@@ -1,15 +1,20 @@
 # LocalKB 运行时瘦依赖（无 torch/optimum；嵌入+重排走 onnxruntime 或 API）
-# 传递依赖(numpy/pyarrow/pandas/scipy/tokenizers 等)会自动装。
+# 传递依赖(numpy/pyarrow/pandas/scipy 等)会自动装。
+#
+# 可复现构建：本文件用「区间」防上游大版本把 bundle 拉崩；正式出包前建议冻结一份精确锁：
+#     python -m pip freeze > requirements.lock
+# 并随 bundle 一起走、下次按 requirements.lock 重建，杜绝“几个月后重建就崩”。
 fastapi
 uvicorn
 lancedb>=0.33
-onnxruntime
-transformers
-tokenizers
+onnxruntime>=1.17,<2        # 依赖 VC++ 运行库、ABI 敏感，跨大版本易崩 → 锁主版本
+transformers>=4.40,<5       # 仅用其 tokenizer 加载；需与 tokenizers 版本匹配
+tokenizers>=0.19,<0.22      # 与 transformers 的 ABI 绑定，别让其自由漂移
 bm25s
 jieba
 scikit-learn
 pymupdf4llm
+python-docx>=1.1           # 综述导出 Word（缺它则导出恒降级为 .md）
 requests
 pywebview
 pythonnet

@@ -53,16 +53,25 @@ def main():
                     print(f"    ⚠ 缺 {fn}（可能该模型不需要）")
         sz = tgz.stat().st_size
         print(f"    大小 {sz/1e6:.0f}MB，算 sha256 …", flush=True)
+        placeholder = f"https://github.com/<用户名>/LocalKB/releases/download/models-v1/{tgz.name}"
         models.append({
             "name": name, "filename": tgz.name, "bytes": sz,
             "sha256": sha256(tgz),
-            "url": f"https://github.com/<用户名>/LocalKB/releases/download/models-v1/{tgz.name}",
+            # urls 支持多镜像（按序尝试，国内 GitHub 直连易失败可加镜像）；占位符 <…> 必须替换
+            "urls": [placeholder],
         })
-    manifest = {"schema": 1, "note": "上传 .tar.gz 到 GitHub Release 后把真实直链填入各 url", "models": models}
+    manifest = {"schema": 1,
+                "note": "上传 .tar.gz 到 GitHub Release（可加镜像）后，把真实直链填入各 models[].urls",
+                "models": models}
     (C.APP / "models_manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"[pack] 完成，共 {len(models)} 个资产在 {out}")
-    print(f"[pack] 清单写入 {C.APP/'models_manifest.json'}（记得填 url 后再分发）")
+    # 显式校验：占位符 url 未替换会导致分发版首启下载必失败，构建前必须发现
+    ph = [m["name"] for m in models
+          if not m.get("urls") or any("<" in u for u in m["urls"])]
+    if ph:
+        print(f"[pack] ⚠ 以下模型的 url 仍是占位符（含 <…>），分发前务必替换为真实直链：{', '.join(ph)}")
+    print(f"[pack] 清单写入 {C.APP/'models_manifest.json'}（填好 urls 后再分发；build_bundle 会再校验一次）")
 
 
 if __name__ == "__main__":

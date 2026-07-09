@@ -1,6 +1,7 @@
 # LocalKB MCP 接入说明
 
-> 💡 **最省事的接法**：打开 LocalKB 应用 →「🤖 Agent」页，那里有**本机真实路径已填好**的一键接入命令（Claude Code / Codex / 通用 mcp.json 各一份，可直接复制），比照抄下面的占位路径更可靠。本文档作为原理与工具参考。
+> ⚠️ **下面的命令是占位示例，请勿照抄！** 里面的 `<你的PaperPiggy目录>` 只是占位符，直接复制会得到错误配置。
+> ✅ **正确做法**：打开 PaperPiggy 应用 →「🤖 Agent」页，那里有**本机真实路径已填好**的一键接入命令（Claude Code / Codex / 通用 mcp.json 各一份），直接复制即可。本文档只作原理与工具参考。
 
 让 Claude Code / Codex 等 agent **原生调用**本地知识库——不用记命令，直接说「查库里关于 XX 的文献」，agent 自动调用检索工具。
 
@@ -27,9 +28,11 @@
 
 ## Claude Code 接入
 
+> 下面路径中的 `<你的PaperPiggy目录>` 是占位符（勿照抄，用 Agent 页的真实命令）。
+
 **方式 A（命令行，推荐）**——在任意 Claude Code 会话里运行：
 ```
-claude mcp add localkb -- "D:\00Zotero知识库\rag\.venv\Scripts\python.exe" "D:\LocalKB\mcp_server.py"
+claude mcp add localkb -- "<你的PaperPiggy目录>\python\python.exe" "<你的PaperPiggy目录>\app\mcp_server.py"
 ```
 加 `--scope user` 可让所有项目都能用；不加则只在当前项目。
 
@@ -38,8 +41,8 @@ claude mcp add localkb -- "D:\00Zotero知识库\rag\.venv\Scripts\python.exe" "D
 {
   "mcpServers": {
     "localkb": {
-      "command": "D:\\00Zotero知识库\\rag\\.venv\\Scripts\\python.exe",
-      "args": ["D:\\LocalKB\\mcp_server.py"]
+      "command": "<你的PaperPiggy目录>\\python\\python.exe",
+      "args": ["<你的PaperPiggy目录>\\app\\mcp_server.py"]
     }
   }
 }
@@ -51,11 +54,11 @@ claude mcp add localkb -- "D:\00Zotero知识库\rag\.venv\Scripts\python.exe" "D
 
 ## Codex 接入
 
-编辑 `~/.codex/config.toml`，加：
+编辑 `~/.codex/config.toml`，加（路径同样是占位符，勿照抄，用 Agent 页真实命令）：
 ```toml
 [mcp_servers.localkb]
-command = "D:\\00Zotero知识库\\rag\\.venv\\Scripts\\python.exe"
-args = ["D:\\LocalKB\\mcp_server.py"]
+command = "<你的PaperPiggy目录>\\python\\python.exe"
+args = ["<你的PaperPiggy目录>\\app\\mcp_server.py"]
 ```
 
 ---

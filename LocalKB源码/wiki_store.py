@@ -85,6 +85,17 @@ def index_map():
     return {p["id"]: p for p in load_index().get("pages", [])}
 
 
+def is_indexed(page_id):
+    """该 wiki 页是否**真的**在检索内存表里（full 模式入表成功才算）。
+       wiki-cached-indexed-true：命中缓存时据此按实回填 indexed，
+       避免 light 模式/入表失败时仍谎报 indexed=True。"""
+    try:
+        import retriever as R
+        return f"{page_id}::wiki" in (R.M.get("records") or {})
+    except Exception:
+        return False
+
+
 def _upsert_index(meta):
     idx = load_index()
     pages = [p for p in idx.get("pages", []) if p.get("id") != meta["id"]]
@@ -314,7 +325,8 @@ def _synthesize(page_id, kind, subject, force, llm):
     if not force:
         cached = index_map().get(page_id)
         if cached:
-            m = dict(cached); m["cached"] = True; m["indexed"] = True
+            # wiki-cached-indexed-true：按实回填 indexed（该页是否真在检索表里），不再恒 True。
+            m = dict(cached); m["cached"] = True; m["indexed"] = is_indexed(page_id)
             return m
     ctx, srcs = _gather_evidence(subject, llm.get("topk", 8))
     base, model, key = _resolve_llm(llm)

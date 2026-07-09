@@ -268,6 +268,71 @@ def search_full(query, topk, sort, keys=None):
         out.append(d)
     return out
 
+# ═══ C4/F6：向量「找相似」——用已存向量取近邻 ═══════════════════
+def neighbors(key, topk=8):
+    """给一篇 key 返回向量近邻（cosine），排除自身、剔除 wiki 行、按 key 聚合去重。
+       优先复用该 key 已入表的向量（chunk 行优先于 meta 行）；都取不到则现场 encode 其标题。
+       返回 list（每条结构与 search_full 输出一致，前端复用 resultCard）；
+       light 模式 / 无表 / 取不到向量 / 无标题 → None（上层回 {ok:false}，前端回退抽词法）。"""
+    if STATE.get("mode") != "full" or "tbl" not in M:
+        return None
+    recs = M.get("records", {})
+    qv, title = None, ""
+    for r in recs.values():                       # 找该 key 的一条已存向量（chunk 优先）
+        if r.get("key") != key:
+            continue
+        title = r.get("title", "") or title
+        v = r.get("vector")
+        if v is not None:
+            if r.get("row_type") != "meta":       # chunk 行向量最贴近全文，命中即用
+                qv = v; break
+            if qv is None:                         # 暂存 meta 行向量作兜底
+                qv = v
+    if qv is None:                                # 无已存向量 → 现场 encode 标题
+        if not title:
+            p = (M.get("papers") or {}).get(key)
+            title = (p or {}).get("title", "") if p else ""
+        if not title or "embed" not in M:
+            return None
+        try:
+            qv = [float(x) for x in M["embed"].encode([title], max_length=256)[0]]
+        except Exception:
+            return None
+    try:
+        hits = M["tbl"].search(list(qv)).metric("cosine").limit(max(topk * 5, 40)).to_list()
+    except Exception:
+        return None
+    seen, out = set(), []
+    for h in hits:
+        k = h.get("key", "")
+        if not k or k == key or k in seen or _is_wiki(h):
+            continue
+        seen.add(k)
+        r = recs.get(h.get("chunk_id")) or h
+        sim = round(1.0 - float(h.get("_distance", 0.0)), 4)   # cosine 距离→相似度
+        tier = _tier_of(r)
+        deep = (r.get("row_type") != "meta")
+        d = {
+            "chunk_id": h.get("chunk_id"), "score": sim,
+            "journal_tier": tier, "tier_rank": JT.rank_of(tier),
+            "title": r.get("title", ""), "author": r.get("author", ""),
+            "year": r.get("year", ""), "journal": r.get("journal", ""),
+            "doi": r.get("doi", ""), "page": r.get("page"), "key": k,
+            "official_pages": r.get("official_pages", ""),
+            "row_type": r.get("row_type", "chunk"),
+            "depth": "full" if deep else "abstract",
+            "has_pdf": r.get("has_pdf", True),
+            "heading": r.get("heading", ""),
+            "text": r.get("text", ""), "context": r.get("parent_text", ""),
+            "citation": _page_cite(r), "is_wiki": False,
+        }
+        _attach_weight(d, _weight_res(r))
+        out.append(d)
+        if len(out) >= topk:
+            break
+    return out
+
+
 # ═══ 综合层：wiki 页嵌入入表（进程内即时可搜）════════════════════
 def _fit_row_to_schema(full, vec):
     """按当前表 schema 逐列取值：旧表无 row_type/ingested_at 等列时自动省略，

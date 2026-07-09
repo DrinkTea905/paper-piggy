@@ -30,6 +30,36 @@ def _rm_ro(func, path, _):
     os.chmod(path, stat.S_IWRITE); func(path)
 
 
+def verify_manifest():
+    """构建期护栏：分发版靠首启从云端下载模型，manifest 缺失、或 url 仍是占位符(<…>)，
+    必然导致终端用户首启下载失败。此处提前报错，避免发出一个下载注定失败的包。
+    （若用 --slim-models 把模型直接打进包，则无需下载，跳过此检查。）"""
+    mm = SRC / "models_manifest.json"
+    if not mm.exists():
+        raise SystemExit(f"[bundle] ✗ 缺 {mm}：分发版首启需据此下载模型。"
+                         f"先跑 pack_models.py 生成清单，并把 GitHub Release 真实直链填入各 urls。")
+    import json as _json
+    try:
+        man = _json.loads(mm.read_text(encoding="utf-8"))
+    except Exception as ex:
+        raise SystemExit(f"[bundle] ✗ models_manifest.json 解析失败：{ex}")
+    models = man.get("models") or []
+    if not models:
+        raise SystemExit("[bundle] ✗ models_manifest.json 未列出任何模型（models 为空）。")
+    bad = []
+    for e in models:
+        cand = list(e.get("urls") or e.get("mirrors") or [])
+        if e.get("url"):
+            cand.append(e["url"])
+        if not cand or any("<" in u for u in cand):
+            bad.append(e.get("name", "?"))
+    if bad:
+        raise SystemExit("[bundle] ✗ models_manifest.json 仍含占位符 url（<…>）或缺 url："
+                         + ", ".join(bad)
+                         + "。请把真实下载直链填入后再构建（或用 --slim-models 把模型直接打进包）。")
+    print("[bundle] models_manifest.json 校验通过（url 均为真实直链）")
+
+
 def copy_app():
     if APP_OUT.exists():
         shutil.rmtree(APP_OUT, onerror=_rm_ro)
@@ -204,6 +234,8 @@ def main():
         print(f"[bundle] 已同步 app/（源码）→ {APP_OUT}"); return
     if not (BUNDLE / "python" / "python.exe").exists():
         print(f"[bundle] ✗ 缺 {BUNDLE/'python'}（先下 python-build-standalone 并 pip 装依赖）"); return
+    if not args.slim_models:
+        verify_manifest()   # 依赖首启下载模型的分发包：构建前先确保 manifest 有真实直链
     copy_app()
     (BUNDLE / "data").mkdir(exist_ok=True)
     (BUNDLE / "models").mkdir(exist_ok=True)

@@ -116,6 +116,28 @@ def _fallback_body(subject, hits):
     return "\n".join(out)
 
 
+def _empty_body(subject):
+    """R5：库内无命中——与「未配 key」分开：这是「本库暂无相关文献」，不是缺 LLM。"""
+    return (f"> ℹ 本库暂无与「{subject}」直接相关的文献命中，未能生成资料汇编。\n\n"
+            "建议：换用更贴近文献表述的关键词重试；或先补检索/补入相关文献后再试。")
+
+
+def _degraded_gb(gb):
+    """R6：判断一页是否为「降级产物」（未配 key / LLM 失败 / 无命中）。
+       这类页不应被当权威缓存长期复用——命中缓存时自动重生（修好 key/补文献后即刷新）。
+       成功的 LLM 综述 generated_by=模型名，不以 fallback( 开头、也不等于 no-hits/no-key。"""
+    gb = gb or ""
+    return gb.startswith("fallback(") or gb in ("no-hits", "no-key")
+
+
+def _indexed_of(page_id):
+    """wiki-cached-indexed-true：命中缓存时按实回填 indexed（该页是否真在检索内存表里）。"""
+    try:
+        return W.is_indexed(page_id)
+    except Exception:
+        return False
+
+
 def digest(query, topk=14, llm=None, force=False, by_agent=False):
     """能力二：给一个子题 query → 一节带印刷页引注的综述 + 覆盖评级 + 缺口。存 kind=digest 页。"""
     llm = llm or {}
@@ -125,14 +147,17 @@ def digest(query, topk=14, llm=None, force=False, by_agent=False):
     page_id = _digest_id(query)
     if not force:
         cached = W.index_map().get(page_id)
-        if cached:
-            m = dict(cached); m["cached"] = True; m["indexed"] = True
+        # R6：只有非降级页才复用缓存；降级页（缺 key/LLM 失败/无命中）落到下方重生。
+        if cached and not _degraded_gb(cached.get("generated_by", "")):
+            m = dict(cached); m["cached"] = True; m["indexed"] = _indexed_of(page_id)
             return m
     hits = _recall(query, topk)
     sym, label, n, n_high = _coverage(hits)
     ctx = _build_ctx(hits)
     base, model, key = _resolve_llm(llm)
-    if key and hits:
+    if not hits:                       # R5：库内无命中 ≠ 未配 LLM，分开提示
+        body = _empty_body(query); gen_by = "no-hits"
+    elif key:
         messages = [{"role": "system", "content": DIGEST_SYS.format(subject=query, ctx=ctx)},
                     {"role": "user", "content": f"请就「{query}」写这一节综述，每个论点后保留原引注。"}]
         try:
@@ -154,6 +179,7 @@ def digest(query, topk=14, llm=None, force=False, by_agent=False):
     meta = W.save_research_page(page_id, "digest", title, query, body, sources,
                                generated_by=gen_by, by_agent=by_agent)
     meta["cached"] = False
+    meta["degraded"] = _degraded_gb(gen_by)      # R6：降级页标记，前端可提示、下次命中自动重试
     meta["coverage"] = {"symbol": sym, "label": label, "n": n, "n_high": n_high}
     return meta
 
@@ -178,8 +204,9 @@ def scope(topic, topk=20, llm=None, force=False, by_agent=False):
     page_id = "outline-" + hashlib.sha1(re.sub(r"\s+", " ", topic.lower()).encode("utf-8")).hexdigest()[:8]
     if not force:
         cached = W.index_map().get(page_id)
-        if cached:
-            m = dict(cached); m["cached"] = True; m["indexed"] = True
+        # R6：降级页不复用，落到下方重生（修好 key/补文献后自动刷新）。
+        if cached and not _degraded_gb(cached.get("generated_by", "")):
+            m = dict(cached); m["cached"] = True; m["indexed"] = _indexed_of(page_id)
             return m
     hits = _recall(topic, topk)
     # 范围映射：命中的 tier 分布
@@ -189,7 +216,9 @@ def scope(topic, topk=20, llm=None, force=False, by_agent=False):
         tiers[t] = tiers.get(t, 0) + 1
     ctx = "\n".join(f"{i+1}. {CF.compact(h)}" for i, h in enumerate(hits))
     base, model, key = _resolve_llm(llm)
-    if key and hits:
+    if not hits:                       # R5：库内无命中 ≠ 未配 LLM
+        body = _scope_empty(topic); gen_by = "no-hits"
+    elif key:
         messages = [{"role": "system", "content": SCOPE_SYS.format(topic=topic, ctx=ctx)},
                     {"role": "user", "content": f"请就「{topic}」产出选题拆解、标题参考与三级大纲。"}]
         try:
@@ -207,6 +236,7 @@ def scope(topic, topk=20, llm=None, force=False, by_agent=False):
     meta = W.save_research_page(page_id, "outline", f"选题框架·{topic[:28]}", topic, body, sources,
                                generated_by=gen_by, by_agent=by_agent)
     meta["cached"] = False
+    meta["degraded"] = _degraded_gb(gen_by)      # R6：降级页标记
     return meta
 
 
@@ -216,6 +246,12 @@ def _scope_fallback(topic, hits, tiers):
     for i, h in enumerate(hits, 1):
         out.append(f"{i}. {CF.compact(h)}")
     return "\n".join(out)
+
+
+def _scope_empty(topic):
+    """R5：库内无命中——与「未配 LLM」分开的诚实提示。"""
+    return (f"> ℹ 本库暂无与「{topic}」直接相关的文献命中，未能生成选题框架。\n\n"
+            "建议：换用更贴近文献表述的关键词重试；或先补检索/补入相关文献后再试。")
 
 
 # ═══ 能力三：建议新增文献（Phase D）═══════════════════════════════

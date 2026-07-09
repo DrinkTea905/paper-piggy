@@ -21,6 +21,20 @@ def resolve(provider, base_url, model):
     p = PROVIDERS.get(provider, {})
     return (base_url or p.get("base", "")).rstrip("/"), (model or p.get("model", ""))
 
+def _friendly_error(e):
+    """把 requests 的底层异常翻成人话 RuntimeError（C5）。
+    server.py 的 chat 用 str(e) 透传、wiki 用 detail 展示——抛这个后用户看到的就是人话。"""
+    code = getattr(getattr(e, "response", None), "status_code", None)
+    if isinstance(e, requests.exceptions.HTTPError):
+        if code in (401, 403):
+            return RuntimeError("密钥无效或余额不足，请检查 API Key 与余额")
+        if code == 429:
+            return RuntimeError("请求太频繁，请稍后再试")
+        return RuntimeError(f"模型服务返回错误（HTTP {code}），请稍后再试")
+    if isinstance(e, (requests.exceptions.Timeout, requests.exceptions.ConnectionError)):
+        return RuntimeError("网络连接失败，请检查网络")
+    return RuntimeError(str(e) or "调用模型失败，请稍后再试")
+
 def _payload(model, messages, temperature, stream):
     """构造请求体。Qwen3 是混合推理模型，默认会吐 <think> 思维链——聊天/摘要都不想要，
     对硅基流动关掉它（enable_thinking=false）；其它模型忽略该字段（OpenAI 兼容会丢弃未知键）。"""
@@ -36,8 +50,11 @@ def chat_once(messages, base_url, api_key, model, temperature=0.3, timeout=120):
     url = base_url.rstrip("/") + "/chat/completions"
     payload = _payload(model, messages, temperature, False)
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
-    r = requests.post(url, json=payload, headers=headers, timeout=timeout)
-    r.raise_for_status()
+    try:
+        r = requests.post(url, json=payload, headers=headers, timeout=timeout)
+        r.raise_for_status()
+    except requests.exceptions.RequestException as e:   # C5：网络/HTTP 错误翻成人话
+        raise _friendly_error(e)
     return ((r.json().get("choices") or [{}])[0].get("message", {}) or {}).get("content", "").strip()
 
 def chat_stream(messages, base_url, api_key, model, temperature=0.3):
@@ -47,18 +64,21 @@ def chat_stream(messages, base_url, api_key, model, temperature=0.3):
     url = base_url.rstrip("/") + "/chat/completions"
     payload = _payload(model, messages, temperature, True)
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
-    with requests.post(url, json=payload, headers=headers, stream=True, timeout=180) as r:
-        r.raise_for_status()
-        for raw in r.iter_lines(decode_unicode=True):
-            if not raw or not raw.startswith("data:"):
-                continue
-            data = raw[5:].strip()
-            if data == "[DONE]":
-                break
-            try:
-                j = json.loads(data)
-                delta = (j.get("choices") or [{}])[0].get("delta", {}).get("content", "")
-                if delta:
-                    yield delta
-            except Exception:
-                continue
+    try:
+        with requests.post(url, json=payload, headers=headers, stream=True, timeout=180) as r:
+            r.raise_for_status()
+            for raw in r.iter_lines(decode_unicode=True):
+                if not raw or not raw.startswith("data:"):
+                    continue
+                data = raw[5:].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    j = json.loads(data)
+                    delta = (j.get("choices") or [{}])[0].get("delta", {}).get("content", "")
+                    if delta:
+                        yield delta
+                except Exception:
+                    continue
+    except requests.exceptions.RequestException as e:   # C5：网络/HTTP 错误翻成人话
+        raise _friendly_error(e)

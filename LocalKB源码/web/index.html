@@ -14,12 +14,12 @@
       <button class="tab active" data-tab="dashboard">📊 库总览</button>
       <button class="tab" data-tab="browse">📚 浏览</button>
       <button class="tab" data-tab="agent">🤖 Agent</button>
-      <button class="tab" data-tab="wiki">📖 wiki页</button>
+      <button class="tab" data-tab="wiki">📖 综述库</button>
       <button class="tab" data-tab="search">🔍 检索</button>
       <button class="tab" data-tab="chat">💬 对话</button>
     </nav>
     <div class="actions">
-      <button id="btn-build" class="ghost" title="Zotero 里加了新文献后点此更新：补新增题录与语义层（已入库的跳过；深索仍手动触发）">⟳ 更新知识库</button>
+      <button id="btn-build" class="ghost" title="Zotero 里加了新文献后点此更新：补新增题录（题名·作者·年份·期刊）并提升检索质量（已入库的跳过；深索仍手动触发）">⟳ 更新知识库</button>
       <button id="btn-settings" class="ghost">⚙ 设置</button>
     </div>
   </header>
@@ -34,21 +34,27 @@
   <main id="panel-search" class="panel" data-panel="search" hidden>
     <div class="searchbar">
       <input id="q" type="text" placeholder="输入研究问题，如：认罪认罚从宽对司法信任的影响" autocomplete="off" />
+      <select id="s-cat" title="限定检索范围（分类 / AI 主题）">
+        <option value="">全部文献</option>
+      </select>
       <select id="sort" title="排序">
         <option value="blend">综合</option>
         <option value="relevance">内容相关优先</option>
-        <option value="tier">期刊层级优先</option>
+        <option value="tier">期刊等级优先</option>
       </select>
-      <select id="minw" title="按期刊来源门槛过滤（只看够权威的来源）">
+      <select id="minw" title="按期刊等级过滤（只看够权威的来源）">
         <option value="0">全部期刊</option>
         <option value="0.45">一般及以上</option>
         <option value="0.65">次核心及以上</option>
         <option value="0.85">核心及以上</option>
-        <option value="0.92">只看顶级</option>
+        <option value="0.92">只看权威级</option>
       </select>
       <button id="go">检索</button>
     </div>
+    <div id="s-examples" class="s-chips" hidden></div>
+    <div id="s-history" class="s-chips" hidden></div>
     <div id="s-msg" class="msg"></div>
+    <div id="s-facets" class="s-facets" hidden></div>
     <div id="results" class="results"></div>
   </main>
 
@@ -65,13 +71,22 @@
       <!-- 左侧：AI 主题 + 收藏夹树 -->
       <aside class="browse-tree">
         <div class="bt-scroll">
+          <div class="bt-legend" title="每个分类/收藏夹后的两个数字：左＝已深索篇数，右＝该组总篇数">数字＝<b>已深索</b> / 总篇数</div>
+          <!-- AI 按语义自动归类的主题（会随库变动） -->
           <div class="bt-head">
-            <span class="bt-caret2" data-sec="kbc">▾</span>
-            <span class="bt-head-title" id="bt-kbc-title" title="点这里查看全部已深索文献">🗂 知识库分类（已深索）</span>
+            <span class="bt-caret2" data-sec="topics">▾</span>
+            <span class="bt-head-title" title="AI 按语义把已深索文献自动归类，会随库变动">🧠 AI 自动主题</span>
             <button class="bt-head-btn" id="bt-topics-gen" title="用 AI 把已深索文献自动归类成主题">🔄 生成主题</button>
           </div>
-          <div id="bt-kbc-body">
+          <div id="bt-topics-body">
             <div id="bt-topics" class="bt-topics"><div class="bt-loading">加载主题中…</div></div>
+          </div>
+          <!-- 你手动整理的分类清单 -->
+          <div class="bt-head">
+            <span class="bt-caret2" data-sec="kbc">▾</span>
+            <span class="bt-head-title" id="bt-kbc-title" title="你手动整理的清单；点这里查看全部已深索文献">🗂 我的分类（手动整理）</span>
+          </div>
+          <div id="bt-kbc-body">
             <div id="bt-kbcats" class="bt-kbcats"></div>
             <button id="bt-kbcat-new" class="bt-kbcat-new">＋ 新建分类</button>
           </div>
@@ -100,9 +115,12 @@
               <option value="recommend">推荐优先</option>
               <option value="year">年份最新</option>
             </select>
+            <button id="bl-addcat" class="ghost2b" disabled title="把勾选的文献加入某个「我的分类」">＋ 加入分类</button>
+            <button id="bl-cite-sel" class="ghost2b" disabled title="复制勾选文献的规范引文（GB/T 7714 国标）">⧉ 导出选中引文</button>
             <button id="bl-deep-sel" class="primary-btn" disabled>深索选中 <span id="bl-sel-n">0</span> 篇</button>
           </div>
         </div>
+        <div class="bl-cat-hint">💡 想把文献归类？勾选后点「＋ 加入分类」，或右键文献卡 / 把卡片拖到左侧「我的分类」上。</div>
         <div id="bl-tip" class="bl-tip"></div>
         <div id="empty-dropzone" class="empty-dropzone" hidden>
           <div class="ed-ic">📥</div>
@@ -156,6 +174,18 @@
         <div class="ag-run" id="ag-run"><span class="ag-dot"></span><span id="ag-run-txt">检查服务状态…</span></div>
       </section>
 
+      <section class="ag-card ag-intro">
+        <h3>先决条件：你得先装好 Claude Code 或 Codex</h3>
+        <p class="ag-note">本页是把 PaperPiggy 接进一个 <b>AI 命令行助手（CLI）</b>。它不是 PaperPiggy 自带的，需要你在电脑上单独安装其中一个，<b>装了才能用本页</b>：</p>
+        <ul class="ag-intro-list">
+          <li><b>Claude Code</b>（Anthropic 出品）——官方安装说明：
+            <a href="https://docs.claude.com/en/docs/claude-code/overview" target="_blank" rel="noopener">docs.claude.com/claude-code</a></li>
+          <li><b>Codex</b>（OpenAI 出品）——官方仓库/安装：
+            <a href="https://github.com/openai/codex" target="_blank" rel="noopener">github.com/openai/codex</a></li>
+        </ul>
+        <p class="ag-note ag-intro-check">不确定装没装？打开系统终端输入 <code>claude</code> 或 <code>codex</code>：能进入对话就是装好了；提示「找不到命令」就还没装，按上面链接装完再回来。装好后，照下面 ① 粘贴一行配置即可。</p>
+      </section>
+
       <section class="ag-card">
         <h3>① 一键接入（本机真实路径已填好）</h3>
         <div class="ag-tabs">
@@ -177,7 +207,7 @@
           <p class="ag-step">项目根目录建 <code>.mcp.json</code>（或填进你的客户端 MCP 配置），粘贴：</p>
           <div class="ag-code"><code id="ag-json"></code><button class="ag-copy" data-copy="ag-json">复制</button></div>
         </div>
-        <div class="ag-warn">⚠ <b>配好后要新开一个会话才生效</b>——当前正在运行的 Claude Code / Codex 会话不会热加载新 MCP。新会话里输入 <code>/mcp</code> 应能看到 <code>localkb</code>（6 个工具）。</div>
+        <div class="ag-warn">⚠ <b>配好后要新开一个会话才生效</b>——当前正在运行的 Claude Code / Codex 会话不会热加载新 MCP。新会话里输入 <code>/mcp</code> 应能看到 <code>localkb</code><span id="ag-tool-count"></span>。</div>
       </section>
 
       <section class="ag-card">
@@ -200,7 +230,7 @@
           <li><b>诚实标缺口 + 建议补文献</b>：每节末尾如实标「资料缺口」，并从脚注里挖出你库里缺、值得补的文献（按期刊层级排）。</li>
         </ol>
         <p class="ag-note ag-flow-say">直接对它说：<span class="ag-flow-eg">「用 build_digest 帮我就『认罪认罚从宽对司法信任的影响』做一份带页码引用的资料汇编」</span>
-          或 <span class="ag-flow-eg">「先 research_outline 给我一个大纲」</span>。产出会存进「📖 wiki 页」，随时复用。</p>
+          或 <span class="ag-flow-eg">「先 research_outline 给我一个大纲」</span>。产出会存进「📖 综述库」，随时复用。</p>
         <p class="ag-mini">（完整的「一键写整篇论文」工作流在后续版本；当前先把最扎实的「材料梳理 + 页级引注」做透。）</p>
       </section>
 
@@ -213,7 +243,7 @@
 
       <section class="ag-card">
         <h3>⑤ 进阶：让 AI 写回的综合更可信</h3>
-        <p class="ag-note">AI 用 <code>save_synthesis</code> 写回的综合页会标 🤖「未核验」，默认可被检索命中、但检索排序里不会盖过原始文献；你可在「📖 wiki页」一键删除不满意的。
+        <p class="ag-note">AI 用 <code>save_synthesis</code> 写回的综合页会标 🤖「未核验」，默认可被检索命中、但检索排序里不会盖过原始文献；你可在「📖 综述库」一键删除不满意的。
           AI 写回时应遵守本机的写回规约（引用格式/来源纪律），规约文件在：</p>
         <div class="ag-code"><code id="ag-schema"></code><button class="ag-copy" data-copy="ag-schema">复制路径</button></div>
       </section>
@@ -224,11 +254,11 @@
   <main id="panel-chat" class="panel" data-panel="chat" hidden>
     <div id="chat-log" class="chat-log">
       <div class="chat-hint">
-        <div class="ch-h">💬 对话适合「随手问一句」</div>
-        <p>它基于你本地文库回答、带页码引用，但一次只看少量来源、答案不会自动沉淀。</p>
-        <p><b>要做认真的检索、综述、跨会话累积？更推荐用「🤖 Agent」</b>——让 Claude Code / Codex 直接调你的库，能查、能读页码、能把综合写回、下次复用。</p>
+        <div class="ch-h">💬 自带对话：基于本地文库、带页码引用</div>
+        <p>它直接读你的库回答、每句可回溯到来源页码，随手问答很顺手；一次会看少量来源，答案默认不自动沉淀（可手动「保存此答案」）。</p>
+        <p>想更进一步——跨会话累积、系统化综述、把结论沉淀复用？可以再接「🤖 Agent」：让 Claude Code / Codex 也调你的库。两条路都可用，按需选。</p>
         <button id="chat-to-agent" class="ghost2">→ 去 Agent 页看怎么接入</button>
-        <p class="ch-mini">继续用对话也行：下面「模型设置」里填一个 LLM 的 API Key（DeepSeek / 硅基流动 / Kimi / 智谱 / OpenAI 皆可）即可开问。硅基流动可复用检索引擎已配好的 key。</p>
+        <p class="ch-mini">用对话：在下面「模型设置」里填一个 LLM 的 API Key（DeepSeek / 硅基流动 / Kimi / 智谱 / OpenAI 皆可）即可开问。硅基流动可复用检索引擎已配好的 key。</p>
       </div>
     </div>
     <details id="chat-model" class="chat-model">
@@ -300,7 +330,7 @@
         <label class="eng-mode"><input type="radio" name="eng-backend" value="local" /> 🔒 本地模型（离线，需 ~1.2GB 模型）</label>
         <label class="eng-mode"><input type="radio" name="eng-backend" value="api" /> ☁️ API（SiliconFlow 等 OpenAI 兼容，免费免下载）</label>
         <div id="eng-api">
-          <p class="hint">👉 还没有 Key？去 <a href="https://account.siliconflow.cn/zh/login" target="_blank" rel="noopener">SiliconFlow（硅基流动）</a> 登录即领免费额度。填这一个 Key，检索、对话、深索摘要、文件夹抽题录都能用它的免费模型（仅供体验；认真做研究更推荐用 Agent）。</p>
+          <p class="hint">👉 还没有 Key？去 <a href="https://account.siliconflow.cn/zh/login" target="_blank" rel="noopener">SiliconFlow（硅基流动）</a> 登录即领免费额度。填这一个 Key，检索、对话、深索摘要、文件夹抽题录都能用它的免费模型；够用。想更进一步可再接 Agent。</p>
           <label>Base URL <input id="eng-base" placeholder="https://api.siliconflow.cn/v1" /></label>
           <label>API Key <input id="eng-key" type="password" placeholder="留空＝不改" /></label>
           <details>
@@ -320,7 +350,7 @@
         <h4>🔄 自动更新知识库</h4>
         <label class="sac-toggle">
           <input type="checkbox" id="au-enabled" />
-          <span>在 Zotero 新增文献 / 文件夹新放 PDF 后，后台自动增量更新（只补题录与语义层，深索仍手动）</span>
+          <span>在 Zotero 新增文献 / 文件夹新放 PDF 后，后台自动增量更新（只补题录并提升检索质量，深索仍手动）</span>
         </label>
         <label class="au-int">检查间隔
           <select id="au-interval"><option value="15">每 15 分钟</option><option value="30">每 30 分钟</option><option value="60">每 1 小时</option><option value="180">每 3 小时</option></select>
@@ -329,6 +359,26 @@
       </div>
 
       <p class="hint">💬 对话用的 LLM 服务商已移到「💬 对话」页的「⚙ 模型设置」折叠区（改动即时保存）。</p>
+
+      <div class="set-section">
+        <h4>🎨 外观（主题 / 字号）</h4>
+        <p class="hint">深色模式默认跟随系统；也可手动指定。字号偏小可调大，长时间读片段/综述更舒服。改动即时生效、存本机。</p>
+        <label>主题
+          <select id="ui-theme">
+            <option value="system">跟随系统</option>
+            <option value="light">浅色</option>
+            <option value="dark">深色</option>
+          </select>
+        </label>
+        <label>字号
+          <select id="ui-fontsize">
+            <option value="small">小</option>
+            <option value="normal">标准</option>
+            <option value="large">大</option>
+            <option value="xlarge">特大</option>
+          </select>
+        </label>
+      </div>
 
       <div class="set-section">
         <h4>🐛 错误日志</h4>
@@ -357,12 +407,14 @@
   <div id="wiki-modal" class="modal" hidden>
     <div class="modal-box wiki-box">
       <div class="wiki-head">
-        <h3 id="wiki-title">综合页</h3>
+        <h3 id="wiki-title">综述页</h3>
+        <div id="wiki-flag" class="wiki-flag"></div>
         <div id="wiki-meta" class="hint"></div>
       </div>
       <div id="wiki-body" class="wiki-body"></div>
       <div id="wiki-sources" class="wiki-sources"></div>
       <div class="modal-actions">
+        <a id="wiki-export" class="ghost wiki-export-btn" download>⬇ 导出 Word</a>
         <button id="wiki-regen" class="ghost">↻ 重新生成</button>
         <button id="wiki-discard" class="ghost danger">🗑 不保存此答案</button>
         <button id="wiki-close" class="ghost">关闭</button>
@@ -419,10 +471,10 @@
       <ol class="wizard-steps">
         <li data-step="1" class="active"><span class="dot">1</span>环境自检</li>
         <li data-step="2"><span class="dot">2</span>领 AI Key</li>
-        <li data-step="3"><span class="dot">3</span>检索引擎</li>
+        <li data-step="3"><span class="dot">3</span>选择检索方式</li>
         <li data-step="4"><span class="dot">4</span>连接文库</li>
-        <li data-step="5"><span class="dot">5</span>准备引擎</li>
-        <li data-step="6"><span class="dot">6</span>即时索引</li>
+        <li data-step="5"><span class="dot">5</span>下载引擎</li>
+        <li data-step="6"><span class="dot">6</span>建立索引</li>
       </ol>
       <div class="wizard-body" id="wizard-body"><!-- 由 JS 填充 --></div>
     </div>

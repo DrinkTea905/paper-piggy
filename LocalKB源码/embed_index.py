@@ -16,6 +16,7 @@ import journal_tiers as JT
 from dbutil import key_predicate
 
 KEYS_FILE = C.STATE / "embedded_keys.txt"
+NO_TEXT_FILE = C.STATE / "deep_no_text.txt"   # C1/A2: 扫描件/无可抽文本的 stem（需 OCR，非真深索）
 SUM_FILE  = C.DATA / "summaries" / "summaries.json"   # M2: {stem: 文档级摘要}
 
 def load_summaries():
@@ -39,6 +40,17 @@ def mark_done(key):
     with open(KEYS_FILE, "a", encoding="utf-8") as f:
         f.write(key + "\n")
 
+def load_no_text():
+    """C1/A2：已判定为扫描件/无文本的 stem 集合（不算深索、下次跳过、不反复重抽）。"""
+    if NO_TEXT_FILE.exists():
+        return set(NO_TEXT_FILE.read_text(encoding="utf-8").split())
+    return set()
+
+def mark_no_text(key):
+    """C1/A2：把空 chunks 的 stem 记进 deep_no_text.txt（而非 embedded_keys.txt），供前端标「扫描件·需OCR」。"""
+    with open(NO_TEXT_FILE, "a", encoding="utf-8") as f:
+        f.write(key + "\n")
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--limit", type=int, default=0)
@@ -54,10 +66,11 @@ def main():
     want_tier = (tbl is None) or ("journal_tier" in tbl.schema.names)
 
     done = load_done()
+    no_text = load_no_text()   # C1/A2：已判定扫描件的跳过，避免反复重抽
     files = sorted(C.CHUNKS.glob("*.json"))
     if args.limit:
         files = files[:args.limit]
-    todo = [f for f in files if f.stem not in done]
+    todo = [f for f in files if f.stem not in done and f.stem not in no_text]
     bm25_exists = (C.BM25_DIR / "bm25_ids.json").exists()
     # bm25 是否覆盖全表：比对 bm25_ids 数量与表行数。若进程曾在「新行已入表、bm25 未重建」
     # 的窗口被杀（本机休眠会杀进程树），bm25 会陈旧且行数不符，此时**不能**走快退。
@@ -117,7 +130,9 @@ def main():
         for i, f in enumerate(todo, 1):
             chunks = json.loads(f.read_text(encoding="utf-8"))
             if not chunks:
-                mark_done(f.stem); continue
+                # C1/A2：空 chunks = 扫描件/无可抽文本。不写 embedded_keys.txt（否则虚标已深索），
+                # 改记 deep_no_text.txt，前端标「🚫 扫描件·需OCR」；下次跳过不重抽。
+                mark_no_text(f.stem); no_text.add(f.stem); continue
             # M2：摘要只拼进"嵌入文本"，存表的 text 仍是原文（展示/重排/BM25 用）。
             summ = summaries.get(f.stem, "")
             if summ:

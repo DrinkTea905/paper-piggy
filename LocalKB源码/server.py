@@ -20,7 +20,10 @@ from typing import Optional, List
 import uvicorn
 
 app = FastAPI(title="本地知识库")
-BUILD = {"running": False, "stage": None, "log": [], "started": None}
+BUILD = {"running": False, "stage": None, "log": [], "started": None, "rc": None}
+# B1：build 守卫锁——把「判 running + 置 True」做成原子并在调用线程内同步置位，
+# 杜绝多路触发并发起两个 build_all 子进程写坏同一 LanceDB/bm25/papers.jsonl。
+_BUILD_LOCK = threading.Lock()
 
 @app.middleware("http")
 async def _no_cache(request, call_next):
@@ -88,7 +91,19 @@ def _source_signature():
         import zotero_source as Z
         dd = Z.detect_data_dir()
         sq = (Path(dd) / "zotero.sqlite") if dd else None
-        return f"zotero:{int(sq.stat().st_mtime)}" if (sq and sq.exists()) else "zotero:none"
+        if not (sq and sq.exists()):
+            return "zotero:none"
+        # R7：WAL 模式下新增条目常只落 -wal、主库 mtime 暂不动 → 自动更新检测不到。
+        # 把 zotero.sqlite-wal 的 mtime/size 一并纳入指纹，新增即可被捕获。
+        sig = f"zotero:{int(sq.stat().st_mtime)}"
+        wal = sq.with_name("zotero.sqlite-wal")
+        if wal.exists():
+            try:
+                ws = wal.stat()
+                sig += f":wal{int(ws.st_mtime)}:{ws.st_size}"
+            except Exception:
+                pass
+        return sig
     except Exception:
         return None
 
@@ -109,9 +124,18 @@ def _auto_update_loop():
             sig = _source_signature()
             if sig and sig != AUTO["sig"] and not BUILD["running"]:
                 stage = "folder" if S.source() == "folder" else "all"   # 只轻量层+语义，深索永远手动
-                if _run_build(stage):
-                    AUTO["sig"] = sig
-                    BUILD["log"].insert(0, "[auto] 检测到新增文献，已自动增量更新。")
+                # A4：只有 build 真正成功(rc==0)才推进 sig，失败留待下轮重试（与 A3 returncode 贯通）。
+                def _auto_done(rc, _sig=sig):
+                    if rc == 0:
+                        AUTO["sig"] = _sig
+                        BUILD["log"].insert(0, "[auto] 检测到新增文献，已自动增量更新。")
+                    else:
+                        BUILD["log"].insert(0, f"[auto] 自动增量更新未成功(rc={rc})，下轮将重试。")
+                    try:
+                        _drain_deep_queue()   # 沿用旧默认行为：build 后推进自动深索队列
+                    except Exception as e:
+                        log_error("auto build drain", repr(e))
+                _run_build(stage, on_done=_auto_done)
         except Exception as e:
             log_error("auto_update loop", repr(e))
             time.sleep(60)
@@ -527,13 +551,16 @@ def index_status():
     ek = C.STATE / "embedded_keys.txt"
     deep = len(ek.read_text(encoding="utf-8").split()) if ek.exists() else 0
     meta_done = len(C.META_EMBEDDED.read_text(encoding="utf-8").split()) if C.META_EMBEDDED.exists() else 0
+    # C1/A2：扫描件/无文本篇数（记在 deep_no_text.txt，不算已深索）——供前端与深索汇总提示。
+    nt = C.STATE / "deep_no_text.txt"
+    deep_no_text = len(nt.read_text(encoding="utf-8").split()) if nt.exists() else 0
     with _Q_LOCK:
         q_pending = len(QUEUE["pending"]); q_inflight = len(QUEUE["in_flight"])
     return {
         "mode": R.STATE.get("mode"), "ready": R.STATE.get("ready", False),
         "light_done": manifest.get("light_done", False), "source": manifest.get("source"),
         "papers": manifest.get("papers", 0), "with_pdf": manifest.get("with_pdf", 0),
-        "meta_done": meta_done, "deep_done": deep,
+        "meta_done": meta_done, "deep_done": deep, "deep_no_text": deep_no_text,
         "building": BUILD["running"], "stage": BUILD["stage"], "log": BUILD["log"][-40:],
         "queue_pending": q_pending, "queue_in_flight": q_inflight,
     }
@@ -593,6 +620,12 @@ def _load_cats():
 def _deep_keys():
     ek = C.STATE / "embedded_keys.txt"
     return set(ek.read_text(encoding="utf-8").split()) if ek.exists() else set()
+
+def _deep_no_text_keys():
+    """C1/A2：扫描件/无可抽文本的 safe_name(stem) 集合（格式同 embedded_keys.txt）。
+       这些篇不算已深索、也无法深索——前端据此标「🚫 扫描件·需OCR」而非「未深索」。"""
+    nt = C.STATE / "deep_no_text.txt"
+    return set(nt.read_text(encoding="utf-8").split()) if nt.exists() else set()
 
 def _rec_score(p, g=None):
     """值得读打分：期刊权重为主 + 新近度 + 有 PDF（可深读）。
@@ -681,9 +714,10 @@ def _kbc_find(doc, cid):
 # ── 自动深索串行队列 ──────────────────────────────────────
 _DEEP_QUEUE_FILE = C.STATE / "deep_queue.json"
 _Q_LOCK = threading.Lock()
-QUEUE = {"pending": [], "in_flight": [], "timer": None}
+QUEUE = {"pending": [], "in_flight": [], "timer": None, "fails": 0}
 _DEEP_BATCH = 50
 _DEEP_DEBOUNCE = 4.0
+_DEEP_MAX_RETRY = 3        # A3：同一批连续软失败超过此次数则暂停自动重试（避免坏 PDF/余额0 无限重试烧钱）
 
 def _q_persist():
     """调用方须持 _Q_LOCK。"""
@@ -717,7 +751,7 @@ def enqueue_deep(keys):
         have = set(QUEUE["pending"]) | set(QUEUE["in_flight"])
         newk = [k for k in keys if k not in have and not is_deep(k, deepk)]
         if newk:
-            QUEUE["pending"].extend(newk); _q_persist()
+            QUEUE["pending"].extend(newk); QUEUE["fails"] = 0; _q_persist()   # 新动作复位失败计数，重启自动重试
             if QUEUE["timer"]:
                 QUEUE["timer"].cancel()
             QUEUE["timer"] = threading.Timer(_DEEP_DEBOUNCE, _drain_deep_queue)
@@ -739,10 +773,28 @@ def _drain_deep_queue():
             QUEUE["pending"] = batch + QUEUE["pending"]
             QUEUE["in_flight"] = []; _q_persist()
 
-def _on_deep_done():
+def _on_deep_done(rc=0):
+    """A3：深索子进程结束回调（收 returncode）。
+       rc==0：本批已成功入库，清 in_flight、复位失败计数、继续排空后续。
+       rc!=0：软失败——把 in_flight 退回 pending **队首**而非清空（否则该批 key 永久蒸发），
+              在重试预算内自动重排；超预算则保留在 pending 但停自动重排，待人工/重启再试。"""
+    should_drain = False
     with _Q_LOCK:
-        QUEUE["in_flight"] = []; _q_persist()
-    if QUEUE["pending"]:
+        batch = QUEUE["in_flight"]; QUEUE["in_flight"] = []
+        if rc != 0 and batch:
+            QUEUE["fails"] = QUEUE.get("fails", 0) + 1
+            QUEUE["pending"] = batch + QUEUE["pending"]        # 退回队首，保住这批 key
+            if QUEUE["fails"] <= _DEEP_MAX_RETRY:
+                should_drain = True
+                BUILD["log"].append(f"[deep] 本批深索失败(rc={rc})，已退回队列重试（第 {QUEUE['fails']} 次）。")
+            else:
+                BUILD["log"].append(f"[deep] 本批深索连续失败 {QUEUE['fails']} 次，暂停自动重试"
+                                    f"（{len(batch)} 篇仍在队列，稍后可重新触发深索）。")
+        else:
+            QUEUE["fails"] = 0
+            should_drain = bool(QUEUE["pending"])
+        _q_persist()
+    if should_drain:
         _drain_deep_queue()
 
 @app.get("/index/queue")
@@ -976,6 +1028,20 @@ def similar_keywords(q: SimilarQ):
             log_error("similar/keywords", repr(e))
     return {"ok": True, "keywords": "", "by": "none"}   # 前端据空回退本地抽词
 
+@app.get("/similar/{key}")
+def similar_vector(key: str, topk: int = 8):
+    """C4/F6：真正的向量「找相似」。full 模式用该 key 已存向量（或现场 encode 其标题）在
+       LanceDB 做 cosine 近邻、排除自身，results 每条结构与 /search 一致（前端复用 resultCard）。
+       light 模式或取不到向量 → {ok:false}，前端回退现有 /similar/keywords 抽词法。"""
+    try:
+        res = R.neighbors(key, topk)
+    except Exception as e:
+        log_error("similar vector", repr(e))
+        res = None
+    if res is None:
+        return {"ok": False}
+    return {"ok": True, "key": key, "results": res}
+
 # ── 综合层 wiki（答案沉淀 / 按需综述）──────────────────────────
 class WikiSaveQ(BaseModel):
     query: str = ""
@@ -1128,12 +1194,17 @@ def research_suggest(q: ResearchQ):
         log_error("research/suggest_sources", repr(e), traceback.format_exc())
         return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
 
-@app.post("/research/export_docx/{page_id}")
-def research_export_docx(page_id: str):
-    """把 digest/outline wiki 页导出。有 python-docx 则出 .docx，否则退化为 .md（诚实降级）。"""
+def _export_docx(page_id: str):
+    """把 digest/outline wiki 页导出。有 python-docx 则出 .docx，否则退化为 .md（诚实降级）。
+       C3：末尾用 p['sources'] 追加一节「参考文献」（页级引用），产出可直接拿去写作。"""
     p = W.get_page(page_id)
     if not p:
         return JSONResponse({"ok": False, "detail": "无此页"}, status_code=404)
+    sources = p.get("sources", []) or []
+    def _cite(s):
+        if isinstance(s, dict):
+            return s.get("citation") or s.get("key") or ""
+        return str(s)
     try:
         import docx  # python-docx
         from docx import Document
@@ -1149,24 +1220,41 @@ def research_export_docx(page_id: str):
                 doc.add_heading(s[2:], level=1)
             elif s and not s.startswith("---"):
                 doc.add_paragraph(s)
+        if sources:
+            doc.add_heading("参考文献", level=1)
+            for i, s in enumerate(sources, 1):
+                doc.add_paragraph(f"{i}. {_cite(s)}")
         out = C.WIKI_DIGEST_DIR / f"{page_id}.docx"
         doc.save(str(out))
         return FileResponse(str(out), filename=f"{page_id}.docx",
                             media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
     except ImportError:
         # 降级：返回 markdown 文件（本机未装 python-docx）
+        md = p.get("markdown", "")
+        if sources:
+            md += "\n\n## 参考文献\n\n" + "\n".join(f"{i}. {_cite(s)}" for i, s in enumerate(sources, 1))
         out = C.WIKI_DIGEST_DIR / f"{page_id}.md"
-        out.write_text(p.get("markdown", ""), encoding="utf-8")
+        out.write_text(md, encoding="utf-8")
         return FileResponse(str(out), filename=f"{page_id}.md", media_type="text/markdown")
     except Exception as e:
         log_error("research/export_docx", repr(e), traceback.format_exc())
         return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
+
+@app.post("/research/export_docx/{page_id}")
+def research_export_docx(page_id: str):
+    return _export_docx(page_id)
+
+@app.get("/research/export_docx/{page_id}")
+def research_export_docx_get(page_id: str):
+    """C3：GET 版——前端用 <a href download> 直接触发下载。"""
+    return _export_docx(page_id)
 
 @app.get("/papers")
 def papers(collection: Optional[str] = None, topic: Optional[int] = None,
            category: Optional[str] = None, deep: Optional[str] = None,
            sort: str = "recommend", limit: int = 300):
     papers = _load_papers(); cats = _load_cats(); deepk = _deep_keys()
+    notextk = _deep_no_text_keys()   # C1/A2：扫描件集合
     if category and category.startswith("kbc_"):
         ks = _resolve_category_keys(category) or set()
         items = [papers[k] for k in ks if k in papers]
@@ -1199,6 +1287,7 @@ def papers(collection: Optional[str] = None, topic: Optional[int] = None,
             "official_pages": p.get("official_pages", ""), "has_pdf": p.get("has_pdf", False),
             "collections": p.get("collections", []),
             "needs_review": bool(p.get("needs_review", False)),   # folder 模式：AI 抽的题录待核对
+            "no_text": T.safe_name(p["key"]) in notextk,          # C1/A2：扫描件（有 PDF 但无可抽文本，需 OCR，不可深索）
             "score": _rec_score(p, g), "deep": _isdeep,
         })
     if sort == "recommend":
@@ -1210,6 +1299,32 @@ def papers(collection: Optional[str] = None, topic: Optional[int] = None,
         out.sort(key=lambda x: -_y(x))
     return {"papers": out[:limit], "total": len(out),
             "collection": collection, "topic": topic, "category": category, "deep": deep, "sort": sort}
+
+# ── 打开原文 PDF（C2/D4：页级引注可回到原文核对）─────────────
+class OpenPdfQ(BaseModel):
+    key: str
+
+@app.post("/open_pdf")
+def open_pdf(q: OpenPdfQ):
+    """用系统默认阅读器打开某篇的原文 PDF（供深索结果卡「📄 打开原文」）。
+       pdf_path 取自 papers.jsonl（zotero/folder 两种源建库时都已落该字段）。"""
+    p = _load_papers().get(q.key)
+    if not p:
+        return JSONResponse({"ok": False, "msg": "无此文献"}, status_code=404)
+    path = (p.get("pdf_path") or "").strip()
+    if not path or not Path(path).exists():
+        return JSONResponse({"ok": False, "msg": "未找到原文 PDF 文件（可能仅题录、或文件已移动/未随库）"}, status_code=200)
+    try:
+        if sys.platform == "win32":
+            os.startfile(path)  # noqa
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", path])
+        else:
+            subprocess.Popen(["xdg-open", path])
+        return {"ok": True, "path": path}
+    except Exception as e:
+        log_error("open_pdf", repr(e))
+        return JSONResponse({"ok": False, "msg": f"打开失败：{e}"}, status_code=200)
 
 # ── 三档索引触发 ──────────────────────────────────────────
 @app.post("/index/light")
@@ -1230,11 +1345,15 @@ def index_light_ep():
         return JSONResponse({"ok": False, "msg": str(e)}, status_code=500)
 
 def _run_build(stage, extra=None, on_done=None):
-    if BUILD["running"]:
-        return False
-    def run():
+    # B1：原子「判 running + 置 True」并在调用线程内同步置位（不再等子线程 start() 后才置），
+    # 多路触发时后来者立即拿到 running=True → return False，不会并发跑两个子进程。
+    with _BUILD_LOCK:
+        if BUILD["running"]:
+            return False
         BUILD["running"] = True; BUILD["stage"] = stage; BUILD["started"] = time.time()
-        BUILD["log"] = [f"[{stage}] 启动…"]
+        BUILD["log"] = [f"[{stage}] 启动…"]; BUILD["rc"] = None
+    def run():
+        rc = None
         try:
             env = dict(os.environ); env.pop("PYTHONUTF8", None)
             cmd = [sys.executable, str(C.APP / "build_all.py"), "--stage", stage] + (extra or [])
@@ -1242,20 +1361,30 @@ def _run_build(stage, extra=None, on_done=None):
             for raw in p.stdout:
                 BUILD["log"].append(raw.decode("utf-8", errors="replace").rstrip())
                 BUILD["log"] = BUILD["log"][-300:]
-            p.wait()
+            # A3：取子进程 returncode（此前 p.wait() 取到却从不检查）。非 0 = 软失败（余额0/PDF异常）。
+            rc = p.wait()
+            if rc != 0:
+                BUILD["log"].append(f"[build] 子进程以非 0 退出（returncode={rc}）——本批未成功完成。")
         except Exception as e:
             log_error(f"build {stage}", repr(e), traceback.format_exc())
             BUILD["log"].append("[build] 异常：" + str(e))
+            rc = -1
         finally:
-            BUILD["running"] = False
+            BUILD["rc"] = rc
+            # B2：重载期非原子——大库重载数秒内 tbl 已换新表而 records 仍旧，search_full 会拿空结果。
+            # 重载全程保持 running=True（锁未释放前不接受新 build）+ 短暂 ready=False（检索先返回未就绪，
+            # 而非错误的空命中）；load_all 成功后自会把 ready 置回 True。
             try:
+                R.STATE["ready"] = False
                 R.load_all(); BUILD["log"].append("[build] 索引已重载。")
             except Exception as e:
                 BUILD["log"].append("[build] 重载失败：" + str(e))
-            # 任何 build 结束都推进自动深索队列（F10）：有回调走回调，否则尝试排空
+            with _BUILD_LOCK:
+                BUILD["running"] = False
+            # A3/A4：把 returncode 贯通给回调（失败时上层决定退回队列/不推进 sig）。
             if on_done:
                 try:
-                    on_done()
+                    on_done(rc)
                 except Exception as e:
                     log_error("deep queue on_done", repr(e))
             else:
@@ -1335,12 +1464,31 @@ def ingest_files(q: IngestQ):
     if BUILD["running"]:
         return JSONResponse({"ok": False, "msg": "正在建库/入库中，请稍后再拖入", "building": True}, status_code=409)
     fp = Path(folder)
-    existing = set()
+    # R2：先按文件大小建索引，只有大小撞车的候选才按需算 sha1（并缓存），
+    # 避免每拖一篇就把受管文件夹里每个 PDF 全量读盘算 sha1（大库会卡几十秒~几分钟）。
+    size_index = {}          # size -> [paths]
     for p in fp.rglob("*.pdf"):
         try:
-            existing.add(_hl.sha1(p.read_bytes()).hexdigest())
+            size_index.setdefault(p.stat().st_size, []).append(p)
         except Exception:
             pass
+    _sha1_cache = {}         # path -> sha1（仅对大小相同的候选按需算一次）
+    def _is_dup(data):
+        cands = size_index.get(len(data))
+        if not cands:
+            return False
+        h = _hl.sha1(data).hexdigest()
+        for p in cands:
+            hp = _sha1_cache.get(p)
+            if hp is None:
+                try:
+                    hp = _hl.sha1(p.read_bytes()).hexdigest()
+                except Exception:
+                    hp = ""
+                _sha1_cache[p] = hp
+            if hp and hp == h:
+                return True
+        return False
     added, skipped, failed = [], [], []
     for f in (q.files or []):
         name = f.name or "untitled.pdf"
@@ -1348,11 +1496,14 @@ def ingest_files(q: IngestQ):
             failed.append({"name": name, "reason": "非 PDF"}); continue
         try:
             data = _b64.b64decode((f.content_b64 or "").split(",")[-1])
-            h = _hl.sha1(data).hexdigest()
-            if h in existing:
+            if _is_dup(data):
                 skipped.append(name); continue
             dst = _dedupe_name(fp / Path(name).name)
-            dst.write_bytes(data); existing.add(h); added.append(dst.name)
+            dst.write_bytes(data)
+            # 把新写入的文件计入索引/缓存，供同批后续文件去重（原逻辑靠 existing.add）
+            size_index.setdefault(len(data), []).append(dst)
+            _sha1_cache[dst] = _hl.sha1(data).hexdigest()
+            added.append(dst.name)
         except Exception as e:
             failed.append({"name": name, "reason": str(e)})
     try:
@@ -1376,7 +1527,21 @@ class DeepQ(BaseModel):
 
 @app.post("/index/deep")
 def index_deep_ep(q: DeepQ):
-    return {"ok": _run_build("deep", ["--scope", q.scope]), "queued": q.scope}
+    # C7/A1：手动深索不再静默丢弃。
+    #  - scope="keys:k1,k2..."（勾选若干篇深索）→ 走持久队列 enqueue_deep：撞锁自动排队、
+    #    崩溃可回灌续跑，绝不因忙而蒸发。返回真正入队数 queued。
+    #  - scope="all"（整库深索）→ 忙时返回 {ok:false,busy:true} 让前端提示「已有任务在跑」，
+    #    而非假装成功。
+    scope = (q.scope or "all").strip()
+    if scope.startswith("keys:"):
+        raw = scope[len("keys:"):]
+        keys = [k for k in (raw.split(",")) if k.strip()]
+        queued = enqueue_deep(keys)
+        return {"ok": True, "queued": len(queued), "scope": scope}
+    started = _run_build("deep", ["--scope", scope])
+    if not started:
+        return {"ok": False, "busy": True, "scope": scope}
+    return {"ok": True, "queued": scope, "scope": scope}
 
 # ── 检索 ──────────────────────────────────────────────────
 class SearchQ(BaseModel):
@@ -1416,7 +1581,16 @@ SYS_TMPL = (
 @app.post("/chat")
 def chat(q: ChatQ):
     keys = _resolve_category_keys(q.category)
-    hits = R.search(q.query, q.topk, q.sort, keys=keys) if R.STATE.get("ready") else []
+    # C6/A5：检索后端(嵌入/重排 API)挂了不能被误报成「模型没返回内容，请检查对话模型/Key」。
+    # 把同步的 R.search 包 try：失败则 hits=[]、记下真因，稍后在 SSE 里先 yield error 再照常作答。
+    search_err = None
+    hits = []
+    if R.STATE.get("ready"):
+        try:
+            hits = R.search(q.query, q.topk, q.sort, keys=keys)
+        except Exception as e:
+            log_error("chat search", repr(e))
+            search_err = "检索后端暂时不可用（可能余额/网络/超时），本次未附引用"
     ctx = "\n\n".join(
         f"[{i+1}] {h.get('citation','')}\n{(h.get('context') or h.get('text') or '')[:1200]}"
         for i, h in enumerate(hits)
@@ -1435,6 +1609,8 @@ def chat(q: ChatQ):
 
     def gen():
         yield "data: " + json.dumps({"sources": hits}, ensure_ascii=False) + "\n\n"
+        if search_err:      # C6：先把检索失败的真因抛给前端 j.error 分支，再照常让模型作答
+            yield "data: " + json.dumps({"error": search_err}, ensure_ascii=False) + "\n\n"
         try:
             for delta in L.chat_stream(messages, base, api_key, model):
                 yield "data: " + json.dumps({"delta": delta}, ensure_ascii=False) + "\n\n"

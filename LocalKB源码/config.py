@@ -60,8 +60,14 @@ def _resolve_models():
     local = APP / "models"
     if (local / "bge-m3-onnx").exists():        # 分发包：模型已下载到包内
         return local
-    dev = Path(r"D:\00Zotero知识库\rag\data\models")
-    return dev if dev.exists() else local        # 回退开发机；都无则指向包内(待首启下载)
+    # 开发机回退：模型可能复用别处已下好的目录，用环境变量 LOCALKB_DEV_MODELS 指定，
+    # 不再裸写某台开发机的绝对路径（换机/分发时那条路径无意义，且泄漏本机目录结构）。
+    dev_env = os.environ.get("LOCALKB_DEV_MODELS")
+    if dev_env:
+        dev = Path(dev_env)
+        if dev.exists():
+            return dev
+    return local                                 # 都无则指向包内(待首启下载)
 
 MODELS = _resolve_models()
 

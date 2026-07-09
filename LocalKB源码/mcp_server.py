@@ -34,13 +34,28 @@ def health():
     except Exception:
         return None
 
+def _server_log():
+    """server 子进程 stdout/stderr 落 logs/server.log（换机排障命脉，替代 DEVNULL 静默）。
+    取不到日志文件则回退 DEVNULL，绝不让本进程的 stdout（JSON-RPC 通道）被污染。"""
+    try:
+        C.LOGS.mkdir(parents=True, exist_ok=True)
+        f = open(C.LOGS / "server.log", "ab")
+        f.write((f"\n===== [{time.strftime('%Y-%m-%d %H:%M:%S')}] MCP 拉起 server.py =====\n")
+                .encode("utf-8", "replace"))
+        f.flush()
+        return f
+    except Exception:
+        return subprocess.DEVNULL
+
+
 def ensure_up(wait=120):
     h = health()
     if h and h.get("ready"):
         return True
     flags = 0x00000008 | 0x00000200 if sys.platform == "win32" else 0
+    logf = _server_log()
     subprocess.Popen([sys.executable, str(C.APP / "server.py")],
-                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     stdout=logf, stderr=logf,
                      stdin=subprocess.DEVNULL, creationflags=flags, close_fds=True)
     log("拉起 LocalKB 服务（首次加载模型）...")
     t0 = time.time()
@@ -54,11 +69,11 @@ def ensure_up(wait=120):
 TOOLS = [
     {
         "name": "search_localkb",
-        "description": "检索本地法学文献知识库（2000+ 篇中文法学文献，来自 Zotero）。返回带期刊分级(CLSCI/CSSCI/台湾核心等)、官方页码、可回溯引用的结果。用于查找某主题的相关文献、论点或原文段落。",
+        "description": "检索本地文献知识库（用户自己的 Zotero 库或导入的 PDF 文件夹）。返回带期刊等级、官方页码、可回溯引用的结果，用于查找某主题的相关文献、论点或原文段落。可先用 localkb_status 了解库内篇数与学科。",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": "检索问题或主题词，如「认罪认罚从宽对司法信任的影响」"},
+                "query": {"type": "string", "description": "检索问题或主题词，如「深度学习在医学影像中的应用」"},
                 "topk": {"type": "integer", "description": "返回条数（默认 8）", "default": 8},
                 "sort": {"type": "string", "enum": ["blend", "relevance", "tier"],
                           "description": "排序：blend=相关+权威(默认) / relevance=纯相关 / tier=先期刊层级", "default": "blend"},
@@ -159,7 +174,7 @@ TOOLS = [
 def do_tool(name, args):
     if name == "search_localkb":
         if not ensure_up():
-            return "错误：知识库服务启动失败（请检查 D:\\LocalKB 与 python 环境）。"
+            return "错误：知识库服务启动失败（请确认 LocalKB 已安装、Python 环境正常，或查看 logs/server.log）。"
         r = requests.post(URL + "/search", json={"query": args["query"],
                           "topk": args.get("topk", 8), "sort": args.get("sort", "blend"),
                           "category": args.get("category")}, timeout=120).json()

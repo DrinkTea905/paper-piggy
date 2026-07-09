@@ -122,10 +122,12 @@ def grade(journal, issn="", compute=True):
                "needs_review": bool(r.get("needsReview"))}
     except Exception:
         out = None
-    with _LOCK:
-        global _MEMO_DIRTY
-        _MEMO.setdefault(disc, {})[journal] = out
-        _MEMO_DIRTY = True
+    # R3：只缓存成功结果——瞬时异常算出的 None 若写进 memo，会让该刊分级永不重算、跨重启不自愈。
+    if out is not None:
+        with _LOCK:
+            global _MEMO_DIRTY
+            _MEMO.setdefault(disc, {})[journal] = out
+            _MEMO_DIRTY = True
     return out
 
 

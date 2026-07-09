@@ -34,16 +34,30 @@
   const esc = (s) => (s || "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
   const num = (n) => (n == null ? "0" : Number(n).toLocaleString("zh-CN"));
 
+  // 全局浮层提示（右下角，自动消失）——用于跨页通知（如深索完成），不依赖当前所在 tab
+  let _toastTimer = null;
+  function flashToast(msg) {
+    let el = $("#ui-toast");
+    if (!el) { el = document.createElement("div"); el.id = "ui-toast"; el.className = "ui-toast"; document.body.appendChild(el); }
+    el.textContent = msg; el.classList.add("show");
+    clearTimeout(_toastTimer);
+    _toastTimer = setTimeout(() => el.classList.remove("show"), 4000);
+  }
+
   async function jget(url) { const r = await fetch(url); if (!r.ok) throw new Error(url + " " + r.status); return r.json(); }
   async function jpost(url, body) {
     const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
     let j = null; try { j = await r.json(); } catch (e) {}
-    if (!r.ok) throw new Error((j && (j.detail || j.error)) || (url + " " + r.status));
+    // A7：后端把「人话」错误常放在 msg（如「请先完全退出 Zotero」）——一并读取，别再吞成「/path 400」
+    if (!r.ok) throw new Error((j && (j.detail || j.error || j.msg)) || (url + " " + r.status));
     return j;
   }
 
+  // R14：localStorage 可能被写坏，JSON.parse 无兜底会连锁抛错（连对话都发不出）。统一走 safeParse。
+  const safeParse = (s, fb) => { try { const v = JSON.parse(s); return v == null ? fb : v; } catch (e) { return fb; } };
+
   // ── 设置存取（localStorage）──
-  const cfg = () => JSON.parse(localStorage.getItem("localkb.cfg") || "{}");
+  const cfg = () => safeParse(localStorage.getItem("localkb.cfg"), {});
   const saveCfg = (c) => localStorage.setItem("localkb.cfg", JSON.stringify(c));
 
   // 内联输入弹层（替代浏览器 prompt() 的终端风格弹框）。返回 Promise<string|null>。
@@ -105,7 +119,7 @@
     const papers = h.papers != null ? h.papers : h.n;
     const stage = st ? (st.stage || "") : "";
     if (h.building) {
-      s.textContent = (stage === "deep") ? "深度索引中…" : (stage === "folder") ? "读取题录中…" : "索引中…";
+      s.textContent = (stage === "deep") ? "深索中…" : (stage === "folder") ? "读取题录中…" : "索引中…";
       s.className = "status warn";
     }
     else if (!h.mode) { s.textContent = "未建库"; s.className = "status warn"; }
@@ -127,7 +141,13 @@
       updateProgress(st);
       // 深索从「进行中」跳到「结束」的那一刻，静默刷新一次库总览，让进度卡反映最新结果
       const deepBusyNow = st.building && st.stage === "deep";
-      if (wasDeepBusy && !deepBusyNow && dashLoaded) loadDashboard("silent");
+      if (wasDeepBusy && !deepBusyNow) {
+        if (dashLoaded) loadDashboard("silent");
+        // B4：若正在「浏览」页且已加载，静默刷新列表与分类，否则卡片仍显示「未深索」误导重复触发
+        if (browseLoaded && !$("#panel-browse").hidden) { loadPapers(); loadKbCats(); }
+        // F7：深索转闲，弹一句完成提示（跨页浮层，非浏览页也可见）
+        flashToast("✓ 深索完成，相关文献已可精读到页码。");
+      }
       wasDeepBusy = deepBusyNow;
     } else { hideProgress(); }
   }
@@ -135,6 +155,22 @@
 
   // ── S 档语义 / F 档深索 进度条 ──
   function hideProgress() { $("#idx-progress").hidden = true; }
+  // F7：用近一段进度速率估算剩余时间（约剩 N 分）。key 用于区分深索/语义两条进度，切换时重置。
+  let _eta = { key: "", done: 0, t: 0 };
+  function estimateEta(key, done, total) {
+    const now = Date.now();
+    if (_eta.key !== key) { _eta = { key, done, t: now }; return ""; }
+    const dDone = done - _eta.done, dt = (now - _eta.t) / 1000;
+    if (dt < 8) return "";                       // 采样窗口太短，先不显示，避免抖动
+    const rate = dDone / dt;                      // 篇/秒
+    _eta = { key, done, t: now };
+    if (rate <= 0) return "";
+    const remain = Math.max(0, total - done);
+    const sec = remain / rate;
+    if (sec < 45) return "约剩不到 1 分钟";
+    const min = Math.round(sec / 60);
+    return min > 90 ? "约剩 " + Math.round(min / 60) + " 小时" : "约剩 " + min + " 分钟";
+  }
   function updateProgress(st) {
     const bar = $("#idx-progress");
     const papers = st.papers || 0, meta = st.meta_done || 0;
@@ -147,9 +183,10 @@
     const qPending = st.queue_pending || 0;   // F10：自动深索队列积压（加入分类触发）
     let done, total, txt;
     if (deepBusy || (st.building && stage !== "semantic" && deepPending && !semanticPending)) {
-      // 全文深索
+      // 深索（把有 PDF 的文献全文拆成可检索的小段）
       done = deep; total = withPdf || 1;
-      txt = `全文深索中… ${num(deep)}/${num(withPdf)}` + (qPending ? ` · 另 ${num(qPending)} 篇排队` : "");
+      const eta = estimateEta("deep", deep, withPdf || 0);
+      txt = `深索中… ${num(deep)}/${num(withPdf)}` + (qPending ? ` · 另 ${num(qPending)} 篇排队` : "") + (eta ? ` · ${eta}` : "");
     } else if (semanticPending || (st.building && stage === "semantic")) {
       // 语义层提质
       done = meta; total = papers || 1;
@@ -177,11 +214,14 @@
   function switchTab(tab) {
     $$(".tab").forEach((x) => x.classList.toggle("active", x.dataset.tab === tab));
     $$(".panel").forEach((p) => { p.hidden = p.dataset.panel !== tab; });
+    // R12：离开浏览页时清掉「生成主题」的轮询，避免后台卡住时无限轮询
+    if (tab !== "browse" && BR && BR.topicIv) { clearInterval(BR.topicIv); BR.topicIv = null; }
     if (tab === "dashboard") loadDashboard(dashLoaded ? "silent" : "loud");
     if (tab === "browse" && !browseLoaded) loadBrowse();
     if (tab === "wiki") loadWikiList(wikiLoaded ? "silent" : "loud");
     if (tab === "agent" && !agentLoaded) loadAgentConfig();
     if (tab === "chat") loadChatCats();
+    if (tab === "search") loadSearchCats();   // D2：进检索页刷新「范围」下拉，纳入新建的分类/主题
   }
   // 「找相似」本地实词提取（F58，止血版）：不再把整句标题灌进检索，
   // 而是在中文虚词/标点处切开、去停用词、取前几个实词短语作为查询。向量近邻版放后续波次。
@@ -213,6 +253,30 @@
     $("#go").disabled = false;
     $("#q").value = kw; doSearch();
   }
+  // C4/F6：真·向量找相似。先试 GET /similar/{key}（full 模式下用已存向量取近邻，结果结构同 /search，复用 resultCard）；
+  // ok:false（light 模式 / 取不到向量）时无损回退到既有抽词法 switchToSearch。
+  async function findSimilar(key, title) {
+    if (!key) { switchToSearch(title || ""); return; }
+    switchTab("search");
+    $("#q").value = `与「${(title || "").slice(0, 24)}${(title || "").length > 24 ? "…" : ""}」相似`;
+    $("#go").disabled = true; $("#results").innerHTML = ""; $("#s-msg").textContent = "查找相似文献中…";
+    _clearSentinel();
+    SR.raw = []; SR.all = []; SR.shown = 0; SR.facet = { deep: false, tier: "", year: "" };
+    const fb = $("#s-facets"); if (fb) { fb.hidden = true; fb.innerHTML = ""; }
+    try {
+      const r = await jget("/similar/" + encodeURIComponent(key) + "?topk=8");
+      if (r && r.ok) {
+        SR.raw = r.results || []; SR.all = SR.raw.slice();
+        $("#s-msg").textContent = `与该篇最相似的 ${SR.raw.length} 篇（向量近邻）`;
+        $("#go").disabled = false;
+        if (!SR.raw.length) { $("#s-msg").textContent = "没有找到相似文献。"; return; }
+        _mountResults(); renderFacets();
+        return;
+      }
+    } catch (e) { /* 落到抽词回退 */ }
+    $("#go").disabled = false;
+    switchToSearch(title || "");   // 回退：无向量则用抽词法（保证无回退风险）
+  }
 
   // ══════════════════════════════════════════
   //  检索
@@ -226,33 +290,30 @@
     if (WT_COLOR[name] != null) return WT_COLOR[name];
     return tierNameColor(name);
   }
+  // 主徽标＝期刊等级（权威/核心/一般/普通…）。T2：0–1 数值「权威度」收进 tooltip，不再另立一个「权重」徽标（去重复）。
   function tierBadge(r) {
     const cn = r.weight_tier || r.journal_tier || "未知";
     const rev = r.weight_needs_review;
-    const tip = rev ? ' title="待确认：未精确识别到该刊，档位为临时值，请核对原刊"'
-                    : ' title="期刊权威度（按当前锁定学科评定）"';
-    return `<span class="badge" style="background:${badgeColor(cn)}"${tip}>${esc(cn)}</span>`;
+    const wv = (!r.is_wiki && r.journal_weight != null) ? `，权威度 ${Number(r.journal_weight).toFixed(2)}（0–1）` : "";
+    const tip = rev ? `待确认：未精确识别到该刊，期刊等级为临时值，请核对原刊${wv}`
+                    : `期刊等级（按当前锁定学科评定）${wv}`;
+    return `<span class="badge" style="background:${badgeColor(cn)}" title="${esc(tip)}">${esc(cn)}</span>`;
   }
-  // 次徽标：只显示 0–1 数值权重（档位已由主徽标表达，去掉重复的 tier 前缀）
-  function weightBadge(r) {
-    if (r.is_wiki || r.journal_weight == null) return "";   // 综合页无期刊，不显权重徽标
-    const rev = r.weight_needs_review;
-    const tip = rev ? ' title="待确认：未精确识别到该刊，权重为临时值"'
-                    : ' title="期刊引用权重（来源先验，0–1，按当前学科）"';
-    return `<span class="badge wbadge" style="background:${badgeColor(r.weight_tier)}"${tip}>权重 ${Number(r.journal_weight).toFixed(2)}</span>`;
-  }
+  // 次徽标已废弃：权威度数值已收进 tierBadge 的 tooltip（redundant-tier-weight-badge）。保留空实现兼容旧调用点。
+  function weightBadge(r) { return ""; }
   function depthTag(r) {
     if (r.is_wiki) return "";                       // wiki 行用专属徽标（wikiBadge），不显示深度标
+    if (r.no_text) return `<span class="tag nopdf" title="扫描件/无可抽文本，需先 OCR 才能深索">🚫 扫描件·需OCR</span>`;  // C1
     if (r.depth === "full") return `<span class="tag full">📄 已深索</span>`;
-    return `<span class="tag abstract" title="仅题录可搜；深索该篇后可精读到页码">📋 未深索</span>`;
+    return `<span class="tag abstract" title="仅题录匹配；深索该篇后可精读到页码">📋 未深索</span>`;
   }
   // 综合层徽标：命中的是"已存综合"页（可能已过时；来源可展开回溯到论文页码）。
   // agent 经 MCP 写回、未核验的页标 🤖，方便一眼锁定该复看/剔除的对象；人自己保存的标 📝。
   function wikiBadge(r) {
     if (!r.is_wiki) return "";
     return r.by_agent
-      ? `<span class="tag wiki agent" title="agent 自动写回、未经人工核验；可点「🗑 不保存」剔除">🤖 AI综合·未核验</span>`
-      : `<span class="tag wiki" title="本地综合页，可能已过时，请核对来源原文">📝 已存综合</span>`;
+      ? `<span class="tag wiki agent" title="agent 自动写回、未经人工核验；可点「🗑 不保存」剔除">🤖 综述页·未核验</span>`
+      : `<span class="tag wiki" title="本地综述页，可能已过时，请核对来源原文">📝 综述页</span>`;
   }
   // 共用的一行元信息（检索卡与浏览卡合用；作者深色、期刊斜体、页码强调色由 CSS 承担）
   function metaRow(o) {
@@ -286,21 +347,24 @@
     div.className = "card";
     // 主行只留标题（F32）；作者/年份/期刊/页码统一进 metaRow；score 黑话不再显示
     const discard = r.is_wiki ? `<button class="ghost2 wiki-discard" title="删除这条本地综合页（文件+索引+检索行；不影响文献库）">🗑 不保存</button>` : "";
-    const gotoWiki = r.is_wiki ? `<button class="ghost2 wiki-goto" title="在 wiki 页查看这条综合">📖 在wiki页打开</button>` : "";
+    const gotoWiki = r.is_wiki ? `<button class="ghost2 wiki-goto" title="在综述库查看这条综述">📖 在综述库打开</button>` : "";
     const rawCtx = (r.context || "").trim();
     const hasCtx = rawCtx && rawCtx !== (r.text || "").trim();
     const ctxTitleBits = [];
     if (r.official_pages) ctxTitleBits.push("第 " + esc(r.official_pages) + " 页");
     if (r.heading) ctxTitleBits.push(esc(r.heading));
     const ctxHead = "📖 该片段所在整段原文" + (ctxTitleBits.length ? " · " + ctxTitleBits.join(" · ") : "");
+    // C2：深索结果（有 key、非 wiki）可一键打开原文 PDF 核对页码
+    const openPdf = (!r.is_wiki && r.key && r.depth === "full") ? `<button class="ghost2 open-pdf" title="用系统默认阅读器打开这篇的原文 PDF">📄 打开原文</button>` : "";
+    // D3/F1：一键复制规范引文（GB/T 7714 国标）与 BibTeX（非 wiki 行）
+    const citeBtns = (!r.is_wiki) ? `<button class="ghost2 copy-cite" title="复制 GB/T 7714 国标引文">⧉ 复制引文</button><button class="ghost2 copy-bib" title="复制 BibTeX 条目">⧉ BibTeX</button>` : "";
     div.innerHTML =
       `<div class="card-head"><span class="idx">#${i}</span>${wikiBadge(r)}${tierBadge(r)}${weightBadge(r)}${depthTag(r)}</div>` +
       `<div class="cite">${esc(r.title || r.citation || "")}</div>` +
       metaRow(r) +
       `<div class="snippet">${esc((r.text || "").trim())}</div>` +
-      // 复制按钮已去掉（副本#35：文字本身已可选中复制）；wiki 行仍保留其专属按钮
       `<div class="card-btns">` +
-        (hasCtx ? `<button class="ghost2 ctx-toggle">查看原文上下文</button>` : "") + gotoWiki + discard +
+        (hasCtx ? `<button class="ghost2 ctx-toggle">查看原文上下文</button>` : "") + openPdf + citeBtns + gotoWiki + discard +
       `</div>` +
       (hasCtx ? `<div class="ctx hidden"><div class="ctx-h">${ctxHead}</div><div class="ctx-body">${esc(rawCtx)}</div></div>` : "");
     const btn = div.querySelector(".ctx-toggle"), ctx = div.querySelector(".ctx");
@@ -309,10 +373,68 @@
     if (gbtn) gbtn.addEventListener("click", () => { switchTab("wiki"); openWikiPage(r.key); });
     const dbtn = div.querySelector(".wiki-discard");
     if (dbtn) dbtn.addEventListener("click", () => discardWiki(r.key, () => div.remove(), dbtn));
+    const obtn = div.querySelector(".open-pdf");
+    if (obtn) obtn.addEventListener("click", () => openPdfByKey(r.key, obtn));
+    const cbtn = div.querySelector(".copy-cite");
+    if (cbtn) cbtn.addEventListener("click", () => copyText(citationGBT(r), cbtn));
+    const bbtn = div.querySelector(".copy-bib");
+    if (bbtn) bbtn.addEventListener("click", () => copyText(bibtexEntry(r), bbtn));
     return div;
   }
+  // ── 打开原文 PDF（C2）/ 引文与 BibTeX（D3/F1）辅助 ──
+  async function openPdfByKey(key, btn) {
+    if (!key) return;
+    const old = btn ? btn.textContent : null;
+    if (btn) { btn.disabled = true; btn.textContent = "打开中…"; }
+    try {
+      const r = await jpost("/open_pdf", { key });
+      if (!r || !r.ok) flashToast("打不开原文：" + ((r && r.msg) || "未找到 PDF"));
+    } catch (e) { flashToast("打不开原文：" + (e.message || e)); }
+    finally { if (btn) { btn.disabled = false; if (old != null) btn.textContent = old; } }
+  }
+  // 通用复制（clipboard + execCommand 兜底），复制成功时闪一下按钮文字
+  async function copyText(txt, btn) {
+    const old = btn ? btn.textContent : null;
+    const ok = () => { if (btn) { btn.textContent = "✓ 已复制"; setTimeout(() => { if (old != null) btn.textContent = old; }, 1500); } };
+    try { await navigator.clipboard.writeText(txt); ok(); return; } catch (e) {}
+    const ta = document.createElement("textarea"); ta.value = txt; ta.style.position = "fixed"; ta.style.opacity = "0";
+    document.body.appendChild(ta); ta.focus(); ta.select();
+    try { document.execCommand("copy"); ok(); } catch (_) { if (btn) btn.textContent = "复制失败"; }
+    document.body.removeChild(ta);
+  }
+  // GB/T 7714（国标）引文：作者. 题名. 期刊, 年份: 页码.（缺字段则省略；已有 citation 优先）
+  function citationGBT(r) {
+    if (r.citation) return r.citation;
+    const bits = [];
+    const who = (r.author || "").split(";").map((s) => s.trim()).filter(Boolean).join(", ");
+    if (who) bits.push(who + ".");
+    if (r.title) bits.push(esc0(r.title) + ".");
+    const tail = [];
+    if (r.journal) tail.push(r.journal);
+    let ym = "";
+    if (r.year) ym += String(r.year);
+    if (r.official_pages) ym += (ym ? ": " : "") + r.official_pages;
+    if (ym) tail.push(ym);
+    if (tail.length) bits.push(tail.join(", ") + ".");
+    return bits.join(" ").trim() || (r.title || "");
+  }
+  const esc0 = (s) => String(s || "");
+  // BibTeX @article 条目（字段有则填；key 用 stem/首作者+年）
+  function bibtexEntry(r) {
+    const first = (r.author || "").split(";")[0].trim().replace(/\s+/g, "");
+    const cite = (first || "ref") + (r.year || "");
+    const f = [];
+    if (r.author) f.push("  author = {" + (r.author || "").split(";").map((s) => s.trim()).filter(Boolean).join(" and ") + "}");
+    if (r.title) f.push("  title = {" + r.title + "}");
+    if (r.journal) f.push("  journal = {" + r.journal + "}");
+    if (r.year) f.push("  year = {" + r.year + "}");
+    if (r.official_pages) f.push("  pages = {" + r.official_pages + "}");
+    if (r.doi) f.push("  doi = {" + r.doi + "}");
+    return "@article{" + cite + ",\n" + f.join(",\n") + "\n}";
+  }
   // 无限滚动：一次取较大批(重排只跑一次、顺序最稳)，先渲染 10 条，滚到底再追加（原#30/副本#24）
-  const SR = { all: [], shown: 0, observer: null, page: 10 };
+  // raw=后端原始命中；all=facet 过滤后当前展示集（F5）。facet=当前选中的二次筛选。
+  const SR = { raw: [], all: [], shown: 0, observer: null, page: 10, facet: { deep: false, tier: "", year: "" } };
   function _renderMoreResults() {
     const end = Math.min(SR.shown + SR.page, SR.all.length);
     for (let i = SR.shown; i < end; i++) $("#results").appendChild(resultCard(SR.all[i], i + 1));
@@ -320,34 +442,140 @@
     const sentinel = $("#s-sentinel");
     if (sentinel) sentinel.hidden = SR.shown >= SR.all.length;
   }
+  // R9：每次重渲染先清掉旧哨兵与旧 observer，避免泄漏出多个 #s-sentinel（ID 重复、分页操作到错误的哨兵）
+  function _clearSentinel() {
+    if (SR.observer) { SR.observer.disconnect(); SR.observer = null; }
+    const old = $("#s-sentinel"); if (old) old.remove();
+  }
+  function _mountResults() {
+    $("#results").innerHTML = ""; SR.shown = 0;
+    _clearSentinel();
+    if (!SR.all.length) return;
+    _renderMoreResults();
+    const sentinel = document.createElement("div");
+    sentinel.id = "s-sentinel"; sentinel.className = "s-sentinel";
+    sentinel.hidden = SR.shown >= SR.all.length;
+    $("#results").after(sentinel);
+    SR.observer = new IntersectionObserver((es) => {
+      if (es[0].isIntersecting && SR.shown < SR.all.length) _renderMoreResults();
+    }, { rootMargin: "200px" });
+    SR.observer.observe(sentinel);
+  }
+  // F5：基于 SR.raw 前端二次筛选（仅已深索 / 期刊等级 / 年份），即时收窄，无需重查后端
+  function applyFacets() {
+    const f = SR.facet;
+    SR.all = SR.raw.filter((r) => {
+      if (f.deep && r.depth !== "full") return false;
+      if (f.tier && (r.weight_tier || r.journal_tier || "未知") !== f.tier) return false;
+      if (f.year && String(r.year || "") !== f.year) return false;
+      return true;
+    });
+    _mountResults();
+  }
+  function renderFacets() {
+    const box = $("#s-facets"); if (!box) return;
+    if (!SR.raw.length) { box.hidden = true; box.innerHTML = ""; return; }
+    const tiers = {}, years = {}; let deepN = 0;
+    SR.raw.forEach((r) => {
+      if (r.depth === "full") deepN++;
+      const t = r.weight_tier || r.journal_tier || "未知"; tiers[t] = (tiers[t] || 0) + 1;
+      const y = String(r.year || ""); if (y) years[y] = (years[y] || 0) + 1;
+    });
+    const f = SR.facet;
+    let html = "";
+    if (deepN && deepN < SR.raw.length) html += `<span class="facet-chip${f.deep ? " on" : ""}" data-fk="deep">📄 仅已深索 (${deepN})</span>`;
+    Object.keys(tiers).sort((a, b) => (WT_RANK[a] ?? 9) - (WT_RANK[b] ?? 9)).forEach((t) => {
+      if (Object.keys(tiers).length > 1) html += `<span class="facet-chip${f.tier === t ? " on" : ""}" data-fk="tier" data-fv="${esc(t)}">${esc(t)} (${tiers[t]})</span>`;
+    });
+    Object.keys(years).sort((a, b) => b.localeCompare(a)).slice(0, 6).forEach((y) => {
+      html += `<span class="facet-chip${f.year === y ? " on" : ""}" data-fk="year" data-fv="${esc(y)}">${esc(y)} (${years[y]})</span>`;
+    });
+    box.innerHTML = html ? (`<span class="facet-lbl">收窄：</span>` + html) : "";
+    box.hidden = !html;
+    box.querySelectorAll(".facet-chip").forEach((c) => c.addEventListener("click", () => {
+      const k = c.dataset.fk, v = c.dataset.fv || "";
+      if (k === "deep") f.deep = !f.deep;
+      else f[k] = (f[k] === v) ? "" : v;   // 再点同一个＝取消
+      renderFacets(); applyFacets();
+    }));
+  }
   async function doSearch() {
     const q = $("#q").value.trim(); if (!q) return;
     $("#go").disabled = true; $("#results").innerHTML = ""; $("#s-msg").textContent = "检索中…";
-    if (SR.observer) { SR.observer.disconnect(); SR.observer = null; }
-    SR.all = []; SR.shown = 0;
+    _clearSentinel();
+    SR.raw = []; SR.all = []; SR.shown = 0; SR.facet = { deep: false, tier: "", year: "" };
+    const box = $("#s-facets"); if (box) { box.hidden = true; box.innerHTML = ""; }
     try {
-      const res = await jpost("/search", { query: q, topk: 20, sort: $("#sort").value, min_weight: parseFloat($("#minw") && $("#minw").value) || 0 });
+      const cat = ($("#s-cat") && $("#s-cat").value) || "";
+      const TOPK = 50;   // search-hard-cap：由 20 提到 50
+      const res = await jpost("/search", { query: q, topk: TOPK, sort: $("#sort").value,
+        min_weight: parseFloat($("#minw") && $("#minw").value) || 0, category: cat || null });
       if (res.error) { $("#s-msg").textContent = res.error; return; }
-      SR.all = res.results || [];
-      const modeTip = res.mode === "light" ? " · 词法模式（深索后可精读到页码）" : "";
-      $("#s-msg").textContent = `命中 ${SR.all.length} 条 · ${res.took_ms != null ? res.took_ms : "?"}ms${modeTip}`;
-      if (!SR.all.length) { $("#s-msg").textContent += "（无结果，换个关键词试试）"; return; }
-      _renderMoreResults();
-      // 底部哨兵 + IntersectionObserver：滚到底自动补充
-      const sentinel = document.createElement("div");
-      sentinel.id = "s-sentinel"; sentinel.className = "s-sentinel";
-      sentinel.hidden = SR.shown >= SR.all.length;
-      $("#results").after(sentinel);
-      SR.observer = new IntersectionObserver((es) => {
-        if (es[0].isIntersecting && SR.shown < SR.all.length) _renderMoreResults();
-      }, { rootMargin: "200px" });
-      SR.observer.observe(sentinel);
+      SR.raw = res.results || []; SR.all = SR.raw.slice();
+      // T4：不再泄漏「词法模式」黑话；深索后可精读到页码
+      const modeTip = res.mode === "light" ? " · 快速检索（深索后可精读到页码）" : "";
+      const capTip = SR.raw.length >= TOPK ? `（已达上限 ${TOPK} 条，可加关键词或缩小范围）` : "";
+      // minweight-leaks-unknown：过滤了期刊等级时，提示未识别档位的来源也一并保留了
+      const mw = parseFloat($("#minw") && $("#minw").value) || 0;
+      const unkN = mw > 0 ? SR.raw.filter((r) => (r.weight_tier || r.journal_tier) === "待确认" || (r.weight_tier || r.journal_tier) === "未知").length : 0;
+      const unkTip = unkN ? `（另有 ${num(unkN)} 条来源未识别档位，已一并保留）` : "";
+      $("#s-msg").textContent = `命中 ${SR.raw.length} 条 · ${res.took_ms != null ? res.took_ms : "?"}ms${modeTip}${capTip}${unkTip}`;
+      if (!SR.raw.length) { $("#s-msg").textContent += "（无结果，换个关键词试试）"; return; }
+      _mountResults();
+      renderFacets();
+      pushSearchHistory(q);   // F4
     } catch (e) { $("#s-msg").textContent = "检索失败：" + e.message; }
     finally { $("#go").disabled = false; }
   }
   $("#go").addEventListener("click", doSearch);
   // Enter 触发检索，但按钮禁用（检索进行中）时不重复提交，避免结果闪烁
   $("#q").addEventListener("keydown", (e) => { if (e.key === "Enter" && !$("#go").disabled) doSearch(); });
+
+  // ── F4：检索历史（localStorage 最近 15 条，可点 chip）──
+  function pushSearchHistory(q) {
+    if (!q) return;
+    let h = safeParse(localStorage.getItem("localkb.searchHist"), []);
+    if (!Array.isArray(h)) h = [];
+    h = h.filter((x) => x !== q); h.unshift(q); h = h.slice(0, 15);
+    localStorage.setItem("localkb.searchHist", JSON.stringify(h));
+    renderSearchHistory();
+  }
+  function renderSearchHistory() {
+    const box = $("#s-history"); if (!box) return;
+    const h = safeParse(localStorage.getItem("localkb.searchHist"), []);
+    if (!Array.isArray(h) || !h.length) { box.hidden = true; box.innerHTML = ""; return; }
+    box.innerHTML = `<span class="s-chips-lbl">🕘 最近检索：</span>` +
+      h.map((q) => `<span class="s-chip" data-q="${esc(q)}">${esc(q)}</span>`).join("") +
+      `<span class="s-chip s-chip-clear">清空</span>`;
+    box.hidden = false;
+    box.querySelectorAll(".s-chip[data-q]").forEach((c) => c.addEventListener("click", () => { $("#q").value = c.dataset.q; doSearch(); }));
+    const clr = box.querySelector(".s-chip-clear");
+    if (clr) clr.addEventListener("click", () => { localStorage.removeItem("localkb.searchHist"); renderSearchHistory(); });
+  }
+  // ── F9：新手示例检索词（可点 chip）──
+  const EXAMPLE_QUERIES = ["认罪认罚从宽对司法信任的影响", "社会观护制度", "程序正义与结果正义", "数据合规的法律责任"];
+  function renderExamples() {
+    const box = $("#s-examples"); if (!box) return;
+    box.innerHTML = `<span class="s-chips-lbl">试试：</span>` +
+      EXAMPLE_QUERIES.map((q) => `<span class="s-chip" data-q="${esc(q)}">${esc(q)}</span>`).join("");
+    box.hidden = false;
+    box.querySelectorAll(".s-chip").forEach((c) => c.addEventListener("click", () => { $("#q").value = c.dataset.q; doSearch(); }));
+  }
+  renderExamples(); renderSearchHistory();
+  // 检索范围下拉（D2）：复用对话「限定分类」的数据源
+  loadSearchCats();
+  async function loadSearchCats() {
+    const sel = $("#s-cat"); if (!sel) return;
+    const cur = sel.value;
+    const [cats, tops] = await Promise.all([
+      jget("/kb/categories").then((d) => d.categories || []).catch(() => []),
+      jget("/topics").then((d) => d.topics || []).catch(() => []),
+    ]);
+    sel.innerHTML = `<option value="">全部文献</option>`
+      + cats.map((c) => `<option value="${esc(c.id)}">🗂 ${esc(c.name)}</option>`).join("")
+      + tops.map((t) => `<option value="topic:${t.id}">🧠 ${esc(t.name)}</option>`).join("");
+    if (cur) sel.value = cur;
+  }
 
   // ══════════════════════════════════════════
   //  库总览（仪表盘）—— 全部手绘 SVG/CSS
@@ -365,8 +593,8 @@
       off += len;
     });
     return `<svg viewBox="0 0 42 42" width="${size}" height="${size}">${segs}
-      <text x="21" y="20" text-anchor="middle" font-size="6.5" font-weight="700" fill="#1f2937">${num(total)}</text>
-      <text x="21" y="26" text-anchor="middle" font-size="3.2" fill="#6b7280">篇</text></svg>`;
+      <text x="21" y="20" text-anchor="middle" font-size="6.5" font-weight="700" fill="currentColor" class="donut-total">${num(total)}</text>
+      <text x="21" y="26" text-anchor="middle" font-size="3.2" fill="currentColor" class="donut-unit">篇</text></svg>`;
   }
   function donutCard(title, sub, items) {
     const legend = items.map((it) =>
@@ -509,9 +737,9 @@
     return `<div class="dcard span2 dash-guide">
       <div class="dg-ic">🤖</div>
       <div class="dg-body">
-        <div class="dg-h">让 AI 助手替你驱动整个知识库</div>
-        <p>对话只适合随手问一句。要系统地检索、写带页码引用的综述、跨主题梳理、把结论沉淀复用——更推荐把 PaperPiggy 接进
-           <b>Claude Code / Codex</b>：它能查你的库、读到期刊印刷页码、把综合写回，下次一键复用。</p>
+        <div class="dg-h">想更进一步：让 AI 助手驱动整个知识库</div>
+        <p>自带检索/对话已经够用。想系统地检索、写带页码引用的综述、跨主题梳理、把结论沉淀复用，可以再接
+           <b>Claude Code / Codex</b>：它能查你的库、读到期刊印刷页码、把综合写回，下次一键复用。两条路都可用。</p>
         <button class="primary-btn" id="dg-go">去「🤖 Agent」看怎么接入 →</button>
       </div></div>`;
   }
@@ -522,7 +750,7 @@
     const withPdf = st.with_pdf || 0, deep = st.deep_done || 0;
     if (withPdf <= 0) {
       return `<div class="dcard span2 deep-prog">
-        <h4>全文深索进度</h4>
+        <h4>深索进度</h4>
         <p class="dcard-sub">有 PDF 的文献全文切块+向量化后，回答可精确到页码</p>
         <div class="hbar deep-prog-bar"><span class="track"><span class="fill" style="width:0%;background:#16a085"></span></span><span class="val">0%</span></div>
         <p class="deep-prog-txt">暂无可深索文献</p></div>`;
@@ -539,7 +767,7 @@
     // 查看「已深索了哪些」（跳到浏览的「已深索」筛选）。整卡可点→浏览挑未深索去深索。
     const seeLink = deep > 0 ? `<span class="deep-prog-see" id="deep-prog-see">查看已深索 ${num(deep)} 篇 →</span>` : "";
     return `<div class="dcard span2 deep-prog${clickable ? " clickable" : ""}"${clickable ? ' id="deep-prog-card"' : ""}>
-      <h4>全文深索进度</h4>
+      <h4>深索进度</h4>
       <p class="dcard-sub">只有<b>深索过</b>的文献才能被精读、页级引用、跨篇综合；未深索的仅题录可搜。</p>
       <div class="hbar deep-prog-bar">${bar}<span class="val">${pctLabel}</span></div>
       <p class="deep-prog-txt">${txt}${seeLink}</p></div>`;
@@ -569,7 +797,7 @@
         <div class="dh-sub">题录 ${num(cov.meta_indexed)} 篇 · 有 PDF ${num(cov.with_pdf)} 篇 · 已深索 ${num(cov.deep_indexed)} 篇</div>
       </div>
       <div class="dh-deep">
-        <div class="dh-deep-h"><b>全文深索进度</b><span>${pctLabel}</span></div>
+        <div class="dh-deep-h"><b>深索进度</b><span>${pctLabel}</span></div>
         <div class="hbar dh-bar"><span class="track"><span class="fill" style="width:${barPct}%;background:#7ee0b8"></span></span></div>
         <div class="dh-deep-txt">${withPdf === 0 ? "暂无可深索文献。" : (remain > 0
             ? `只有深索过的文献才能被精读、页级引用、跨篇综合。已深索 <b>${num(deep)}</b>/${num(withPdf)} 篇，还有 ${num(remain)} 篇。`
@@ -586,8 +814,15 @@
     const exp = $("#rc-expand"); if (exp) exp.addEventListener("click", () => {
       const more = $(".recent-more"); if (more) { more.hidden = false; exp.hidden = true; }
     });
-    $$(".rc-deep").forEach((b) => b.addEventListener("click", () => {
-      b.disabled = true; b.textContent = "…"; deepIndexKeys([b.dataset.key], b);
+    // R10：库总览「最近入库」的深索按钮自己 try/finally 恢复文字并用浮层反馈（不写进隐藏的浏览页 #bl-msg）
+    $$(".rc-deep").forEach((b) => b.addEventListener("click", async () => {
+      const old = b.textContent; b.disabled = true; b.textContent = "…";
+      try {
+        const r = await jpost("/index/deep", { scope: "keys:" + b.dataset.key });
+        if (r && r.ok === false) { flashToast("已有任务在跑，稍后再试。"); }
+        else { localStorage.removeItem("localkb.deepDismissed"); flashToast("已开始后台深索这篇，进度见顶部。"); poll(); }
+      } catch (e) { flashToast("启动深索失败：" + (e.message || e)); }
+      finally { b.disabled = false; b.textContent = old; }
     }));
     const dgGo = $("#dg-go"); if (dgGo) dgGo.addEventListener("click", () => switchTab("agent"));
   }
@@ -613,7 +848,7 @@
   // scope 统一左树选择态（type: all|zotero|topic|kbcat），取代旧的 collection/topic 两两互清。
   const BR = { scope: { type: "all", id: null, name: "全部" },
                deepFilter: "", sort: "recommend", papers: [], selected: new Set(),
-               cats: [] };   // cats：缓存 /kb/categories，供右键菜单/加成员用
+               cats: [], reqSeq: 0, topicIv: null };   // cats：缓存 /kb/categories；reqSeq：B5 守卫；topicIv：R12 主题轮询句柄
 
   // 左侧收藏夹树（递归渲染，默认折叠，只展开有子节点的第一层由用户点开）
   function treeNodeEl(node, depth) {
@@ -863,15 +1098,17 @@
     });
     // 收起/展开两区（状态存 localStorage）
     const applyCollapse = () => {
-      const st = JSON.parse(localStorage.getItem("localkb.btCollapse") || "{}");
-      const kbcBody = $("#bt-kbc-body"), zotBody = $("#bt-zot-body");
-      if (kbcBody) kbcBody.hidden = !!st.kbc;
-      if (zotBody) zotBody.hidden = !!st.zot;
-      $$(".bt-caret2").forEach((c) => { c.textContent = st[c.dataset.sec] ? "▸" : "▾"; });
+      const st = safeParse(localStorage.getItem("localkb.btCollapse"), {});
+      // 各分区约定：#bt-{sec}-body（topics / kbc / zot）——按 caret 的 data-sec 统一收放
+      $$(".bt-caret2").forEach((c) => {
+        const body = $("#bt-" + c.dataset.sec + "-body");
+        if (body) body.hidden = !!st[c.dataset.sec];
+        c.textContent = st[c.dataset.sec] ? "▸" : "▾";
+      });
     };
     $$(".bt-caret2").forEach((c) => c.addEventListener("click", (e) => {
       e.stopPropagation();
-      const st = JSON.parse(localStorage.getItem("localkb.btCollapse") || "{}");
+      const st = safeParse(localStorage.getItem("localkb.btCollapse"), {});
       st[c.dataset.sec] = !st[c.dataset.sec];
       localStorage.setItem("localkb.btCollapse", JSON.stringify(st));
       applyCollapse();
@@ -887,18 +1124,22 @@
     // 「🔄 生成主题」→ 后台 AI 聚类归类已深索文献
     const gen = $("#bt-topics-gen");
     if (gen) gen.addEventListener("click", async () => {
+      if (BR.topicIv) { clearInterval(BR.topicIv); BR.topicIv = null; }   // R12：先清上一次泄漏的轮询
       gen.disabled = true; const old = gen.textContent; gen.textContent = "归类中…";
+      const restore = () => { gen.disabled = false; gen.textContent = old; };
       try {
         const r = await jpost("/topics/rebuild", {});
-        if (!r.ok) { toast(r.msg || "无法生成主题"); gen.disabled = false; gen.textContent = old; return; }
-        // 轮询完成
-        const iv = setInterval(async () => {
+        if (!r.ok) { toast(r.msg || "无法生成主题"); restore(); return; }
+        // 轮询完成：加最大次数上限（约 5 分钟），iv 存模块级变量便于离开时清理
+        let tries = 0;
+        BR.topicIv = setInterval(async () => {
+          if (++tries > 120) { clearInterval(BR.topicIv); BR.topicIv = null; restore(); toast("生成主题超时，请稍后重试。"); return; }
           try {
             const s = await jget("/topics/status");
-            if (!s.running) { clearInterval(iv); gen.disabled = false; gen.textContent = old; loadTopics(); toast("AI 主题已更新。"); }
-          } catch (e) { clearInterval(iv); gen.disabled = false; gen.textContent = old; }
+            if (!s.running) { clearInterval(BR.topicIv); BR.topicIv = null; restore(); loadTopics(); toast("AI 主题已更新。"); }
+          } catch (e) { clearInterval(BR.topicIv); BR.topicIv = null; restore(); }
         }, 2500);
-      } catch (e) { toast("生成主题失败：" + e.message); gen.disabled = false; gen.textContent = old; }
+      } catch (e) { toast("生成主题失败：" + e.message); restore(); }
     });
     // 全局点击关闭浮层菜单
     document.addEventListener("click", (e) => {
@@ -923,15 +1164,75 @@
     if (!c.api_key && (c.provider || "siliconflow") !== "siliconflow") { openSettings(); return true; }
     return false;
   }
+  // A6：放行对话/综述前，据 /setup/detect 的 api_key_set 判断「是否真有可用 key」。
+  // 默认本地后端（离线免 key）用户即便选硅基流动、服务端也没 key 可复用，一发即失败——此处提前拦下、引导配置。
+  async function ensureLlmKey() {
+    const c = cfg();
+    if (c.api_key) return true;   // 本机已填 key
+    if ((c.provider || "siliconflow") !== "siliconflow") { openSettings(); return false; }
+    try { const d = await jget("/setup/detect"); if (d && d.api_key_set) return true; } catch (e) {}
+    openSettings();
+    flashToast("对话/综述需要一个可用的 API Key——请在设置里填（硅基流动有免费模型）。");
+    return false;
+  }
+  // 零依赖极简 Markdown 渲染：先整体 esc() 防 XSS，再在已转义文本上套基本块级/行内标签（wiki-body-raw-markdown）
+  function mdToHtml(md) {
+    const src = stripFm(md);
+    const inline = (t) => esc(t)
+      .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
+      .replace(/(^|[^*])\*([^*]+)\*/g, "$1<i>$2</i>")
+      .replace(/`([^`]+)`/g, "<code>$1</code>");
+    const lines = src.split(/\r?\n/);
+    let html = "", listType = "", inCode = false, code = "";
+    const closeList = () => { if (listType) { html += "</" + listType + ">"; listType = ""; } };
+    for (const raw of lines) {
+      if (/^```/.test(raw)) {
+        if (inCode) { html += `<pre class="wk-code">${esc(code)}</pre>`; code = ""; inCode = false; }
+        else { closeList(); inCode = true; }
+        continue;
+      }
+      if (inCode) { code += raw + "\n"; continue; }
+      let m;
+      if ((m = raw.match(/^(#{1,6})\s+(.*)$/))) { closeList(); const lv = m[1].length; html += `<h${lv}>${inline(m[2])}</h${lv}>`; }
+      else if ((m = raw.match(/^\s*[-*+]\s+(.*)$/))) { if (listType !== "ul") { closeList(); html += "<ul>"; listType = "ul"; } html += `<li>${inline(m[1])}</li>`; }
+      else if ((m = raw.match(/^\s*\d+\.\s+(.*)$/))) { if (listType !== "ol") { closeList(); html += "<ol>"; listType = "ol"; } html += `<li>${inline(m[1])}</li>`; }
+      else if (/^\s*$/.test(raw)) { closeList(); }
+      else { closeList(); html += `<p>${inline(raw)}</p>`; }
+    }
+    closeList();
+    if (inCode) html += `<pre class="wk-code">${esc(code)}</pre>`;
+    return html;
+  }
   function renderWiki(p) {
-    $("#wiki-title").textContent = p.title || "综合页";
+    $("#wiki-title").textContent = p.title || "综述页";
     const stale = p.stale ? " · ⚠ 可能已过时" : "";
-    $("#wiki-meta").textContent = `本地综合 · 基于 ${(p.sources || []).length} 篇 · 生成于 ${(p.generated_at || "").slice(0, 10)} · 模型 ${p.generated_by || "未知"}${stale}`;
-    $("#wiki-body").textContent = stripFm(p.markdown);
+    $("#wiki-meta").textContent = `本地综述 · 基于 ${(p.sources || []).length} 篇 · 生成于 ${(p.generated_at || "").slice(0, 10)} · 模型 ${p.generated_by || "未知"}${stale}`;
+    // unverified-flag-missing-in-modal：模态里也显示 🤖 未核验 / 📝 我保存的
+    const flag = $("#wiki-flag");
+    if (flag) flag.innerHTML = p.by_agent
+      ? `<span class="wk-flag agent" title="agent 写回、未经人工核验，请核对来源原文">🤖 未核验</span>`
+      : `<span class="wk-flag" title="你保存/生成的综述页">📝 我保存的</span>`;
+    $("#wiki-body").innerHTML = mdToHtml(p.markdown);   // 极简 md 渲染（已转义防 XSS）
+    // F10：来源可点，点击回到检索溯源
     $("#wiki-sources").innerHTML = (p.sources || []).length
-      ? `<div class="ws-h">参考来源（可回溯到论文页码）</div>` + p.sources.map((s, i) => `<div class="ws-item">[${i + 1}] ${esc(s.citation || s.key)}</div>`).join("")
+      ? `<div class="ws-h">参考来源（可点击溯源 · 可回溯到论文页码）</div>` +
+        p.sources.map((s, i) => `<div class="ws-item ws-click" data-key="${esc(s.key || "")}" data-cite="${esc(s.citation || "")}">[${i + 1}] ${esc(s.citation || s.key)}</div>`).join("")
       : "";
+    $("#wiki-sources").querySelectorAll(".ws-click").forEach((el) => el.addEventListener("click", () => {
+      $("#wiki-modal").hidden = true;
+      const k = el.dataset.key, c = el.dataset.cite;
+      if (k) findSimilar(k, c); else switchToSearch(c || "");
+    }));
     $("#wiki-regen").dataset.id = p.id;
+    // discard-button-wrong-wording：按 kind 改文案（对话沉淀＝不保存此答案；其它＝删除此综述）
+    const disc = $("#wiki-discard");
+    if (disc) disc.textContent = (p.kind || "answer") === "answer" ? "🗑 不保存此答案" : "🗑 删除此综述";
+    // R11：对话沉淀页禁止「重新生成」（点了必报错）——隐藏该按钮并记录 kind 供二次拦截
+    const regenBtn = $("#wiki-regen");
+    if (regenBtn) { regenBtn.dataset.kind = p.kind || "answer"; regenBtn.style.display = (p.kind || "answer") === "answer" ? "none" : ""; }
+    // C3：导出 Word（GET FileResponse，直接 <a download>）
+    const exp = $("#wiki-export");
+    if (exp) { exp.href = "/research/export_docx/" + encodeURIComponent(p.id); }
     $("#wiki-modal").hidden = false;
   }
   async function openWikiPage(id) {
@@ -952,7 +1253,7 @@
     finally { if (btn) { btn.disabled = false; if (old != null) btn.textContent = old; } }
   }
   async function genTopic(topicId, name, btn) {
-    if (needKey()) return;
+    if (!(await ensureLlmKey())) return;
     const old = btn ? btn.textContent : null;
     if (btn) { btn.textContent = "⏳"; btn.disabled = true; }
     try {
@@ -973,7 +1274,8 @@
       }, disc));
     const regen = $("#wiki-regen");
     if (regen) regen.addEventListener("click", async () => {
-      if (needKey()) return;
+      if ((regen.dataset.kind || "") === "answer") { alert("「对话沉淀」页由对话生成，请回「💬 对话」重新提问后再保存。"); return; }  // R11
+      if (!(await ensureLlmKey())) return;
       const id = regen.dataset.id; if (!id) return;
       regen.textContent = "重新生成中…"; regen.disabled = true;
       try {
@@ -1012,12 +1314,12 @@
     if (!WK.pages.length) {
       box.innerHTML = `<div class="wk-empty">
         <div class="wk-empty-ic">📖</div>
-        <div class="wk-empty-h">还没有综合页</div>
+        <div class="wk-empty-h">还没有综述页</div>
         <div class="wk-empty-s">在上面输入一个概念点「生成综述」，或在「💬 对话」里问答后「保存此答案」，
-          或让「🤖 Agent」调 save_synthesis 写回——综合会在这里累积。</div></div>`;
+          或让「🤖 Agent」调 save_synthesis 写回——综述页会在这里累积。</div></div>`;
       return;
     }
-    if (!list.length) { box.innerHTML = `<div class="wk-empty">当前筛选下没有综合页。</div>`; return; }
+    if (!list.length) { box.innerHTML = `<div class="wk-empty">当前筛选下没有综述页。</div>`; return; }
     box.innerHTML = "";
     list.forEach((p) => box.appendChild(wikiCard(p)));
   }
@@ -1027,8 +1329,9 @@
     const kind = WK_KIND[p.kind || "answer"] || (p.kind || "");
     const prov = p.by_agent
       ? `<span class="wk-flag agent" title="agent 写回、未经人工核验">🤖 未核验</span>`
-      : `<span class="wk-flag" title="你保存/生成的综合页">📝 我保存的</span>`;
-    const stale = p.stale ? `<span class="wk-flag stale" title="有新论文可能影响此综合，建议重生">⚠ 可能已过时</span>` : "";
+      : `<span class="wk-flag" title="你保存/生成的综述页">📝 我保存的</span>`;
+    const stale = p.stale ? `<span class="wk-flag stale" title="有新论文可能影响此综述，建议重生">⚠ 可能已过时</span>` : "";
+    const isAnswer = (p.kind || "answer") === "answer";
     div.innerHTML =
       `<div class="wk-card-head"><span class="wk-badge k-${esc(p.kind || "answer")}">${esc(kind)}</span>` +
         `<span class="wk-title">${esc(p.title || "(无标题)")}</span></div>` +
@@ -1036,8 +1339,9 @@
         ` · 模型 ${esc(p.generated_by || "未知")} ${prov} ${stale}</div>` +
       `<div class="wk-card-btns">` +
         `<button class="ghost2 wk-open">📖 打开</button>` +
+        `<a class="ghost2 wk-export" href="/research/export_docx/${encodeURIComponent(p.id)}" download>⬇ 导出Word</a>` +
         `<button class="ghost2 wk-tosearch">🔍 按标题检索</button>` +
-        `<button class="ghost2 wk-regen">↻ 重新生成</button>` +
+        (isAnswer ? "" : `<button class="ghost2 wk-regen">↻ 重新生成</button>`) +   // R11：对话沉淀不给重新生成
         `<button class="ghost2 danger wk-del">🗑 删除</button>` +
       `</div>`;
     div.querySelector(".wk-open").addEventListener("click", () => openWikiPage(p.id));
@@ -1045,8 +1349,9 @@
     div.querySelector(".wk-del").addEventListener("click", (e) =>
       discardWiki(p.id, () => loadWikiList("silent"), e.currentTarget));
     const rb = div.querySelector(".wk-regen");
+    if (rb)
     rb.addEventListener("click", async () => {
-      if (needKey()) return;
+      if (!(await ensureLlmKey())) return;
       if ((p.kind || "answer") === "answer") { alert("「对话沉淀」页由对话生成，请回「💬 对话」重新提问后再保存。"); return; }
       const old = rb.textContent; rb.disabled = true; rb.textContent = "重新生成中…";
       try {
@@ -1062,7 +1367,7 @@
   async function genConcept() {
     const c = $("#wk-concept").value.trim();
     if (!c) { $("#wk-msg").textContent = "请先输入一个概念或主题。"; return; }
-    if (needKey()) return;
+    if (!(await ensureLlmKey())) return;
     const btn = $("#wk-gen"); btn.disabled = true; btn.textContent = "生成中…"; $("#wk-msg").textContent = "";
     try {
       const r = await jpost("/wiki/concept", llmBody({ concept: c }));
@@ -1109,6 +1414,8 @@
   function renderAgentTools() {
     $("#ag-tools").innerHTML = AG_TOOLS.map(
       ([say, tool, desc]) => `<tr><td>${esc(say)}</td><td>${esc(desc)}</td></tr>`).join("");
+    // mcp-verify-wrong-tool-count：工具数量动态填，不写死
+    const tc = $("#ag-tool-count"); if (tc) tc.textContent = `（${AG_TOOLS.length} 个工具）`;
   }
   function renderAgentPrompts() {
     $("#ag-prompts").innerHTML = AG_PROMPTS.map((p) => `<li>${esc(p)}</li>`).join("");
@@ -1131,8 +1438,9 @@
       const d = await jget("/agent/mcp-config");
       AG.cfg = d;
       $("#ag-run").classList.toggle("ok", !!d.server_running);
+      // agent-status-dot-always-green：绿点只代表本地库服务在线，不代表 MCP 已接好
       $("#ag-run-txt").textContent = d.server_running
-        ? "本地服务已在运行 · 127.0.0.1:8770" : "本地服务未就绪";
+        ? "本地库服务在线（不代表 MCP 已接好）· 127.0.0.1:8770" : "本地库服务未就绪";
       renderAgentCmds();
       $("#ag-schema").textContent = d.wiki_schema_md || "";
       agentLoaded = true;   // 成功才置位
@@ -1174,9 +1482,10 @@
     return `<span class="brec" title="按期刊层级/年份/有无全文综合推荐，值得优先深读">建议深读</span>`;
   }
   function deepBadge(p) {
+    if (p.no_text) return `<span class="tag nopdf" title="扫描件/无可抽文本，需先 OCR 才能深索">🚫 扫描件·需OCR</span>`;  // C1/A2
     if (p.deep) return `<span class="tag full">📄 已深索</span>`;
     if (p.has_pdf) return `<span class="tag abstract" title="有 PDF，可深索后精读到页码">📋 未深索</span>`;
-    return `<span class="tag nopdf" title="无 PDF，无法深索">📋 未深索</span>`;
+    return `<span class="tag nopdf" title="无 PDF，只有题录（题名·作者·年份·期刊）">🚫 无全文 / 仅题录</span>`;  // T5：与「未深索」区分
   }
   // 文件夹模式：AI 抽的题录待人工核对
   function reviewBadge(p) {
@@ -1185,14 +1494,16 @@
   function paperCard(p) {
     const div = document.createElement("div");
     div.className = "bcard";
-    const selectable = p.has_pdf && !p.deep;
+    // C1：扫描件（no_text）虽有 PDF 也不能深索，复选框禁用
+    const selectable = p.has_pdf && !p.deep && !p.no_text;
     const checked = BR.selected.has(p.key) ? "checked" : "";
     const cbDisabled = selectable ? "" : "disabled";
     div.innerHTML =
       `<label class="bcard-cb"><input type="checkbox" ${checked} ${cbDisabled} data-key="${esc(p.key)}"/></label>` +
       `<div class="bcard-body">` +
-        `<div class="bcard-head">${scoreBadge(p)}${tierBadge(p)}${deepBadge(p)}${reviewBadge(p)}</div>` +
-        `<div class="bcard-title" title="点标题：用其中的关键词找相似文献">${esc(p.title || "(无标题)")}</div>` +
+        `<div class="bcard-head">${scoreBadge(p)}${tierBadge(p)}${deepBadge(p)}${reviewBadge(p)}` +
+          `<button class="bcard-addcat" title="加入「我的分类」">＋分类</button></div>` +   // D1：可见入口
+        `<div class="bcard-title" title="点标题：查找相似文献">${esc(p.title || "(无标题)")}</div>` +
         metaRow(p) +
       `</div>`;
     const cb = div.querySelector("input[type=checkbox]");
@@ -1200,7 +1511,15 @@
       if (cb.checked) BR.selected.add(p.key); else BR.selected.delete(p.key);
       refreshSelUI();
     });
-    div.querySelector(".bcard-title").addEventListener("click", () => switchToSearch(p.title || ""));
+    div.querySelector(".bcard-title").addEventListener("click", () => findSimilar(p.key, p.title || ""));
+    // D1：卡片上的「＋分类」按钮——右击的多选集优先，否则只这一篇
+    const ac = div.querySelector(".bcard-addcat");
+    if (ac) ac.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const keys = (BR.selected.has(p.key) && BR.selected.size) ? [...BR.selected] : [p.key];
+      const rect = ac.getBoundingClientRect();
+      openAddToCatMenu(keys, rect.left, rect.bottom + 2);
+    });
     // 右键「加入分类▸」：若右击的卡片在多选集里则操作整个多选集，否则只操作这一篇
     div.addEventListener("contextmenu", (e) => {
       e.preventDefault();
@@ -1223,6 +1542,8 @@
     const n = BR.selected.size;
     $("#bl-sel-n").textContent = num(n);
     $("#bl-deep-sel").disabled = n === 0;
+    const _a = $("#bl-addcat"); if (_a) _a.disabled = n === 0;
+    const _c = $("#bl-cite-sel"); if (_c) _c.disabled = n === 0;
     // 全选框状态：以「当前列表里可深索的」为分母
     const selectable = BR.papers.filter((p) => p.has_pdf && !p.deep);
     const allSel = selectable.length > 0 && selectable.every((p) => BR.selected.has(p.key));
@@ -1232,13 +1553,15 @@
   }
 
   async function loadPapers() {
+    const myseq = ++BR.reqSeq;   // B5：请求序号守卫，防止快速切换时旧响应覆盖新选择
     $("#bl-name").textContent = BR.scope.name;
     $("#bl-list").innerHTML = ""; $("#bl-msg").textContent = "加载中…";
     BR.selected.clear(); refreshSelUI();
     const isRec = BR.sort === "recommend";
+    // T6：长解释收进点击浮层（.tip-i 已有 ctx 展开习惯）；title 精简为一句
     $("#bl-tip").innerHTML = isRec
-      ? `⭐ 已按「值得先读」排序：优先高档期刊（权威/核心）、近年、有全文可深读的
-         <span class="tip-i" title="推荐分 = 期刊来源门槛（按当前学科评定，0–1）×10 ＋ 近年加成 ＋ 有全文可深读；「建议深读」= 推荐分较高的篇。因此它和「设置 → 期刊分级学科」相关：换学科，推荐分与排序会跟着变。">ⓘ 怎么算的</span>`
+      ? `⭐ 已按「值得先读」排序：优先高等级期刊（权威/核心）、近年、有全文可深读的
+         <span class="tip-i" title="推荐分＝期刊权威度×10＋近年加成＋有全文可深读；随「设置→期刊分级学科」变化。">ⓘ 怎么算的</span>`
       : "";
     $("#bl-tip").style.display = isRec ? "" : "none";
     try {
@@ -1250,15 +1573,23 @@
       // 深索状态筛选（与范围叠加）
       if (BR.deepFilter) params.set("deep", BR.deepFilter);
       const d = await jget("/papers?" + params.toString());
+      if (myseq !== BR.reqSeq) return;   // B5：已有更新的请求发出，丢弃这次陈旧响应
       BR.papers = d.papers || [];
       $("#bl-count").textContent = `· 共 ${num(d.total != null ? d.total : BR.papers.length)} 篇` +
         (d.total > BR.papers.length ? `（显示前 ${num(BR.papers.length)}）` : "");
-      $("#bl-msg").textContent = BR.papers.length ? "" : (s.type === "topic" ? "（该主题暂无文献）" : s.type === "kbcat" ? "（该分类暂无文献，去右键把文献加进来）" : "（该分类暂无文献）");
+      if (BR.papers.length) { $("#bl-msg").innerHTML = ""; }
+      else if (s.type === "topic") { $("#bl-msg").textContent = "（该主题暂无文献）"; }
+      else if (s.type === "kbcat") {
+        // empty-cat-hint-deadlock：给出可操作路径 + 跳转按钮，而非死胡同
+        $("#bl-msg").innerHTML = `该分类暂无文献。去「⭐ 全部文献」勾选后点「＋ 加入分类」，或右键文献卡 / 拖到左侧分类上归类。 <a class="ag-link" id="bl-go-all">→ 去全部文献</a>`;
+        const g = $("#bl-go-all"); if (g) g.addEventListener("click", () => selectCollection(null, "全部", null));
+      } else { $("#bl-msg").textContent = "（该分类暂无文献）"; }
       const frag = document.createDocumentFragment();
       BR.papers.forEach((p) => frag.appendChild(paperCard(p)));
       $("#bl-list").appendChild(frag);
       refreshSelUI();
     } catch (e) {
+      if (myseq !== BR.reqSeq) return;
       $("#bl-msg").textContent = "加载失败：" + e.message;
     }
   }
@@ -1268,9 +1599,12 @@
     if (!keys.length) { $("#bl-msg").textContent = "没有可深索的文献（需有 PDF 且尚未深索）。"; return; }
     if (btn) btn.disabled = true;
     try {
-      await jpost("/index/deep", { scope: "keys:" + keys.join(",") });
+      // C7：手动深索走持久队列，撞锁自动排队；后端返回 {ok:true,queued:n}
+      const r = await jpost("/index/deep", { scope: "keys:" + keys.join(",") });
+      if (r && r.ok === false) { $("#bl-msg").textContent = "已有任务在跑，稍后再试。"; return; }
       localStorage.removeItem("localkb.deepDismissed");
-      $("#bl-msg").textContent = `已开始后台深索 ${num(keys.length)} 篇，进度见顶部。`;
+      const n = (r && r.queued != null) ? r.queued : keys.length;
+      $("#bl-msg").textContent = `已开始后台深索 ${num(n)} 篇，进度见顶部。`;
       poll(); // 让顶栏进度条接管
     } catch (e) {
       $("#bl-msg").textContent = "启动深索失败：" + e.message;
@@ -1295,6 +1629,23 @@
   $("#bl-deep-sel").addEventListener("click", () => {
     const keys = BR.papers.filter((p) => BR.selected.has(p.key) && p.has_pdf && !p.deep).map((p) => p.key);
     deepIndexKeys(keys, $("#bl-deep-sel"));
+  });
+  // D1：工具栏「＋ 加入分类」——对当前勾选集打开加入分类菜单
+  const _blAdd = $("#bl-addcat");
+  if (_blAdd) _blAdd.addEventListener("click", (e) => {
+    if (!BR.selected.size) return;
+    e.stopPropagation();   // 否则冒泡到 document 的关闭浮层处理器会立刻关掉刚打开的菜单
+    const rect = _blAdd.getBoundingClientRect();
+    openAddToCatMenu([...BR.selected], rect.left, rect.bottom + 2);
+  });
+  // D3/F1：导出选中引文（GB/T 7714 国标，一篇一行）
+  const _blCite = $("#bl-cite-sel");
+  if (_blCite) _blCite.addEventListener("click", () => {
+    const picked = BR.papers.filter((p) => BR.selected.has(p.key));
+    if (!picked.length) return;
+    const txt = picked.map((p) => citationGBT(p)).join("\n\n");
+    copyText(txt, _blCite);
+    flashToast(`已复制 ${num(picked.length)} 篇的规范引文（GB/T 7714）。`);
   });
   // 「深索推荐 Top 10」按钮已移除（F19：年份排序时名不副实，且与选中深索重复）
   $("#bt-all").addEventListener("click", () => selectCollection(null, "全部", null));
@@ -1337,8 +1688,8 @@
           model: c.model || "",
         });
         btn.textContent = "✓ 已沉淀为综合页";
-        msg.innerHTML = (r.indexed ? "（已入库，检索/wiki页可见）" : "（已存盘，重建索引后可检索）") +
-          ` <a class="save-goto" href="#">→ 去 wiki 页查看</a>`;
+        msg.innerHTML = (r.indexed ? "（已入库，检索/综述库可见）" : "（已存盘，重建索引后可检索）") +
+          ` <a class="save-goto" href="#">→ 去综述库查看</a>`;
         const go = msg.querySelector(".save-goto");
         if (go) go.addEventListener("click", (e) => {
           e.preventDefault();
@@ -1354,8 +1705,8 @@
   async function doChat() {
     const q = $("#chat-q").value.trim(); if (!q) return;
     const c = cfg();
-    // 硅基流动可复用检索引擎的 key（服务端兜底），故无 key 也放行；其它服务商仍要求先填 key
-    if (!c.api_key && (c.provider || "siliconflow") !== "siliconflow") { openSettings(); return; }
+    // A6：放行前据 /setup/detect 判断是否真有可用 key（默认本地后端 + 硅基流动无 key 会直接失败）
+    if (!(await ensureLlmKey())) return;
     const hint = $(".chat-hint"); if (hint) hint.remove();
     $("#chat-q").value = ""; $("#chat-q").style.height = "auto";
     addBubble("user", q);
@@ -1384,8 +1735,8 @@
           else if (j.error) { errored = true; bot.textContent = "⚠ " + j.error; }
         }
       }
-      history.push({ role: "user", content: q }, { role: "assistant", content: answer });
-      if (answer && !errored) addSaveBtn(bot, q, answer, srcHits);
+      // R13：仅在真有回答且未出错时才把这轮写进 history，避免空/错误回合污染后续上下文
+      if (answer && !errored) { history.push({ role: "user", content: q }, { role: "assistant", content: answer }); addSaveBtn(bot, q, answer, srcHits); }
       // 流正常结束却一个字都没吐、也没报错：给一句兜底，避免留个空白气泡让人以为卡死
       else if (!answer && !errored) bot.textContent = "⚠ 模型没有返回内容，请重试，或在设置里检查对话模型/Key。";
     } catch (e) { bot.textContent = "⚠ 请求失败：" + e; }
@@ -1485,6 +1836,34 @@
   });
   $("#btn-settings").addEventListener("click", openSettings);
   $("#set-close").addEventListener("click", () => $("#settings-modal").hidden = true);
+
+  // ── F8：外观（主题 / 字号）——存 localStorage，冷启动即应用。跟随系统时解析成具体 light/dark 写到 data-theme（CSS 只需处理 data-theme）──
+  function applyAppearance() {
+    const a = safeParse(localStorage.getItem("localkb.ui"), {});
+    const pref = a.theme || "system", fs = a.fontsize || "normal";
+    const sysDark = !!(window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
+    const theme = pref === "system" ? (sysDark ? "dark" : "light") : pref;
+    const root = document.documentElement;
+    root.setAttribute("data-theme", theme);
+    root.setAttribute("data-fontsize", fs);
+    const ts = $("#ui-theme"); if (ts) ts.value = pref;   // 下拉显示用户选择（system/light/dark），非解析值
+    const fsel = $("#ui-fontsize"); if (fsel) fsel.value = fs;
+  }
+  function saveAppearance() {
+    const a = safeParse(localStorage.getItem("localkb.ui"), {});
+    const ts = $("#ui-theme"), fsel = $("#ui-fontsize");
+    if (ts) a.theme = ts.value;
+    if (fsel) a.fontsize = fsel.value;
+    localStorage.setItem("localkb.ui", JSON.stringify(a));
+    applyAppearance();
+  }
+  { const ts = $("#ui-theme"); if (ts) ts.addEventListener("change", saveAppearance);
+    const fsel = $("#ui-fontsize"); if (fsel) fsel.addEventListener("change", saveAppearance);
+    // 跟随系统时，系统主题变化即时重解析
+    if (window.matchMedia) { try { window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
+      const a = safeParse(localStorage.getItem("localkb.ui"), {}); if ((a.theme || "system") === "system") applyAppearance();
+    }); } catch (e) {} } }
+  applyAppearance();
 
   // ── 对话页「模型设置」折叠区（原设置弹窗的 LLM 服务商块内联到此，onChange 即存）──
   // 冷启动即回填对话页模型设置（原逻辑只在打开设置弹窗时回填）
@@ -1678,12 +2057,25 @@
   //  建库（增量更新）—— 保留原逻辑
   // ══════════════════════════════════════════
   let buildTimer = null;
-  $("#btn-build").addEventListener("click", () => { $("#build-modal").hidden = false; refreshBuild(); });
+  // R8：打开弹窗时若后台正在构建，重起 timer 让日志继续滚动（否则重开后日志冻结）
+  $("#btn-build").addEventListener("click", async () => {
+    $("#build-modal").hidden = false;
+    await refreshBuild();
+    try {
+      const s = await (await fetch("/build/status")).json();
+      if (s.running) { clearInterval(buildTimer); buildTimer = setInterval(refreshBuild, 1500); }
+    } catch (e) {}
+  });
   $("#build-close").addEventListener("click", () => { $("#build-modal").hidden = true; clearInterval(buildTimer); });
   $("#build-start").addEventListener("click", async () => {
     $("#build-start").disabled = true;
-    await fetch("/build", { method: "POST" });
-    buildTimer = setInterval(refreshBuild, 1500);
+    try {
+      const r = await fetch("/build", { method: "POST" });
+      let j = null; try { j = await r.json(); } catch (e) {}
+      // C7：忙时后端返回 {ok:false}，此时保持按钮可用并提示，不假装已开始
+      if (j && j.ok === false) { $("#build-log").textContent = "已有任务在跑，稍后再试。"; $("#build-start").disabled = false; return; }
+    } catch (e) { $("#build-log").textContent = "启动失败：" + (e.message || e); $("#build-start").disabled = false; return; }
+    clearInterval(buildTimer); buildTimer = setInterval(refreshBuild, 1500);   // 防覆盖泄漏
   });
   async function refreshBuild() {
     try {
@@ -1707,7 +2099,8 @@
       li.classList.toggle("done", s < n);
     });
   }
-  function closeWizard() { $("#wizard").hidden = true; }
+  // 走到「进入知识库」即视为已引导：R16 用它避免空文件夹（无索引 manifest）每次重启重弹向导
+  function closeWizard() { $("#wizard").hidden = true; try { localStorage.setItem("localkb.onboarded", "1"); } catch (e) {} }
 
   function renderStep1() {
     setStep(1);
@@ -1769,7 +2162,11 @@
           WZ.api.key = k; if (WZ.detect) WZ.detect.meta_ready = true; APP.metaReady = true;
           // 对话页也用这个 key（siliconflow）
           const c = cfg(); c.provider = c.provider || "siliconflow"; c.api_key = c.api_key || k; saveCfg(c);
-        } catch (e) { $("#wzk-msg").innerHTML = `<div class="wz-err">保存失败：${esc(e.message)}（可跳过，之后在设置里补）</div>`; }
+        } catch (e) {
+          // R15：保存失败则停在本步显示错误、不前进（否则 renderStep2 整块重绘会抹掉刚写的提示）
+          $("#wzk-msg").innerHTML = `<div class="wz-err">保存失败：${esc(e.message)}。请检查网络后重试，或清空此框跳过（之后在设置里补）。</div>`;
+          return;
+        }
       }
       renderStep2();
     });
@@ -1785,8 +2182,8 @@
         <label class="wz-engine ${localSel ? "sel" : ""}" data-be="local">
           <input type="radio" name="wz-backend" value="local" ${localSel ? "checked" : ""} />
           <div class="wz-engine-body">
-            <div class="wz-engine-h">🔒 本地模式 <span class="wz-badge-rec">推荐</span></div>
-            <div class="wz-engine-d">离线 · 隐私不出本机 · 需下载约 1.2GB 模型</div>
+            <div class="wz-engine-h">🔒 本地模式</div>
+            <div class="wz-engine-d">离线 · 隐私不出本机 · 需下载约 1.2GB 模型（首次一次性）</div>
           </div>
         </label>
         <label class="wz-engine ${localSel ? "" : "sel"}" data-be="api">
@@ -1827,9 +2224,7 @@
       <div class="wz-actions">
         <button class="ghost2c wz-back" id="wz2-back">← 上一步</button>
         <button class="primary" id="wz2-next">下一步 →</button>
-        
       </div>`;
-    { const _sk=$("#wz-skip"); if (_sk) _sk.addEventListener("click", closeWizard); }
     $("#wz2-back").addEventListener("click", renderStepKey);
 
     // 单选切换：更新选中态 + 展开/收起 API 表单
@@ -2079,7 +2474,6 @@
 
     const bindReady = () => {
       $("#wz4-inner").innerHTML = readyHtml;
-      { const _sk=$("#wz-skip"); if (_sk) _sk.addEventListener("click", closeWizard); }
       $("#wz4-back").addEventListener("click", renderStep3);
       $("#wz4-next").addEventListener("click", renderStep5);
     };
@@ -2105,9 +2499,7 @@
         <div class="wz-actions">
           <button class="ghost2c wz-back" id="wz4-back">← 上一步</button>
           <button class="primary green" id="wz4-dl">开始下载</button>
-          
         </div>`;
-      { const _sk=$("#wz-skip"); if (_sk) _sk.addEventListener("click", closeWizard); }
       $("#wz4-back").addEventListener("click", renderStep3);
       $("#wz4-dl").addEventListener("click", () => downloadModels());
     })();
@@ -2137,9 +2529,8 @@
         $("#wz4-msg").innerHTML = `<div class="wz-result">下载完成 ✓</div>`;
         // 就绪：把「开始下载」换成「下一步」
         const actions = btn ? btn.parentNode : null;
-        if (actions) actions.innerHTML = `<button class="primary" id="wz4-next">下一步：即时索引 →</button>`;
+        if (actions) actions.innerHTML = `<button class="primary" id="wz4-next">下一步：建立索引 →</button>`;
         $("#wz4-next").addEventListener("click", renderStep5);
-        { const _sk=$("#wz-skip"); if (_sk) _sk.addEventListener("click", closeWizard); }
         if (WZ.detect) { WZ.detect.models_local = true; WZ.detect.reranker_local = true; WZ.detect.models_ready = true; }
       } else {
         $("#wz4-msg").innerHTML = `<div class="wz-err">下载失败：${esc(msg || "未知错误")}</div>`;
@@ -2189,18 +2580,16 @@
           ? `<div class="wz-note">文件夹还是空的——没关系，进去后把 PDF 拖进窗口就会自动入库。也可以先放好 PDF 再点下面。</div>`
           : `<div class="wz-note">下一步会<b>逐篇读出每个 PDF 的题录</b>（题名/作者/年份/期刊），再建索引。
               比 Zotero 慢一些（每篇要让 AI 读一次），${entries != null ? `约 <b>${num(entries)}</b> 篇，` : ""}可以放着，完成后自动可搜。</div>`)
-      : `<div class="wz-note">下一步做<b>即时索引</b>（词法层）：把每篇的「标题+摘要+关键词」建成可搜索索引。
+      : `<div class="wz-note">下一步<b>建立索引</b>：把每篇的「标题+摘要+关键词」建成可搜索索引。
           <b>0 等待、秒级完成</b>，完成后检索框和库总览立刻可用。${entries != null ? ` 待索引约 <b>${num(entries)}</b> 篇。` : ""}</div>`;
-    const goLabel = emptyFolder ? "进入知识库 →" : (isFolder ? "开始建库（读取题录）" : "开始即时索引");
+    const goLabel = emptyFolder ? "进入知识库 →" : (isFolder ? "开始建库（读取题录）" : "开始建立索引");
     $("#wizard-body").innerHTML =
       note +
       `<div id="wz5-msg"></div>
       <div class="wz-actions">
         <button class="ghost2c wz-back" id="wz5-back">← 上一步</button>
         <button class="primary green" id="wz5-go">${goLabel}</button>
-        
       </div>`;
-    { const _sk=$("#wz-skip"); if (_sk) _sk.addEventListener("click", closeWizard); }
     $("#wz5-back").addEventListener("click", renderStep4);
     $("#wz5-go").addEventListener("click", async () => {
       const btn = $("#wz5-go");
@@ -2218,7 +2607,8 @@
           }
           $("#wz5-msg").innerHTML = `<div class="wz-result">🚀 已开始建库，正在逐篇读取题录（进度见顶部）。可直接进入，完成后自动可搜。</div>`;
           btn.outerHTML = `<button class="primary" id="wz5-enter">进入知识库 →</button>`;
-          $("#wz5-enter").addEventListener("click", () => { closeWizard(); poll(); });
+          // C2：进入后强制重载库总览，刷掉冷启动残留的「统计加载失败」红字
+          $("#wz5-enter").addEventListener("click", () => { closeWizard(); poll(); dashLoaded = false; loadDashboard("loud"); });
           poll();
           return;
         }
@@ -2226,9 +2616,10 @@
         const papers = r.meta_indexed != null ? r.meta_indexed : (r.total || 0);
         const wp = r.with_pdf || 0;
         jpost("/index/semantic", {}).catch((e) => reportErr(e && e.message, "wizard auto-semantic"));
-        $("#wz5-msg").innerHTML = `<div class="wz-result">🎉 已索引 ${num(papers)} 篇（其中 ${num(wp)} 篇有 PDF 可深索）<br><span class="wz-subtle">语义层已在后台自动提质，可直接进入使用。</span></div>`;
+        $("#wz5-msg").innerHTML = `<div class="wz-result">🎉 已索引 ${num(papers)} 篇（其中 ${num(wp)} 篇有 PDF 可深索）<br><span class="wz-subtle">检索质量已在后台自动提升，可直接进入使用。</span></div>`;
         btn.outerHTML = `<button class="primary" id="wz5-enter">进入知识库 →</button>`;
-        $("#wz5-enter").addEventListener("click", () => { closeWizard(); poll(); maybeDeepInvite(); });
+        // C2：进入后强制重载库总览，刷掉冷启动残留的失败态
+        $("#wz5-enter").addEventListener("click", () => { closeWizard(); poll(); dashLoaded = false; loadDashboard("loud"); maybeDeepInvite(); });
       } catch (e) {
         $("#wz5-msg").innerHTML = `<div class="wz-err">建库失败：${esc(e.message)}</div>`;
         btn.disabled = false; btn.textContent = "重试";
@@ -2256,8 +2647,8 @@
     card.className = "deep-invite";
     card.innerHTML =
       `<div class="di-ic">📄</div>
-      <div class="di-txt"><b>深度索引让回答精确到页码</b>
-        <span>已深索 <b>${num(deep)}</b>/<b>${num(withPdf)}</b> 篇有 PDF 的文献。把剩余文献全文切块并向量化，可后台进行。</span></div>
+      <div class="di-txt"><b>深索让回答精确到页码</b>
+        <span>已深索 <b>${num(deep)}</b>/<b>${num(withPdf)}</b> 篇有 PDF 的文献。把剩余文献的全文拆成可检索的小段，可后台进行。</span></div>
       <div class="di-btns"><button class="go">深索全库</button><button class="later">以后再说</button></div>`;
     $("#results").parentNode.insertBefore(card, $("#results"));
     card.querySelector(".later").addEventListener("click", () => {
@@ -2267,7 +2658,9 @@
       const b = card.querySelector(".go"); b.disabled = true;
       const later = card.querySelector(".later"); if (later) later.style.display = "none";
       try {
-        await jpost("/index/deep", { scope: "all" });
+        // C7：scope=all 时若后台忙，后端返回 {ok:false,busy:true}——此时不假装已开始，恢复按钮并提示
+        const r = await jpost("/index/deep", { scope: "all" });
+        if (r && r.ok === false) { b.textContent = "已有任务在跑，稍后再试"; b.disabled = false; if (later) later.style.display = ""; return; }
         b.textContent = "后台深索中…（进度见顶部）";
         poll();  // 立刻拉一次，让顶部进度条接管显示
       } catch (e) { b.textContent = "启动失败：" + e.message; b.disabled = false; if (later) later.style.display = ""; }
@@ -2292,7 +2685,10 @@
       applySourceCopy();
       // 用后端当前后端选择初始化向导态（默认 local）
       if (d.backend === "api" || d.backend === "local") WZ.backend = d.backend;
-      if (!d.indexed) { $("#wizard").hidden = false; renderStep1(); }
+      // R16：空文件夹进入后不建索引→无 manifest→d.indexed 恒 false 会每次重弹向导。
+      // 用本机 onboarded 标记兜底：已走完向导的就不再弹，改走老用户回访路径。
+      const onboarded = (() => { try { return localStorage.getItem("localkb.onboarded") === "1"; } catch (e) { return false; } })();
+      if (!d.indexed && !onboarded) { $("#wizard").hidden = false; renderStep1(); }
       else { maybeDeepInvite(); maybeShowDropzone(); }  // 老用户回访：深索提示 + 文件夹空库 dropzone
     } catch (e) { /* 后端不可达时不弹向导，让状态 pill 提示 */ }
   }
@@ -2359,22 +2755,28 @@
     let dragDepth = 0;
     const overlay = $("#drop-overlay");
     const isFileDrag = (e) => Array.from((e.dataTransfer && e.dataTransfer.types) || []).includes("Files");
+    // B3：只要拖入的是文件，就无条件 preventDefault（阻止浏览器导航/打开文件），再按模式分支。
     window.addEventListener("dragenter", (e) => {
-      if (APP.source !== "folder" || !isFileDrag(e)) return;
-      e.preventDefault(); dragDepth++; if (overlay) overlay.hidden = false;
+      if (!isFileDrag(e)) return;
+      e.preventDefault();
+      if (APP.source !== "folder") return;   // zotero 模式不弹入库遮罩
+      dragDepth++; if (overlay) overlay.hidden = false;
     });
     window.addEventListener("dragover", (e) => {
-      if (APP.source !== "folder" || !isFileDrag(e)) return;
-      e.preventDefault(); e.dataTransfer.dropEffect = "copy";   // 必须 preventDefault，否则浏览器会打开文件
+      if (!isFileDrag(e)) return;
+      e.preventDefault();                      // 无条件阻止导航（否则松手浏览器会打开该 PDF、离开应用）
+      if (APP.source === "folder") e.dataTransfer.dropEffect = "copy";
+      else e.dataTransfer.dropEffect = "none";
     });
     window.addEventListener("dragleave", (e) => {
       if (APP.source !== "folder") return;
       if (--dragDepth <= 0) { dragDepth = 0; if (overlay) overlay.hidden = true; }
     });
     window.addEventListener("drop", (e) => {
-      if (APP.source !== "folder") return;
+      if (!isFileDrag(e)) return;
       e.preventDefault(); dragDepth = 0; if (overlay) overlay.hidden = true;
-      ingestFiles((e.dataTransfer && e.dataTransfer.files) || []);
+      if (APP.source === "folder") { ingestFiles((e.dataTransfer && e.dataTransfer.files) || []); }
+      else { flashToast("Zotero 模式不支持直接拖入 PDF。请在 Zotero 里添加文献后，点顶栏「⟳ 更新知识库」。"); }
     });
     // 文件选择器兜底（拖拽不生效时 100% 可用）
     const inp = $("#ingest-file-input");

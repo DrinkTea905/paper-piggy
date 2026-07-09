@@ -70,8 +70,15 @@ class APIReranker:
                                   json={"model": self.model, "query": query, "documents": docs,
                                         "return_documents": False},
                                   timeout=self.timeout)
-                if r.status_code == 429:
-                    time.sleep(min(30, 2 ** attempt)); last = "429 限流"; continue
+            except Exception as e:                              # 网络层异常（连接/超时）：可重试
+                last = repr(e); time.sleep(min(10, 1.5 ** attempt)); continue
+            if r.status_code == 429:
+                time.sleep(min(30, 2 ** attempt)); last = "429 限流"; continue
+            if r.status_code in (500, 502, 503, 504):           # 服务端过载：退避重试
+                last = f"{r.status_code} 服务端繁忙"; time.sleep(min(10, 1.5 ** attempt)); continue
+            if 400 <= r.status_code < 500:                       # R1：4xx(密钥/额度/参数) 重试无用，快速失败
+                raise RuntimeError(_client_err(r.status_code, self.model))
+            try:                                                # 2xx：解析（偶发坏响应仍可重试）
                 r.raise_for_status()
                 sc = [0.0] * len(docs)
                 for item in r.json().get("results", []):
@@ -88,6 +95,17 @@ class APIReranker:
         for i in range(0, len(texts), self.batch):
             out.extend(self._post(query, list(texts[i:i + self.batch])))
         return out
+
+
+def _client_err(code, model=""):
+    """R1：把 4xx 客户端错误翻成人话（重试无用，直接抛给用户看）。"""
+    if code in (401, 403):
+        return "密钥无效或余额不足，请检查 API Key 与余额"
+    if code == 404:
+        return f"接口地址或模型不存在（404，模型 {model}），请检查 base 地址与模型名"
+    if code == 400:
+        return f"请求被拒（400），请检查模型名（{model}）与参数"
+    return f"重排 API 客户端错误（HTTP {code}），请检查 API Key / 模型 / base 地址"
 
 
 def get_reranker(model=C.RERANK_MODEL, **kw):

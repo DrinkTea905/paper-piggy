@@ -72,12 +72,18 @@ class SiliconFlowEmbedder:
         for attempt in range(self.max_retries):
             try:
                 r = self._sess.post(url, json=payload, timeout=self.timeout)
-                if r.status_code == 429:                       # 限流：优先听 Retry-After
-                    wait = _retry_after(r) or min(30, 2 ** attempt)
-                    last = "429 限流"; time.sleep(wait + random.uniform(0, 0.3)); continue
-                if r.status_code in (500, 502, 503, 504):      # 服务端过载：退避重试
-                    last = f"{r.status_code} 服务端繁忙"
-                    time.sleep(min(10, 1.5 ** attempt) + random.uniform(0, 0.3)); continue
+            except Exception as e:                              # 网络层异常（连接/超时）：可重试
+                last = repr(e)
+                time.sleep(min(10, 1.5 ** attempt) + random.uniform(0, 0.3)); continue
+            if r.status_code == 429:                            # 限流：优先听 Retry-After
+                wait = _retry_after(r) or min(30, 2 ** attempt)
+                last = "429 限流"; time.sleep(wait + random.uniform(0, 0.3)); continue
+            if r.status_code in (500, 502, 503, 504):           # 服务端过载：退避重试
+                last = f"{r.status_code} 服务端繁忙"
+                time.sleep(min(10, 1.5 ** attempt) + random.uniform(0, 0.3)); continue
+            if 400 <= r.status_code < 500:                       # R1：4xx(密钥/额度/参数/模型名) 重试无用，快速失败
+                raise RuntimeError(_client_err(r.status_code, self.model))
+            try:                                                # 2xx：解析（偶发坏响应/维度不符仍可重试）
                 r.raise_for_status()
                 data = sorted(r.json()["data"], key=lambda x: x.get("index", 0))
                 v = np.asarray([d["embedding"] for d in data], dtype=np.float32)
@@ -117,6 +123,17 @@ class SiliconFlowEmbedder:
     # 便捷：直接拿单条向量
     def encode_one(self, text, max_length=None):
         return self.encode([text], max_length=max_length)[0]
+
+
+def _client_err(code, model=""):
+    """R1：把 4xx 客户端错误翻成人话（重试无用，直接抛给用户看）。"""
+    if code in (401, 403):
+        return "密钥无效或余额不足，请检查 API Key 与余额"
+    if code == 404:
+        return f"接口地址或模型不存在（404，模型 {model}），请检查 base 地址与模型名"
+    if code == 400:
+        return f"请求被拒（400），请检查模型名（{model}）与参数"
+    return f"嵌入 API 客户端错误（HTTP {code}），请检查 API Key / 模型 / base 地址"
 
 
 def _retry_after(resp):

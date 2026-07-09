@@ -5,7 +5,7 @@
 无 key 时正常退出（returncode 0，退回文件名题名），不阻断 LIGHT。
 用法: python folder_ingest.py [--workers 3] [--limit N]
 """
-import sys, os, json, time, hashlib, argparse
+import sys, os, json, time, hashlib, argparse, threading
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 sys.path.insert(0, str(Path(__file__).parent))
@@ -20,7 +20,9 @@ try:
 except Exception:
     pass
 
-_CACHE_LOCK = None
+# R4：多线程共享 cache 字典的锁。worker 只在持锁时写；主线程存盘前在持锁下浅拷贝快照，
+# 避免 json.dumps 迭代时 worker 增键触发 "dictionary changed size during iteration" 崩溃。
+_CACHE_LOCK = threading.Lock()
 
 
 def _now():
@@ -32,9 +34,12 @@ def _load_cache():
 
 
 def _save_cache(cache):
+    # R4：在持锁下浅拷贝快照再 dumps，防与 worker 并发写冲突。
+    with _CACHE_LOCK:
+        snap = dict(cache)
     C.FOLDER_DIR_STATE.mkdir(parents=True, exist_ok=True)
     tmp = C.FOLDER_META_CACHE.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(cache, ensure_ascii=False, indent=1), encoding="utf-8")
+    tmp.write_text(json.dumps(snap, ensure_ascii=False, indent=1), encoding="utf-8")
     for i in range(6):
         try:
             os.replace(tmp, C.FOLDER_META_CACHE)
@@ -74,18 +79,21 @@ def _head_text(pdf, key):
 
 def ingest_one(folder, pdf, cache):
     key = FS.stable_key(folder, pdf)
-    if key in cache and cache[key].get("meta"):
-        return "skip"
+    with _CACHE_LOCK:                                   # R4：持锁读，避免与其它 worker/存盘竞争
+        if key in cache and cache[key].get("meta"):
+            return "skip"
     text = _head_text(pdf, key)
     if not text:
-        cache[key] = {"meta": {"title": Path(pdf).stem}, "file": pdf,
-                      "needs_review": True, "note": "no_text", "extracted_at": _now()}
+        with _CACHE_LOCK:                               # R4：持锁写
+            cache[key] = {"meta": {"title": Path(pdf).stem}, "file": pdf,
+                          "needs_review": True, "note": "no_text", "extracted_at": _now()}
         return "empty"
     meta, needs_review, err = FM.extract_meta(text)
     if not meta.get("title"):
         meta["title"] = Path(pdf).stem
-    cache[key] = {"meta": meta, "file": pdf, "sha1": _file_sha1(pdf),
-                  "needs_review": needs_review, "extracted_at": _now(), "err": err}
+    with _CACHE_LOCK:                                   # R4：持锁写
+        cache[key] = {"meta": meta, "file": pdf, "sha1": _file_sha1(pdf),
+                      "needs_review": needs_review, "extracted_at": _now(), "err": err}
     return "ok" if not err else "fallback"
 
 
