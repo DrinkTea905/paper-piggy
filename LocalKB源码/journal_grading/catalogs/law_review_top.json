@@ -1,0 +1,67 @@
+{
+  "_meta": {
+    "catalog": "law_review_top",
+    "version": "2026-06-28-legacy",
+    "source": "个人整理（顶尖外文法律评论）",
+    "origin": "intl",
+    "note": "私有目录（law_personal 专用）：顶尖外文法评（耶鲁/哈佛/芝大等旗舰法评）。外刊不打折(intl=1.0)→T1。level=收录。 ｜ 已并入 2026-06-28 个人法学旧档。",
+    "migrated_from": "D:\\LocalKB\\data\\journal_tiers.json"
+  },
+  "journals": [
+    {
+      "name": "California Law Review",
+      "issn": "",
+      "level": "收录"
+    },
+    {
+      "name": "Columbia Law Review",
+      "issn": "",
+      "level": "收录"
+    },
+    {
+      "name": "Cornell Law Review",
+      "issn": "",
+      "level": "收录"
+    },
+    {
+      "name": "Harvard Law Review",
+      "issn": "",
+      "level": "收录"
+    },
+    {
+      "name": "Michigan Law Review",
+      "issn": "",
+      "level": "收录"
+    },
+    {
+      "name": "Minnesota Law Review",
+      "issn": "",
+      "level": "收录"
+    },
+    {
+      "name": "Notre Dame Law Review",
+      "issn": "",
+      "level": "收录"
+    },
+    {
+      "name": "The University of Chicago Law Review",
+      "issn": "",
+      "level": "收录"
+    },
+    {
+      "name": "The Yale Law Journal",
+      "issn": "",
+      "level": "收录"
+    },
+    {
+      "name": "University of Pennsylvania Law Review",
+      "issn": "",
+      "level": "收录"
+    },
+    {
+      "name": "Yale Law Journal",
+      "issn": "",
+      "level": "收录"
+    }
+  ]
+}

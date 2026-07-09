@@ -1,0 +1,12 @@
+{
+  "_meta": {
+    "catalog": "ssci",
+    "version": "seed",
+    "source": "Clarivate Master Journal List（名单免费）；分区(Q)需自备或用 SJR 替代",
+    "note": "种子样本。名单免费(收录与否)，但 JCR 的 Q 分区不免费——缺 Q 时用 sjr.json 的 Q 区替代 ssci.Q* 位置，方案不受影响。level ∈ {Q1,Q2,Q3,Q4}（有分区时）。",
+    "updated": "seed"
+  },
+  "journals": [
+    { "name": "Academy of Management Journal", "issn": "0001-4273", "level": "Q1" }
+  ]
+}

@@ -1,0 +1,242 @@
+{
+  "_meta": {
+    "catalog": "ssci_law_authority",
+    "version": "2026-06-28-legacy",
+    "source": "个人整理（SSCI 法学/犯罪学/社科旗舰权威）",
+    "origin": "intl",
+    "note": "私有目录（law_personal 专用）：非旗舰法评的 SSCI 权威社科刊。外刊不打折(intl=1.0)→T2。level=收录。 ｜ 已并入 2026-06-28 个人法学旧档。",
+    "migrated_from": "D:\\LocalKB\\data\\journal_tiers.json"
+  },
+  "journals": [
+    {
+      "name": "American Journal of Political Science",
+      "issn": "",
+      "level": "收录"
+    },
+    {
+      "name": "American Journal of Sociology",
+      "issn": "",
+      "level": "收录"
+    },
+    {
+      "name": "American Political Science Review",
+      "issn": "",
+      "level": "收录"
+    },
+    {
+      "name": "American Psychologist",
+      "issn": "",
+      "level": "收录"
+    },
+    {
+      "name": "American Sociological Review",
+      "issn": "",
+      "level": "收录"
+    },
+    {
+      "name": "Annual Review of Criminology",
+      "issn": "",
+      "level": "收录"
+    },
+    {
+      "name": "Annual Review of Neuroscience",
+      "issn": "",
+      "level": "收录"
+    },
+    {
+      "name": "Annual Review of Political Science",
+      "issn": "",
+      "level": "收录"
+    },
+    {
+      "name": "British Journal of Political Science",
+      "issn": "",
+      "level": "收录"
+    },
+    {
+      "name": "Comparative Political Studies",
+      "issn": "",
+      "level": "收录"
+    },
+    {
+      "name": "Crime and Justice",
+      "issn": "",
+      "level": "收录"
+    },
+    {
+      "name": "Criminal Justice and Behavior",
+      "issn": "",
+      "level": "收录"
+    },
+    {
+      "name": "Criminology",
+      "issn": "",
+      "level": "收录"
+    },
+    {
+      "name": "Demography",
+      "issn": "",
+      "level": "收录"
+    },
+    {
+      "name": "European Journal of Criminology",
+      "issn": "",
+      "level": "收录"
+    },
+    {
+      "name": "European Journal of International Law",
+      "issn": "",
+      "level": "收录"
+    },
+    {
+      "name": "European Journal of Political Research",
+      "issn": "",
+      "level": "收录"
+    },
+    {
+      "name": "Governance",
+      "issn": "",
+      "level": "收录"
+    },
+    {
+      "name": "Journal of Criminal Justice",
+      "issn": "",
+      "level": "收录"
+    },
+    {
+      "name": "Journal of Criminal Law and Criminology",
+      "issn": "",
+      "level": "收录"
+    },
+    {
+      "name": "Journal of Economic Literature",
+      "issn": "",
+      "level": "收录"
+    },
+    {
+      "name": "Journal of Empirical Legal Studies",
+      "issn": "",
+      "level": "收录"
+    },
+    {
+      "name": "Journal of Experimental Criminology",
+      "issn": "",
+      "level": "收录"
+    },
+    {
+      "name": "Journal of Law and Society",
+      "issn": "",
+      "level": "收录"
+    },
+    {
+      "name": "Journal of Law, Economics, & Organization",
+      "issn": "",
+      "level": "收录"
+    },
+    {
+      "name": "Journal of Quantitative Criminology",
+      "issn": "",
+      "level": "收录"
+    },
+    {
+      "name": "Journal of Research in Crime and Delinquency",
+      "issn": "",
+      "level": "收录"
+    },
+    {
+      "name": "Justice Quarterly",
+      "issn": "",
+      "level": "收录"
+    },
+    {
+      "name": "Law & Society Review",
+      "issn": "",
+      "level": "收录"
+    },
+    {
+      "name": "Law and Human Behavior",
+      "issn": "",
+      "level": "收录"
+    },
+    {
+      "name": "Nature Communications",
+      "issn": "",
+      "level": "收录"
+    },
+    {
+      "name": "Nature Reviews Neuroscience",
+      "issn": "",
+      "level": "收录"
+    },
+    {
+      "name": "NeuroImage",
+      "issn": "",
+      "level": "收录"
+    },
+    {
+      "name": "Proceedings of the National Academy of Sciences",
+      "issn": "",
+      "level": "收录"
+    },
+    {
+      "name": "Psychological Science",
+      "issn": "",
+      "level": "收录"
+    },
+    {
+      "name": "Public Opinion Quarterly",
+      "issn": "",
+      "level": "收录"
+    },
+    {
+      "name": "Science",
+      "issn": "",
+      "level": "收录"
+    },
+    {
+      "name": "Sociological Methodology",
+      "issn": "",
+      "level": "收录"
+    },
+    {
+      "name": "Sociological Methods & Research",
+      "issn": "",
+      "level": "收录"
+    },
+    {
+      "name": "The American Economic Review",
+      "issn": "",
+      "level": "收录"
+    },
+    {
+      "name": "The British Journal of Criminology",
+      "issn": "",
+      "level": "收录"
+    },
+    {
+      "name": "The Journal of Legal Studies",
+      "issn": "",
+      "level": "收录"
+    },
+    {
+      "name": "The Journal of Neuroscience",
+      "issn": "",
+      "level": "收录"
+    },
+    {
+      "name": "The Journal of Politics",
+      "issn": "",
+      "level": "收录"
+    },
+    {
+      "name": "Theoretical Criminology",
+      "issn": "",
+      "level": "收录"
+    },
+    {
+      "name": "Trends in Cognitive Sciences",
+      "issn": "",
+      "level": "收录"
+    }
+  ]
+}

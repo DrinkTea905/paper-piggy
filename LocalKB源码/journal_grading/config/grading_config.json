@@ -1,0 +1,205 @@
+{
+  "version": "1.0",
+  "license": "CC0",
+  "_comment_license": "公开，可自由微调、再分发。",
+  "_readme": "期刊引用权重分级配置（配置即代码）。本文件是唯一给用户/AI 微调的文件：改系数改 disciplines[*].coeff；加学科复制一段 disciplines；改档位分改 tiers；自定顶刊往 recognizedTopLists[学科] 加刊名；关影响因子把对应 archetype 的 ifStrength 设 0。评级逻辑/系数/顶刊清单均已联网核实，非必要勿改。落地自：期刊引用权重分级方案.md §七。JSON 不支持注释，原 JSONC 的 // 注释转成 _comment_* 字段，键以 _ 开头者仅供人读、解析器忽略。",
+  "meta": { "scope": "中文文科知识库", "mode": "整库锁定单学科" },
+
+  "tiers": { "T1": 1.00, "T1b": 0.92, "T2": 0.85, "T3": 0.65, "T4": 0.45, "T5": 0.25 },
+  "_comment_tiers": "全局档位分。T1权威1.00 / T1b准权威0.92(law_personal专用:CLSCI来源/外文权威) / T2核心0.85 / T3次核心0.65 / T4一般0.45 / T5普通0.25(未识别默认;预警/报纸也归此档)。已按用户要求取消原T6存疑档(0.05):用户不会自存假文献,故预警刊不再压最低——若另在正经名单(如SJR)按其档走,否则按普通。标准10学科A-D原型不用T1b。",
+
+  "catalogs": {
+    "cssci":  { "type": "名录", "levels": ["来源", "扩展"], "builtin": true, "free": true, "note": "文科最高本土标尺，两层必须分开" },
+    "clsci":  { "type": "名录", "levels": ["权威", "来源"], "builtin": true, "free": true, "note": "法学专属，约26刊" },
+    "pku":    { "type": "名录", "levels": ["收录"], "builtin": true, "free": true, "note": "北大核心，2023第十版，每3年" },
+    "ami":    { "type": "名录", "levels": ["顶级", "权威", "核心", "扩展"], "builtin": true, "free": true, "note": "社科院AMI，文科第三套，可选" },
+    "ssci":   { "type": "排名", "levels": ["Q1", "Q2", "Q3", "Q4"], "builtin": true, "free": false, "note": "名单免费(Master Journal List)；分区需自备，可缺省。缺分区时用 SJR 的 Q 区替代 ssci.Q* 位置。" },
+    "ahci":   { "type": "名录", "levels": ["收录"], "builtin": true, "free": true, "note": "纯人文无JIF分区，只用收录与否" },
+    "sjr":    { "type": "排名", "levels": ["Q1", "Q2", "Q3", "Q4"], "builtin": true, "free": true, "note": "外文默认分区源，scimagojr.com 免费导出 Excel" },
+    "abs":    { "type": "排名", "levels": ["4*", "4", "3", "2", "1"], "builtin": true, "free": true, "note": "经管事实标准(AJG 2024)" },
+    "ft50":   { "type": "名录", "levels": ["收录"], "builtin": true, "free": true, "note": "经管顶刊加分" },
+    "utd24":  { "type": "名录", "levels": ["收录"], "builtin": true, "free": true, "note": "经管顶刊加分" },
+    "fms":    { "type": "名录", "levels": ["A", "B"], "builtin": true, "free": true, "note": "管理科学高质量期刊(FMS)，国内经管目录" },
+    "erih":   { "type": "名录", "levels": ["收录"], "builtin": true, "free": true, "note": "ERIH PLUS，欧洲人文兜底，不排名" },
+    "warning":{ "type": "黑名单", "levels": ["预警"], "builtin": true, "free": true, "note": "预警名单，命中直接 T6" },
+    "if_cnki":{ "type": "数值", "levels": [], "builtin": false, "free": false, "note": "知网复合影响因子，v2 经浏览器接入，v1 留空" },
+
+    "_comment_private": "以下为 law_personal（个人法学增强档）专用私有目录，由 2026-06-28 旧档迁移而来，仅 law_personal 的 map 引用；其他学科不引用，命中也不定档。origin 声明中/外刊（resolver 据此选 coeff.cn/intl）。",
+    "law_review_top":     { "type": "名录", "levels": ["收录"], "builtin": true, "free": true, "private": true, "origin": "intl", "note": "顶尖外文法律评论（旗舰法评）。law_personal 里→T1，外刊不打折。private=仅按学科白名单放行。" },
+    "tw_law":             { "type": "名录", "levels": ["核心", "一般"], "builtin": true, "free": true, "private": true, "origin": "cn", "note": "台湾法学期刊。核心→T1、一般→T2。private=仅按学科白名单放行。" },
+    "ssci_law_authority": { "type": "名录", "levels": ["收录"], "builtin": true, "free": true, "private": true, "origin": "intl", "note": "SSCI 法学/犯罪学/社科旗舰权威（非旗舰法评）。law_personal 里→T2，外刊不打折。private=仅按学科白名单放行。" },
+    "newspaper":          { "type": "黑名单", "levels": ["报纸"], "builtin": true, "free": true, "private": true, "origin": "cn", "note": "报纸/公报，作辅证、压最低档 T6。private=仅按学科白名单放行。" }
+  },
+
+  "_comment_recognizedTopLists": "认可顶刊清单（T1 最高档）：已联网核实(2026)，可被用户/AI 增删。匹配优先用 ISSN。判定口径见方案 §5.5。现代外语(1003-6105)、外国文学研究(1003-7519) 为通行记载值，入库前建议再核刊号页；实际匹配以离线数据文件的权威 ISSN 为准。",
+  "recognizedTopLists": {
+    "law": [
+      { "name": "中国社会科学", "issn": "1002-4921" },
+      { "name": "中国法学", "issn": "1003-1707" },
+      { "name": "法学研究", "issn": "1002-896X" }
+    ],
+    "law_personal": [
+      { "name": "中国社会科学", "issn": "1002-4921" },
+      { "name": "中国法学", "issn": "1003-1707" },
+      { "name": "法学研究", "issn": "1002-896X" }
+    ],
+    "marxism": [
+      { "name": "中国社会科学", "issn": "1002-4921" },
+      { "name": "马克思主义研究", "issn": "1006-5199" },
+      { "name": "马克思主义与现实", "issn": "1004-5961" },
+      { "name": "求是", "issn": "1002-4980" },
+      { "name": "教学与研究", "issn": "0257-2826" },
+      { "name": "思想理论教育导刊", "issn": "1009-2528" }
+    ],
+    "business": [
+      { "name": "中国社会科学", "issn": "1002-4921" },
+      { "name": "会计研究", "issn": "1003-2886" },
+      { "name": "管理世界", "issn": "1002-5502" },
+      { "name": "中国工业经济", "issn": "1006-480X" },
+      { "name": "管理科学学报", "issn": "1007-9807" },
+      { "name": "南开管理评论", "issn": "1008-3448" }
+    ],
+    "economics": [
+      { "name": "中国社会科学", "issn": "1002-4921" },
+      { "name": "经济研究", "issn": "0577-9154" },
+      { "name": "经济学(季刊)", "issn": "2095-1086" },
+      { "name": "世界经济", "issn": "1002-9621" },
+      { "name": "金融研究", "issn": "1002-7246" },
+      { "name": "中国工业经济", "issn": "1006-480X" },
+      { "name": "数量经济技术经济研究", "issn": "1000-3894" },
+      { "name": "管理世界", "issn": "1002-5502" }
+    ],
+    "education": [
+      { "name": "中国社会科学", "issn": "1002-4921" },
+      { "name": "教育研究", "issn": "1002-5731" },
+      { "name": "北京大学教育评论", "issn": "1671-9468" },
+      { "name": "高等教育研究", "issn": "1000-4203" },
+      { "name": "华东师范大学学报(教育科学版)", "issn": "1000-5560" }
+    ],
+    "journalism": [
+      { "name": "中国社会科学", "issn": "1002-4921" },
+      { "name": "新闻与传播研究", "issn": "1005-2577" },
+      { "name": "国际新闻界", "issn": "1002-5685" },
+      { "name": "新闻大学", "issn": "1006-1460" },
+      { "name": "现代传播(中国传媒大学学报)", "issn": "1007-8770" }
+    ],
+    "publicadmin": [
+      { "name": "中国社会科学", "issn": "1002-4921" },
+      { "name": "管理世界", "issn": "1002-5502" },
+      { "name": "公共管理学报", "issn": "1672-6162" },
+      { "name": "中国行政管理", "issn": "1006-0863" },
+      { "name": "公共行政评论", "issn": "1674-2486" }
+    ],
+    "chinese_lit": [
+      { "name": "中国社会科学", "issn": "1002-4921" },
+      { "name": "文学评论", "issn": "0511-4683" },
+      { "name": "文学遗产", "issn": "0257-5914" },
+      { "name": "中国语文", "issn": "0578-1949" },
+      { "name": "文艺研究", "issn": "0257-5876" }
+    ],
+    "history": [
+      { "name": "中国社会科学", "issn": "1002-4921" },
+      { "name": "历史研究", "issn": "0459-1909" },
+      { "name": "中国史研究", "issn": "1002-7963" },
+      { "name": "近代史研究", "issn": "1001-6708" },
+      { "name": "世界历史", "issn": "1002-011X" }
+    ],
+    "foreign_lang": [
+      { "name": "中国社会科学", "issn": "1002-4921" },
+      { "name": "外语教学与研究", "issn": "1000-0429" },
+      { "name": "外国语(上海外国语大学学报)", "issn": "1004-5139" },
+      { "name": "现代外语", "issn": "1003-6105" },
+      { "name": "当代语言学", "issn": "1007-8274" },
+      { "name": "外国文学评论", "issn": "1001-6368" },
+      { "name": "外国文学研究", "issn": "1003-7519" }
+    ]
+  },
+
+  "_comment_archetypes": "4 原型：coeff 中外系数 + ifStrength 影响因子强度 + map 档位映射（命中优先级最高者定档）。map 每档列 token：'目录.级别' 为真实信号；'目录.级别@recognizedTop' 需该刊同时在 recognizedTopLists[学科]；'cssci.来源@fmsA' 需同时命中 fms.A；单写目录名(如 ft50/utd24)= 该目录收录；'普通'=识别到但无排名信号的通用兜底；'其他核心'=识别到且有名录命中但未被上面更高档接住的次级兜底。",
+  "archetypes": {
+    "A_本土政策": {
+      "coeff": { "cn": 1.0, "intl": 0.65 }, "ifStrength": 0.05,
+      "map": {
+        "T1": ["clsci.权威", "cssci.来源@recognizedTop"],
+        "T2": ["clsci.来源", "cssci.来源"],
+        "T3": ["cssci.扩展", "pku.收录", "ami.核心"],
+        "T4": ["其他核心", "ssci.Q1", "ssci.Q2"],
+        "T5": ["sjr.Q1", "sjr.Q2", "普通", "warning.预警"]
+      }
+    },
+    "B_国际商科": {
+      "coeff": { "cn": 0.9, "intl": 1.0 }, "ifStrength": 0.20,
+      "map": {
+        "T1": ["abs.4*", "abs.4", "ft50", "utd24", "ssci.Q1", "cssci.来源@fmsA"],
+        "T2": ["abs.3", "ssci.Q2", "cssci.来源"],
+        "T3": ["abs.2", "ssci.Q3", "cssci.扩展", "sjr.Q1"],
+        "T4": ["abs.1", "ssci.Q4", "pku.收录", "sjr.Q2"],
+        "T5": ["sjr.Q3", "sjr.Q4", "普通", "warning.预警"]
+      }
+    },
+    "C_均衡社科": {
+      "coeff": { "cn": 1.0, "intl": 0.9 }, "ifStrength": 0.15,
+      "map": {
+        "T1": ["ssci.Q1", "cssci.来源@recognizedTop"],
+        "T2": ["ssci.Q2", "cssci.来源"],
+        "T3": ["ssci.Q3", "cssci.扩展", "pku.收录", "sjr.Q1"],
+        "T4": ["ssci.Q4", "sjr.Q2", "其他核心"],
+        "T5": ["sjr.Q3", "sjr.Q4", "普通", "warning.预警"]
+      }
+    },
+    "D_纯人文": {
+      "coeff": { "cn": 1.0, "intl": 0.75 }, "ifStrength": 0.0,
+      "map": {
+        "T1": ["cssci.来源@recognizedTop"],
+        "T2": ["cssci.来源"],
+        "T3": ["cssci.扩展", "pku.收录", "ahci.收录", "ami.核心"],
+        "T4": ["erih.收录", "sjr.Q1", "sjr.Q2", "其他核心"],
+        "T5": ["普通", "sjr.Q3", "sjr.Q4", "warning.预警"]
+      }
+    },
+    "A_法学个人": {
+      "_comment": "个人法学增强档（law_personal 专用，2026-06-28 旧档迁移）。忠于旧档：外刊不打折(intl=1.0)——顶尖外文法评/台湾核心→T1最高、CLSCI来源/外文权威→T1b(0.92)、CSSCI来源/台湾一般→T2、报纸→普通T5(原T6存疑档已取消)。私有目录 law_review_top/tw_law/ssci_law_authority/newspaper 仅此原型引用。",
+      "coeff": { "cn": 1.0, "intl": 1.0 }, "ifStrength": 0.05,
+      "map": {
+        "T1": ["clsci.权威", "law_review_top.收录", "tw_law.核心", "cssci.来源@recognizedTop"],
+        "T1b": ["clsci.来源", "ssci_law_authority.收录"],
+        "T2": ["cssci.来源", "tw_law.一般"],
+        "T3": ["cssci.扩展", "pku.收录", "ami.核心"],
+        "T4": ["其他核心", "sjr.Q1"],
+        "T5": ["sjr.Q2", "sjr.Q3", "sjr.Q4", "普通", "warning.预警", "newspaper.报纸"]
+      }
+    }
+  },
+
+  "_comment_disciplines": "10 学科：绑定原型 + 覆盖系数(coeff 覆盖原型默认) + 追加专属目录。注意 law(外0.70) 与 business(外1.00) 方向相反——这正是必须按学科分设系数的证据。",
+  "disciplines": {
+    "law":          { "name": "法学",               "archetype": "A_本土政策", "coeff": { "cn": 1.0, "intl": 0.70 }, "catalogs": ["clsci"] },
+    "law_personal": { "name": "法学（开发者增强）",     "archetype": "A_法学个人", "coeff": { "cn": 1.0, "intl": 1.00 }, "catalogs": ["clsci", "law_review_top", "tw_law", "ssci_law_authority", "newspaper"], "_comment": "个人专用：2026-06-28 旧档并入。产品用户用标准 law，本人锁 law_personal。外刊不打折。" },
+    "marxism":      { "name": "马克思主义理论/思政",  "archetype": "A_本土政策", "coeff": { "cn": 1.0, "intl": 0.55 } },
+    "business":     { "name": "工商管理·会计",       "archetype": "B_国际商科", "coeff": { "cn": 0.9, "intl": 1.00 }, "catalogs": ["abs", "ft50", "utd24", "fms"] },
+    "economics":    { "name": "经济学·金融",         "archetype": "B_国际商科", "coeff": { "cn": 0.9, "intl": 1.00 }, "catalogs": ["abs", "ft50"] },
+    "education":    { "name": "教育学",              "archetype": "C_均衡社科", "coeff": { "cn": 1.0, "intl": 0.90 } },
+    "journalism":   { "name": "新闻传播学",          "archetype": "C_均衡社科", "coeff": { "cn": 1.0, "intl": 0.90 } },
+    "publicadmin":  { "name": "公共管理·行政管理",   "archetype": "C_均衡社科", "coeff": { "cn": 1.0, "intl": 0.85 } },
+    "chinese_lit":  { "name": "中国语言文学",        "archetype": "D_纯人文",   "coeff": { "cn": 1.0, "intl": 0.75 }, "catalogs": ["ahci", "erih"] },
+    "history":      { "name": "历史学",              "archetype": "D_纯人文",   "coeff": { "cn": 1.0, "intl": 0.75 }, "catalogs": ["ahci", "erih"] },
+    "foreign_lang": { "name": "外国语言文学",        "archetype": "D_纯人文",   "coeff": { "cn": 1.0, "intl": 0.80 }, "catalogs": ["ahci", "erih"] }
+  },
+
+  "matching": {
+    "keys": ["issn", "eissn", "normalizedName"],
+    "normalize": ["trim", "去《》和空格", "全半角归一", "简繁归一", "拉丁字母转小写"],
+    "fallback": "刊名模糊匹配 ≥0.9 才自动采纳，否则标记待人工确认"
+  },
+
+  "resolution": {
+    "strategy": "priority-max",
+    "priorityOrder": ["clsci", "law_review_top", "tw_law", "abs", "ft50", "utd24", "cssci", "ssci_law_authority", "ami", "ssci", "pku", "fms", "sjr", "ahci", "erih", "newspaper", "warning"],
+    "ifAdjust": "base * (1 + ifStrength * percentileInDiscipline(if))",
+    "ifEnabled": true,
+    "_comment_ifEnabled": "已开启知网复合影响因子(if_cnki)微调：base×(1+ifStrength×该刊复合IF在全库的分位[0-1])。D_纯人文 ifStrength=0 不受影响；无 if_cnki 数据的刊自动跳过、不报错。数据源 catalogs/if_cnki.json。",
+    "unknownDefault": "T5",
+    "output": "clamp(score * coeffByOrigin, 0, 1)",
+    "explain": true
+  }
+}

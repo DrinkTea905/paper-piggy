@@ -1,0 +1,15 @@
+# LocalKB 运行时瘦依赖（无 torch/optimum；嵌入+重排走 onnxruntime 或 API）
+# 传递依赖(numpy/pyarrow/pandas/scipy/tokenizers 等)会自动装。
+fastapi
+uvicorn
+lancedb>=0.33
+onnxruntime
+transformers
+tokenizers
+bm25s
+jieba
+scikit-learn
+pymupdf4llm
+requests
+pywebview
+pythonnet

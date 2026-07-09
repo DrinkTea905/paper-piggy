@@ -1,0 +1,286 @@
+{
+  "_meta": {
+    "catalog": "warning",
+    "version": "2023-2025",
+    "source": "中科院《国际期刊预警名单》2023/2024/2025 (via github hitfyd/ShowJCR)",
+    "note": "命中即 T6(0.05)、标红。国际预警期刊，合并近三年。",
+    "count": 55
+  },
+  "journals": [
+    {
+      "name": "ACTA MEDICA MEDITERRANEA",
+      "issn": "",
+      "level": "预警"
+    },
+    {
+      "name": "AEROSPACE",
+      "issn": "",
+      "level": "预警"
+    },
+    {
+      "name": "ALTERNATIVE THERAPIES IN HEALTH AND MEDICINE",
+      "issn": "",
+      "level": "预警"
+    },
+    {
+      "name": "AMERICAN JOURNAL OF TRANSLATIONAL RESEARCH",
+      "issn": "",
+      "level": "预警"
+    },
+    {
+      "name": "BIOENGINEERED",
+      "issn": "",
+      "level": "预警"
+    },
+    {
+      "name": "BUILDINGS",
+      "issn": "",
+      "level": "预警"
+    },
+    {
+      "name": "CANCERS",
+      "issn": "",
+      "level": "预警"
+    },
+    {
+      "name": "CMES-COMPUTER MODELING IN ENGINEERING & SCIENCES",
+      "issn": "",
+      "level": "预警"
+    },
+    {
+      "name": "COMPUTATIONAL AND MATHEMATICAL METHODS IN MEDICINE",
+      "issn": "",
+      "level": "预警"
+    },
+    {
+      "name": "CONNECTION SCIENCE",
+      "issn": "",
+      "level": "预警"
+    },
+    {
+      "name": "Computers & Electrical Engineering",
+      "issn": "",
+      "level": "预警"
+    },
+    {
+      "name": "DIAGNOSTICS",
+      "issn": "",
+      "level": "预警"
+    },
+    {
+      "name": "ECONOMIC RESEARCH-EKONOMSKA ISTRAZIVANJA",
+      "issn": "",
+      "level": "预警"
+    },
+    {
+      "name": "ENERGY REPORTS",
+      "issn": "",
+      "level": "预警"
+    },
+    {
+      "name": "ENVIRONMENTAL SCIENCE AND POLLUTION RESEARCH",
+      "issn": "",
+      "level": "预警"
+    },
+    {
+      "name": "EXPERIMENTAL AND THERAPEUTIC MEDICINE",
+      "issn": "",
+      "level": "预警"
+    },
+    {
+      "name": "FOOD SCIENCE AND TECHNOLOGY",
+      "issn": "",
+      "level": "预警"
+    },
+    {
+      "name": "FRONTIERS IN EARTH SCIENCE",
+      "issn": "",
+      "level": "预警"
+    },
+    {
+      "name": "FRONTIERS IN ENERGY RESEARCH",
+      "issn": "",
+      "level": "预警"
+    },
+    {
+      "name": "FRONTIERS IN ENVIRONMENTAL SCIENCE",
+      "issn": "",
+      "level": "预警"
+    },
+    {
+      "name": "FRONTIERS IN SURGERY",
+      "issn": "",
+      "level": "预警"
+    },
+    {
+      "name": "FUEL",
+      "issn": "",
+      "level": "预警"
+    },
+    {
+      "name": "GEOFLUIDS",
+      "issn": "",
+      "level": "预警"
+    },
+    {
+      "name": "INORGANIC AND NANO-METAL CHEMISTRY",
+      "issn": "",
+      "level": "预警"
+    },
+    {
+      "name": "INTERNATIONAL JOURNAL OF CONTROL AUTOMATION AND SYSTEMS",
+      "issn": "",
+      "level": "预警"
+    },
+    {
+      "name": "INTERNATIONAL JOURNAL OF ELECTROCHEMICAL SCIENCE",
+      "issn": "",
+      "level": "预警"
+    },
+    {
+      "name": "JOURNAL OF BIOBASED MATERIALS AND BIOENERGY",
+      "issn": "",
+      "level": "预警"
+    },
+    {
+      "name": "JOURNAL OF BIOMATERIALS AND TISSUE ENGINEERING",
+      "issn": "",
+      "level": "预警"
+    },
+    {
+      "name": "JOURNAL OF BIOMEDICAL NANOTECHNOLOGY",
+      "issn": "",
+      "level": "预警"
+    },
+    {
+      "name": "JOURNAL OF CLINICAL LABORATORY ANALYSIS",
+      "issn": "",
+      "level": "预警"
+    },
+    {
+      "name": "JOURNAL OF CLINICAL MEDICINE",
+      "issn": "",
+      "level": "预警"
+    },
+    {
+      "name": "JOURNAL OF ENVIRONMENTAL AND PUBLIC HEALTH",
+      "issn": "",
+      "level": "预警"
+    },
+    {
+      "name": "JOURNAL OF INDUSTRIAL AND MANAGEMENT OPTIMIZATION",
+      "issn": "",
+      "level": "预警"
+    },
+    {
+      "name": "JOURNAL OF NANOELECTRONICS AND OPTOELECTRONICS",
+      "issn": "",
+      "level": "预警"
+    },
+    {
+      "name": "JOURNAL OF PERSONALIZED MEDICINE",
+      "issn": "",
+      "level": "预警"
+    },
+    {
+      "name": "JOURNAL OF SENSORS",
+      "issn": "",
+      "level": "预警"
+    },
+    {
+      "name": "JOURNAL OF STRUCTURAL CHEMISTRY",
+      "issn": "",
+      "level": "预警"
+    },
+    {
+      "name": "MACHINES",
+      "issn": "",
+      "level": "预警"
+    },
+    {
+      "name": "MATERIALS EXPRESS",
+      "issn": "",
+      "level": "预警"
+    },
+    {
+      "name": "MATHEMATICAL BIOSCIENCES AND ENGINEERING",
+      "issn": "",
+      "level": "预警"
+    },
+    {
+      "name": "MATHEMATICAL PROBLEMS IN ENGINEERING",
+      "issn": "",
+      "level": "预警"
+    },
+    {
+      "name": "MICROPROCESSORS AND MICROSYSTEMS",
+      "issn": "",
+      "level": "预警"
+    },
+    {
+      "name": "MOBILE INFORMATION SYSTEMS",
+      "issn": "",
+      "level": "预警"
+    },
+    {
+      "name": "MULTIMEDIA TOOLS AND APPLICATIONS",
+      "issn": "",
+      "level": "预警"
+    },
+    {
+      "name": "NUMERICAL HEAT TRANSFER PART A-APPLICATIONS",
+      "issn": "",
+      "level": "预警"
+    },
+    {
+      "name": "Natural Resources Forum",
+      "issn": "",
+      "level": "预警"
+    },
+    {
+      "name": "PHARMAZIE",
+      "issn": "",
+      "level": "预警"
+    },
+    {
+      "name": "PSYCHIATRIA DANUBINA",
+      "issn": "",
+      "level": "预警"
+    },
+    {
+      "name": "RADIOLOGIA MEDICA",
+      "issn": "",
+      "level": "预警"
+    },
+    {
+      "name": "SCALABLE COMPUTING-PRACTICE AND EXPERIENCE",
+      "issn": "",
+      "level": "预警"
+    },
+    {
+      "name": "SCIENCE OF ADVANCED MATERIALS",
+      "issn": "",
+      "level": "预警"
+    },
+    {
+      "name": "TEXTILE RESEARCH JOURNAL",
+      "issn": "",
+      "level": "预警"
+    },
+    {
+      "name": "TROPICAL JOURNAL OF PHARMACEUTICAL RESEARCH",
+      "issn": "",
+      "level": "预警"
+    },
+    {
+      "name": "WORLD JOURNAL OF CLINICAL CASES",
+      "issn": "",
+      "level": "预警"
+    },
+    {
+      "name": "Wireless Personal Communications",
+      "issn": "",
+      "level": "预警"
+    }
+  ]
+}

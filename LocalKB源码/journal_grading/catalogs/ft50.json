@@ -1,0 +1,10 @@
+{
+  "_meta": {
+    "catalog": "ft50",
+    "version": "seed",
+    "source": "Financial Times FT50 官网公开列表",
+    "note": "占位（尚无种子数据）。请补全 FT50 刊。level = 收录。",
+    "updated": "seed"
+  },
+  "journals": []
+}

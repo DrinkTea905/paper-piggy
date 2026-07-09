@@ -1,0 +1,10 @@
+{
+  "_meta": {
+    "catalog": "abs",
+    "version": "AJG2024-seed",
+    "source": "charteredabs.org（Academic Journal Guide 2024，注册可查）",
+    "note": "占位（尚无种子数据）。请补全经管刊。level ∈ {4*, 4, 3, 2, 1}。",
+    "updated": "seed"
+  },
+  "journals": []
+}

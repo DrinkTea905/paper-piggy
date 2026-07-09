@@ -1,0 +1,167 @@
+{
+  "_meta": {
+    "catalog": "clsci",
+    "version": "2024-seed",
+    "source": "法学创新网 fxcxw.org.cn",
+    "note": "种子样本：仅含三大权威 + 几本第一梯队来源刊，用于开箱即用与自检。请按《离线数据获取清单》替换为完整 CLSCI 名单（约26刊，含权威/来源两级）。level ∈ {权威, 来源}。 ｜ 已并入 2026-06-28 个人法学旧档。",
+    "updated": "seed",
+    "migrated_from": "D:\\LocalKB\\data\\journal_tiers.json"
+  },
+  "journals": [
+    {
+      "name": "中国法学",
+      "issn": "1003-1707",
+      "level": "权威"
+    },
+    {
+      "name": "中国社会科学",
+      "issn": "",
+      "level": "权威"
+    },
+    {
+      "name": "法学研究",
+      "issn": "1002-896X",
+      "level": "权威"
+    },
+    {
+      "name": "China Legal Science [zhongguo faxue]",
+      "issn": "",
+      "level": "来源"
+    },
+    {
+      "name": "Chinese Journal of Law [faxue yanjiu]",
+      "issn": "",
+      "level": "来源"
+    },
+    {
+      "name": "Contemporary Law Review [dangdai faxue]",
+      "issn": "",
+      "level": "来源"
+    },
+    {
+      "name": "Journal of Comparative Law [bijiaofa yanjiu]",
+      "issn": "",
+      "level": "来源"
+    },
+    {
+      "name": "Journal of National Prosecutors College [guojia jianchaguan xueyuan xuebao]",
+      "issn": "",
+      "level": "来源"
+    },
+    {
+      "name": "东方法学",
+      "issn": "",
+      "level": "来源"
+    },
+    {
+      "name": "中国刑事法杂志",
+      "issn": "",
+      "level": "来源"
+    },
+    {
+      "name": "中国法律评论",
+      "issn": "",
+      "level": "来源"
+    },
+    {
+      "name": "中外法学",
+      "issn": "",
+      "level": "来源"
+    },
+    {
+      "name": "华东政法大学学报",
+      "issn": "",
+      "level": "来源"
+    },
+    {
+      "name": "国家检察官学院学报",
+      "issn": "",
+      "level": "来源"
+    },
+    {
+      "name": "当代法学",
+      "issn": "",
+      "level": "来源"
+    },
+    {
+      "name": "政治与法律",
+      "issn": "",
+      "level": "来源"
+    },
+    {
+      "name": "政法论坛",
+      "issn": "",
+      "level": "来源"
+    },
+    {
+      "name": "比较法研究",
+      "issn": "",
+      "level": "来源"
+    },
+    {
+      "name": "民主与法制",
+      "issn": "",
+      "level": "来源"
+    },
+    {
+      "name": "法制与社会发展",
+      "issn": "",
+      "level": "来源"
+    },
+    {
+      "name": "法商研究",
+      "issn": "",
+      "level": "来源"
+    },
+    {
+      "name": "法学",
+      "issn": "",
+      "level": "来源"
+    },
+    {
+      "name": "法学家",
+      "issn": "",
+      "level": "来源"
+    },
+    {
+      "name": "法学杂志",
+      "issn": "",
+      "level": "来源"
+    },
+    {
+      "name": "法学论坛",
+      "issn": "",
+      "level": "来源"
+    },
+    {
+      "name": "法学评论",
+      "issn": "",
+      "level": "来源"
+    },
+    {
+      "name": "法律科学(西北政法大学学报)",
+      "issn": "",
+      "level": "来源"
+    },
+    {
+      "name": "清华法学",
+      "issn": "",
+      "level": "来源"
+    },
+    {
+      "name": "环球法律评论",
+      "issn": "",
+      "level": "来源"
+    },
+    {
+      "name": "现代法学",
+      "issn": "",
+      "level": "来源"
+    },
+    {
+      "name": "行政法学研究",
+      "issn": "",
+      "level": "来源"
+    }
+  ]
+}

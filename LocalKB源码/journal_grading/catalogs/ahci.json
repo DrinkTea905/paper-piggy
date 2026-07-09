@@ -1,0 +1,12 @@
+{
+  "_meta": {
+    "catalog": "ahci",
+    "version": "seed",
+    "source": "Clarivate Master Journal List（A&HCI 收录名单，免费）",
+    "note": "种子样本。纯人文无 JIF 分区，只用收录与否。level = 收录。",
+    "updated": "seed"
+  },
+  "journals": [
+    { "name": "Monumenta Serica", "issn": "", "level": "收录" }
+  ]
+}

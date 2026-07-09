@@ -1,0 +1,10 @@
+{
+  "_meta": {
+    "catalog": "ami",
+    "version": "seed",
+    "source": "社科院中国社会科学评价研究院报告",
+    "note": "占位（可选目录，尚无种子数据）。请按需补全。level ∈ {顶级, 权威, 核心, 扩展}。",
+    "updated": "seed"
+  },
+  "journals": []
+}

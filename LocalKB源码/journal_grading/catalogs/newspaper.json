@@ -1,0 +1,37 @@
+{
+  "_meta": {
+    "catalog": "newspaper",
+    "version": "2026-06-28-legacy",
+    "source": "个人整理（法律类报纸/公报）",
+    "origin": "cn",
+    "note": "私有目录（law_personal 专用）：报纸/公报，作辅证、压最低档 T6。level=报纸。 ｜ 已并入 2026-06-28 个人法学旧档。",
+    "migrated_from": "D:\\LocalKB\\data\\journal_tiers.json"
+  },
+  "journals": [
+    {
+      "name": "中华人民共和国最高人民检察院公报",
+      "issn": "",
+      "level": "报纸"
+    },
+    {
+      "name": "人民法院报",
+      "issn": "",
+      "level": "报纸"
+    },
+    {
+      "name": "刑事政策与犯罪研究论文集",
+      "issn": "",
+      "level": "报纸"
+    },
+    {
+      "name": "少年司法周报",
+      "issn": "",
+      "level": "报纸"
+    },
+    {
+      "name": "犯罪状况及其分析",
+      "issn": "",
+      "level": "报纸"
+    }
+  ]
+}

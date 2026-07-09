@@ -1,0 +1,10 @@
+{
+  "_meta": {
+    "catalog": "fms",
+    "version": "seed",
+    "source": "国家自然科学基金委管理科学部《管理科学高质量期刊》目录",
+    "note": "占位（尚无种子数据）。请补全。level ∈ {A, B}。business 原型中 cssci.来源@fmsA 需该刊在此为 A 级。",
+    "updated": "seed"
+  },
+  "journals": []
+}
