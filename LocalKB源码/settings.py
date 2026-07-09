@@ -150,7 +150,14 @@ def api_conf():
 
 
 def sac_conf():
-    return load().get("sac", DEFAULT["sac"])
+    """SAC 配置。K2：补 generator 字段（server|agent|off）——
+       老配置无该字段时据 enabled 迁移：enabled=True→server（服务端自动生成）、False→off（不生成）。
+       不写进 DEFAULT，避免 _merge 用默认值盖掉老用户的 enabled 语义。"""
+    c = dict(load().get("sac", DEFAULT["sac"]))
+    g = c.get("generator")
+    if g not in ("server", "agent", "off"):
+        c["generator"] = "server" if c.get("enabled") else "off"
+    return c
 
 
 def is_api():

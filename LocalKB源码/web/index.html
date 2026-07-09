@@ -24,10 +24,26 @@
     </div>
   </header>
 
-  <!-- S 档语义/F 档深索 常驻细进度条（poll 控制显隐） -->
-  <div id="idx-progress" class="idx-progress" hidden>
+  <!-- S 档语义/F 档深索 常驻细进度条（poll 控制显隐；点击可展开「深索详情」面板） -->
+  <div id="idx-progress" class="idx-progress" hidden title="点击查看深索详情 / 暂停继续">
     <div class="idx-progress-bar"><span id="idx-progress-fill" class="idx-progress-fill"></span></div>
     <div id="idx-progress-txt" class="idx-progress-txt"></div>
+  </div>
+
+  <!-- K1（副本#9）：深索详情面板——正在深索哪几篇 / 进度 / 队列 / ETA / 暂停继续 -->
+  <div id="deep-panel" class="deep-panel" hidden>
+    <div class="deep-panel-head">
+      <span class="dp-title">深索详情</span>
+      <button id="deep-panel-close" class="dp-close" title="关闭">✕</button>
+    </div>
+    <div id="dp-stat" class="dp-stat">读取中…</div>
+    <div id="dp-eta" class="dp-eta"></div>
+    <div class="dp-items-h">正在深索</div>
+    <ul id="dp-items" class="dp-items"></ul>
+    <div class="dp-actions">
+      <button id="dp-pause" class="ghost">暂停</button>
+      <span id="dp-msg" class="hint"></span>
+    </div>
   </div>
 
   <!-- 检索面板 -->
@@ -210,28 +226,30 @@
         <div class="ag-warn">⚠ <b>配好后要新开一个会话才生效</b>——当前正在运行的 Claude Code / Codex 会话不会热加载新 MCP。新会话里输入 <code>/mcp</code> 应能看到 <code>localkb</code><span id="ag-tool-count"></span>。</div>
       </section>
 
+      <!-- 副本#2：② 直接对话 与 ③ 内置工作流 合并成一屏（两列并排），一屏内可看完不用下滚 -->
       <section class="ag-card">
-        <h3>② 接好之后，直接对话就行</h3>
-        <p class="ag-note">不用记命令、不用手动调工具——<b>接好后在新会话里直接用大白话跟它说</b>，它会自己去查你的库、读页码、写回综合。比如：</p>
-        <ul class="ag-prompts" id="ag-prompts"></ul>
-        <details class="ag-tools-more"><summary>想知道它到底能调用哪些能力？（一般不用管）</summary>
-          <table class="ag-tools"><thead><tr><th>你可以说</th><th>做什么</th></tr></thead>
-          <tbody id="ag-tools"></tbody></table>
-        </details>
-      </section>
-
-      <section class="ag-card ag-workflow">
-        <h3>③ 内置工作流：带页级引注的资料汇编</h3>
-        <p class="ag-note">PaperPiggy 给 AI 装了一套「半自动研究助手」工作流，专门帮你把库里可用的材料按选题梳理成
-          <b>带期刊印刷页码引注的资料汇编</b>：</p>
-        <ol class="ag-flow">
-          <li><b>选题拆解 + 大纲</b>：给它一个研究方向，它检索你的库、拆出关键词与核心命题、生成挂着 ★核心/☆辅助 文献的三级大纲。</li>
-          <li><b>分节综述（引注到印刷页）</b>：对每个子题召回证据、合成综述，<b>每个论点后紧跟「作者《题名》，期刊，第 X 页」</b>——X 是读者翻期刊看到的那一页，不是 PDF 顺序页。</li>
-          <li><b>诚实标缺口 + 建议补文献</b>：每节末尾如实标「资料缺口」，并从脚注里挖出你库里缺、值得补的文献（按期刊层级排）。</li>
-        </ol>
-        <p class="ag-note ag-flow-say">直接对它说：<span class="ag-flow-eg">「用 build_digest 帮我就『认罪认罚从宽对司法信任的影响』做一份带页码引用的资料汇编」</span>
-          或 <span class="ag-flow-eg">「先 research_outline 给我一个大纲」</span>。产出会存进「📖 综述库」，随时复用。</p>
-        <p class="ag-mini">（完整的「一键写整篇论文」工作流在后续版本；当前先把最扎实的「材料梳理 + 页级引注」做透。）</p>
+        <div class="ag-use-grid">
+          <div class="ag-use-col">
+            <h3>② 接好后，直接说大白话</h3>
+            <p class="ag-note">不用记命令、不用手动调工具——在新会话里用大白话跟它说，它自己查库、读页码、写回综合。比如：</p>
+            <ul class="ag-prompts" id="ag-prompts"></ul>
+            <details class="ag-tools-more"><summary>它到底能调用哪些能力？（一般不用管）</summary>
+              <table class="ag-tools"><thead><tr><th>你可以说</th><th>做什么</th></tr></thead>
+              <tbody id="ag-tools"></tbody></table>
+            </details>
+          </div>
+          <div class="ag-use-col ag-workflow">
+            <h3>③ 内置工作流：带页级引注的资料汇编</h3>
+            <p class="ag-note">给 AI 装了套「半自动研究助手」，把库里材料按选题梳理成<b>带期刊印刷页码引注</b>的汇编：</p>
+            <ol class="ag-flow">
+              <li><b>选题拆解＋大纲</b>：检索你的库，拆关键词与核心命题，生成挂 ★核心/☆辅助 文献的三级大纲。</li>
+              <li><b>分节综述（引注到印刷页）</b>：每个论点后紧跟「作者《题名》，期刊，第 X 页」——X 是期刊印刷页，非 PDF 顺序页。</li>
+              <li><b>诚实标缺口</b>：每节末如实标「资料缺口」，并建议库里缺、值得补的文献。</li>
+            </ol>
+            <p class="ag-note ag-flow-say">直接说：<span class="ag-flow-eg">「用 build_digest 就『…』做带页码引用的资料汇编」</span>
+              或 <span class="ag-flow-eg">「先 research_outline 给我大纲」</span>。产出存进「📖 综述库」随时复用。</p>
+          </div>
+        </div>
       </section>
 
       <section class="ag-card">
@@ -304,13 +322,16 @@
       </div>
 
       <div class="set-section">
-        <h4>🧬 深索摘要（自动生成 AI 摘要提升检索）</h4>
-        <label class="sac-toggle">
-          <input type="checkbox" id="sac-enabled" />
-          <span>深索时自动给每篇生成 ~150 字摘要当检索前缀（更易被搜到）</span>
-        </label>
-        <p class="hint">默认复用你在「检索引擎」里配的 API key（SiliconFlow 免费即可），无需额外配置。开关一点即存。</p>
-        <p class="hint">🤖 用 Agent 驱动深索时也一样：只要这里开着，无论你在应用里深索、还是让 Claude Code / Codex 触发深索，服务端都会自动补摘要——不需要 agent 额外做什么。</p>
+        <h4>🧬 深索摘要（AI 摘要当检索前缀，提升召回）</h4>
+        <p class="hint">给每篇深索文献生成 ~150 字摘要当检索前缀，更易被搜到。选择<b>由谁来生成</b>（一点即存）：</p>
+        <div class="sac-gen">
+          <label class="sac-gen-opt"><input type="radio" name="sac-gen" value="server" />
+            <span><b>服务端自动生成</b>（用你配的 API Key，耗额度）<br><small>深索时后端调 SiliconFlow 等自动补摘要，全自动，无需 agent 参与。</small></span></label>
+          <label class="sac-gen-opt"><input type="radio" name="sac-gen" value="agent" />
+            <span><b>交给 Agent 生成</b>（推荐）<br><small>深索时让 Claude Code / Codex 自己写摘要，省 API 额度、质量更好。</small></span></label>
+          <label class="sac-gen-opt"><input type="radio" name="sac-gen" value="off" />
+            <span><b>不生成</b><br><small>深索只做全文切块，不额外生成摘要前缀。</small></span></label>
+        </div>
         <div id="sac-status" class="sac-status hint"></div>
         <details class="sac-adv">
           <summary>高级：单独指定摘要用的服务商 / key / 模型（可选）</summary>

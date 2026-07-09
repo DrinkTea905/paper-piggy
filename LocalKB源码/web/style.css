@@ -16,32 +16,65 @@ body {
 }
 
 /* 顶栏 */
+/* 副本#1：顶栏改用与下方内容区同一浅色系（随主题：浅色浅、深色深），底部一条细分隔线保留层次 */
 .topbar {
   display: flex; align-items: center; gap: 12px;
-  background: var(--topbar); color: #fff; padding: 0 16px; height: 52px; flex: 0 0 auto;
+  background: var(--card); color: var(--fg);
+  border-bottom: 1px solid var(--line);
+  padding: 0 16px; height: 52px; flex: 0 0 auto;
 }
-.brand { font-weight: 700; font-size: 16px; display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+.brand { font-weight: 700; font-size: 16px; color: var(--brand); display: flex; align-items: center; gap: 8px; white-space: nowrap; }
 .brand-logo { width: 26px; height: 26px; border-radius: 7px; object-fit: cover; }
 .status { font-size: 11px; font-weight: 600; padding: 2px 9px; border-radius: 10px; background: #334155; color: #cbd5e1; white-space: nowrap; }
 .status.ok { background: #064e3b; color: #6ee7b7; }
 .status.warn { background: #78350f; color: #fcd34d; }
 .status.err { background: #7f1d1d; color: #fca5a5; }
 .tabs { display: flex; gap: 2px; margin-left: 4px; }
-.tab { background: transparent; border: none; color: #e7d3de; padding: 8px 11px; border-radius: 8px; cursor: pointer; font-size: 13.5px; white-space: nowrap; }
-.tab:hover { background: rgba(255,255,255,.12); color: #fff; }
+.tab { background: transparent; border: none; color: var(--muted); padding: 8px 11px; border-radius: 8px; cursor: pointer; font-size: 13.5px; white-space: nowrap; }
+.tab:hover { background: rgba(127,127,127,.14); color: var(--fg); }
 .tab.active { background: var(--brand); color: #fff; }
 .actions { margin-left: auto; display: flex; gap: 8px; }
 .ghost { background: transparent; border: 1px solid var(--line); color: var(--muted); padding: 6px 12px; border-radius: 8px; cursor: pointer; font-size: 13px; }
 .ghost:hover { border-color: var(--accent); color: var(--accent); }
-/* 顶栏右侧按钮：深底上用半透明白描边，避免"白按钮融进黑边"（副本#3） */
-.actions .ghost { background: rgba(255,255,255,.10); border: 1px solid rgba(255,255,255,.25); color: #f3e7ee; }
-.actions .ghost:hover { background: rgba(255,255,255,.2); color: #fff; border-color: rgba(255,255,255,.45); }
+/* 副本#1：顶栏改浅色系后，右侧按钮沿用通用 ghost 样式即可（原深底半透明白描边已随之移除） */
 
 /* S 档语义 / F 档深索 常驻细进度条（顶栏下方，克制） */
-.idx-progress { flex: 0 0 auto; background: var(--card); border-bottom: 1px solid var(--line); padding: 3px 20px 4px; }
+.idx-progress { flex: 0 0 auto; background: var(--card); border-bottom: 1px solid var(--line); padding: 3px 20px 4px; cursor: pointer; }
+.idx-progress:hover { background: rgba(127,127,127,.06); }
 .idx-progress-bar { height: 3px; border-radius: 3px; background: #e5e7eb; overflow: hidden; }
 .idx-progress-fill { display: block; height: 100%; border-radius: 3px; background: var(--accent); width: 0; transition: width .5s ease; }
 .idx-progress-txt { font-size: 11px; color: var(--muted); margin-top: 2px; }
+
+/* K1（副本#9）：深索详情面板——点顶栏进度条 / 库总览深索卡展开，轮询 /index/queue */
+.deep-panel { position: fixed; top: 60px; right: 16px; width: 340px; max-width: calc(100vw - 24px); z-index: 60;
+  background: var(--card); color: var(--fg); border: 1px solid var(--line); border-radius: 12px;
+  box-shadow: 0 12px 34px rgba(0,0,0,.20); padding: 14px 16px; }
+.deep-panel-head { display: flex; align-items: center; margin-bottom: 8px; }
+.deep-panel-head .dp-title { font-weight: 700; font-size: 14px; }
+.deep-panel-head .dp-close { margin-left: auto; background: transparent; border: none; color: var(--muted); cursor: pointer; font-size: 15px; line-height: 1; }
+.deep-panel-head .dp-close:hover { color: var(--fg); }
+.dp-stat { font-size: 13px; }
+.dp-eta { font-size: 12px; color: var(--muted); margin-top: 2px; min-height: 15px; }
+.dp-items-h { font-size: 11px; color: var(--muted); margin: 8px 0 4px; text-transform: none; }
+.dp-items { list-style: none; margin: 0; padding: 0; max-height: 168px; overflow-y: auto; }
+.dp-items li { font-size: 12.5px; padding: 4px 8px; border-radius: 6px; background: rgba(127,127,127,.08);
+  margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dp-items li.dp-empty { background: transparent; color: var(--muted); }
+.dp-actions { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+.dp-actions .primary-btn { padding: 6px 14px; }
+
+/* K2（副本#7）：SAC 三选一（服务端/Agent/不生成）。用 .sac-gen 前缀提高特异性，压过 .modal-box label 的 display:block */
+.sac-gen { display: flex; flex-direction: column; gap: 6px; margin: 6px 0 4px; }
+.sac-gen .sac-gen-opt { display: flex; align-items: flex-start; gap: 8px; margin: 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; cursor: pointer; color: var(--fg); font-size: 13px; }
+.sac-gen .sac-gen-opt:hover { border-color: var(--accent); }
+.sac-gen .sac-gen-opt input { margin-top: 2px; flex: 0 0 auto; }
+.sac-gen .sac-gen-opt small { color: var(--muted); font-size: 12px; }
+
+/* 副本#2：Agent 页 ②③ 合并成一屏（两列并排，窄屏自动换行） */
+.ag-use-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+.ag-use-col h3 { margin: 0 0 8px; font-size: 14.5px; }
+.ag-use-col .ag-note { margin: 0 0 8px; }
+@media (max-width: 720px) { .ag-use-grid { grid-template-columns: 1fr; } }
 
 .panel { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
 

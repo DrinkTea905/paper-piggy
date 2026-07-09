@@ -124,12 +124,41 @@ TOOLS = [
     },
     {
         "name": "localkb_status",
-        "description": "查看本地知识库索引状态（词法/语义/全文各档就绪情况、已索引篇数）。",
+        "description": "查看本地知识库索引状态（词法/语义/全文各档就绪情况、已索引篇数）。查【深索】进度请用 deep_status。",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
+        "name": "deep_status",
+        "description": "查看本地库【深索】进度：已深索篇数 / 有PDF总数 / 队列剩余 / 是否暂停 / 预计剩余时间（ETA）"
+                       "/ 当前在深索或队首的篇。深索前后可随时查，了解深到哪了。",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "deep_index",
+        "description": "深索用户的本地文献库——切块→你自己写检索摘要→带摘要嵌入，一趟完成，不用「先深索再单独补摘要」。"
+                       "用法（循环）：第一次【不带 summaries】调用我 → 我返回 to_summarize（若干篇的 key、标题、正文节选 excerpt）；"
+                       "你为每篇写一段【约150字的中文检索摘要】（概括核心主题/研究方法/主要结论，供语义检索用）；"
+                       "再【带 summaries=[{key, summary}]】调用我 → 我把上一批带着你的摘要嵌入入库、并返回下一批待写摘要；"
+                       "如此循环，直到我返回 finished=true 表示全部深索完成。每批默认 15 篇（可用 batch 调整）。"
+                       "若返回 busy=true 说明有其它构建在跑，稍后再调。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "summaries": {"type": "array",
+                    "description": "上一批你写好的摘要；每项 {key, summary}。首次调用留空。",
+                    "items": {"type": "object", "properties": {
+                        "key": {"type": "string", "description": "文献 key（取自我上一轮返回的 to_summarize）"},
+                        "summary": {"type": "string", "description": "你写的约150字中文检索摘要"}},
+                        "required": ["key", "summary"]}},
+                "batch": {"type": "integer", "description": "每批处理篇数（默认 15）", "default": 15},
+            },
+        },
+    },
+    {
         "name": "localkb_build",
-        "description": "触发本地知识库建库/更新。stage: light(即时词法,秒级) / semantic(语义,分钟级) / deep(全文深索,数小时)。加了新文献后用来增量更新。",
+        "description": "触发本地知识库建库/更新。stage: light(即时词法,秒级) / semantic(语义,分钟级) / deep(全文深索)。"
+                       "加了新文献后用来增量更新。注意：deep 深索大库很慢，且服务端摘要需 API Key——"
+                       "推荐改用 deep_index 让你（Agent）自己写检索摘要，一趟把深索+摘要都做完（无需 API Key、质量可控）。",
         "inputSchema": {
             "type": "object",
             "properties": {"stage": {"type": "string", "enum": ["light", "semantic", "deep"],
@@ -260,6 +289,52 @@ def do_tool(name, args):
             pass
         h["wiki_schema_md"] = str(C.WIKI_SCHEMA_MD)   # agent 去这里读综合层的写回规约（等价 CLAUDE.md）
         return json.dumps(h, ensure_ascii=False)
+    if name == "deep_status":
+        if not ensure_up():
+            return "错误：知识库服务启动失败。"
+        s = requests.get(URL + "/index/queue", timeout=15).json()
+        eta = s.get("eta_seconds")
+        eta_s = f"约剩 {max(1, int(eta // 60))} 分钟" if eta else "未知"
+        out = [f"深索进度：已深索 {s.get('deep_done')}/{s.get('with_pdf')} 篇（有PDF）。",
+               f"队列：待处理 {s.get('pending')}、在跑 {s.get('in_flight')}、"
+               f"{'⏸ 已暂停' if s.get('paused') else '运行中'}。",
+               f"预计剩余：{eta_s}。"]
+        items = s.get("items") or []
+        if items:
+            out.append("当前在深索/队首：")
+            for it in items[:8]:
+                out.append(f"- {it.get('title') or it.get('key')}")
+        return "\n".join(out)
+    if name == "deep_index":
+        if not ensure_up():
+            return "错误：知识库服务启动失败。"
+        body = {"batch": args.get("batch", 15)}
+        sm = args.get("summaries")
+        if sm:
+            body["summaries"] = [{"key": x.get("key", ""), "summary": x.get("summary", "")}
+                                 for x in sm if x.get("key")]
+        r = requests.post(URL + "/index/deep_agent", json=body, timeout=1800).json()
+        if r.get("busy"):
+            return "知识库正在建库/深索中（有其它构建任务在跑），请稍后再调用 deep_index。"
+        if not r.get("ok"):
+            return "深索失败：" + str(r.get("detail") or r)
+        done, wp, rem = r.get("done"), r.get("with_pdf"), r.get("remaining")
+        ts = r.get("to_summarize") or []
+        if r.get("finished") and not ts:
+            tail = f"（本次已把 {r.get('wrote')} 篇摘要嵌入入库）" if r.get("wrote") else ""
+            return f"✅ 深索全部完成。已深索 {done}/{wp} 篇（有PDF），无更多待处理。{tail}"
+        out = []
+        if r.get("wrote"):
+            out.append(f"已把上一批 {r.get('wrote')} 篇摘要嵌入入库。")
+        out.append(f"进度：已深索 {done}/{wp} 篇，剩余约 {rem} 篇待写摘要。")
+        out.append(f"请给下面 {len(ts)} 篇各写一段约150字中文检索摘要，"
+                   f"然后带 summaries=[{{key, summary}}] 再次调用 deep_index：\n")
+        for i, x in enumerate(ts, 1):
+            out.append(f"[{i}] key: {x.get('key')}")
+            out.append(f"    标题：{x.get('title')}")
+            ex = (x.get("excerpt") or "").strip().replace("\n", " ")
+            out.append(f"    正文节选：{ex[:1200]}" if ex else "    正文节选：（无可抽文本，可能是扫描件，可跳过此篇不写摘要）")
+        return "\n".join(out)
     if name == "localkb_build":
         if not ensure_up():
             return "服务启动失败"

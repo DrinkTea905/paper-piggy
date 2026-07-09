@@ -55,15 +55,38 @@ def _conf():
 
 
 def enabled():
+    """K2：仅当 generator=="server"（服务端用 API Key 自动生成）且有 key 时，服务端才生成摘要。
+       generator=="agent" 时服务端不生成——摘要由 Agent 经 /index/deep_agent 写进 summaries.json；
+       generator=="off" 也不生成。这样 deep_embed 里的服务端 SAC 会被跳过，只认已有摘要。"""
     c = _conf()
-    return bool(c.get("enabled") and c.get("key"))
+    return bool(c.get("generator") == "server" and c.get("key"))
+
+
+def write_summaries(items):
+    """#7：把 Agent 写好的检索摘要合并进 summaries.json（键用 safe_name(stem)，与 embed_index 一致）。
+       items：可迭代 {"key":..,"summary":..} 或 (key, summary)。幂等 merge、原子写。返回写入条数。"""
+    import textutil as T
+    sums = _load()
+    n = 0
+    for it in (items or []):
+        if isinstance(it, dict):
+            key = it.get("key"); summ = (it.get("summary") or "").strip()
+        else:
+            key, summ = it[0], (it[1] or "").strip()
+        if not key or not summ:
+            continue
+        sums[T.safe_name(key)] = summ
+        n += 1
+    if n:
+        _save(sums)
+    return n
 
 
 def ensure_for(items, log=print):
     """items: 可迭代 (stem, title, abstract, body)。给缺摘要者生成，写回 summaries.json。返回新增数。
-    未启用或无 key 时直接返回 0（静默）。"""
+    未启用（generator!=server）或无 key 时直接返回 0（静默）。"""
     conf = _conf()
-    if not (conf.get("enabled") and conf.get("key")):
+    if not (conf.get("generator") == "server" and conf.get("key")):
         return 0
     sums = _load()
     n, fail = 0, 0

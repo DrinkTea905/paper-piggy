@@ -17,7 +17,9 @@ PY = sys.executable
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--stage", default="all", choices=["light", "semantic", "deep", "all", "folder"])
+    ap.add_argument("--stage", default="all",
+                    choices=["light", "semantic", "deep", "all", "folder",
+                             "deep_prepare", "deep_embed"])
     ap.add_argument("--scope", default="all")
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--limit", type=int, default=0)
@@ -30,18 +32,23 @@ def main():
     CAT = ("收藏夹树", [PY, str(C.APP / "build_categories.py")])       # 只读 zotero.sqlite，无嵌入，秒级
     TOPICS = ("AI 主题", [PY, str(C.APP / "build_ai_topics.py")])      # 需要 meta 向量→放在 SEM 之后
     FOLDER_PREP = ("题录抽取", [PY, str(C.APP / "folder_ingest.py"), "--workers", str(args.workers)])  # folder 模式先补 meta_cache
-    DEEP = [
-        ("提取 PDF", [PY, str(C.APP / "extract.py"), "--scope", args.scope, "--workers", str(args.workers)] + lim),
-        ("结构切块", [PY, str(C.APP / "chunk.py")] + lim),
-        ("嵌入+索引", [PY, str(C.APP / "embed_index.py"), "--batch", "32"] + lim),
-        ("印刷页码映射", [PY, str(C.APP / "page_map.py"), "--all"]),   # 研究助手地基：PDF页→期刊印刷页
-    ]
+    EXTRACT = ("提取 PDF", [PY, str(C.APP / "extract.py"), "--scope", args.scope, "--workers", str(args.workers)] + lim)
+    CHUNK   = ("结构切块", [PY, str(C.APP / "chunk.py")] + lim)
+    EMBED   = ("嵌入+索引", [PY, str(C.APP / "embed_index.py"), "--batch", "32"] + lim)
+    PAGEMAP = ("印刷页码映射", [PY, str(C.APP / "page_map.py"), "--all"])   # 研究助手地基：PDF页→期刊印刷页
+    DEEP = [EXTRACT, CHUNK, EMBED, PAGEMAP]
+    # #7 Agent 驱动深索：拆两段，让「写摘要」插在 chunk 之后、embed 之前，一趟完成。
+    #   deep_prepare = extract(--scope)+chunk（只切块不嵌入）→ 返回节选供 Agent 写摘要
+    #   deep_embed   = embed_index+page_map（此时 summaries.json 已含 Agent 摘要→自动拼前缀）
+    DEEP_PREPARE = [EXTRACT, CHUNK]
+    DEEP_EMBED   = [EMBED, PAGEMAP]
     # CAT 跟 LIGHT（收藏夹一连库就该出现）；TOPICS 跟 SEM（要 meta 向量）。二者失败仅记日志、不阻断建库。
     # folder 阶段：先 FOLDER_PREP 补 meta_cache（含 N 次 LLM，分钟级），再 LIGHT（读 cache 建词法），再 SEM。
     # folder 不放 CAT（build_categories 只读 zotero.sqlite，folder 下会早退）。
     steps = {"light": [LIGHT, CAT], "semantic": [SEM, TOPICS], "deep": DEEP,
              "all": [LIGHT, CAT, SEM, TOPICS],
-             "folder": [FOLDER_PREP, LIGHT, SEM, TOPICS]}[args.stage]
+             "folder": [FOLDER_PREP, LIGHT, SEM, TOPICS],
+             "deep_prepare": DEEP_PREPARE, "deep_embed": DEEP_EMBED}[args.stage]
     SOFT = {"收藏夹树", "AI 主题", "印刷页码映射"}   # 非致命：这些步骤失败只跳过、不 sys.exit
 
     try:
@@ -54,7 +61,11 @@ def main():
         if logf:
             logf.write(m + "\n"); logf.flush()
 
-    env = dict(os.environ); env.pop("PYTHONUTF8", None)
+    # 任务五：强制子进程按 UTF-8 输出（PYTHONIOENCODING）并开启 UTF-8 模式，
+    # 避免其 GBK 输出被上层按 UTF-8 解码成乱码（旧代码 env.pop("PYTHONUTF8") 反而触发乱码）。
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
     t0 = time.time()
     emit(f"\n===== 建库开始 stage={args.stage} {time.strftime('%Y-%m-%d %H:%M:%S')} =====")
     for name, cmd in steps:

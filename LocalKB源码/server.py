@@ -32,8 +32,19 @@ async def _no_cache(request, call_next):
     p = request.url.path
     if p == "/" or p.startswith("/static"):
         resp.headers["Cache-Control"] = "no-store, must-revalidate"
+        # 任务六：给文本类响应补 charset=utf-8，避免 WebView2 按系统 GBK 解码整页出现乱码
+        # （StaticFiles 在 Windows 上常返回不带 charset 的 text/html、text/css）。
+        ct = resp.headers.get("content-type", "")
+        if ct and "charset" not in ct.lower() and (
+                ct.startswith("text/") or "javascript" in ct or "json" in ct):
+            resp.headers["content-type"] = ct + "; charset=utf-8"
     return resp
 ERRLOG = C.LOGS / "errors.log"
+
+def _last4(s):
+    """K3：返回 key 的末4位（用于掩码显示「已填」状态）；不足4位或空则返回 ""。绝不回完整明文。"""
+    s = (s or "").strip()
+    return s[-4:] if len(s) >= 4 else ""
 
 # ── 错误日志 ──────────────────────────────────────────────
 def log_error(where, err, tb=""):
@@ -261,6 +272,9 @@ def setup_detect():
         "folder_meta_ready": bool(meta_ready),
         "backend": backend,                        # local | api
         "api_key_set": api_key_set,
+        # K3：各 key 末4位掩码（只回末4位、绝不回明文），供前端展示「已填 ••••1234」
+        "api_key_last4": _last4((st.get("api") or {}).get("key")),
+        "sac_key_last4": _last4((st.get("sac") or {}).get("key")),
         # 引擎就绪：本地模式看模型文件；API 模式看 key 是否已填
         "models_ready": models_local if backend == "local" else api_key_set,
         "reranker_ready": reranker_local if backend == "local" else api_key_set,
@@ -441,6 +455,7 @@ def setup_test_api(q: BackendQ):
 
 class SacQ(BaseModel):
     enabled: Optional[bool] = None
+    generator: Optional[str] = None       # K2：server（服务端用API Key）| agent（交给Agent）| off（不生成）
     base: Optional[str] = None
     key: Optional[str] = None
     model: Optional[str] = None
@@ -449,20 +464,29 @@ class SacQ(BaseModel):
 def get_sac():
     import settings as S, sac as SAC
     sc = S.sac_conf()
-    return {"enabled": bool(sc.get("enabled")), "base": sc.get("base"), "model": sc.get("model"),
-            "key_set": bool(sc.get("key")), "effective_ready": SAC.enabled()}
+    return {"enabled": bool(sc.get("enabled")), "generator": sc.get("generator"),
+            "base": sc.get("base"), "model": sc.get("model"),
+            "key_set": bool(sc.get("key")), "key_last4": _last4(sc.get("key")),   # K3 掩码
+            "effective_ready": SAC.enabled()}
 
 @app.post("/setup/sac")
 def setup_sac(q: SacQ):
-    """配置自动 SAC（深索时用 LLM 生成摘要前缀）。key 空时会自动复用 API 后端的 key。"""
+    """配置深索摘要生成方（K2 generator 三选一）。key 空时会自动复用 API 后端的 key。
+       generator=server→服务端自动生成；agent→交给 Agent（服务端不生成）；off→不生成。"""
     import settings as S, sac as SAC
     patch = {}
-    if q.enabled is not None: patch["enabled"] = bool(q.enabled)
+    if q.generator in ("server", "agent", "off"):
+        patch["generator"] = q.generator
+        patch["enabled"] = (q.generator == "server")     # 与旧 enabled 同步（向后兼容读 enabled 的代码）
+    elif q.enabled is not None:                           # 老前端只传 enabled 时的兼容路径
+        patch["enabled"] = bool(q.enabled)
+        patch["generator"] = "server" if q.enabled else "off"
     if q.base: patch["base"] = q.base
     if q.key is not None: patch["key"] = q.key
     if q.model: patch["model"] = q.model
     S.save({"sac": patch})
-    return {"ok": True, "effective_ready": SAC.enabled()}
+    sc = S.sac_conf()
+    return {"ok": True, "generator": sc.get("generator"), "effective_ready": SAC.enabled()}
 
 # ── 期刊分级学科（整库锁定单学科；journal_grading 期刊权重引擎用）──
 class DiscQ(BaseModel):
@@ -714,7 +738,9 @@ def _kbc_find(doc, cid):
 # ── 自动深索串行队列 ──────────────────────────────────────
 _DEEP_QUEUE_FILE = C.STATE / "deep_queue.json"
 _Q_LOCK = threading.Lock()
-QUEUE = {"pending": [], "in_flight": [], "timer": None, "fails": 0}
+# K1：paused=深索暂停标志（不再起新批）；spp=近批「秒/篇」用于 ETA 外推；batch_start=当前批起跑时刻。
+QUEUE = {"pending": [], "in_flight": [], "timer": None, "fails": 0,
+         "paused": False, "spp": None, "batch_start": None}
 _DEEP_BATCH = 50
 _DEEP_DEBOUNCE = 4.0
 _DEEP_MAX_RETRY = 3        # A3：同一批连续软失败超过此次数则暂停自动重试（避免坏 PDF/余额0 无限重试烧钱）
@@ -724,6 +750,7 @@ def _q_persist():
     try:
         _atomic_json_write(_DEEP_QUEUE_FILE, {
             "pending": QUEUE["pending"], "in_flight": QUEUE["in_flight"],
+            "paused": bool(QUEUE.get("paused")),
             "updated_at": time.strftime("%Y-%m-%d %H:%M:%S")})
     except Exception as e:
         log_error("deep_queue persist", repr(e))
@@ -735,9 +762,10 @@ def _q_boot():
             d = json.loads(_DEEP_QUEUE_FILE.read_text(encoding="utf-8"))
             QUEUE["pending"] = list(dict.fromkeys((d.get("in_flight") or []) + (d.get("pending") or [])))
             QUEUE["in_flight"] = []
+            QUEUE["paused"] = bool(d.get("paused"))    # K1：恢复暂停标志（暂停态跨重启保留）
         except Exception:
             pass
-    if QUEUE["pending"]:
+    if QUEUE["pending"] and not QUEUE.get("paused"):
         _drain_deep_queue()
 
 def _queue_keyset():
@@ -762,11 +790,14 @@ def _drain_deep_queue():
     """把一批 pending 转 in_flight 并起 deep build。撞锁则回滚，等 build 结束再排。"""
     with _Q_LOCK:
         QUEUE["timer"] = None
-        if BUILD["running"] or not QUEUE["pending"]:
+        # K1：暂停中不再起新批（正在跑的那批已在子进程里自然跑完，队列保留）。
+        if BUILD["running"] or QUEUE.get("paused") or not QUEUE["pending"]:
             return
         batch = QUEUE["pending"][:_DEEP_BATCH]
         QUEUE["pending"] = QUEUE["pending"][_DEEP_BATCH:]
-        QUEUE["in_flight"] = batch; _q_persist()
+        QUEUE["in_flight"] = batch
+        QUEUE["batch_start"] = time.time()   # K1：记本批起跑，用于 ETA「秒/篇」外推
+        _q_persist()
     started = _run_build("deep", ["--scope", "keys:" + ",".join(batch)], on_done=_on_deep_done)
     if not started:
         with _Q_LOCK:
@@ -781,6 +812,13 @@ def _on_deep_done(rc=0):
     should_drain = False
     with _Q_LOCK:
         batch = QUEUE["in_flight"]; QUEUE["in_flight"] = []
+        # K1：成功批用「本批耗时/篇数」更新 seconds-per-paper 的 EMA，供 /index/queue 外推 ETA。
+        if rc == 0 and batch and QUEUE.get("batch_start"):
+            el = time.time() - QUEUE["batch_start"]
+            spp = el / max(1, len(batch))
+            prev = QUEUE.get("spp")
+            QUEUE["spp"] = spp if not prev else (prev * 0.5 + spp * 0.5)
+        QUEUE["batch_start"] = None
         if rc != 0 and batch:
             QUEUE["fails"] = QUEUE.get("fails", 0) + 1
             QUEUE["pending"] = batch + QUEUE["pending"]        # 退回队首，保住这批 key
@@ -799,10 +837,42 @@ def _on_deep_done(rc=0):
 
 @app.get("/index/queue")
 def deep_queue_status():
+    """K1：深索队列/详情/ETA。items=当前在深索或在队首的若干篇 key+标题；
+       eta_seconds 按近批速率外推（取不到给 null）。"""
+    papers = _load_papers()
+    deep_done = len(_deep_keys())
+    manifest = json.loads(C.INDEX_MANIFEST.read_text(encoding="utf-8")) if C.INDEX_MANIFEST.exists() else {}
     with _Q_LOCK:
-        return {"pending": len(QUEUE["pending"]), "in_flight": len(QUEUE["in_flight"]),
-                "in_flight_keys": list(QUEUE["in_flight"]),
-                "building": BUILD["running"], "stage": BUILD["stage"]}
+        pending = len(QUEUE["pending"]); in_flight = len(QUEUE["in_flight"])
+        paused = bool(QUEUE.get("paused")); spp = QUEUE.get("spp")
+        inflight_keys = list(QUEUE["in_flight"])
+        shown = (inflight_keys + list(QUEUE["pending"]))[:8]
+    items = [{"key": k, "title": (papers.get(k) or {}).get("title", "")} for k in shown]
+    remaining = pending + in_flight
+    eta_seconds = int(remaining * spp) if (spp and remaining) else None
+    return {"pending": pending, "in_flight": in_flight, "paused": paused,
+            "deep_done": deep_done, "with_pdf": manifest.get("with_pdf", 0),
+            "eta_seconds": eta_seconds, "items": items,
+            # 兼容旧前端字段
+            "in_flight_keys": inflight_keys,
+            "building": BUILD["running"], "stage": BUILD["stage"]}
+
+class DeepPauseQ(BaseModel):
+    paused: bool = True
+
+@app.post("/index/deep/pause")
+def deep_pause(q: DeepPauseQ):
+    """K1：置深索暂停标志。暂停后 _drain_deep_queue 不再起新批（正在跑的自然跑完），队列保留；
+       恢复(paused=False)立即尝试继续排空。"""
+    with _Q_LOCK:
+        QUEUE["paused"] = bool(q.paused)
+        _q_persist()
+    if not q.paused:
+        try:
+            _drain_deep_queue()
+        except Exception as e:
+            log_error("deep resume drain", repr(e))
+    return {"ok": True, "paused": bool(q.paused)}
 
 # ── F11：分类 → keys 白名单解析 ──────────────────────────
 def _resolve_category_keys(category):
@@ -1344,6 +1414,14 @@ def index_light_ep():
         log_error("index/light", repr(e), traceback.format_exc())
         return JSONResponse({"ok": False, "msg": str(e)}, status_code=500)
 
+def _child_env():
+    """任务五：子进程统一 env——强制 UTF-8 输出（PYTHONIOENCODING）+ 开 UTF-8 模式（PYTHONUTF8=1），
+       让 build 子进程稳定输出 UTF-8，server 端按 utf-8 解码不再乱码。"""
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
+    return env
+
 def _run_build(stage, extra=None, on_done=None):
     # B1：原子「判 running + 置 True」并在调用线程内同步置位（不再等子线程 start() 后才置），
     # 多路触发时后来者立即拿到 running=True → return False，不会并发跑两个子进程。
@@ -1355,7 +1433,7 @@ def _run_build(stage, extra=None, on_done=None):
     def run():
         rc = None
         try:
-            env = dict(os.environ); env.pop("PYTHONUTF8", None)
+            env = _child_env()   # 任务五：稳定 UTF-8 输出，避免 build 日志乱码
             cmd = [sys.executable, str(C.APP / "build_all.py"), "--stage", stage] + (extra or [])
             p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
             for raw in p.stdout:
@@ -1543,6 +1621,94 @@ def index_deep_ep(q: DeepQ):
         return {"ok": False, "busy": True, "scope": scope}
     return {"ok": True, "queued": scope, "scope": scope}
 
+# ── #7：Agent 驱动深索（切块→Agent写摘要→带摘要嵌入，一趟完成，阻塞式逐批）──
+class DeepAgentSummary(BaseModel):
+    key: str
+    summary: str = ""
+
+class DeepAgentQ(BaseModel):
+    summaries: Optional[List[DeepAgentSummary]] = None   # 带上一批 Agent 写的摘要则先写盘+嵌入
+    batch: int = 15
+
+def _run_stage_blocking(stage, extra=None):
+    """阻塞跑一段 build_all（子进程 subprocess.run，捕获 stdout 不污染 HTTP 响应）。返回 returncode。"""
+    env = _child_env()
+    cmd = [sys.executable, str(C.APP / "build_all.py"), "--stage", stage] + (extra or [])
+    p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
+    try:
+        out = (p.stdout or b"").decode("utf-8", errors="replace")
+        BUILD["log"].append(f"[deep_agent:{stage}] rc={p.returncode}")
+        for ln in out.splitlines()[-20:]:
+            BUILD["log"].append(ln)
+        BUILD["log"] = BUILD["log"][-300:]
+    except Exception:
+        pass
+    return p.returncode
+
+def _extracted_excerpt(stem, limit=1800):
+    """取该篇提取正文前 ~limit 字，供 Agent 写摘要。无提取文本（未切块/扫描件）→ ""。"""
+    f = C.EXTRACTED / f"{stem}.json"
+    if not f.exists():
+        return ""
+    try:
+        rec = json.loads(f.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    txt = "\n".join((pg.get("text") or "") for pg in rec.get("pages", []))
+    return txt[:limit]
+
+def _deep_agent_run(q: DeepAgentQ):
+    import sac as SAC
+    wrote = 0
+    # ① 带 summaries：写进 summaries.json，再阻塞跑 deep_embed 把上一批带摘要嵌入（标记已深索）
+    if q.summaries:
+        wrote = SAC.write_summaries([{"key": s.key, "summary": s.summary} for s in q.summaries])
+        _run_stage_blocking("deep_embed")
+        try:                              # 嵌入后重载索引，让新深索的篇立刻可检索
+            R.STATE["ready"] = False
+            R.load_all()
+        except Exception as e:
+            log_error("deep_agent reload", repr(e))
+    # ② 选下一批 pending-deep（有PDF、未深索、非扫描件），阻塞跑 deep_prepare(extract+chunk)
+    papers = _load_papers(); deepk = _deep_keys(); notext = _deep_no_text_keys()
+    cand = [p for p in papers.values()
+            if p.get("has_pdf") and not is_deep(p["key"], deepk)
+            and T.safe_name(p["key"]) not in notext]
+    batch_n = max(1, int(q.batch or 15))
+    batch = cand[:batch_n]
+    to_summarize = []
+    if batch:
+        keys = [p["key"] for p in batch]
+        _run_stage_blocking("deep_prepare", ["--scope", "keys:" + ",".join(keys)])
+        for p in batch:
+            to_summarize.append({"key": p["key"], "title": p.get("title", ""),
+                                 "excerpt": _extracted_excerpt(p["stem"])})
+    manifest = json.loads(C.INDEX_MANIFEST.read_text(encoding="utf-8")) if C.INDEX_MANIFEST.exists() else {}
+    # ③ 汇总返回。finished=没有更多待处理（末批：summaries 已提交且无新篇也能收尾）
+    return {"ok": True, "wrote": wrote, "to_summarize": to_summarize,
+            "done": len(_deep_keys()), "with_pdf": manifest.get("with_pdf", 0),
+            "remaining": max(0, len(cand) - len(batch)),
+            "finished": (len(batch) == 0)}
+
+@app.post("/index/deep_agent")
+def index_deep_agent(q: DeepAgentQ):
+    """#7：Agent 驱动深索的单批处理（阻塞，可跑 30-60s）。尊重构建锁：有其它构建在跑→busy。
+       用法见 MCP 工具 deep_index：首次不带 summaries→返回 to_summarize；带 summaries 再调→
+       嵌入上一批+返回下一批；循环至 finished=true。"""
+    with _BUILD_LOCK:
+        if BUILD["running"]:
+            return {"ok": False, "busy": True}
+        BUILD["running"] = True; BUILD["stage"] = "deep_agent"
+        BUILD["started"] = time.time(); BUILD["rc"] = None
+    try:
+        return _deep_agent_run(q)
+    except Exception as e:
+        log_error("index/deep_agent", repr(e), traceback.format_exc())
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=200)
+    finally:
+        with _BUILD_LOCK:
+            BUILD["running"] = False
+
 # ── 检索 ──────────────────────────────────────────────────
 class SearchQ(BaseModel):
     query: str
@@ -1626,7 +1792,8 @@ WEB = C.APP / "web"
 
 @app.get("/")
 def index():
-    return FileResponse(str(WEB / "index.html"))
+    # 任务六：显式 charset=utf-8，避免 WebView2 按系统 GBK 解码整页
+    return FileResponse(str(WEB / "index.html"), media_type="text/html; charset=utf-8")
 
 app.mount("/static", StaticFiles(directory=str(WEB)), name="static")
 

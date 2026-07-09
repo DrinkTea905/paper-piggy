@@ -59,6 +59,8 @@
   // ── 设置存取（localStorage）──
   const cfg = () => safeParse(localStorage.getItem("localkb.cfg"), {});
   const saveCfg = (c) => localStorage.setItem("localkb.cfg", JSON.stringify(c));
+  // K3（副本#4/#5）：已填 key 用掩码「••••••1234」显示，让用户一眼知道填过了；后端只回末4位，绝不回明文
+  const maskKey = (last4) => (last4 ? "••••••" + String(last4) : "");
 
   // 内联输入弹层（替代浏览器 prompt() 的终端风格弹框）。返回 Promise<string|null>。
   function askText(title, defaultVal, placeholder) {
@@ -203,6 +205,72 @@
     $("#idx-progress-fill").style.width = pct + "%";
     $("#idx-progress-txt").textContent = `${txt} · ${pct}%`;
     bar.hidden = false;
+  }
+
+  // ── K1（副本#9）：深索详情面板——轮询 /index/queue，暂停/继续 /index/deep/pause ──
+  const DP = { open: false, iv: null, paused: false };
+  function _etaText(sec) {
+    if (sec == null || sec <= 0) return "";
+    if (sec < 45) return "约剩不到 1 分钟";
+    const min = Math.round(sec / 60);
+    return min > 90 ? "约剩 " + Math.round(min / 60) + " 小时" : "约剩 " + min + " 分钟";
+  }
+  async function deepPanelPoll() {
+    if (!DP.open) return;
+    try {
+      const q = await jget("/index/queue");
+      DP.paused = !!q.paused;
+      const deep = q.deep_done || 0, withPdf = q.with_pdf || 0;
+      const pending = q.pending || 0, inflight = q.in_flight || 0;
+      $("#dp-stat").innerHTML = `已深索 <b>${num(deep)}</b> / ${num(withPdf)} 篇 · 队列剩余 <b>${num(pending)}</b> 篇`
+        + (inflight ? ` · 正在处理 ${num(inflight)} 篇` : "");
+      const eta = _etaText(q.eta_seconds);
+      $("#dp-eta").textContent = DP.paused ? "⏸ 已暂停（正在跑的那批会跑完，队列保留）" : (eta || "");
+      const items = q.items || [];
+      $("#dp-items").innerHTML = items.length
+        ? items.map((it) => `<li title="${esc(it.title || it.key || "")}">${esc(it.title || it.key || "（未命名）")}</li>`).join("")
+        : `<li class="dp-empty">${DP.paused ? "已暂停，暂无正在深索的文献" : "暂无正在深索的文献"}</li>`;
+      const btn = $("#dp-pause");
+      if (btn) { btn.textContent = DP.paused ? "继续" : "暂停"; btn.classList.toggle("primary-btn", DP.paused); btn.classList.toggle("ghost", !DP.paused); }
+    } catch (e) {
+      $("#dp-stat").textContent = "读取失败：" + e.message;
+    }
+  }
+  function openDeepPanel() {
+    const p = $("#deep-panel"); if (!p) return;
+    DP.open = true; p.hidden = false;
+    $("#dp-msg").textContent = "";
+    deepPanelPoll();
+    if (DP.iv) clearInterval(DP.iv);
+    DP.iv = setInterval(deepPanelPoll, 3000);
+  }
+  function closeDeepPanel() {
+    const p = $("#deep-panel"); if (p) p.hidden = true;
+    DP.open = false;
+    if (DP.iv) { clearInterval(DP.iv); DP.iv = null; }
+  }
+  function toggleDeepPanel() { DP.open ? closeDeepPanel() : openDeepPanel(); }
+  { // 顶栏进度条点击 → 展开/收起深索详情
+    const idxp = $("#idx-progress");
+    if (idxp) idxp.addEventListener("click", toggleDeepPanel);
+    const cl = $("#deep-panel-close"); if (cl) cl.addEventListener("click", closeDeepPanel);
+    const pb = $("#dp-pause");
+    if (pb) pb.addEventListener("click", async () => {
+      pb.disabled = true; $("#dp-msg").textContent = "";
+      try {
+        const r = await jpost("/index/deep/pause", { paused: !DP.paused });
+        DP.paused = !!(r && r.paused);
+        $("#dp-msg").textContent = DP.paused ? "已暂停。" : "已继续。";
+        deepPanelPoll();
+      } catch (e) { $("#dp-msg").textContent = "操作失败：" + e.message; }
+      finally { pb.disabled = false; }
+    });
+    // 点面板外部关闭（不含进度条本身，避免点进度条时刚开又被关）
+    document.addEventListener("click", (e) => {
+      if (!DP.open) return;
+      const p = $("#deep-panel"), idx = $("#idx-progress");
+      if (p && !p.contains(e.target) && idx && !idx.contains(e.target) && !e.target.closest(".dash-deep-detail")) closeDeepPanel();
+    });
   }
 
   // ── tab 切换（泛化：按 data-panel 显隐）──
@@ -803,7 +871,8 @@
             ? `只有深索过的文献才能被精读、页级引用、跨篇综合。已深索 <b>${num(deep)}</b>/${num(withPdf)} 篇，还有 ${num(remain)} 篇。`
             : `已全部深索完成 ✓`)}
           ${deep > 0 ? `<a class="dh-link" id="dash-see-deep">查看已深索 ${num(deep)} 篇 →</a>` : ""}
-          ${remain > 0 ? `<a class="dh-link" id="dash-go-deep">去深索这 ${num(remain)} 篇 →</a>` : ""}</div>
+          ${remain > 0 ? `<a class="dh-link" id="dash-go-deep">去深索这 ${num(remain)} 篇 →</a>` : ""}
+          ${withPdf > 0 ? `<a class="dh-link dash-deep-detail" id="dash-deep-detail">深索详情 / 暂停 →</a>` : ""}</div>
       </div></div>`;
     $("#dash").innerHTML = header
       + `<div class="dash-grid dash-2col">${overviewCard(d)}${recentCard(d.recent)}</div>`
@@ -811,6 +880,7 @@
     // 事件
     const seeD = $("#dash-see-deep"); if (seeD) seeD.addEventListener("click", () => _goDeepBrowse("yes"));
     const goD = $("#dash-go-deep"); if (goD) goD.addEventListener("click", () => _goDeepBrowse("no"));
+    const ddD = $("#dash-deep-detail"); if (ddD) ddD.addEventListener("click", openDeepPanel);   // K1：库总览深索卡 → 深索详情面板
     const exp = $("#rc-expand"); if (exp) exp.addEventListener("click", () => {
       const more = $(".recent-more"); if (more) { more.hidden = false; exp.hidden = true; }
     });
@@ -951,6 +1021,11 @@
     const src = await ensureSource();
     loadTopics(); // AI/知识库分类：两模式都要
     loadKbCats(); // 知识库分类（用户自建）
+    // 副本#8：「全部文献」后显示总篇数（原为收藏夹数「N 夹」），两种数据源模式都设
+    jget("/health").then((h) => {
+      const n = h && (h.papers != null ? h.papers : h.n);
+      $("#bt-all-cnt").textContent = n != null ? (num(n) + " 篇") : "";
+    }).catch(() => {});
     const zsec = $("#bt-zotero-sec");
     if (src === "folder") {
       // 文件夹模式：整块隐藏 Zotero 分类区，不请求 /categories
@@ -962,7 +1037,6 @@
     if (zsec) zsec.hidden = false;
     try {
       const d = await jget("/categories");
-      $("#bt-all-cnt").textContent = d.n_collections != null ? (num(d.n_collections) + " 夹") : "";
       const box = $("#bt-tree"); box.innerHTML = "";
       (d.tree || []).forEach((n) => box.appendChild(treeNodeEl(n, 0)));
       if (!(d.tree || []).length) box.innerHTML = `<div class="bt-loading">（无收藏夹）</div>`;
@@ -1719,7 +1793,7 @@
           provider: c.provider || "siliconflow", base_url: c.base || "", api_key: c.api_key || "", model: c.model || "",
           topk: 6, sort: "blend", category: ($("#chat-cat") && $("#chat-cat").value) || null }),
       });
-      const reader = resp.body.getReader(); const dec = new TextDecoder(); let buf = "", answer = "", errored = false, srcHits = [];
+      const reader = resp.body.getReader(); const dec = new TextDecoder("utf-8"); let buf = "", answer = "", errored = false, srcHits = [];
       while (true) {
         const { value, done } = await reader.read(); if (done) break;
         buf += dec.decode(value, { stream: true });
@@ -1873,11 +1947,16 @@
     applyProvider(provSel.value, true);
     $("#set-base").value = c.base || PROVIDERS[provSel.value].base;
     $("#set-model").value = c.model || PROVIDERS[provSel.value].model;
-    $("#set-key").value = c.api_key || "";
+    // K3（副本#4/#5）：对话 key 存 localStorage 明文；这里不回填明文到框里，改用掩码占位（末4位）显示「填过了」。
+    // 框留空＝不改（沿用已存 key）；输入新 key＝更新。
+    const k = c.api_key || "";
+    $("#set-key").value = "";
+    $("#set-key").placeholder = k ? maskKey(k.slice(-4)) : "sk-…";
   }
   function saveChatModel() {
+    const keyIn = $("#set-key").value.trim();
     saveCfg({ provider: provSel.value, base: $("#set-base").value.trim(),
-              api_key: $("#set-key").value.trim(), model: $("#set-model").value.trim() });
+              api_key: keyIn || (cfg().api_key || ""), model: $("#set-model").value.trim() });
     const s = $("#cm-saved");
     if (s) { s.textContent = "已保存 ✓"; s.classList.add("flash"); setTimeout(() => s.classList.remove("flash"), 800); }
   }
@@ -1922,10 +2001,11 @@
     // /setup/detect 只回 backend + 是否已设 key；base/模型名用标准默认（改过高级项的可自行重填）
     $("#eng-base").value = "https://api.siliconflow.cn/v1";
     $("#eng-embed").value = ""; $("#eng-rerank").value = ""; $("#eng-key").value = "";
-    let be = "local", keySet = false;
-    try { const d = await jget("/setup/detect"); be = d.backend === "api" ? "api" : "local"; keySet = !!d.api_key_set; } catch (e) {}
+    let be = "local", keySet = false, last4 = "";
+    try { const d = await jget("/setup/detect"); be = d.backend === "api" ? "api" : "local"; keySet = !!d.api_key_set; last4 = d.api_key_last4 || ""; } catch (e) {}
     const r = document.querySelector(`input[name=eng-backend][value=${be}]`); if (r) r.checked = true;
-    $("#eng-key").placeholder = keySet ? "已设置（留空＝不改）" : "去 cloud.siliconflow.cn 领免费 key";
+    // K3：已设置时用掩码占位「••••••1234（留空＝不改）」，让用户知道填过；留空提交＝不改
+    $("#eng-key").placeholder = keySet ? ((last4 ? maskKey(last4) + " " : "") + "已设置（留空＝不改）") : "去 cloud.siliconflow.cn 领免费 key";
     engApiVisible(be);
   }
   $$("input[name=eng-backend]").forEach((r) => r.addEventListener("change", () =>
@@ -1962,16 +2042,20 @@
     finally { btn.disabled = false; }
   });
 
-  // ── 深索摘要（SAC）：GET 回填 / 开关即存 / 高级单独存 ──
-  // 依据 effective_ready 显示三态状态行
-  function renderSacStatus(enabled, effectiveReady) {
+  // ── 深索摘要（SAC）：K2（副本#7）三选一 generator=server|agent|off ──
+  // 当前选中的生成方式（读单选按钮）
+  function sacGen() { return (document.querySelector("input[name=sac-gen]:checked") || {}).value || "off"; }
+  // 依据 generator + effective_ready 显示状态行
+  function renderSacStatus(gen, effectiveReady) {
     const el = $("#sac-status");
-    if (!enabled) {
+    if (gen === "off") {
       el.className = "sac-status hint"; el.textContent = "已关闭：深索时不生成摘要。";
+    } else if (gen === "agent") {
+      el.className = "sac-status hint ok"; el.textContent = "✓ 交给 Agent：深索时由 Claude Code / Codex 生成摘要，不耗你的 API 额度。";
     } else if (effectiveReady) {
-      el.className = "sac-status hint ok"; el.textContent = "✓ 已就绪：深索时会自动生成摘要前缀。";
+      el.className = "sac-status hint ok"; el.textContent = "✓ 服务端自动：深索时会自动生成摘要前缀（用你配的 API key）。";
     } else {
-      el.className = "sac-status hint warn"; el.textContent = "⚠ 需先在检索引擎里配 API key，或在下方“高级”单独填 key。";
+      el.className = "sac-status hint warn"; el.textContent = "⚠ 服务端自动模式需先在检索引擎里配 API key，或在下方“高级”单独填 key。";
     }
   }
   async function loadSac() {
@@ -1980,42 +2064,46 @@
     $("#sac-status").textContent = "";
     try {
       const s = await jget("/setup/sac");
-      $("#sac-enabled").checked = !!s.enabled;
+      // 迁移兼容：后端未回 generator 时，用老的 enabled 推断（true→server，false→off）
+      const gen = s.generator || (s.enabled ? "server" : "off");
+      const r = document.querySelector(`input[name=sac-gen][value=${gen}]`); if (r) r.checked = true;
       $("#sac-base").value = s.base || "";
       $("#sac-model").value = s.model || "";
-      // key 是密码，后端只回 key_set 布尔；已设则用占位提示，不回填明文
+      // K3：key 是密码，后端只回末4位；已设则用掩码占位，不回填明文
+      const last4 = s.key_last4 || s.sac_key_last4 || "";
       $("#sac-key").value = "";
-      $("#sac-key").placeholder = s.key_set ? "已设置（留空＝不改；复用检索引擎的 key）" : "留空＝复用检索引擎的 key";
-      renderSacStatus(!!s.enabled, !!s.effective_ready);
+      $("#sac-key").placeholder = s.key_set
+        ? ((last4 ? maskKey(last4) + " " : "") + "已设置（留空＝不改；复用检索引擎的 key）")
+        : "留空＝复用检索引擎的 key";
+      renderSacStatus(gen, !!s.effective_ready);
     } catch (e) {
       $("#sac-status").className = "sac-status hint warn";
       $("#sac-status").textContent = "状态加载失败：" + e.message;
     }
   }
-  // 开关切换：立即 POST 保存并用返回的 effective_ready 刷新状态行
-  $("#sac-enabled").addEventListener("change", async () => {
-    const enabled = $("#sac-enabled").checked;
+  // 三选一切换：立即 POST 保存 generator，并用返回的 effective_ready 刷新状态行
+  $$("input[name=sac-gen]").forEach((radio) => radio.addEventListener("change", async () => {
+    const gen = sacGen();
     try {
-      const r = await jpost("/setup/sac", { enabled });
-      renderSacStatus(enabled, !!(r && r.effective_ready));
+      const r = await jpost("/setup/sac", { generator: gen });
+      renderSacStatus(gen, !!(r && r.effective_ready));
     } catch (e) {
-      // 保存失败则回滚勾选态并提示
-      $("#sac-enabled").checked = !enabled;
       $("#sac-status").className = "sac-status hint warn";
       $("#sac-status").textContent = "保存失败：" + e.message;
     }
-  });
-  // 高级：单独保存 base / key / model（只传填了的字段）
+  }));
+  // 高级：单独保存 base / key / model（随当前 generator 一起提交，只传填了的字段）
   $("#sac-adv-save").addEventListener("click", async () => {
     const msg = $("#sac-adv-msg");
-    const body = { enabled: $("#sac-enabled").checked };
+    const gen = sacGen();
+    const body = { generator: gen };
     const base = $("#sac-base").value.trim(), model = $("#sac-model").value.trim(), key = $("#sac-key").value.trim();
     body.base = base; body.model = model;
     if (key) body.key = key; // 留空则不改，后端复用检索引擎的 key
     msg.textContent = "保存中…";
     try {
       const r = await jpost("/setup/sac", body);
-      renderSacStatus($("#sac-enabled").checked, !!(r && r.effective_ready));
+      renderSacStatus(gen, !!(r && r.effective_ready));
       $("#sac-key").value = ""; // 存完清空明文输入
       if (key) $("#sac-key").placeholder = "已设置（留空＝不改；复用检索引擎的 key）";
       msg.textContent = "已保存 ✓";

@@ -67,6 +67,9 @@ def chat_stream(messages, base_url, api_key, model, temperature=0.3):
     try:
         with requests.post(url, json=payload, headers=headers, stream=True, timeout=180) as r:
             r.raise_for_status()
+            # #6 对话乱码根因：SSE 响应头常不带 charset，requests 的 iter_lines(decode_unicode=True)
+            # 会退回 ISO-8859-1(Latin-1) 解码 → UTF-8 中文被烤成「ä½ å¥½」乱码。强制按 UTF-8 解码。
+            r.encoding = "utf-8"
             for raw in r.iter_lines(decode_unicode=True):
                 if not raw or not raw.startswith("data:"):
                     continue

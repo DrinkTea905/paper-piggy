@@ -118,6 +118,45 @@ def _check_path_ascii():
                      f"请优先排查此路径（可设环境变量 LOCALKB_DATA / LOCALKB_MODELS 指向纯英文无空格目录）。")
 
 
+def _system_light():
+    """系统是否浅色主题（HKCU AppsUseLightTheme）。读不到默认浅色。"""
+    try:
+        import winreg
+        k = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                           r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize")
+        return bool(winreg.QueryValueEx(k, "AppsUseLightTheme")[0])
+    except Exception:
+        return True
+
+
+def _tint_titlebar_async():
+    """#1：把原生窗口的标题栏从系统默认黑色改成跟随系统浅/深色，与应用内容协调。
+    用 FindWindowW 按标题找到窗口再 DWM 着色（跨 pywebview 后端稳），纯外观、失败静默。"""
+    if sys.platform != "win32":
+        return
+    import threading
+    def work():
+        try:
+            import ctypes
+            light = _system_light()
+            user32 = ctypes.windll.user32
+            dwm = ctypes.windll.dwmapi
+            for _ in range(50):                       # 最多等 ~10s 直到窗口出现
+                hwnd = user32.FindWindowW(None, "PaperPiggy")
+                if hwnd:
+                    # DWMWA_USE_IMMERSIVE_DARK_MODE=20：0=浅色标题栏，1=深色（Win10 2004+）
+                    val = ctypes.c_int(0 if light else 1)
+                    dwm.DwmSetWindowAttribute(hwnd, 20, ctypes.byref(val), ctypes.sizeof(val))
+                    # DWMWA_CAPTION_COLOR=35：直接给标题栏底色，与内容近似（Win11 22000+；老系统忽略）
+                    cap = ctypes.c_int(0x00F7F7F7 if light else 0x001C1C1E)   # 浅≈#F7F7F7 / 深≈#1E1C1C
+                    dwm.DwmSetWindowAttribute(hwnd, 35, ctypes.byref(cap), ctypes.sizeof(cap))
+                    return
+                time.sleep(0.2)
+        except Exception as e:
+            _logline(f"标题栏着色跳过（纯外观，不影响使用）：{repr(e)}")
+    threading.Thread(target=work, daemon=True).start()
+
+
 def main():
     _check_path_ascii()
     proc = None
@@ -172,6 +211,7 @@ def main():
         webview.create_window("PaperPiggy", C.DAEMON_URL,
                               width=1300, height=880, min_size=(960, 640),
                               text_select=True)
+        _tint_titlebar_async()   # #1：标题栏跟随系统浅/深色，别再是突兀的黑条
         webview.start()   # 阻塞直到窗口关闭
         if proc:          # 关窗口 → 停掉本次启动的 server（关窗即退出应用）
             try:
