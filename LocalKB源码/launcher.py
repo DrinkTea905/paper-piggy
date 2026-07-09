@@ -129,9 +129,32 @@ def _system_light():
         return True
 
 
+def _ensure_icon():
+    """把 web/PaperPiggy.png 封成 .ico（纯 stdlib，PNG-in-ICO），供窗口/任务栏图标用。返回 ico 路径或 None。"""
+    try:
+        png = C.APP / "web" / "PaperPiggy.png"
+        ico = C.DATA / "PaperPiggy.ico"
+        if ico.exists() and ico.stat().st_size > 0:
+            return str(ico)
+        if not png.exists():
+            return None
+        import struct
+        data = png.read_bytes()
+        w = int.from_bytes(data[16:20], "big"); h = int.from_bytes(data[20:24], "big")
+        bw = 0 if w >= 256 else w; bh = 0 if h >= 256 else h   # 0 表示 256
+        hdr = struct.pack("<HHH", 0, 1, 1)                     # ICONDIR: reserved,type=icon,count
+        entry = struct.pack("<BBBBHHII", bw, bh, 0, 0, 1, 32, len(data), 22)  # ICONDIRENTRY
+        C.DATA.mkdir(parents=True, exist_ok=True)
+        ico.write_bytes(hdr + entry + data)
+        return str(ico)
+    except Exception:
+        return None
+
+
 def _tint_titlebar_async():
     """#1：把原生窗口的标题栏从系统默认黑色改成跟随系统浅/深色，与应用内容协调。
-    用 FindWindowW 按标题找到窗口再 DWM 着色（跨 pywebview 后端稳），纯外观、失败静默。"""
+    用 FindWindowW 按标题找到窗口再 DWM 着色（跨 pywebview 后端稳），纯外观、失败静默。
+    #1b：顺手把窗口图标从 pythonw 默认的 Python 图标换成 PaperPiggy。"""
     if sys.platform != "win32":
         return
     import threading
@@ -150,6 +173,16 @@ def _tint_titlebar_async():
                     # DWMWA_CAPTION_COLOR=35：直接给标题栏底色，与内容近似（Win11 22000+；老系统忽略）
                     cap = ctypes.c_int(0x00F7F7F7 if light else 0x001C1C1E)   # 浅≈#F7F7F7 / 深≈#1E1C1C
                     dwm.DwmSetWindowAttribute(hwnd, 35, ctypes.byref(cap), ctypes.sizeof(cap))
+                    # #1b：设应用图标，替换 pythonw 默认的 Python 图标（失败静默）
+                    try:
+                        ico = _ensure_icon()
+                        if ico:
+                            hicon = user32.LoadImageW(None, ico, 1, 0, 0, 0x00000010)   # IMAGE_ICON, LR_LOADFROMFILE
+                            if hicon:
+                                user32.SendMessageW(hwnd, 0x0080, 0, hicon)   # WM_SETICON, ICON_SMALL
+                                user32.SendMessageW(hwnd, 0x0080, 1, hicon)   # WM_SETICON, ICON_BIG
+                    except Exception:
+                        pass
                     return
                 time.sleep(0.2)
         except Exception as e:

@@ -159,7 +159,7 @@ class AutoUpdateQ(BaseModel):
 def get_auto_update():
     import settings as S
     c = S.load().get("auto_update", {}) or {}
-    return {"enabled": bool(c.get("enabled", True)), "interval_min": int(c.get("interval_min", 30))}
+    return {"enabled": bool(c.get("enabled", True)), "interval_min": int(c.get("interval_min", 15))}
 
 @app.post("/setup/auto_update")
 def set_auto_update(q: AutoUpdateQ):
@@ -169,7 +169,7 @@ def set_auto_update(q: AutoUpdateQ):
     if q.interval_min is not None: patch["interval_min"] = max(5, int(q.interval_min))
     S.save({"auto_update": patch})
     c = S.load().get("auto_update", {})
-    return {"ok": True, "enabled": bool(c.get("enabled", True)), "interval_min": int(c.get("interval_min", 30))}
+    return {"ok": True, "enabled": bool(c.get("enabled", True)), "interval_min": int(c.get("interval_min", 15))}
 
 # ── 启动加载 ──────────────────────────────────────────────
 @app.on_event("startup")
@@ -1358,6 +1358,7 @@ def papers(collection: Optional[str] = None, topic: Optional[int] = None,
             "collections": p.get("collections", []),
             "needs_review": bool(p.get("needs_review", False)),   # folder 模式：AI 抽的题录待核对
             "no_text": T.safe_name(p["key"]) in notextk,          # C1/A2：扫描件（有 PDF 但无可抽文本，需 OCR，不可深索）
+            "ingested_at": p.get("ingested_at", ""),               # 供「最新入库」排序
             "score": _rec_score(p, g), "deep": _isdeep,
         })
     if sort == "recommend":
@@ -1367,6 +1368,8 @@ def papers(collection: Optional[str] = None, topic: Optional[int] = None,
             try: return int(x["year"] or 0)
             except Exception: return 0
         out.sort(key=lambda x: -_y(x))
+    elif sort == "ingested":
+        out.sort(key=lambda x: x.get("ingested_at", ""), reverse=True)   # 最新入库优先
     return {"papers": out[:limit], "total": len(out),
             "collection": collection, "topic": topic, "category": category, "deep": deep, "sort": sort}
 

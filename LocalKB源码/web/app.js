@@ -101,10 +101,8 @@
     if (APP.source !== "folder") return;
     const sub = document.querySelector(".wizard-sub");
     if (sub) sub.textContent = "把一个文件夹里的 PDF 变成能秒级检索、可视化、可对话的本地知识库。全程离线，隐私不出本机。";
-    const bh = $("#build-modal .modal-box .hint");
-    if (bh) bh.textContent = "重新扫描你的知识库文件夹，只处理新加入的 PDF，已入库的会跳过。（也可以直接把 PDF 拖进窗口即时入库。）";
     const bt = $("#btn-build");
-    if (bt) bt.title = "加了新 PDF 后点这里增量更新（或直接把 PDF 拖进窗口）";
+    if (bt) bt.title = "加了新 PDF 后点一次即在后台增量更新（也可直接把 PDF 拖进窗口即时入库）。想定时自动更新？到 ⚙ 设置里开。";
   }
 
   // ── 顶栏状态 pill（读 /health：mode=null|light|full）+ 常驻进度条（读 /index/status）──
@@ -733,12 +731,32 @@
       </div></div>`;
   }
 
+  // 期刊分级分布：把「待确认」并入「普通」显示（检索卡仍保留「待确认」徽标以提示核对未识别刊）
+  function mergeProvisionalTier(by) {
+    const out = []; let prov = 0;
+    (by || []).forEach((x) => { if (x.tier === "待确认") prov += x.n; else out.push({ tier: x.tier, n: x.n }); });
+    if (prov > 0) {
+      const norm = out.find((x) => x.tier === "普通");
+      if (norm) norm.n += prov; else out.push({ tier: "普通", n: prov });
+    }
+    return out;
+  }
+  // 「最近入库」的「展开更多」→ 跳「浏览」并按入库时间排序
+  function _goBrowseRecent() {
+    BR.sort = "ingested"; BR.deepFilter = "";
+    const bs = $("#bl-sort"); if (bs) bs.value = "ingested";
+    const df = $("#bl-deep-filter"); if (df) df.value = "";
+    const firstBrowse = !browseLoaded;
+    switchTab("browse");
+    if (!firstBrowse) selectCollection(null, "全部", null);
+  }
   function tierCard(by_tier) {
+    by_tier = mergeProvisionalTier(by_tier);
     if (!by_tier || !by_tier.length) return "";
     const max = Math.max.apply(null, by_tier.map((d) => d.n)) || 1;
     const rows = by_tier.map((d) => hbar(d.tier, d.n, max, badgeColor(d.tier), true)).join("");
     return `<div class="dcard"><h4>期刊分级分布</h4>
-      <p class="dcard-sub">按当前锁定学科评定 · 颜色越暖越权威（红＝权威 / 橙＝核心 / 绿＝一般 / 灰＝普通·待确认）</p>${rows}</div>`;
+      <p class="dcard-sub">按当前锁定学科评定 · 颜色越暖越权威（红＝权威 / 橙＝核心 / 绿＝一般 / 灰＝普通）</p>${rows}</div>`;
   }
 
   function journalCard(by_journal) {
@@ -784,7 +802,7 @@
   // 概览卡：期刊分级分布 + 一行"文献构成"速览（副本#12：除分级分布再放点啥）
   function overviewCard(d) {
     const cov = d.coverage || {};
-    const by = d.by_tier || [];
+    const by = mergeProvisionalTier(d.by_tier || []);
     const max = Math.max.apply(null, by.map((x) => x.n).concat([1]));
     const rows = by.map((x) => hbar(x.tier, x.n, max, badgeColor(x.tier), true)).join("");
     const zh = (d.by_lang || []).find((x) => /中/.test(x.lang)) || {};
@@ -800,15 +818,17 @@
       <p class="dcard-sub" style="margin-top:10px">期刊分级分布（按当前锁定学科评定 · 红＝权威/橙＝核心/绿＝一般/灰＝普通）</p>${rows}</div>`;
   }
 
-  // 底部：为什么用 Agent 驱动（用户友好 + 可跳转）
+  // 底部：这个知识库能帮你做什么（用户友好系统介绍，替代原「劝去 Agent」卡）
   function agentGuideCard() {
     return `<div class="dcard span2 dash-guide">
-      <div class="dg-ic">🤖</div>
+      <div class="dg-ic">📚</div>
       <div class="dg-body">
-        <div class="dg-h">想更进一步：让 AI 助手驱动整个知识库</div>
-        <p>自带检索/对话已经够用。想系统地检索、写带页码引用的综述、跨主题梳理、把结论沉淀复用，可以再接
-           <b>Claude Code / Codex</b>：它能查你的库、读到期刊印刷页码、把综合写回，下次一键复用。两条路都可用。</p>
-        <button class="primary-btn" id="dg-go">去「🤖 Agent」看怎么接入 →</button>
+        <div class="dg-h">这个知识库能帮你做什么</div>
+        <p><b>🔍 秒级检索</b>——输入一个研究问题，立刻从全库找出相关文献和原文段落，按期刊权威度排序。
+           <b>📄 深索精读</b>——把 PDF 深索后，检索能精确到期刊印刷页码，论点可直接引用、可跨篇综合。
+           <b>📖 综合沉淀</b>——把问答与综述存成 wiki 页，下次同类问题一键复用，知识越用越厚。
+           <b>🤖 接入 AI 助手</b>——把库接进 Claude Code / Codex，让它替你查库、读页码、写带引用的综述并写回。</p>
+        <button class="primary-btn" id="dg-go">看看怎么接入 AI 助手 →</button>
       </div></div>`;
   }
 
@@ -871,19 +891,24 @@
             ? `只有深索过的文献才能被精读、页级引用、跨篇综合。已深索 <b>${num(deep)}</b>/${num(withPdf)} 篇，还有 ${num(remain)} 篇。`
             : `已全部深索完成 ✓`)}
           ${deep > 0 ? `<a class="dh-link" id="dash-see-deep">查看已深索 ${num(deep)} 篇 →</a>` : ""}
-          ${remain > 0 ? `<a class="dh-link" id="dash-go-deep">去深索这 ${num(remain)} 篇 →</a>` : ""}
+          ${remain > 0 ? `<a class="dh-link" id="dash-go-deep">深索全部未深索文献 →</a>` : ""}
           ${withPdf > 0 ? `<a class="dh-link dash-deep-detail" id="dash-deep-detail">深索详情 / 暂停 →</a>` : ""}</div>
+        ${remain > 0 ? `<div class="dh-deep-note">深索会把 PDF 全文切块并向量化，之后 AI 才能精读到页码、跨篇综合、生成带引用的综述。全部深索较耗时（每篇约数秒，可放后台慢慢跑，不影响你继续使用）。</div>` : ""}
       </div></div>`;
     $("#dash").innerHTML = header
       + `<div class="dash-grid dash-2col">${overviewCard(d)}${recentCard(d.recent)}</div>`
       + agentGuideCard();
     // 事件
     const seeD = $("#dash-see-deep"); if (seeD) seeD.addEventListener("click", () => _goDeepBrowse("yes"));
-    const goD = $("#dash-go-deep"); if (goD) goD.addEventListener("click", () => _goDeepBrowse("no"));
-    const ddD = $("#dash-deep-detail"); if (ddD) ddD.addEventListener("click", openDeepPanel);   // K1：库总览深索卡 → 深索详情面板
-    const exp = $("#rc-expand"); if (exp) exp.addEventListener("click", () => {
-      const more = $(".recent-more"); if (more) { more.hidden = false; exp.hidden = true; }
+    const goD = $("#dash-go-deep"); if (goD) goD.addEventListener("click", async () => {
+      goD.textContent = "正在开始全量深索…";
+      try { const r = await jpost("/index/deep", { scope: "all" });
+        if (r && r.ok === false) { goD.textContent = "已有任务在跑，稍后再试"; }
+        else { poll(); goD.textContent = "已开始后台深索，进度见顶部 ✓"; }
+      } catch (e) { goD.textContent = "启动失败：" + (e.message || e); }
     });
+    const ddD = $("#dash-deep-detail"); if (ddD) ddD.addEventListener("click", openDeepPanel);   // K1：库总览深索卡 → 深索详情面板
+    const exp = $("#rc-expand"); if (exp) exp.addEventListener("click", _goBrowseRecent);
     // R10：库总览「最近入库」的深索按钮自己 try/finally 恢复文字并用浮层反馈（不写进隐藏的浏览页 #bl-msg）
     $$(".rc-deep").forEach((b) => b.addEventListener("click", async () => {
       const old = b.textContent; b.disabled = true; b.textContent = "…";
@@ -1474,9 +1499,9 @@
   ];
   const AG_PROMPTS = [
     "帮我查库里关于「认罪认罚从宽对司法信任的影响」的权威文献，按期刊层级排。",
-    "先 list_wiki 看有没有现成综述；没有的话检索后综合一版，再 save_synthesis 存回来。",
+    "先看看库里有没有现成的综述；没有的话检索后综合一版，再帮我存起来。",
     "把库里关于「社会观护」的核心论点综述一下，每个论断带页码引用。",
-    "库里最近加的文献深索了吗？没有的话帮我 localkb_build 深索一下。",
+    "库里最近加的文献深索了吗？没有的话帮我全部深索一遍。",
   ];
   function renderAgentCmds() {
     const d = AG.cfg; if (!d) return;
@@ -1842,6 +1867,7 @@
     loadEngine(); // 同时回填检索引擎当前后端/是否已设 key
     loadDiscipline(); // 回填期刊分级学科下拉
     loadAutoUpdate(); // 回填自动更新开关/间隔
+    loadOnlyPdf();    // 回填「只导入有 PDF」开关
   }
 
   // ── 自动更新（即改即存）──
@@ -1850,20 +1876,52 @@
     try {
       const s = await jget("/setup/auto_update");
       en.checked = !!s.enabled;
-      if (iv) iv.value = String(s.interval_min || 30);
+      if (iv) iv.value = String(s.interval_min || 15);
     } catch (e) {}
   }
   async function saveAutoUpdate() {
     const en = $("#au-enabled"), iv = $("#au-interval"), msg = $("#au-msg");
     try {
-      await jpost("/setup/auto_update", { enabled: en.checked, interval_min: parseInt(iv.value, 10) || 30 });
-      if (msg) msg.textContent = en.checked ? `已开启：约每 ${iv.value} 分钟检查一次新增文献并自动更新。` : "已关闭：只能用顶栏「⟳ 更新知识库」手动更新。";
+      await jpost("/setup/auto_update", { enabled: en.checked, interval_min: parseInt(iv.value, 10) || 15 });
+      if (msg) msg.textContent = en.checked ? `已开启：约每 ${iv.value} 分钟检查一次新增文献并自动更新。` : "已关闭：只能用顶栏「⟳ 手动更新知识库」手动更新。";
     } catch (e) { if (msg) msg.textContent = "保存失败：" + e.message; }
   }
   (function wireAutoUpdate() {
     const en = $("#au-enabled"), iv = $("#au-interval");
     if (en) en.addEventListener("change", saveAutoUpdate);
     if (iv) iv.addEventListener("change", saveAutoUpdate);
+  })();
+
+  // 只导入有 PDF（Zotero 模式）：设置里开关，改后需点「手动更新知识库」重建题录索引
+  async function loadOnlyPdf() {
+    const cb = $("#set-onlypdf"); if (!cb) return;
+    try { const d = await jget("/setup/detect"); cb.checked = !!d.import_only_pdf; } catch (e) {}
+  }
+  (function wireOnlyPdf() {
+    const cb = $("#set-onlypdf"); if (!cb) return;
+    cb.addEventListener("change", async () => {
+      const msg = $("#onlypdf-msg");
+      try {
+        await jpost("/setup/import_only_pdf", { only_pdf: cb.checked });
+        if (msg) msg.textContent = (cb.checked
+          ? "已设为只导入有 PDF 的文献。"
+          : "已允许导入纯题录（无 PDF 的也进库）。") + "点顶栏「手动更新知识库」重建题录索引即生效。";
+      } catch (e) { if (msg) msg.textContent = "保存失败：" + e.message; }
+    });
+  })();
+  // 重新查看引导：关设置、按当前状态重开首启向导
+  (function wireRewizard() {
+    const b = $("#set-rewizard"); if (!b) return;
+    b.addEventListener("click", async () => {
+      $("#settings-modal").hidden = true;
+      try {
+        const d = await jget("/setup/detect");
+        WZ.detect = d;
+        if (d.backend === "api" || d.backend === "local") WZ.backend = d.backend;
+      } catch (e) {}
+      $("#wizard").hidden = false;
+      renderStep1();
+    });
   })();
 
   // ── 期刊分级学科：设置里选整库锁定的学科，保存后下次检索即生效 ──
@@ -2030,14 +2088,37 @@
     } catch (e) { msg.className = "hint warn"; msg.textContent = "连接失败：" + esc(e.message); }
     finally { btn.disabled = false; }
   });
+  // 换引擎后旧向量不兼容 → 应用时强制重建索引，并显示「正在重建中」
+  async function doRebuildIndex(msgEl) {
+    if (msgEl) { msgEl.className = "hint"; msgEl.textContent = "正在重建索引（换引擎后旧向量不兼容）…"; }
+    try {
+      const r = await fetch("/build", { method: "POST" });
+      let j = null; try { j = await r.json(); } catch (e) {}
+      if (j && j.ok === false) { if (msgEl) { msgEl.className = "hint warn"; msgEl.textContent = "已有任务在跑，稍后再点「应用检索引擎」重建。"; } return; }
+      poll();
+      await new Promise((resolve) => {
+        let tries = 0;
+        const iv = setInterval(async () => {
+          tries++;
+          try {
+            const s = await (await fetch("/build/status")).json();
+            if (!s.running || tries > 240) {   // 6min 封顶，防后端卡 running 时 await 永不返回、按钮卡死
+              clearInterval(iv);
+              if (msgEl) { msgEl.className = "hint ok"; msgEl.textContent = tries > 240 ? "重建仍在进行，可关闭设置，进度见顶部。" : "✓ 索引已用新引擎重建完成。"; }
+              poll(); if (dashLoaded) loadDashboard("silent"); resolve();
+            } else if (msgEl) { msgEl.textContent = "正在重建索引中…（可关闭设置，进度见顶部）"; }
+          } catch (e) { clearInterval(iv); resolve(); }
+        }, 1500);
+      });
+    } catch (e) { if (msgEl) { msgEl.className = "hint warn"; msgEl.textContent = "重建失败：" + esc(e.message || e); } }
+  }
   $("#eng-save").addEventListener("click", async () => {
     const msg = $("#eng-msg"), btn = $("#eng-save"); btn.disabled = true;
     msg.className = "hint"; msg.textContent = "保存中…";
     try {
       const r = await jpost("/setup/backend", engBody());
-      msg.className = "hint ok";
-      msg.textContent = "✓ 已保存检索引擎（" + (r.backend === "api" ? "API" : "本地") + "）。" + (r.warn ? " ⚠ " + r.warn : "");
-      poll();
+      msg.className = "hint"; msg.textContent = "✓ 已应用检索引擎（" + (r.backend === "api" ? "API" : "本地") + "）。" + (r.warn ? "⚠ " + r.warn + " " : "") + "开始重建索引…";
+      await doRebuildIndex(msg);
     } catch (e) { msg.className = "hint warn"; msg.textContent = "保存失败：" + esc(e.message); }
     finally { btn.disabled = false; }
   });
@@ -2142,37 +2223,36 @@
   // 设置里的「深度索引」小节已删除（F67）：深索入口改由库总览深索卡 + 检索区深索邀请卡 + 浏览页选中深索承担。
 
   // ══════════════════════════════════════════
-  //  建库（增量更新）—— 保留原逻辑
+  //  手动更新知识库（点一次直接后台增量更新，进度走顶部状态条，不弹终端日志窗）
   // ══════════════════════════════════════════
-  let buildTimer = null;
-  // R8：打开弹窗时若后台正在构建，重起 timer 让日志继续滚动（否则重开后日志冻结）
-  $("#btn-build").addEventListener("click", async () => {
-    $("#build-modal").hidden = false;
-    await refreshBuild();
-    try {
-      const s = await (await fetch("/build/status")).json();
-      if (s.running) { clearInterval(buildTimer); buildTimer = setInterval(refreshBuild, 1500); }
-    } catch (e) {}
-  });
-  $("#build-close").addEventListener("click", () => { $("#build-modal").hidden = true; clearInterval(buildTimer); });
-  $("#build-start").addEventListener("click", async () => {
-    $("#build-start").disabled = true;
+  let manualUpdating = false;
+  async function doManualUpdate() {
+    if (manualUpdating) return;
+    const btn = $("#btn-build"); const old = btn.textContent;
+    const restore = () => { manualUpdating = false; btn.disabled = false; btn.textContent = old; };
+    manualUpdating = true; btn.disabled = true; btn.textContent = "⟳ 更新中…";
     try {
       const r = await fetch("/build", { method: "POST" });
       let j = null; try { j = await r.json(); } catch (e) {}
-      // C7：忙时后端返回 {ok:false}，此时保持按钮可用并提示，不假装已开始
-      if (j && j.ok === false) { $("#build-log").textContent = "已有任务在跑，稍后再试。"; $("#build-start").disabled = false; return; }
-    } catch (e) { $("#build-log").textContent = "启动失败：" + (e.message || e); $("#build-start").disabled = false; return; }
-    clearInterval(buildTimer); buildTimer = setInterval(refreshBuild, 1500);   // 防覆盖泄漏
-  });
-  async function refreshBuild() {
-    try {
-      const s = await (await fetch("/build/status")).json();
-      $("#build-log").textContent = (s.log || []).join("\n") || "（无输出）";
-      $("#build-log").scrollTop = 1e9;
-      if (!s.running) { $("#build-start").disabled = false; clearInterval(buildTimer); }
-    } catch (e) {}
+      // 忙时后端返回 {ok:false}，提示而非假装已开始
+      if (j && j.ok === false) { btn.textContent = "有任务在跑，稍后再试"; setTimeout(restore, 1800); return; }
+      poll();  // 顶部状态/进度条立刻接管
+      let tries = 0;
+      const iv = setInterval(async () => {
+        tries++;
+        try {
+          const s = await (await fetch("/build/status")).json();
+          if (!s.running || tries > 240) {   // 240×1.5s≈6min 封顶，防后端卡 running 时按钮永久禁用
+            clearInterval(iv); restore();
+            if (dashLoaded) loadDashboard("silent");
+            if (browseLoaded) { browseLoaded = false; if (!$("#panel-browse").hidden) loadBrowse(); }
+            poll();
+          }
+        } catch (e) { clearInterval(iv); restore(); }
+      }, 1500);
+    } catch (e) { btn.textContent = "更新失败"; setTimeout(restore, 1800); }
   }
+  $("#btn-build").addEventListener("click", doManualUpdate);
 
   // ══════════════════════════════════════════
   //  首启向导（Onboarding）
@@ -2198,23 +2278,12 @@
       return `<li><span class="ic">${ok ? icOk : icMiss}</span><span class="k">${k}</span>
         <span class="v ${ok ? "ok" : "miss"}">${ok ? esc(String(val)) : (missTxt || "未检测到")}</span></li>`;
     };
-    // 模型状态行随后端：API 模式无需本地模型；本地模式看模型文件是否就绪
-    const isApi = d.backend === "api";
-    let semanticRow, rerankerRow;
-    if (isApi) {
-      semanticRow = `<li><span class="ic">☁️</span><span class="k">语义模型</span><span class="v ok">API 模式（无需本地模型）</span></li>`;
-      rerankerRow = `<li><span class="ic">☁️</span><span class="k">重排模型</span><span class="v ok">API 模式（无需本地模型）</span></li>`;
-    } else {
-      semanticRow = row("🧠", "⏬", "语义模型", d.models_local ? "已就绪（bge-m3）" : "", null, "尚未下载（可在第 4 步准备）");
-      rerankerRow = row("🎯", "⏬", "重排模型", d.reranker_local ? "已就绪" : "", null, "尚未下载（可在第 4 步准备）");
-    }
     const noZoteroHint = !d.zotero_dir
       ? `<div class="wz-note">未检测到 Zotero —— 没关系，第 3 步可选「文件夹模式」，直接放 PDF 建库。</div>` : "";
     $("#wizard-body").innerHTML =
-      `<ul class="wz-check">
+      `<div class="wz-note">只需 4 步、几分钟，就能把你的文库变成可秒级检索、可对话的本地知识库。先看看环境：</div>
+      <ul class="wz-check">
         ${row("📁", "⚠️", "Zotero 目录", d.zotero_dir, null, "未探测到（可用文件夹模式）")}
-        ${semanticRow}
-        ${rerankerRow}
       </ul>
       ${noZoteroHint}
       <div class="wz-actions">
@@ -2236,11 +2305,29 @@
         <input id="wzk-key" type="password" value="${esc(cur)}" placeholder="去 https://account.siliconflow.cn/zh/login 登录领免费额度" />
       </div>
       <p class="wz-mini">👉 <a href="https://account.siliconflow.cn/zh/login" target="_blank" rel="noopener">点此打开 SiliconFlow 登录页领 Key</a>。也可以先跳过，之后在「⚙ 设置」里补。</p>
+      <div class="wz-actions-inline">
+        <button class="ghost2c" id="wzk-test">测试连接（把要用的免费模型测一遍）</button>
+        <span id="wzk-test-msg" class="wz-test-msg"></span>
+      </div>
       <div id="wzk-msg"></div>
       <div class="wz-actions">
         <button class="ghost2c wz-back" id="wzk-back">← 上一步</button>
-        <button class="primary" id="wzk-next">下一步：选择检索引擎 →</button>
+        <button class="primary" id="wzk-next">下一步：配置检索引擎 →</button>
       </div>`;
+    $("#wzk-test").addEventListener("click", async () => {
+      const k = $("#wzk-key").value.trim(), msg = $("#wzk-test-msg");
+      if (!k) { msg.className = "wz-test-msg err"; msg.textContent = "请先填 Key"; return; }
+      msg.className = "wz-test-msg"; msg.textContent = "测试中…";
+      try {
+        const r = await jpost("/setup/test_api", { base: (WZ.api && WZ.api.base) || "https://api.siliconflow.cn/v1", key: k,
+          embed_model: (WZ.api && WZ.api.embed_model) || "BAAI/bge-m3", rerank_model: (WZ.api && WZ.api.rerank_model) || "BAAI/bge-reranker-v2-m3" });
+        if (r && r.ok) {
+          if (WZ.api) WZ.api.key = k; WZ.apiTested = true;
+          msg.className = "wz-test-msg ok";
+          msg.textContent = `✓ 免费模型可用（向量维度 ${num(r.dim)}，延迟 ${num(r.latency_ms)}ms）。下一步会自动用 API 引擎、无需再测。`;
+        } else { WZ.apiTested = false; msg.className = "wz-test-msg err"; msg.textContent = "连接失败：" + esc((r && r.msg) || "未知错误"); }
+      } catch (e) { WZ.apiTested = false; msg.className = "wz-test-msg err"; msg.textContent = "连接失败：" + esc(e.message); }
+    });
     $("#wzk-back").addEventListener("click", renderStep1);
     $("#wzk-next").addEventListener("click", async () => {
       const k = $("#wzk-key").value.trim();
@@ -2262,7 +2349,9 @@
 
   // ── 第 2 步：选择检索引擎（本地 / API 二选一）──
   function renderStep2() {
-    setStep(3);
+    setStep(2);
+    // 上一步填了 SiliconFlow Key → 默认用 API 引擎（免下模型、免再测）
+    if (WZ.api && WZ.api.key && WZ.backend !== "api") WZ.backend = "api";
     const a = WZ.api;
     const localSel = WZ.backend === "local";
     $("#wizard-body").innerHTML =
@@ -2325,6 +2414,10 @@
       $("#wz-api-form").hidden = be !== "api";
     };
     $$("input[name=wz-backend]").forEach((r) => r.addEventListener("change", syncBackend));
+    // 上一步已用该 Key 测通 → 提示免测（apiTested 已为 true，下一步不会拦）
+    if (WZ.apiTested && WZ.api && WZ.api.key) {
+      const tm0 = $("#wz-api-test-msg"); if (tm0) { tm0.className = "wz-test-msg ok"; tm0.textContent = "✓ 已用上一步的 Key 测通，无需再测。"; }
+    }
 
     // 表单输入回写 WZ.api；改动后视为「未测通」
     const readApiForm = () => {
@@ -2392,7 +2485,7 @@
   // ── 第 3 步：连接文库 ──
   // 第 3 步：选择文库来源（连接 Zotero / 文件夹模式）
   function renderStep3() {
-    setStep(4);
+    setStep(3);
     const d = WZ.detect || {};
     if (!WZ.srcChoice) WZ.srcChoice = d.zotero_detected ? "zotero" : "folder";
     const zSel = WZ.srcChoice === "zotero";
@@ -2450,13 +2543,28 @@
       try {
         const r = await jpost("/setup/connect", zdir ? { zotero_dir: zdir } : {});
         WZ.connected = r; WZ.srcChoice = "zotero"; APP.source = "zotero";
-        $("#wz3c-msg").innerHTML = `<div class="wz-result">✅ 已连接，共 ${num(r.entries)} 条文献</div>`;
-        setTimeout(renderStep4, 600);
+        $("#wz3c-msg").innerHTML = `<div class="wz-result">✅ 已连接 Zotero，共 ${num(r.entries)} 条文献。确认无误后点「下一步」。</div>`;
+        const act = btn.parentNode;
+        if (act) {
+          act.innerHTML = `<button class="ghost2c wz-back" id="wz3-back2">← 上一步</button><button class="primary" id="wz3-next2">下一步：建立索引 →</button>`;
+          $("#wz3-back2").addEventListener("click", renderStep2);
+          $("#wz3-next2").addEventListener("click", renderStep4);
+        }
       } catch (e) {
         $("#wz3c-msg").innerHTML = `<div class="wz-err">连接失败：${esc(e.message)}</div>`;
         btn.disabled = false;
       }
     });
+    // 从后续步骤回退时：本会话已连过 Zotero → 直接恢复「下一步」态，免得重连
+    if (WZ.connected) {
+      $("#wz3c-msg").innerHTML = `<div class="wz-result">✅ 已连接 Zotero，共 ${num(WZ.connected.entries)} 条文献。点「下一步」继续。</div>`;
+      const cb0 = $("#wz3-connect"), act0 = cb0 && cb0.parentNode;
+      if (act0) {
+        act0.innerHTML = `<button class="ghost2c wz-back" id="wz3-back2">← 上一步</button><button class="primary" id="wz3-next2">下一步：建立索引 →</button>`;
+        $("#wz3-back2").addEventListener("click", renderStep2);
+        $("#wz3-next2").addEventListener("click", renderStep4);
+      }
+    }
   }
   async function renderStep3Folder() {
     const nativePick = (typeof window !== "undefined" && window.pywebview !== undefined);
@@ -2509,13 +2617,29 @@
         WZ.srcChoice = "folder"; WZ.folderDir = dir; WZ.folderConnected = r;
         APP.source = "folder"; APP.folderDir = dir; APP.srcLoaded = true; applySourceCopy();
         const n = num(r.entries || 0);
-        $("#wz3f-msg").innerHTML = `<div class="wz-result">✅ 已建立文件夹库，发现 ${n} 个 PDF${r.entries ? "" : "（空文件夹也没关系，稍后把 PDF 拖进窗口就会自动入库）"}</div>`;
-        setTimeout(renderStep4, 700);
+        $("#wz3f-msg").innerHTML = `<div class="wz-result">✅ 已建立文件夹库，发现 ${n} 个 PDF${r.entries ? "" : "（空文件夹也没关系，稍后把 PDF 拖进窗口就会自动入库）"}。点「下一步」继续。</div>`;
+        const act = btn.parentNode;
+        if (act) {
+          act.innerHTML = `<button class="ghost2c wz-back" id="wz3f-back2">← 上一步</button><button class="primary" id="wz3f-next2">下一步：建立索引 →</button>`;
+          $("#wz3f-back2").addEventListener("click", renderStep2);
+          $("#wz3f-next2").addEventListener("click", renderStep4);
+        }
       } catch (e) {
         $("#wz3f-msg").innerHTML = `<div class="wz-err">建立失败：${esc(e.message)}</div>`;
         btn.disabled = false;
       }
     });
+    // 从后续步骤回退时：本会话已建过文件夹库 → 直接恢复「下一步」态
+    if (WZ.folderConnected) {
+      const n0 = num(WZ.folderConnected.entries || 0);
+      $("#wz3f-msg").innerHTML = `<div class="wz-result">✅ 已建立文件夹库，发现 ${n0} 个 PDF。点「下一步」继续。</div>`;
+      const cb1 = $("#wz3f-connect"), act1 = cb1 && cb1.parentNode;
+      if (act1) {
+        act1.innerHTML = `<button class="ghost2c wz-back" id="wz3f-back2">← 上一步</button><button class="primary" id="wz3f-next2">下一步：建立索引 →</button>`;
+        $("#wz3f-back2").addEventListener("click", renderStep2);
+        $("#wz3f-next2").addEventListener("click", renderStep4);
+      }
+    }
     renderMetaDep();
   }
   // 抽题录需 LLM Key 的三态引导
@@ -2550,7 +2674,7 @@
 
   // ── 第 4 步：准备检索引擎（仅本地模式需下载模型；API 模式直接就绪）──
   function renderStep4() {
-    setStep(5);
+    setStep(4);
     const readyHtml =
       `<div class="wz-note">检索引擎已就绪 ✓${WZ.backend === "api" ? "（API 模式，无需本地模型）" : "（本地模型已在）"}。可直接进入下一步。</div>
       <div class="wz-actions">
@@ -2659,7 +2783,7 @@
 
   // ── 第 5 步：即时索引（词法层）──
   function renderStep5() {
-    setStep(6);
+    setStep(4);
     const isFolder = WZ.srcChoice === "folder";
     const entries = WZ.connected ? WZ.connected.entries : (WZ.folderConnected ? WZ.folderConnected.entries : null);
     const emptyFolder = isFolder && (entries === 0);

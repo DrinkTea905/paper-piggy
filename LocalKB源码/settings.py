@@ -26,7 +26,7 @@ DEFAULT = {
     # 自动更新：Zotero 新增条目 / 文件夹新增 PDF 时，后台定时增量更新（只跑轻量层+语义，深索永远手动）
     "auto_update": {
         "enabled": True,
-        "interval_min": 30,
+        "interval_min": 15,
     },
     # 文件夹模式的题录抽取 LLM（key 空时复用 api/sac 的 key，见 folder_meta._conf）
     "folder_meta": {
