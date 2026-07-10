@@ -160,7 +160,7 @@ def _compute_dist(papers, disc):
         if not j:
             continue
         g = grade(j, p.get("issn", ""), compute=True)   # 预热期允许冷算
-        cn = g["cn"] if g else (p.get("journal_tier") or "未知")
+        cn = g["cn"] if g else "未知"   # F3：grade 失败不再回退原始档名（防台湾核心/台湾一般等泄漏进 6 档分布）
         rnk = g["rank"] if g else 6
         tier_n[(cn, rnk)] += 1
         jn[j] += 1; jtier[j] = (cn, rnk)

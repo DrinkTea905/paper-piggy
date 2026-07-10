@@ -89,23 +89,23 @@
         <div class="bt-scroll">
           <div class="bt-legend" title="每个分类/收藏夹后的两个数字：左＝已深索篇数，右＝该组总篇数">数字＝<b>已深索</b> / 总篇数</div>
           <div id="bt-all" class="bt-all active">⭐ 全部文献<span class="bt-cnt" id="bt-all-cnt"></span></div>
-          <!-- AI 按语义自动归类的主题（会随库变动） -->
-          <div class="bt-head">
-            <span class="bt-caret2" data-sec="topics">▾</span>
-            <span class="bt-head-title" title="AI 按语义把已深索文献自动归类，会随库变动">🧠 AI 自动主题</span>
-            <button class="bt-head-btn" id="bt-topics-gen" title="用 AI 把已深索文献自动归类成主题">🔄 生成主题</button>
-          </div>
-          <div id="bt-topics-body">
-            <div id="bt-topics" class="bt-topics"><div class="bt-loading">加载主题中…</div></div>
-          </div>
-          <!-- 你手动整理的分类清单 -->
+          <!-- 你手动整理的分类清单（F10：提到 AI 分类之前） -->
           <div class="bt-head">
             <span class="bt-caret2" data-sec="kbc">▾</span>
-            <span class="bt-head-title" id="bt-kbc-title" title="你手动整理的清单；点这里查看全部已深索文献">🗂 我的分类（手动整理）</span>
+            <span class="bt-head-title" id="bt-kbc-title" title="你手动整理的清单；点这里查看该清单里的文献">🗂 手动分类</span>
           </div>
           <div id="bt-kbc-body">
             <div id="bt-kbcats" class="bt-kbcats"></div>
             <button id="bt-kbcat-new" class="bt-kbcat-new">＋ 新建分类</button>
+          </div>
+          <!-- AI 按语义自动归类的主题（会随库变动） -->
+          <div class="bt-head">
+            <span class="bt-caret2" data-sec="topics">▾</span>
+            <span class="bt-head-title" title="AI 按语义把所有文献自动归类，会随库变动">🧠 AI分类</span>
+            <button class="bt-head-btn" id="bt-topics-gen" title="用 AI 把所有文献自动归类成主题">🔄 生成主题</button>
+          </div>
+          <div id="bt-topics-body">
+            <div id="bt-topics" class="bt-topics"><div class="bt-loading">加载主题中…</div></div>
           </div>
           <div id="bt-zotero-sec">
             <div class="bt-head">
@@ -132,12 +132,12 @@
               <option value="year">年份最新</option>
               <option value="ingested">最新入库</option>
             </select>
-            <button id="bl-addcat" class="ghost2b" disabled title="把勾选的文献加入某个「我的分类」">＋ 加入分类</button>
+            <button id="bl-addcat" class="ghost2b" disabled title="把勾选的文献加入某个「手动分类」">＋ 加入分类</button>
             <button id="bl-cite-sel" class="ghost2b" disabled title="复制勾选文献的规范引文（GB/T 7714 国标）">⧉ 导出选中引文</button>
-            <button id="bl-deep-sel" class="primary-btn" disabled>深索选中 <span id="bl-sel-n">0</span> 篇</button>
+            <button id="bl-deep-sel" class="primary-btn" disabled>深索选中的未深索文献 <span id="bl-sel-n">0</span> 篇</button>
           </div>
         </div>
-        <div class="bl-cat-hint">💡 想把文献归类？勾选后点「＋ 加入分类」，或右键文献卡 / 把卡片拖到左侧「我的分类」上。</div>
+        <div class="bl-cat-hint">💡 想把文献归类？勾选后点「＋ 加入分类」，或右键文献卡 / 把卡片拖到左侧「手动分类」上。</div>
         <div id="bl-tip" class="bl-tip"></div>
         <div id="empty-dropzone" class="empty-dropzone" hidden>
           <div class="ed-ic">📥</div>
@@ -330,7 +330,7 @@
         <div id="eng-api">
           <p class="hint">👉 还没有 Key？去 <a href="https://account.siliconflow.cn/zh/login" target="_blank" rel="noopener">SiliconFlow（硅基流动）</a> 登录即领免费额度。填这一个 Key 即可全局复用。</p>
           <label>Base URL <input id="eng-base" placeholder="https://api.siliconflow.cn/v1" /></label>
-          <label>API Key <input id="eng-key" type="password" placeholder="留空＝不改" /></label>
+          <label>API Key <input id="eng-key" type="password" placeholder="填过就不用再填，留空即可" /></label>
           <details>
             <summary>高级：嵌入 / 重排模型（一般不用改）</summary>
             <label>嵌入模型 <input id="eng-embed" placeholder="BAAI/bge-m3" /></label>
@@ -348,18 +348,18 @@
         <h4>🧬 深索摘要（AI 摘要当检索前缀，提升召回）</h4>
         <p class="hint">给每篇深索文献生成 ~150 字摘要当检索前缀，更易被搜到。选择<b>由谁来生成</b>（一点即存）：</p>
         <div class="sac-gen">
-          <label class="sac-gen-opt"><input type="radio" name="sac-gen" value="server" />
-            <span><b>服务端自动生成</b>（用你配的 API Key，耗额度）<br><small>深索时后端调 SiliconFlow 等自动补摘要，全自动，无需 agent 参与。</small></span></label>
           <label class="sac-gen-opt"><input type="radio" name="sac-gen" value="agent" />
-            <span><b>交给 Agent 生成</b>（推荐）<br><small>深索时让 Claude Code / Codex 自己写摘要，省 API 额度、质量更好。</small></span></label>
+            <span><b>交给 Agent 生成</b>（推荐）<br><small>在对话里让 Claude Code / Codex 跑深索时，它边深索边自己写摘要——省 API 额度、质量更好。注意：摘要只在用 Agent 跑深索时生成；在应用内直接点「深索」不会补摘要。</small></span></label>
+          <label class="sac-gen-opt"><input type="radio" name="sac-gen" value="server" />
+            <span><b>服务端自动生成</b>（用你配的 API Key，耗额度）<br><small>在应用内点深索时，后端调 SiliconFlow 等自动补摘要，全自动、无需 Agent 参与。</small></span></label>
           <label class="sac-gen-opt"><input type="radio" name="sac-gen" value="off" />
             <span><b>不生成</b><br><small>深索只做全文切块，不额外生成摘要前缀。</small></span></label>
         </div>
         <div id="sac-status" class="sac-status hint"></div>
         <details class="sac-adv">
           <summary>高级：单独指定摘要用的服务商 / key / 模型（可选）</summary>
-          <label>Base URL <input id="sac-base" placeholder="留空＝复用检索引擎的 API" /></label>
-          <label>API Key <input id="sac-key" type="password" placeholder="留空＝复用检索引擎的 key" /></label>
+          <label>Base URL <input id="sac-base" placeholder="不用填，会复用检索引擎的 API" /></label>
+          <label>API Key <input id="sac-key" type="password" placeholder="不用填，会复用检索引擎的 key" /></label>
           <label>模型 <input id="sac-model" placeholder="Qwen/Qwen2.5-7B-Instruct（免费）" /></label>
           <div class="set-errbtns">
             <button id="sac-adv-save" class="ghost">保存高级设置</button>

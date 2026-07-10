@@ -4,6 +4,7 @@
   /* PaperPiggy 小猪主题：顶栏深梅红，品牌/激活态用小猪粉（与检索蓝分工，不冲突） */
   --topbar: #4e2a3e; --brand: #e8548a; --brand-d: #d43f76;
   --ok: #16a34a; --ok-bg: #dcfce7; --ok-fg: #166534;
+  --purple: #7c3aed;   /* F5：四步图第 3 步用色 */
 }
 /* 关键修复：确保 hidden 属性能覆盖 .wizard/.modal/.panel 的 display:flex，否则它们永远显示 */
 [hidden] { display: none !important; }
@@ -67,7 +68,7 @@ body {
 .sac-gen { display: flex; flex-direction: column; gap: 6px; margin: 6px 0 4px; }
 .sac-gen .sac-gen-opt { display: flex; align-items: flex-start; gap: 8px; margin: 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; cursor: pointer; color: var(--fg); font-size: 13px; }
 .sac-gen .sac-gen-opt:hover { border-color: var(--accent); }
-.sac-gen .sac-gen-opt input { margin-top: 2px; flex: 0 0 auto; }
+.sac-gen .sac-gen-opt input { width: 16px; height: 16px; margin-top: 2px; flex: 0 0 auto; cursor: pointer; }  /* F6：radio 不吃 modal-box 的 width:100%，否则单选圈被撑大、卡片竖滚+横滚 */
 .sac-gen .sac-gen-opt small { color: var(--muted); font-size: 12px; }
 
 /* 副本#2：Agent 页 ②③ 合并成一屏（两列并排，窄屏自动换行） */
@@ -96,6 +97,13 @@ button:disabled { opacity: .6; cursor: default; }
 .tag { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 10px; white-space: nowrap; }
 .tag.full { background: var(--ok-bg); color: var(--ok-fg); }
 .tag.abstract { background: #f1f5f9; color: #64748b; }
+/* F11/F12：可点击深索的「未深索」徽标——hover/聚焦变「深索该篇」 */
+.tag.abstract.deep-one { cursor: pointer; user-select: none; transition: background .12s, color .12s; }
+.tag.abstract .lbl-hover { display: none; }
+.tag.abstract.deep-one:hover, .tag.abstract.deep-one:focus-visible { background: #e0e7ff; color: #4338ca; outline: none; }
+.tag.abstract.deep-one:hover .lbl-idle, .tag.abstract.deep-one:focus-visible .lbl-idle { display: none; }
+.tag.abstract.deep-one:hover .lbl-hover, .tag.abstract.deep-one:focus-visible .lbl-hover { display: inline; }
+.tag.abstract.deep-one.deep-pending { background: #fef3c7; color: #b45309; cursor: default; }
 .tag.nopdf { background: #f1f5f9; color: #94a3b8; }
 .tag.wiki { background: #ede9fe; color: #6d28d9; }
 .tag.wiki.agent { background: #fef3c7; color: #b45309; }   /* 🤖 agent 写回·未核验 */
@@ -139,9 +147,13 @@ button:disabled { opacity: .6; cursor: default; }
 .modal-box input, .modal-box select { width: 100%; margin-top: 4px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; font-size: 14px; color: var(--fg); }
 .hint { color: var(--muted); font-size: 12px; }
 .hint a { color: var(--accent); }
-.modal-actions { display: flex; gap: 8px; margin-top: 16px; }
+.modal-actions { display: flex; gap: 8px; margin-top: 20px; justify-content: space-between; align-items: center; }  /* F7：两端对齐——危险项靠左、主操作靠右 */
 .modal-actions button { padding: 8px 18px; border: none; border-radius: 8px; background: var(--accent); color: #fff; font-weight: 600; cursor: pointer; }
 .modal-actions .ghost { background: transparent; border: 1px solid var(--line); color: var(--muted); }
+/* F7：关闭＝主按钮（填色，右侧），恢复默认设置＝次要危险项（描边红，左侧） */
+.modal-actions #set-close { background: var(--accent); color: #fff; border: none; padding: 8px 24px; }
+.modal-actions #set-close:hover { background: var(--accent-d); }
+.modal-actions .ghost.danger { color: #b91c1c; border-color: #b91c1c; }  /* 静止态即显危险红，压过 .modal-actions .ghost 的灰 */
 /* 综合层 Phase 1：主题综述按钮 + 综合页查看器 */
 .tp-gen { margin-left: 4px; border: none; background: transparent; cursor: pointer; font-size: 12px; padding: 0 3px; border-radius: 4px; line-height: 1; }
 .tp-gen:hover { background: rgba(37,99,235,.14); }
@@ -565,10 +577,46 @@ button:disabled { opacity: .6; cursor: default; }
 .rc-tag.done { background: var(--ok-bg); color: var(--ok-fg); }
 .rc-tag.nopdf { background: #f1f5f9; color: #94a3b8; }
 .rc-expand { margin-top: 8px; border: none; background: none; color: var(--accent); cursor: pointer; font-size: 12.5px; }
-.dash-guide { display: flex; gap: 16px; align-items: center; background: linear-gradient(90deg, rgba(232,84,138,.06), rgba(37,99,235,.05)); }
-.dash-guide .dg-ic { font-size: 38px; }
-.dash-guide .dg-h { font-weight: 700; font-size: 15px; margin-bottom: 4px; }
-.dash-guide .dg-body p { font-size: 13px; color: var(--muted); line-height: 1.7; margin: 0 0 10px; }
+/* F5：首页横板四步示意图（替代原 dash-guide 密排文字；作用域 .howto，宽度自适应、一页显示） */
+.howto { width: 100%; border: 1px solid var(--line); border-radius: 16px; padding: 20px 22px 22px;
+  background: linear-gradient(120deg, rgba(232,84,138,.08), rgba(37,99,235,.06)); }
+.howto .ht-head { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; }
+.howto .ht-mascot { width: 48px; height: 48px; border-radius: 13px; flex: 0 0 auto; box-shadow: 0 4px 14px rgba(232,84,138,.28); }
+.howto .ht-head-txt { min-width: 0; }
+.howto .ht-h { font-size: 18px; font-weight: 800; letter-spacing: .3px; }
+.howto .ht-h .hl { color: var(--brand-d); }
+.howto .ht-sub { font-size: 12.5px; color: var(--muted); margin-top: 3px; }
+.howto .ht-cta { margin-left: auto; flex: 0 0 auto; white-space: nowrap; }
+.howto .flow { display: flex; align-items: stretch; gap: 0; }
+.howto .step { flex: 1 1 0; background: var(--card); border: 1px solid var(--line); border-radius: 14px;
+  padding: 15px 14px 14px; position: relative; min-width: 0; box-shadow: 0 3px 10px rgba(60,40,55,.05); }
+.howto .step-top { height: 4px; border-radius: 4px; width: 36px; margin-bottom: 11px; }
+.howto .ht-badge { position: absolute; top: -11px; left: 14px; width: 24px; height: 24px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center; color: #fff; font-size: 13px; font-weight: 800; box-shadow: 0 2px 6px rgba(0,0,0,.15); }
+.howto .st-emoji { font-size: 25px; line-height: 1; margin-bottom: 8px; }
+.howto .st-title { font-size: 14px; font-weight: 800; margin-bottom: 5px; }
+.howto .st-desc { font-size: 11.5px; color: var(--muted); line-height: 1.6; }
+.howto .st-desc b { color: var(--fg); font-weight: 700; }
+.howto .arrow { flex: 0 0 30px; display: flex; align-items: center; justify-content: center; color: var(--brand); }
+.howto .arrow svg { width: 20px; height: 20px; }
+.howto .s1 .step-top { background: var(--brand); } .howto .s1 .ht-badge { background: var(--brand); }
+.howto .s2 .step-top { background: var(--accent); } .howto .s2 .ht-badge { background: var(--accent); }
+.howto .s3 .step-top { background: var(--purple); } .howto .s3 .ht-badge { background: var(--purple); }
+.howto .s4 .step-top { background: var(--ok); } .howto .s4 .ht-badge { background: var(--ok); }
+.howto .ht-foot { margin-top: 16px; text-align: center; font-size: 12.5px; color: var(--topbar); font-weight: 700; }
+.howto .ht-foot .pig { font-size: 15px; }
+/* 窄屏：四步换行、隐藏箭头与 CTA，避免横向滚动 */
+@media (max-width: 760px) {
+  .howto .flow { flex-wrap: wrap; }
+  .howto .arrow { display: none; }
+  .howto .step { flex: 1 1 44%; margin-bottom: 10px; }
+  .howto .ht-cta { display: none; }
+}
+/* F3：概览「当前锁定学科」行 + 分级分布计算中占位 */
+.ov-disc { font-size: 12.5px; color: var(--muted); margin: 8px 0 2px; }
+.ov-disc b { color: var(--fg); }
+.ov-disc .dh-link { cursor: pointer; }
+.ov-dist-pending { font-size: 12.5px; color: var(--muted); padding: 10px 0; }
 .s-sentinel { height: 24px; text-align: center; color: var(--muted); font-size: 12px; }
 .s-sentinel::after { content: "下滑加载更多…"; }
 
@@ -672,7 +720,11 @@ a.wk-export:hover { border-color: var(--accent); color: var(--accent); }
   --card: #211a29; --accent: #6ea8fe; --accent-d: #8bbcff;
   --topbar: #34202c; --brand: #e8548a; --brand-d: #f06fa0;
   --ok: #34d399; --ok-bg: #10362a; --ok-fg: #6ee7b7;
+  --purple: #a78bfa;   /* F5：深色下四步图第 3 步用亮紫 */
 }
+/* F5：四步图深色微调——渐变更亮一点、脚注文字用亮色（--topbar 深色下过暗） */
+:root[data-theme="dark"] .howto { background: linear-gradient(120deg, rgba(232,84,138,.10), rgba(110,168,254,.08)); }
+:root[data-theme="dark"] .howto .ht-foot { color: #e7d3de; }
 /* 深色下若干写死浅色表面的兜底修正（覆盖高频 #fff/#f1f5f9/#f8fafc/#eff6ff 等） */
 :root[data-theme="dark"] select,
 :root[data-theme="dark"] .modal-box input, :root[data-theme="dark"] .modal-box select,

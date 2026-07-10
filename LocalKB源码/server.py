@@ -203,7 +203,8 @@ def health():
     blocks = len(R.M.get("records", {})) if mode == "full" else 0  # 正文块数（段）
     n = blocks if mode == "full" else papers     # 兼容旧字段
     return {"ready": R.STATE.get("ready", False), "mode": mode,
-            "n": n, "papers": papers, "blocks": blocks, "building": BUILD["running"]}
+            "n": n, "papers": papers, "blocks": blocks, "building": BUILD["running"],
+            "deep": len(_deep_keys())}          # F10：「全部文献」显示 已深索/总数
 
 # ── Agent / MCP 接入信息（给应用内 Agent 页，吐出本机真实可用的接入命令）──
 @app.get("/agent/mcp-config")
@@ -314,9 +315,12 @@ def setup_connect(q: ConnectQ):
     try:
         import zotero_source as Z
         if Z.available(q.zotero_dir):
-            n = len(Z.load_papers(q.zotero_dir))
+            papers = Z.load_papers(q.zotero_dir)
+            n = len(papers)
+            with_pdf = sum(1 for p in papers if p.get("has_pdf"))   # F1：向导计数区分「全库 / 将入库」
             S.save({"source": "zotero"})              # 选 zotero 时把 source 切回 zotero
             return {"ok": True, "source": "zotero.sqlite", "entries": n,
+                    "with_pdf": with_pdf, "no_pdf": n - with_pdf,
                     "dir": q.zotero_dir or str(Z.detect_data_dir())}
     except Exception as e:
         log_error("setup/connect zotero", repr(e))
@@ -613,6 +617,12 @@ def stats_ep():
         import grading_svc as GS
         import settings as _S
         s["grading_discipline"] = _S.discipline()
+        try:                                          # F3：概览显示中文学科名
+            import journal_grading as JG
+            s["grading_discipline_name"] = JG.load_data().disciplines().get(
+                _S.discipline(), {}).get("name", _S.discipline())
+        except Exception:
+            s["grading_discipline_name"] = _S.discipline()
         dist = GS.weight_dist(_load_papers())
         if dist:
             s["by_tier"], s["by_journal"] = dist
@@ -1032,7 +1042,13 @@ def categories():
 @app.get("/topics")
 def topics():
     ait = _load_ai_topics()
-    return {"topics": [{"id": t["id"], "name": t["name"], "size": t["size"]} for t in ait.get("topics", [])]}
+    deepk = _deep_keys()   # F10：每主题补已深索数，前端显示 已深索/总篇数
+    out = []
+    for t in ait.get("topics", []):
+        keys = t.get("keys") or []
+        deep = sum(1 for k in keys if is_deep(k, deepk))
+        out.append({"id": t["id"], "name": t["name"], "size": t["size"], "deep": deep})
+    return {"topics": out}
 
 # ── AI 主题聚类：用向量 KMeans 把已索引文献自动归类（无 LLM，簇数自适应）──
 TOPICS_BUILD = {"running": False, "msg": ""}
@@ -1462,6 +1478,7 @@ def _run_build(stage, extra=None, on_done=None):
                 BUILD["log"].append("[build] 重载失败：" + str(e))
             with _BUILD_LOCK:
                 BUILD["running"] = False
+                BUILD["stage"] = ""          # F4：构建结束复位 stage，避免残留 "deep" 让顶栏误报「深索中」
             # A3/A4：把 returncode 贯通给回调（失败时上层决定退回队列/不推进 sig）。
             if on_done:
                 try:
@@ -1711,6 +1728,7 @@ def index_deep_agent(q: DeepAgentQ):
     finally:
         with _BUILD_LOCK:
             BUILD["running"] = False
+            BUILD["stage"] = ""          # F4：deep_agent 结束同样复位 stage
 
 # ── 检索 ──────────────────────────────────────────────────
 class SearchQ(BaseModel):
