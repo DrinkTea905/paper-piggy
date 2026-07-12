@@ -15,6 +15,7 @@ from textutil import tokenize
 import lancedb
 import bm25s
 import journal_tiers as JT
+import source_rules as SR          # 法源/报告规则定档 + 手动改档（优先级高于期刊分级引擎）
 try:
     import journal_grading as JG   # 期刊权重引擎（可选；缺失/出错则回退旧离散档，不影响检索）
 except Exception as _jg_e:
@@ -152,7 +153,15 @@ def _active_discipline():
         return "law"
 
 def _weight_res(r):
-    """算一条候选的期刊权重（检索期动态）。引擎缺失/出错 → None（排序回退旧离散档）。"""
+    """算一条候选的权重（检索期动态）。优先级：手动改档 > 法源/报告规则 > 期刊分级引擎。
+       全部算不出 → None（排序回退旧离散档）。wiki 行 itemtype="wiki"，不进规则、走引擎兜底。"""
+    try:
+        sr = SR.resolve(r.get("key", ""), r.get("itemtype", ""), r.get("title", ""))
+        if sr:
+            return {"tier": sr["tier"], "weight": sr["weight"], "rank": sr["rank"],
+                    "needsReview": False, "src": sr["src"]}
+    except Exception:
+        pass
     if JG is None:
         return None
     try:
@@ -173,6 +182,7 @@ def _attach_weight(d, wr):
     d["weight_tier"] = _TIER_CN.get(_t, _t) if _t else None      # 中文档名（前端主徽标源）
     d["weight_tier_code"] = _t                                    # 原始 T? 码（调试/兼容用）
     d["weight_needs_review"] = bool(wr.get("needsReview")) if wr else False
+    d["weight_src"] = wr.get("src") if wr else None               # manual=手动改档 / rule=法源报告规则（前端标记）
     return d
 
 def _is_wiki(r):
@@ -498,7 +508,14 @@ def _apply_sort(items, sort, lex=False):
     if sort == "relevance":
         items.sort(key=lambda x: -_wiki_effective(x[1], x[0]))
     elif sort == "tier":
-        items.sort(key=lambda x: (JT.rank_of(x[2]), -_wiki_effective(x[1], x[0])))
+        # 手动改档/法源规则的结果带 rank（0~5，与旧离散 rank 同尺度）——tier 排序也要跟着走；
+        # 期刊分级引擎结果不带 rank，维持旧离散档主键（行为不变）。
+        def _rk(x):
+            wr = x[3] if len(x) > 3 else None
+            if wr and wr.get("rank") is not None:
+                return wr["rank"]
+            return JT.rank_of(x[2])
+        items.sort(key=lambda x: (_rk(x), -_wiki_effective(x[1], x[0])))
     else:  # blend
         items.sort(key=lambda x: -(_wiki_effective(x[1], x[0]) + _blend_bonus(x, lex)))
 

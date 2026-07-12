@@ -655,6 +655,13 @@ button:disabled { opacity: .6; cursor: default; }
 .ctx-menu .ctx-item:hover { background: rgba(37,99,235,.1); }
 .ctx-menu .ctx-item.danger { color: #c0392b; }
 .ctx-menu .ctx-item.ctx-new { border-top: 1px solid var(--line); margin-top: 4px; color: var(--accent); }
+/* 手动改档：等级徽标可点击 + 档位菜单（法源权重改造 2026-07-12） */
+.tier-badge.tb-click { cursor: pointer; }
+.tier-badge.tb-click:hover { filter: brightness(1.12); box-shadow: 0 0 0 2px rgba(37,99,235,.25); }
+#tier-menu { position: fixed; z-index: 200; min-width: 170px; background: var(--card); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 8px 28px rgba(0,0,0,.16); padding: 4px; }
+#tier-menu .tm-head { font-size: 11.5px; color: var(--muted); padding: 6px 10px 4px; border-bottom: 1px solid var(--line); margin-bottom: 4px; }
+#tier-menu button { display: block; width: 100%; text-align: left; background: none; border: 0; padding: 7px 10px; border-radius: 6px; cursor: pointer; font-size: 13px; color: var(--fg); white-space: nowrap; }
+#tier-menu button:hover { background: rgba(37,99,235,.1); }
 .chat-scope { padding: 6px 14px 0; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .chat-scope label { font-size: 12.5px; color: var(--muted); display: inline-flex; align-items: center; gap: 6px; }
 /* 对话页常驻引导：对话开始后欢迎语会消失，这条一直在，提醒 Agent 效果更好 */

@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 import config as C
 from textutil import tokenize, clean, safe_name, de_emoji, EMOJI
 import journal_tiers as JT
+import source_rules as SR
 
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -56,7 +57,9 @@ def enrich(m, now):
     m["text"] = "\n".join(x for x in [m.get("title", ""), m.get("abstract", ""),
                                       de_emoji(m.get("keywords", ""))] if x)
     m["stem"] = safe_name(m["key"])
-    m["journal_tier"] = JT.tier_of(m.get("journal", ""))
+    # 法源/报告按条目类型+标题规则定档（手动改档在检索期动态层生效，不写建库层）
+    _rt = SR.rule_tier(m.get("itemtype", ""), m.get("title", ""))
+    m["journal_tier"] = SR.OLD_TIER_LABEL.get(_rt) or JT.tier_of(m.get("journal", ""))
     m["tier_rank"] = JT.rank_of(m["journal_tier"])
     m["lang"] = ("中文" if (str(m.get("langid", "")).lower() in ("zh", "chinese", "中文") or _is_cjk(m.get("title", "")))
                  else ("外文" if m.get("title") else "未知"))

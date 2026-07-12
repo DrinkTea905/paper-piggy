@@ -424,15 +424,84 @@
     if (WT_COLOR[name] != null) return WT_COLOR[name];
     return tierNameColor(name);
   }
-  // 主徽标＝期刊等级（权威/核心/一般/普通…）。T2：0–1 数值「权威度」收进 tooltip，不再另立一个「权重」徽标（去重复）。
+  // 主徽标＝等级（权威/核心/一般/普通…）。T2：0–1 数值「权威度」收进 tooltip，不再另立一个「权重」徽标（去重复）。
+  // 法源权重改造：徽标可点击 → 手动改档菜单（✎ 标记手动档）；wiki 行/无 key 的不可点。
   function tierBadge(r) {
     const cn = r.weight_tier || r.journal_tier || "未知";
     const rev = r.weight_needs_review;
     const wv = (!r.is_wiki && r.journal_weight != null) ? `，权威度 ${Number(r.journal_weight).toFixed(2)}（0–1）` : "";
-    const tip = rev ? `待确认：未精确识别到该刊，期刊等级为临时值，请核对原刊${wv}`
-                    : `期刊等级（按当前锁定学科评定）${wv}`;
-    return `<span class="badge" style="background:${badgeColor(cn)}" title="${esc(tip)}">${esc(cn)}</span>`;
+    const manual = r.weight_src === "manual";
+    const clickable = !!r.key && !r.is_wiki;
+    const tip = (manual ? `手动指定的档位${wv}`
+                : rev ? `待确认：未精确识别到该刊，等级为临时值，请核对原刊${wv}`
+                      : `等级（按当前锁定学科评定）${wv}`)
+              + (clickable ? "。点击可手动改档" : "");
+    const dk = clickable ? ` data-key="${esc(r.key)}"` : "";
+    return `<span class="badge tier-badge${clickable ? " tb-click" : ""}"${dk} style="background:${badgeColor(cn)}" title="${esc(tip)}">${esc(cn)}${manual ? " ✎" : ""}</span>`;
   }
+  // 手动改档菜单：档位与后端 source_rules.TIER_W 一致；空档 = 恢复自动（删除 override）。
+  const TIER_MENU = [
+    ["", "↺ 恢复自动（按规则/期刊评定）"],
+    ["T1", "权威（1.00）"], ["T1b", "准权威（0.92）"], ["T2", "核心（0.85）"],
+    ["T3", "次核心（0.65）"], ["T4", "一般（0.45）"], ["T5", "普通（0.25）"]];
+  function closeTierMenu() { const old = document.getElementById("tier-menu"); if (old) old.remove(); }
+  function openTierMenu(badge) {
+    closeTierMenu();
+    const key = badge.dataset.key;
+    if (!key) return;
+    const m = document.createElement("div");
+    m.id = "tier-menu";
+    m.innerHTML = `<div class="tm-head">手动改档</div>` +
+      TIER_MENU.map(([c, label]) => `<button data-tier="${c}">${label}</button>`).join("");
+    document.body.appendChild(m);
+    const rc = badge.getBoundingClientRect();
+    m.style.left = Math.max(8, Math.min(rc.left, window.innerWidth - m.offsetWidth - 8)) + "px";
+    m.style.top = Math.max(8, Math.min(rc.bottom + 4, window.innerHeight - m.offsetHeight - 8)) + "px";
+    m.addEventListener("click", async (e) => {
+      const b = e.target.closest("button[data-tier]");
+      if (!b) return;
+      e.stopPropagation();
+      try {
+        const res = await jpost("/paper/tier", { key, tier: b.dataset.tier || null });
+        const g = res.effective || {};
+        const cn = g.cn || "未知";
+        const wv = (g.weight != null) ? `，权威度 ${Number(g.weight).toFixed(2)}（0–1）` : "";
+        const tip = (res.override ? `手动指定的档位${wv}` : `已恢复自动评定${wv}`) + "。点击可手动改档";
+        // 同键徽标全部更新（同文献可能有多张卡），并回写内存行数据——
+        // 否则 facet 收窄/重渲染会用旧数据把徽标打回原档（对抗审查 #9/#12/#13）。
+        document.querySelectorAll(`.tier-badge[data-key="${CSS.escape(key)}"]`).forEach((el) => {
+          el.style.background = badgeColor(cn);
+          el.textContent = cn + (res.override ? " ✎" : "");
+          el.title = tip;
+        });
+        const patch = (row) => {
+          if (!row || row.key !== key) return;
+          row.weight_tier = g.cn || "";
+          row.weight_tier_code = g.tier || null;
+          row.journal_weight = (g.weight != null) ? g.weight : null;
+          row.weight_needs_review = !!g.needs_review;
+          row.weight_src = res.override ? "manual" : (g.src || null);
+        };
+        (SR.raw || []).forEach(patch); (SR.all || []).forEach(patch);
+        ((typeof BR !== "undefined" && BR.papers) || []).forEach(patch);
+      } catch (err) { alert("改档失败：" + err.message); }
+      closeTierMenu();
+    });
+  }
+  document.addEventListener("click", (e) => {
+    const b = e.target.closest(".tier-badge.tb-click");
+    if (b) { e.stopPropagation(); e.preventDefault(); openTierMenu(b); return; }
+    if (!e.target.closest("#tier-menu")) closeTierMenu();
+  });
+  // 「⚡深索/＋分类」等控件 stopPropagation 会拦掉上面的冒泡关闭——捕获阶段兜底；
+  // 滚动/Escape 也关闭，防 fixed 定位的菜单脱锚残留（对抗审查 #10/#11）。
+  document.addEventListener("click", (e) => {
+    if (!document.getElementById("tier-menu")) return;
+    if (e.target.closest("#tier-menu") || e.target.closest(".tier-badge.tb-click")) return;
+    closeTierMenu();
+  }, true);
+  document.addEventListener("scroll", closeTierMenu, true);
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeTierMenu(); });
   // 次徽标已废弃：权威度数值已收进 tierBadge 的 tooltip（redundant-tier-weight-badge）。保留空实现兼容旧调用点。
   function weightBadge(r) { return ""; }
   function depthTag(r) {
@@ -844,6 +913,7 @@
     "CSSCI": 2, "台湾一般": 2,
     "CSSCI扩展": 3,
     "外文一般": 4, "普刊": 4,
+    "法源": 1, "官方报告": 2,   // source_rules 建库期标签（法源=准权威档色、报告=核心档色）
     "报纸": 5, "未知": 6,
   };
   function tierNameColor(name) {

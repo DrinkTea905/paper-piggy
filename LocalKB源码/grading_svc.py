@@ -20,6 +20,11 @@ try:
 except Exception as _e:
     JG = None
     print("[grading_svc] journal_grading 未加载，分级回退旧离散档：", _e, flush=True)
+try:
+    import source_rules as SR      # 法源/报告规则 + 手动改档（优先级高于期刊分级）
+except Exception as _e:
+    SR = None
+    print("[grading_svc] source_rules 未加载，法源/报告定档停用：", _e, flush=True)
 
 # tier code → 面向用户中文档名 / 排序 rank（前后端统一口径）
 TIER_CN = {"T1": "权威", "T1b": "准权威", "T2": "核心", "T3": "次核心",
@@ -36,6 +41,7 @@ _WARMING = set()      # 正在预热的 (disc, mtime)，防重复起线程
 
 MEMO_FILE = C.DATA / "grading_memo.json"
 DIST_FILE = C.DATA / "grading_dist.json"
+DIST_VER = 2   # 分布算法版本位：v2=计入法源/报告规则命中。升级后旧缓存（无此字段）自动失效重算。
 
 
 def _disc():
@@ -131,15 +137,40 @@ def grade(journal, issn="", compute=True):
     return out
 
 
+def grade_paper(p, compute=True):
+    """按整条题录定档：手动改档/法源报告规则优先，未命中回退 grade(journal)。
+       返回 {tier,weight,cn,rank,needs_review[,src]} 或 None。"""
+    if SR is not None:
+        try:
+            sr = SR.resolve(p.get("key", ""), p.get("itemtype", ""), p.get("title", ""))
+        except Exception:
+            sr = None
+        if sr:
+            t = sr["tier"]
+            return {"tier": t, "weight": sr["weight"], "cn": TIER_CN.get(t, t),
+                    "rank": TIER_RANK.get(t, 6), "needs_review": False, "src": sr["src"]}
+    return grade(p.get("journal", ""), p.get("issn", ""), compute=compute)
+
+
+def _ov_mtime():
+    """手动改档文件的 mtime（分布缓存失效键之一：改档后分布卡要重算）。"""
+    try:
+        return SR.overrides_mtime() if SR is not None else 0.0
+    except Exception:
+        return 0.0
+
+
 def weight_dist(papers):
     """返回当前学科的 (by_tier, by_journal) 分布；仅命中缓存时返回，否则 None（并异步预热）。
-       papers: {key: paper_dict}。缓存键 = (学科, papers.jsonl mtime)。"""
+       papers: {key: paper_dict}。缓存键 = (学科, papers.jsonl mtime, 改档文件 mtime)。"""
     disc = _disc()
-    mt = _papers_mtime()
+    mt = _papers_mtime(); ov = _ov_mtime()
     with _LOCK:
         _load_dist()
         d = _DIST.get(disc)
-        if d and abs(float(d.get("mtime", -1)) - mt) < 1e-6:
+        if d and d.get("v") == DIST_VER \
+             and abs(float(d.get("mtime", -1)) - mt) < 1e-6 \
+             and abs(float(d.get("ov_mtime", 0.0)) - ov) < 1e-6:
             return d.get("by_tier", []), d.get("by_journal", [])
     warm_async(papers)          # 未命中 → 后台预热，本次先返回 None（调用方兜旧分布）
     return None
@@ -157,13 +188,19 @@ def _compute_dist(papers, disc):
     tier_n = Counter(); jn = Counter(); jtier = {}
     for p in papers.values():
         j = p.get("journal", "")
-        if not j:
-            continue
-        g = grade(j, p.get("issn", ""), compute=True)   # 预热期允许冷算
+        g = grade_paper(p, compute=True)   # 篇级（六档分布用）：手动改档/法源规则优先，预热期允许冷算
+        if g is None and not j:
+            continue                        # 无刊且无规则命中：维持旧行为，不进分布
         cn = g["cn"] if g else "未知"   # F3：grade 失败不再回退原始档名（防台湾核心/台湾一般等泄漏进 6 档分布）
         rnk = g["rank"] if g else 6
         tier_n[(cn, rnk)] += 1
-        jn[j] += 1; jtier[j] = (cn, rnk)
+        if j:
+            jn[j] += 1
+            # 期刊卡档位必须用**刊级** grade(j)：篇级结果（手动改档按 key、标题规则按篇）
+            # last-wins 会把单篇改档写成整刊档位（对抗审查 #3/#4，major）。
+            if j not in jtier:
+                gj = grade(j, p.get("issn", ""), compute=True)
+                jtier[j] = (gj["cn"], gj["rank"]) if gj else ("未知", 6)
     by_tier = sorted(({"tier": cn, "rank": r, "n": n} for (cn, r), n in tier_n.items()),
                      key=lambda x: x["rank"])
     by_journal = [{"journal": j, "tier": jtier[j][0], "rank": jtier[j][1], "n": n}
@@ -175,11 +212,12 @@ def warm(papers):
     """同步预热：算全库去重刊名 grade（填 memo）+ 算分布并落盘。设计跑在后台线程里。"""
     if JG is None:
         return None
-    disc = _disc(); mt = _papers_mtime()
+    disc = _disc(); mt = _papers_mtime(); ov = _ov_mtime()
     by_tier, by_journal = _compute_dist(papers, disc)
     with _LOCK:
         _load_dist()
-        _DIST[disc] = {"mtime": mt, "by_tier": by_tier, "by_journal": by_journal}
+        _DIST[disc] = {"v": DIST_VER, "mtime": mt, "ov_mtime": ov,
+                       "by_tier": by_tier, "by_journal": by_journal}
         _atomic_write(DIST_FILE, _DIST)
     flush()
     return by_tier, by_journal
@@ -189,11 +227,14 @@ def warm_async(papers):
     """若该 (学科, mtime) 尚未预热且无进行中的预热，则起后台线程 warm。"""
     if JG is None:
         return
-    disc = _disc(); mt = _papers_mtime(); tag = (disc, round(mt, 3))
+    disc = _disc(); mt = _papers_mtime(); ov = _ov_mtime()
+    tag = (disc, round(mt, 3), round(ov, 3))
     with _LOCK:
         _load_dist()
         d = _DIST.get(disc)
-        if d and abs(float(d.get("mtime", -1)) - mt) < 1e-6:
+        if d and d.get("v") == DIST_VER \
+             and abs(float(d.get("mtime", -1)) - mt) < 1e-6 \
+             and abs(float(d.get("ov_mtime", 0.0)) - ov) < 1e-6:
             return                      # 已缓存
         if tag in _WARMING:
             return                      # 已在预热

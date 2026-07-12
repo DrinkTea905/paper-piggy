@@ -110,7 +110,8 @@ def load_papers(data_dir=None, library_id=1):
     papers = []
     for iid, key, typ in items:
         f = fld.get(iid, {})
-        title = _clean(f.get("title") or f.get("caseName") or f.get("subject") or "")
+        # statute 的标题在 nameOfAct（法规名称）字段——漏读会让全部法规被当"无标题"丢弃
+        title = _clean(f.get("title") or f.get("caseName") or f.get("nameOfAct") or f.get("subject") or "")
         if not title:
             continue
         ym = re.search(r'\d{4}', f.get("date", "") or "")

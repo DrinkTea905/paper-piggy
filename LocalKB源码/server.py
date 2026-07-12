@@ -1513,7 +1513,8 @@ def papers(collection: Optional[str] = None, topic: Optional[int] = None,
         if deep == "no" and _isdeep:
             continue
         # F38-B：按当前学科取分级（快路径 compute=False，只用已预热 memo；未预热则回退旧 journal_tier）
-        g = GS.grade(p.get("journal", ""), p.get("issn", ""), compute=False) if p.get("journal") else None
+        # 手动改档/法源报告规则在 grade_paper 里优先命中（不走 memo，即改即显）。
+        g = GS.grade_paper(p, compute=False)
         out.append({
             "key": p["key"], "title": p.get("title", ""), "author": p.get("author", ""),
             "year": p.get("year", ""), "journal": p.get("journal", ""),
@@ -1522,6 +1523,7 @@ def papers(collection: Optional[str] = None, topic: Optional[int] = None,
             "weight_rank": (g["rank"] if g else 6),
             "journal_weight": (g["weight"] if g else None),
             "weight_needs_review": (g["needs_review"] if g else False),
+            "weight_src": (g.get("src") if g else None),     # manual=手动改档 / rule=法源报告规则
             "official_pages": p.get("official_pages", ""), "has_pdf": p.get("has_pdf", False),
             "collections": p.get("collections", []),
             "needs_review": bool(p.get("needs_review", False)),   # folder 模式：AI 抽的题录待核对
@@ -1540,6 +1542,34 @@ def papers(collection: Optional[str] = None, topic: Optional[int] = None,
         out.sort(key=lambda x: x.get("ingested_at", ""), reverse=True)   # 最新入库优先
     return {"papers": out[:limit], "total": len(out),
             "collection": collection, "topic": topic, "category": category, "deep": deep, "sort": sort}
+
+# ── 单篇手动改档（法源权重改造 2026-07-12）──────────────────
+class TierOverrideQ(BaseModel):
+    key: str
+    tier: Optional[str] = None      # "T1"/"T1b"/"T2"/"T3"/"T4"/"T5"；None/空 = 恢复自动
+
+@app.post("/paper/tier")
+def set_paper_tier(q: TierOverrideQ):
+    """手动提高/降低某篇的档位（存 data/tier_overrides.json，优先级最高，即改即生效）。"""
+    import source_rules as SR
+    import grading_svc as GS
+    tier = (q.tier or "").strip() or None
+    if tier and tier not in SR.TIER_W:
+        return JSONResponse({"detail": f"非法档位 {tier}（可选 T1/T1b/T2/T3/T4/T5 或留空恢复自动）"},
+                            status_code=400)
+    p = _load_papers().get(q.key)
+    if not p:
+        return JSONResponse({"detail": f"未找到文献 {q.key}"}, status_code=404)
+    try:
+        SR.set_override(q.key, tier)
+    except Exception as e:
+        log_error("paper tier override", repr(e))
+        return JSONResponse({"detail": f"写入改档失败：{e}"}, status_code=500)
+    g = GS.grade_paper(p)            # 改完立刻算出生效档（含回落到规则/期刊分级的情形）
+    return {"ok": True, "key": q.key, "override": tier,
+            "effective": g or {"tier": None, "cn": p.get("journal_tier", "未知"),
+                               "weight": None, "rank": p.get("tier_rank", 6),
+                               "needs_review": False}}
 
 # ── 打开原文 PDF（C2/D4：页级引注可回到原文核对）─────────────
 class OpenPdfQ(BaseModel):
