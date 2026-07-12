@@ -94,13 +94,29 @@ def _load_light():
     M["meta_ids"] = json.loads((C.BM25_META_DIR / "bm25_meta_ids.json").read_text(encoding="utf-8"))
 
 def _load_wiki_index():
-    """载入综合层页元数据 index.json → M["wiki"]（id→meta），供检索期标注/降权/展示。"""
+    """载入综合层页元数据 index.json → M["wiki"]（id→meta），供检索期标注/降权/展示。
+       顺带存量自愈：把降级页（未配 key / LLM 失败 / 无命中 → 正文其实是原文片段清单）
+       移出检索表。新写入已由 wiki_store._persist_page 拦下；这里清历史遗留。只删表行，不删 .md。
+       注意：本函数在 STATE["mode"] 被置为 full **之前**调用，故按 M["tbl"] 判断而非 mode。"""
     try:
         import wiki_store as W
         M["wiki"] = W.index_map()
     except Exception as e:
         M["wiki"] = {}
         log("wiki index 载入失败（视为空）：", e)
+        return
+    if "tbl" not in M or not M.get("records"):
+        return
+    stale_rows = [pid for pid, meta in M["wiki"].items()
+                  if W.is_degraded(meta.get("generated_by", "")) and f"{pid}::wiki" in M["records"]]
+    for pid in stale_rows:
+        try:
+            delete_wiki_page(pid)      # 删表行 + 内存登记（幂等）；页面仍可在综述库阅读
+            log(f"降级综合页 {pid} 已移出检索表（仍可在综述库阅读）")
+        except Exception as e:
+            log(f"清理降级页 {pid} 失败：", e)
+    if stale_rows:
+        M["wiki"] = W.index_map()      # delete_wiki_page 会 pop 掉条目，重载回其余页的 meta
 
 # ═══ 检索：full 模式 ════════════════════════════════════════════
 def dense_search(q, k):
@@ -388,12 +404,16 @@ def index_wiki_page(page_id, title, body, meta):
 def delete_wiki_page(page_id):
     """一键"不保存"的表侧：删该 wiki 页的表行 + 内存登记（幂等）。仅 full 模式有表。
        wiki 行 key==page_id，复用 dbutil.key_predicate 精确幂等删（0 行无副作用）。
-       返回该页此前是否存在（用于上层判定 deleted，保证重复删不误报）。"""
+       返回该页此前是否存在（用于上层判定 deleted，保证重复删不误报）。
+
+       按 M["tbl"] 而非 STATE["mode"] 判断有无表：_load_wiki_index 的存量清理在
+       STATE["mode"] 被置为 "full" **之前**就调本函数，用 mode 判断会静默跳过删表行
+       —— 内存清了、表行残留，日志却报成功。"""
     cid = f"{page_id}::wiki"
     existed = (page_id in (M.get("wiki") or {})) or (cid in (M.get("records") or {}))
     (M.get("wiki") or {}).pop(page_id, None)
     (M.get("records") or {}).pop(cid, None)
-    if STATE.get("mode") != "full" or "tbl" not in M:
+    if "tbl" not in M:
         return existed
     try:
         from dbutil import key_predicate
@@ -439,36 +459,48 @@ def search_light(query, topk, sort, keys=None):
         out.append(d)
     return out
 
-def _wiki_penalty(obj):
-    """wiki 行降权（仅 full 模式，obj 为 chunk_id 字符串）：
-       新鲜综合页象征性让位于原始文献（provenance 居中）；stale 页显著降权。
-       light 模式 obj 是题录 dict → 返回 0（wiki 本就不在 light 模式召回）。"""
+def _wiki_effective(score, obj):
+    """wiki 行的**有效排序分**（仅 full 模式，obj 为 chunk_id 字符串）。
+
+    - 新鲜综合页：减一个小常数，只在同分时让位于原始文献（provenance 居中）。
+    - 过时(stale)综合页：**乘性**重罚。必须是乘法：reranker 分尺度 0~10+，而 answer 页的标题
+      就是用户原问题，reranker 拿 query 对 query 打分，分数天然虚高（实测 7.99，同题最相关的
+      真论文才 4.34）。减 0.5 拉不动它——被新文献推翻的旧综合会继续霸占第一，
+      agent 下次又把它当事实引用。这是幻觉复利的引擎，只有乘法能真正把它压到真论文之下。
+
+    light 模式 obj 是题录 dict → 原分返回（wiki 本就不在 light 模式召回）。"""
     if not isinstance(obj, str):
-        return 0.0
+        return score
     r = (M.get("records") or {}).get(obj)
     if not r or not _is_wiki(r):
-        return 0.0
-    return C.WIKI_STALE_PENALTY if _wiki_meta(r).get("stale") else C.WIKI_BASE_PENALTY
+        return score
+    if _wiki_meta(r).get("stale"):
+        return score * C.WIKI_STALE_FACTOR
+    return score - C.WIKI_BASE_PENALTY
 
 def _blend_bonus(x, lex):
     """blend 排序加成：优先用 journal_weight∈[0,1]（连续、按学科），回退旧离散 TIER_BONUS。
-       x = (obj, score, tier[, weight_res])。wiki 行再减去过时降权。"""
+       x = (obj, score, tier[, weight_res])。wiki 降权不在这里，见 _wiki_effective。"""
     scale = 3 if lex else 1
     wr = x[3] if len(x) > 3 else None
     if wr and wr.get("weight") is not None:
         b = wr["weight"] * C.WEIGHT_BONUS_SCALE * scale
     else:
         b = C.TIER_BONUS.get(x[2], 0.0) * scale
-    return b - _wiki_penalty(x[0])
+    return b
 
 def _apply_sort(items, sort, lex=False):
-    """items: list of (obj, score, tier[, weight_res])。lex=True 时词法分尺度不同，加成放大。"""
+    """items: list of (obj, score, tier[, weight_res])。lex=True 时词法分尺度不同，加成放大。
+
+    wiki 降权在**三种排序下都必须生效**：sort 是 MCP search_localkb 开放给 agent 的参数，
+    若只有 blend 降权，agent 传 sort=relevance 即可让自己写回的未核验综合页与真论文平起平坐
+    （幻觉复利的直通车）。light 模式 obj 是题录 dict，_wiki_effective 原样返回，不受影响。"""
     if sort == "relevance":
-        items.sort(key=lambda x: -x[1])
+        items.sort(key=lambda x: -_wiki_effective(x[1], x[0]))
     elif sort == "tier":
-        items.sort(key=lambda x: (JT.rank_of(x[2]), -x[1]))
+        items.sort(key=lambda x: (JT.rank_of(x[2]), -_wiki_effective(x[1], x[0])))
     else:  # blend
-        items.sort(key=lambda x: -(x[1] + _blend_bonus(x, lex)))
+        items.sort(key=lambda x: -(_wiki_effective(x[1], x[0]) + _blend_bonus(x, lex)))
 
 # ═══ 统一入口 ════════════════════════════════════════════════════
 def search(query, topk, sort=None, min_weight=0.0, keys=None):

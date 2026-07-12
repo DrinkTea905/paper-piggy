@@ -20,7 +20,10 @@ from typing import Optional, List
 import uvicorn
 
 app = FastAPI(title="本地知识库")
-BUILD = {"running": False, "stage": None, "log": [], "started": None, "rc": None}
+#  proc/cancelled：整库深索(scope=all)跑在 subprocess 里，此前不留句柄 → 一旦开始无法停，
+#  可能空跑数小时并烧掉 API 额度。存下 Popen 供 POST /build/cancel 终止。
+BUILD = {"running": False, "stage": None, "log": [], "started": None, "rc": None,
+         "proc": None, "cancelled": False}
 # B1：build 守卫锁——把「判 running + 置 True」做成原子并在调用线程内同步置位，
 # 杜绝多路触发并发起两个 build_all 子进程写坏同一 LanceDB/bm25/papers.jsonl。
 _BUILD_LOCK = threading.Lock()
@@ -174,6 +177,12 @@ def set_auto_update(q: AutoUpdateQ):
 # ── 启动加载 ──────────────────────────────────────────────
 @app.on_event("startup")
 def _startup():
+    try:
+        # 建 wiki 目录 + 把 WIKI.md 升到当前 schema 版本。它会被 MCP 整篇下发给 agent，
+        # 过期的话 agent 就照着旧规约干活（不知道 entity 页、不知道该 mark_stale 而非覆盖）。
+        W.ensure_scaffold()
+    except Exception as e:
+        log_error("startup ensure_scaffold", repr(e))
     threading.Thread(target=_safe_load, daemon=True).start()
     threading.Thread(target=_auto_update_loop, daemon=True).start()
 
@@ -1143,6 +1152,9 @@ def wiki_answer(q: WikiSaveQ):
         meta = W.save_answer(q.query, q.answer, q.sources, generated_by=q.model, by_agent=q.by_agent)
         return {"ok": True, "id": meta["id"], "title": meta["title"],
                 "indexed": meta.get("indexed", False), "n_sources": len(meta.get("sources", []))}
+    except W.WikiWriteDenied as e:
+        # 正常的权限拒绝（agent 想覆盖人工核验页），不是故障，不进 errors.log
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=409)
     except Exception as e:
         log_error("wiki/answer", repr(e), traceback.format_exc())
         return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
@@ -1168,6 +1180,137 @@ def wiki_delete(page_id: str):
         return {"ok": True, "id": page_id, **r}
     except Exception as e:
         log_error("wiki/delete", repr(e), traceback.format_exc())
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
+
+# ── stale 写侧 + by_source 反查出口（此前两者都只建不用）──
+class WikiStaleQ(BaseModel):
+    stale: bool = True
+    reason: str = ""
+
+@app.post("/wiki/stale/{page_id}")
+def wiki_stale(page_id: str, q: WikiStaleQ):
+    """标记/清除某综合页「已过时」。检索降权立即生效，无需重启。"""
+    try:
+        return {"ok": True, **W.set_stale(page_id, q.stale, q.reason)}
+    except ValueError as e:
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=404)
+    except Exception as e:
+        log_error("wiki/stale", repr(e), traceback.format_exc())
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
+
+@app.get("/wiki/backlinks")
+def wiki_backlinks(key: Optional[str] = None, page_id: Optional[str] = None):
+    """key=论文 → 引用它的综合页；page_id=页 → 它的来源与互链（含 orphan 判定）。"""
+    try:
+        return {"ok": True, **W.backlinks(key=key, page_id=page_id)}
+    except ValueError as e:
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
+    except Exception as e:
+        log_error("wiki/backlinks", repr(e), traceback.format_exc())
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
+
+# ── 波次2：互链写侧 / 任意页读写 / 体检 / 一源触多页 / 图 / 版本历史 ──
+class WikiLinksQ(BaseModel):
+    links: List[str] = []
+    mode: str = "replace"           # replace | add | remove
+
+@app.post("/wiki/links/{page_id}")
+def wiki_set_links(page_id: str, q: WikiLinksQ):
+    """写 links —— 把一堆孤岛补成一张图。拒绝自链与断链，返回 skipped。"""
+    try:
+        return {"ok": True, **W.set_links(page_id, q.links, q.mode)}
+    except ValueError as e:
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=404)
+    except Exception as e:
+        log_error("wiki/links", repr(e), traceback.format_exc())
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
+
+class WikiUpdateQ(BaseModel):
+    kind: Optional[str] = None
+    title: Optional[str] = None
+    content: str = ""
+    sources: Optional[List[dict]] = None
+    mode: str = "replace"           # replace | append
+    links: Optional[List[str]] = None
+    model: str = ""
+    by_agent: bool = False
+
+@app.post("/wiki/page/{page_id}")
+def wiki_update_page(page_id: str, q: WikiUpdateQ):
+    """建 / 覆盖 / 追加任意 kind 的 wiki 页（含 entity / overview）。沿用 agent 写权护栏。"""
+    try:
+        m = W.update_page(page_id, kind=q.kind, title=q.title, content=q.content,
+                          sources=q.sources, mode=q.mode, links=q.links,
+                          generated_by=q.model, by_agent=q.by_agent)
+        return {"ok": True, "id": m["id"], "kind": m.get("kind"), "title": m.get("title"),
+                "indexed": m.get("indexed", False), "degraded": m.get("degraded", False),
+                "links": m.get("links", []), "n_sources": len(m.get("sources", []))}
+    except W.WikiWriteDenied as e:
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=409)
+    except ValueError as e:
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
+    except Exception as e:
+        log_error("wiki/update", repr(e), traceback.format_exc())
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
+
+@app.get("/wiki/lint")
+def wiki_lint(min_mentions: int = 2):
+    """gist 的 Lint：孤儿页 / 过时页 / 断链 / 无来源 / 降级页 / 缺失概念页。纯读，零副作用。"""
+    try:
+        return {"ok": True, **W.lint(min_mentions)}
+    except Exception as e:
+        log_error("wiki/lint", repr(e), traceback.format_exc())
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
+
+@app.get("/wiki/graph")
+def wiki_graph():
+    """图视图数据：节点=页，边=links，孤儿页标出。给应用内的图视图用（不依赖 Obsidian）。"""
+    try:
+        return {"ok": True, **W.graph()}
+    except Exception as e:
+        log_error("wiki/graph", repr(e), traceback.format_exc())
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
+
+@app.get("/wiki/propose/{source_key}")
+def wiki_propose(source_key: str, topk: int = 12):
+    """gist 核心：一篇源影响了哪些 wiki 页、每页该怎么改。只建议，不动手。"""
+    try:
+        return {"ok": True, **W.propose_updates(source_key, topk)}
+    except Exception as e:
+        log_error("wiki/propose", repr(e), traceback.format_exc())
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
+
+@app.get("/wiki/history/{page_id}")
+def wiki_history(page_id: str, limit: int = 30):
+    try:
+        return {"ok": True, **W.page_history(page_id, limit)}
+    except ValueError as e:
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=404)
+    except Exception as e:
+        log_error("wiki/history", repr(e), traceback.format_exc())
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
+
+class WikiRestoreQ(BaseModel):
+    rev: str
+
+@app.post("/wiki/restore/{page_id}")
+def wiki_restore(page_id: str, q: WikiRestoreQ):
+    """回滚某页到历史版本。回滚本身也记一版，可再滚回去。**仅人用**，不做成 MCP 工具。"""
+    try:
+        return {"ok": True, **W.restore_page(page_id, q.rev)}
+    except ValueError as e:
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=404)
+    except Exception as e:
+        log_error("wiki/restore", repr(e), traceback.format_exc())
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
+
+@app.get("/wiki/vcs")
+def wiki_vcs_status():
+    """版本历史后端：git（开发机）或 snapshot（多数 exe 用户机器上没装 git）。"""
+    try:
+        import wiki_vcs as V
+        return {"ok": True, **V.status()}
+    except Exception as e:
         return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
 
 # ── Phase 1：按需生成概念/主题综述页（命中缓存 0 成本；LLM 综合 + LLM 命名）──
@@ -1253,6 +1396,8 @@ def research_digest(q: ResearchQ):
         return {"ok": True, "id": m["id"], "title": m["title"], "kind": m.get("kind"),
                 "cached": m.get("cached", False), "indexed": m.get("indexed", False),
                 "coverage": m.get("coverage"), "n_sources": len(m.get("sources", []))}
+    except W.WikiWriteDenied as e:
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=409)
     except Exception as e:
         log_error("research/digest", repr(e), traceback.format_exc())
         return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
@@ -1266,6 +1411,8 @@ def research_scope(q: ResearchQ):
         return {"ok": True, "id": m["id"], "title": m["title"], "kind": m.get("kind"),
                 "cached": m.get("cached", False), "indexed": m.get("indexed", False),
                 "n_sources": len(m.get("sources", []))}
+    except W.WikiWriteDenied as e:
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=409)
     except Exception as e:
         log_error("research/scope", repr(e), traceback.format_exc())
         return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
@@ -1415,6 +1562,77 @@ def open_pdf(q: OpenPdfQ):
         log_error("open_pdf", repr(e))
         return JSONResponse({"ok": False, "msg": f"打开失败：{e}"}, status_code=200)
 
+# ══════════════════════════════════════════════════════════════════
+#  读取论文全文（agent 的 ingest 地基）
+#  此前 agent 只能拿到 220 字检索片段；逐页正文一直躺在 config.EXTRACTED 里，
+#  却只有 _extracted_excerpt 内部自用、没有任何出口。gist 的 ingest 主干
+#  "the LLM reads it, extracts the key information" 因此走不通。
+# ══════════════════════════════════════════════════════════════════
+@app.get("/source/{key}")
+def read_source(key: str, from_page: int = 1, to_page: int = 0, max_chars: int = 20000):
+    """按 PDF 顺序页返回该篇提取正文（每页附印刷页码）。
+
+    诚实降级：读不到时明确区分「无此篇 / 只有题录无 PDF / 尚未深索 / 扫描件无文字」，
+    各给 reason + 可执行的 detail——绝不返回空串让 agent 以为这篇没内容。"""
+    import textutil as T
+    papers = _load_papers()
+    p = papers.get(key)
+    if not p:
+        return JSONResponse({"ok": False, "reason": "not_found",
+                             "detail": f"知识库中没有 key={key} 的文献。可先用 /papers 或 list_sources 枚举。"},
+                            status_code=404)
+    title = p.get("title", "")
+    if not p.get("has_pdf"):
+        return {"ok": False, "reason": "no_pdf", "key": key, "title": title,
+                "detail": "该篇只有题录、没有 PDF 原文，读不到全文。"}
+
+    stem = p.get("stem") or T.safe_name(key)
+    f = C.EXTRACTED / f"{stem}.json"
+    if not f.exists():
+        return {"ok": False, "reason": "not_deep_indexed", "key": key, "title": title,
+                "detail": "该篇尚未深索，没有可读全文。请在应用「浏览」页勾选它深索，"
+                          "或调用 localkb_build(stage='deep')。"}
+    try:
+        rec = json.loads(f.read_text(encoding="utf-8"))
+    except Exception as e:
+        log_error("source/read", repr(e))
+        return JSONResponse({"ok": False, "reason": "unreadable", "key": key,
+                             "detail": f"提取文件损坏：{e}"}, status_code=500)
+
+    pages = rec.get("pages") or []
+    if not any((pg.get("text") or "").strip() for pg in pages):
+        return {"ok": False, "reason": "scanned_no_text", "key": key, "title": title,
+                "detail": "该篇是扫描件（图片型 PDF），抽不到文字，需要先 OCR。"}
+
+    lo = max(1, int(from_page or 1))
+    hi = int(to_page) if to_page else len(pages)
+    try:
+        import page_map as PM
+    except Exception:
+        PM = None
+
+    out, used, truncated, next_page = [], 0, False, None
+    budget = max(500, int(max_chars or 20000))
+    for pg in pages:
+        n = int(pg.get("page", 0) or 0)
+        if n < lo or n > hi:
+            continue
+        txt = (pg.get("text") or "").strip()
+        if not txt:
+            continue
+        if used + len(txt) > budget and out:      # 至少给一页，别因预算太小返回空
+            truncated, next_page = True, n
+            break
+        used += len(txt)
+        pr = PM.printed(key, n) if PM else {}
+        out.append({"pdf_page": n, "printed_page": (pr or {}).get("display", ""), "text": txt})
+
+    return {"ok": True, "key": key, "title": title,
+            "author": p.get("author", ""), "year": p.get("year", ""), "journal": p.get("journal", ""),
+            "n_pages_total": len(pages), "returned_pages": len(out),
+            "chars": used, "truncated": truncated, "next_page": next_page,
+            "pages": out}
+
 # ── 三档索引触发 ──────────────────────────────────────────
 @app.post("/index/light")
 def index_light_ep():
@@ -1449,18 +1667,22 @@ def _run_build(stage, extra=None, on_done=None):
             return False
         BUILD["running"] = True; BUILD["stage"] = stage; BUILD["started"] = time.time()
         BUILD["log"] = [f"[{stage}] 启动…"]; BUILD["rc"] = None
+        BUILD["proc"] = None; BUILD["cancelled"] = False
     def run():
         rc = None
         try:
             env = _child_env()   # 任务五：稳定 UTF-8 输出，避免 build 日志乱码
             cmd = [sys.executable, str(C.APP / "build_all.py"), "--stage", stage] + (extra or [])
             p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
+            BUILD["proc"] = p            # 留句柄给 /build/cancel
             for raw in p.stdout:
                 BUILD["log"].append(raw.decode("utf-8", errors="replace").rstrip())
                 BUILD["log"] = BUILD["log"][-300:]
             # A3：取子进程 returncode（此前 p.wait() 取到却从不检查）。非 0 = 软失败（余额0/PDF异常）。
             rc = p.wait()
-            if rc != 0:
+            if BUILD.get("cancelled"):
+                BUILD["log"].append("[build] 已被用户取消。已完成的部分已保存，可随时继续。")
+            elif rc != 0:
                 BUILD["log"].append(f"[build] 子进程以非 0 退出（returncode={rc}）——本批未成功完成。")
         except Exception as e:
             log_error(f"build {stage}", repr(e), traceback.format_exc())
@@ -1468,6 +1690,7 @@ def _run_build(stage, extra=None, on_done=None):
             rc = -1
         finally:
             BUILD["rc"] = rc
+            BUILD["proc"] = None
             # B2：重载期非原子——大库重载数秒内 tbl 已换新表而 records 仍旧，search_full 会拿空结果。
             # 重载全程保持 running=True（锁未释放前不接受新 build）+ 短暂 ready=False（检索先返回未就绪，
             # 而非错误的空命中）；load_all 成功后自会把 ready 置回 True。
@@ -1485,7 +1708,8 @@ def _run_build(stage, extra=None, on_done=None):
                     on_done(rc)
                 except Exception as e:
                     log_error("deep queue on_done", repr(e))
-            else:
+            elif not BUILD.get("cancelled"):
+                # 被取消时不再排空队列——否则子进程一死就立刻起新批，用户会以为取消没生效
                 try:
                     _drain_deep_queue()
                 except Exception as e:
@@ -1500,10 +1724,36 @@ def _run_build(stage, extra=None, on_done=None):
 def build_ep():
     return {"ok": _run_build("all")}
 
+@app.post("/build/cancel")
+def build_cancel():
+    """取消正在跑的建库/深索子进程。整库深索(scope=all)此前一旦开始就停不下来，
+       可能空跑数小时并烧掉 API 额度。深索是增量的：已完成的篇已落盘，随时可继续。
+       同时暂停深索队列——否则子进程一死，_drain_deep_queue 立刻起新批。"""
+    p = BUILD.get("proc")
+    if not BUILD["running"] or p is None:
+        return JSONResponse({"ok": False, "detail": "当前没有正在运行的任务"}, status_code=409)
+    BUILD["cancelled"] = True
+    try:
+        with _Q_LOCK:
+            QUEUE["paused"] = True
+            _q_persist()
+    except Exception as e:
+        log_error("build/cancel pause-queue", repr(e))
+    try:
+        p.terminate()
+    except Exception as e:
+        log_error("build/cancel", repr(e), traceback.format_exc())
+        return JSONResponse({"ok": False, "detail": f"终止失败：{e}"}, status_code=500)
+    BUILD["log"].append("[build] 收到取消请求，正在停止…")
+    return {"ok": True, "stage": BUILD.get("stage"), "queue_paused": True}
+
 @app.get("/build/status")
 def build_status():
     return {"running": BUILD["running"], "stage": BUILD["stage"],
-            "log": BUILD["log"][-300:], "started": BUILD["started"]}
+            "log": BUILD["log"][-300:], "started": BUILD["started"],
+            # cancellable：有活着的子进程句柄才能取消（供前端决定是否显示「取消」按钮）
+            "cancellable": bool(BUILD["running"] and BUILD.get("proc") is not None),
+            "cancelled": bool(BUILD.get("cancelled"))}
 
 # ── 文件夹模式：建库（后台，含 N 次 LLM 抽题录）+ 拖入入库 ──
 @app.post("/index/folder_build")

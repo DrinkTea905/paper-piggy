@@ -24,6 +24,54 @@ PROTO = "2024-11-05"
 def log(*a):
     print("[mcp-localkb]", *a, file=sys.stderr, flush=True)
 
+
+# ══ gist 第 3 层「schema」：让 LLM 成为纪律严明的 wiki 维护者，而非通用聊天机器人 ══
+#   此前 agent 连上只能从 localkb_status 拿到一个 WIKI.md **路径字符串**，永远读不到内容。
+#   MCP 的 initialize 支持 instructions 字段——把规约直接下发，是整个接入里投入产出比最高的一改。
+_INSTRUCTIONS_HEAD = """你连接的是用户的**本地文献知识库**（PaperPiggy / LocalKB）。
+
+它不只是搜索引擎。它有一个**综合层（wiki）**：把对文献的理解持久化成带引用、可累积、互链的页面。
+你的角色是这个 wiki 的**维护者**。
+
+工作纪律：
+1. 动手综合前，先 list_wiki / get_wiki_page 看有没有现成的页，别重复造轮子。
+2. 每个论断后带 [n] 引用，n 对应 sources 里的论文 key。不臆造、不给无出处的断言。
+3. 下判断前先 read_source 读原文（逐页正文 + 印刷页码）。不要只凭 220 字检索片段就写综述。
+4. 你只能写**综合层**（save_synthesis / build_digest / research_outline / mark_stale）。
+   绝不改动文献库、索引、Zotero。你能写、不能删——删除只由用户在应用里操作。
+5. 你写回的页会标记为「🤖 未核验」，立即进入检索但会被降权。请对得起这个信任。
+6. 覆盖规则：你不能覆盖用户人工保存/核验过的页（会被拒绝）。发现旧页被新文献推翻，
+   用 mark_stale 标脏并写清理由，而不是抹掉别人的结论。
+7. 矛盾与争议只作「未核实」的只读提示，不要落成 wiki 断言。
+8. 新增/更新一篇文献后，用 get_backlinks(key=…) 查哪些综合页引用了它，逐一判断是否需要标脏或重生。
+
+下面是这个 wiki 的结构约定（data/wiki/WIKI.md）：
+"""
+
+
+def _wiki_schema_text():
+    """读 WIKI.md 正文随 initialize 下发。读不到就只发纪律部分，不阻塞握手。
+
+    先 ensure_scaffold()：WIKI.md 可能还不存在（新装），或仍是旧 schema 版本
+    （升级逻辑此前只在第一次写页时才跑，agent 会拿到过期规约）。
+    这里只 import wiki_store（不碰 retriever/lancedb），开销很小。"""
+    try:
+        import wiki_store as W
+        W.ensure_scaffold()
+    except Exception as e:
+        log("ensure_scaffold 失败（继续用现有 WIKI.md）：", e)
+    try:
+        if C.WIKI_SCHEMA_MD.exists():
+            return C.WIKI_SCHEMA_MD.read_text(encoding="utf-8").strip()
+    except Exception as e:
+        log("读 WIKI.md 失败：", e)
+    return ""
+
+
+def instructions():
+    s = _wiki_schema_text()
+    return _INSTRUCTIONS_HEAD + (s or "（WIKI.md 尚未生成；首次写回综合页时会自动创建。）")
+
 def send(msg):
     sys.stdout.write(json.dumps(msg, ensure_ascii=False) + "\n")
     sys.stdout.flush()
@@ -198,15 +246,231 @@ TOOLS = [
             "required": ["id"],
         },
     },
+    # ── ingest 地基：读原文。检索只给 220 字片段，真正读懂一篇文献要靠这个 ──
+    {
+        "name": "read_source",
+        "description": "读某篇论文的**原文正文**（逐页，附期刊印刷页码）。检索结果只给 220 字片段；"
+                       "要真正读懂一篇文献、写综述、或核对引注，必须用这个先读原文。"
+                       "key 来自 search_localkb 结果里的 «key:…» 或 list_sources。"
+                       "未深索 / 只有题录 / 扫描件时会明确告知原因与补救办法，不会静默返回空。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "key": {"type": "string", "description": "论文 key"},
+                "from_page": {"type": "integer", "description": "起始 PDF 顺序页（默认 1）", "default": 1},
+                "to_page": {"type": "integer", "description": "结束 PDF 顺序页（0 = 直到末页）", "default": 0},
+                "max_chars": {"type": "integer",
+                              "description": "最多返回多少字（默认 20000）。超出会截断并告诉你 next_page，从那页续读。",
+                              "default": 20000},
+            },
+            "required": ["key"],
+        },
+    },
+    {
+        "name": "list_sources",
+        "description": "列出知识库里的文献题录。可用 deep='no' 筛出**尚未深索**的篇目——"
+                       "那些是还没被读过、值得 ingest 的源。用于驱动「逐篇读入并维护 wiki」的循环。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "deep": {"type": "string", "enum": ["yes", "no", "all"], "default": "all",
+                         "description": "yes=只列已深索（可 read_source）；no=只列未深索；all=全部"},
+                "category": {"type": "string", "description": "限定到某分类 id（来自 list_kb_categories）"},
+                "limit": {"type": "integer", "default": 50},
+            },
+        },
+    },
+    # ── lint 地基：stale 写侧 + by_source 反查 ──
+    {
+        "name": "mark_stale",
+        "description": "把某综合页标记为「已过时」（或清除标记）。当新文献推翻了旧综合、或页内断言不再成立时用。"
+                       "标记后该页在检索里显著降权、界面显示 ⚠ 徽标。"
+                       "这是健康检查(lint)的核心动作：**不要**直接覆盖别人的结论页，而应标脏并写清理由。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "page_id": {"type": "string", "description": "综合页 id（来自 list_wiki）"},
+                "stale": {"type": "boolean", "default": True, "description": "true=标为过时；false=清除标记"},
+                "reason": {"type": "string", "description": "为什么过时。务必写清楚——用户会读这句话。"},
+            },
+            "required": ["page_id"],
+        },
+    },
+    {
+        "name": "get_backlinks",
+        "description": "反查关联。给 key（论文）→ 哪些综合页引用了这篇（新增或更新这篇后，据此判断哪些页要标脏/重生）；"
+                       "给 page_id（综合页）→ 它引用了哪些论文、与哪些页互链、是不是孤儿页。"
+                       "这是 ingest 后「一篇源触及多个 wiki 页」和 lint 的起点。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "key": {"type": "string", "description": "论文 key（与 page_id 二选一）"},
+                "page_id": {"type": "string", "description": "综合页 id（与 key 二选一）"},
+            },
+        },
+    },
+    # ── 维护权：建/改页 + 建互链 ──
+    {
+        "name": "update_wiki_page",
+        "description": "建立或修改一个 wiki 综合页。这是维护 wiki 的主要动作。\n"
+                       "kind 可选：answer(问答沉淀) / concept(概念) / topic(主题) / digest(资料汇编) / "
+                       "outline(选题框架) / **entity(实体页：作者、机构、案件、制度)** / **overview(总论页：随全库演进的核心论点)**。\n"
+                       "mode='append' 把新内容并入既有正文（读完一篇新文献后补充某页时用），'replace' 整体重写。\n"
+                       "护栏：不能覆盖用户人工核验过的页（会被拒绝）。每个论断带 [n] 引用，sources 填论文 key。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "page_id": {"type": "string",
+                            "description": "页 id。新建时自取，建议带类型前缀，如 entity-chenruihua / concept-xxx / overview-main"},
+                "kind": {"type": "string",
+                         "enum": ["answer", "concept", "topic", "digest", "outline", "entity", "overview"],
+                         "description": "页种。新建时必填"},
+                "title": {"type": "string"},
+                "content": {"type": "string", "description": "markdown 正文，每个论断后带 [n] 引用"},
+                "sources": {"type": "array", "items": {"type": "string"},
+                            "description": "本页所依据论文的 key 列表（provenance 命脉，别留空）"},
+                "mode": {"type": "string", "enum": ["replace", "append"], "default": "replace"},
+                "links": {"type": "array", "items": {"type": "string"},
+                          "description": "交叉链接到的其它 wiki 页 id（可选，也可事后用 set_wiki_links）"},
+            },
+            "required": ["page_id", "content"],
+        },
+    },
+    {
+        "name": "set_wiki_links",
+        "description": "维护某页的交叉链接（wiki 页之间的边）。**这是把一堆孤立页面变成一张知识图的唯一途径**——"
+                       "没有 links，每一页都是孤儿，lint 会一直报警。"
+                       "只接受已存在的页 id，自动拒绝自链与断链。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "page_id": {"type": "string"},
+                "links": {"type": "array", "items": {"type": "string"}, "description": "目标页 id 列表"},
+                "mode": {"type": "string", "enum": ["replace", "add", "remove"], "default": "replace"},
+            },
+            "required": ["page_id", "links"],
+        },
+    },
+    # ── gist 的 Lint 与 Ingest 编排 ──
+    {
+        "name": "lint_wiki",
+        "description": "综合层健康体检（gist 三大操作之一）。查：孤儿页、已过时页、断链、无来源论文的页、"
+                       "未配 AI 模型时生成的降级页、被反复提及却没有独立页的概念。返回问题清单 + 建议动作。"
+                       "定期跑一次，wiki 才不会烂掉。纯读，不改任何东西。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "min_mentions": {"type": "integer", "default": 2,
+                                 "description": "一个概念被至少多少个页提及才算「该有独立页」"},
+            },
+        },
+    },
+    {
+        "name": "propose_wiki_updates",
+        "description": "**读完一篇文献后必调**。给论文 key，返回这篇影响了哪些既有 wiki 页、每页该怎么改。\n"
+                       "两条线索：① 直接引用它的页（结论可能被推翻）；② 讲同一主题却没引用它的页（该更新却没人知道）。\n"
+                       "gist 的经验：一篇源常常触及 10-15 个页。拿到清单后逐页执行 "
+                       "update_wiki_page / mark_stale / set_wiki_links，别只改一页就收工。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "key": {"type": "string", "description": "论文 key"},
+                "topk": {"type": "integer", "default": 12, "description": "检索同题页时取多少候选"},
+            },
+            "required": ["key"],
+        },
+    },
 ]
+
+# ══ MCP resources：把 schema / 索引 / 页面暴露成资源，agent 可直接读 ══
+RESOURCES = [
+    {"uri": "localkb://schema", "name": "WIKI.md — 综合层结构约定",
+     "description": "gist 第 3 层 schema：页种、每页结构、写回纪律、检索表现。写回前请读。",
+     "mimeType": "text/markdown"},
+    {"uri": "localkb://index", "name": "综合层索引",
+     "description": "所有 wiki 页的清单（id/kind/title/来源数/是否过时/是否 agent 写回）。",
+     "mimeType": "application/json"},
+    {"uri": "localkb://lint", "name": "综合层体检报告",
+     "description": "当前的孤儿页 / 过时页 / 断链 / 无来源页 / 缺失概念页。",
+     "mimeType": "application/json"},
+]
+
+# ══ MCP prompts：把 gist 的三大操作做成斜杠命令 ══
+PROMPTS = [
+    {
+        "name": "ingest-source",
+        "description": "把一篇文献读进 wiki：读原文 → 看它影响哪些页 → 逐页更新 → 建互链（gist 的 Ingest）",
+        "arguments": [{"name": "key", "description": "论文 key（可先用 list_sources 找）", "required": True}],
+    },
+    {
+        "name": "lint-wiki",
+        "description": "给综合层做体检并修复：孤儿页补互链、过时页重写、断链清理（gist 的 Lint）",
+        "arguments": [],
+    },
+    {
+        "name": "query-and-file",
+        "description": "回答一个问题，并把好答案沉淀回 wiki，接进已有的知识图（gist 的 Query）",
+        "arguments": [{"name": "question", "description": "研究问题", "required": True}],
+    },
+]
+
+
+def prompt_text(name, args):
+    a = args or {}
+    if name == "ingest-source":
+        k = a.get("key", "")
+        return (f"请把论文 {k} 读进综合层，严格按下面的顺序：\n"
+                f"1. read_source(key='{k}') 读原文（长文分页读完，别只读第一页）。\n"
+                f"2. propose_wiki_updates(key='{k}') 看它影响了哪些既有页。\n"
+                f"3. 对每个受影响页：结论仍成立就跳过；被这篇补充或挑战了，就 "
+                f"update_wiki_page(mode='append') 并入并加 [n] 引注；被推翻了就 mark_stale 并写清理由。\n"
+                f"4. 若这篇引出了新的实体（作者/机构/案件/制度）或新概念，用 update_wiki_page 建 entity/concept 页。\n"
+                f"5. 用 set_wiki_links 把新页接进已有的图——别留孤儿页。\n"
+                f"6. 更新 overview 总论页：这篇是强化了还是挑战了现有论点？\n"
+                f"7. 最后把你做了什么、触及哪几页，简要报告给我。\n"
+                f"gist 的经验是一篇源常触及 10-15 个页。只改一页通常说明你漏了。")
+    if name == "lint-wiki":
+        return ("请给综合层做一次体检并修复：\n"
+                "1. lint_wiki() 拿到问题清单。\n"
+                "2. 孤儿页：读它的内容，用 set_wiki_links 接到语义相关的页上。\n"
+                "3. 断链：set_wiki_links(mode='remove') 清掉指向已删除页的链接。\n"
+                "4. 过时页：read_source 读最新的相关文献，update_wiki_page 重写，再 mark_stale(stale=false)。\n"
+                "5. 无来源页：补 sources，或告诉我它为什么该留着。\n"
+                "6. 缺失概念页：用 update_wiki_page(kind='concept') 补上，并接进图。\n"
+                "改完再跑一次 lint_wiki 确认。全程不要删除任何页——你没有删除权限，"
+                "该删的页列给我，由我在应用里删。")
+    if name == "query-and-file":
+        q = a.get("question", "")
+        return (f"请回答：{q}\n\n"
+                f"步骤：\n"
+                f"1. list_wiki() 看有没有现成的综合页已经回答过——有就直接读它（get_wiki_page），别重复造轮子。\n"
+                f"2. search_localkb 检索证据；对关键的几篇 read_source 读原文，不要只凭片段下结论。\n"
+                f"3. 写出带 [n] 引注的答案给我看。\n"
+                f"4. 如果这个答案有长期价值，用 update_wiki_page 沉淀成一页（kind 自选），"
+                f"并用 set_wiki_links 接进已有的知识图。\n"
+                f"gist 的原则：好答案应该像导入的文献一样在知识库里复利，而不是消失在聊天记录里。")
+    return f"未知 prompt：{name}"
+
+def _err_of(resp):
+    """把非 2xx 响应翻成人话。此前 search_localkb 直接 .json() 后读 results，
+       服务端 503「索引未就绪」会被吞成「未检索到相关文献」——把真实原因藏了。"""
+    try:
+        j = resp.json()
+    except Exception:
+        return f"HTTP {resp.status_code}"
+    return str(j.get("detail") or j.get("error") or j.get("msg") or f"HTTP {resp.status_code}")
+
 
 def do_tool(name, args):
     if name == "search_localkb":
         if not ensure_up():
             return "错误：知识库服务启动失败（请确认 LocalKB 已安装、Python 环境正常，或查看 logs/server.log）。"
-        r = requests.post(URL + "/search", json={"query": args["query"],
-                          "topk": args.get("topk", 8), "sort": args.get("sort", "blend"),
-                          "category": args.get("category")}, timeout=120).json()
+        resp = requests.post(URL + "/search", json={"query": args["query"],
+                             "topk": args.get("topk", 8), "sort": args.get("sort", "blend"),
+                             "category": args.get("category")}, timeout=120)
+        if resp.status_code != 200:
+            return f"检索失败：{_err_of(resp)}"
+        r = resp.json()
         res = r.get("results", [])
         if not res:
             return f"未检索到与「{args.get('query')}」相关的文献。"
@@ -381,7 +645,224 @@ def do_tool(name, args):
         srcs = "\n".join(f"[{i+1}] {s.get('citation') or s.get('key')}"
                          for i, s in enumerate(p.get("sources", [])))
         return head + "\n\n" + p.get("markdown", "") + ("\n\n来源页级引用：\n" + srcs if srcs else "")
+
+    # ── 读原文（ingest 地基）──
+    if name == "read_source":
+        if not ensure_up():
+            return "错误：知识库服务启动失败。"
+        key = str(args.get("key", "")).strip()
+        if not key:
+            return "需要 key（论文标识）。可从 search_localkb 结果的 «key:…» 或 list_sources 取得。"
+        resp = requests.get(URL + "/source/" + key,
+                            params={"from_page": args.get("from_page", 1),
+                                    "to_page": args.get("to_page", 0),
+                                    "max_chars": args.get("max_chars", 20000)}, timeout=90)
+        if resp.status_code == 404:
+            return f"知识库里没有 key={key} 的文献。先用 list_sources 或 search_localkb 确认 key。"
+        if resp.status_code != 200:
+            return f"读取失败：{_err_of(resp)}"
+        r = resp.json()
+        if not r.get("ok"):
+            return f"读不到这篇的全文（{r.get('reason')}）：{r.get('detail', '')}"
+        head = (f"《{r.get('title', '')}》 {r.get('author', '')} {r.get('year', '')} {r.get('journal', '')}\n"
+                f"全文共 {r.get('n_pages_total')} 页；本次返回 {r.get('returned_pages')} 页 / {r.get('chars')} 字。")
+        if r.get("truncated"):
+            head += f"\n⚠ 已按 max_chars 截断——续读请传 from_page={r.get('next_page')}。"
+        body = []
+        for pg in r.get("pages", []):
+            pp = pg.get("printed_page") or ""
+            mark = f"—— PDF 第 {pg['pdf_page']} 页" + (f"（印刷页 {pp}）" if pp else "") + " ——"
+            body.append(f"\n{mark}\n{pg.get('text', '')}")
+        return head + "\n" + "".join(body)
+
+    if name == "list_sources":
+        if not ensure_up():
+            return "错误：知识库服务启动失败。"
+        params = {"limit": args.get("limit", 50)}
+        deep = args.get("deep", "all")
+        if deep in ("yes", "no"):
+            params["deep"] = deep
+        if args.get("category"):
+            params["category"] = args["category"]
+        resp = requests.get(URL + "/papers", params=params, timeout=30)
+        if resp.status_code != 200:
+            return f"列举失败：{_err_of(resp)}"
+        r = resp.json()
+        items = r.get("papers", [])
+        if not items:
+            return "没有符合条件的文献。"
+        scope = {"yes": "已深索", "no": "未深索", "all": "全部"}.get(deep, "全部")
+        out = [f"{scope}文献 {len(items)} 篇（库内共 {r.get('total', len(items))} 篇符合条件）："]
+        for p in items:
+            flags = []
+            if p.get("no_text"):
+                flags.append("扫描件·不可读全文")
+            if not p.get("has_pdf"):
+                flags.append("仅题录·无PDF")
+            tail = ("　[" + "；".join(flags) + "]") if flags else ""
+            out.append(f"- «key:{p.get('key')}» {p.get('title', '')}"
+                       f"（{p.get('author', '')} {p.get('year', '')}，{p.get('journal', '')}"
+                       f"{'·' + p['weight_tier'] if p.get('weight_tier') else ''}）{tail}")
+        return "\n".join(out)
+
+    # ── lint 地基：标脏 + 反查 ──
+    if name == "mark_stale":
+        if not ensure_up():
+            return "错误：知识库服务启动失败。"
+        pid = str(args.get("page_id", "")).strip()
+        if not pid:
+            return "需要 page_id（来自 list_wiki）。"
+        stale = args.get("stale", True)
+        resp = requests.post(URL + "/wiki/stale/" + pid,
+                             json={"stale": bool(stale), "reason": args.get("reason", "")}, timeout=30)
+        if resp.status_code == 404:
+            return f"无此综合页：{pid}（先用 list_wiki 查 id）。"
+        if resp.status_code != 200:
+            return f"标记失败：{_err_of(resp)}"
+        r = resp.json()
+        if stale:
+            return (f"已把「{r.get('title')}」标为过时（检索中显著降权，界面显示 ⚠ 徽标）。"
+                    f"理由：{r.get('reason') or '（未填）'}")
+        return f"已清除「{r.get('title')}」的过时标记。"
+
+    if name == "get_backlinks":
+        if not ensure_up():
+            return "错误：知识库服务启动失败。"
+        key, pid = args.get("key"), args.get("page_id")
+        if not key and not pid:
+            return "需要 key（论文）或 page_id（综合页）之一。"
+        resp = requests.get(URL + "/wiki/backlinks",
+                            params={k: v for k, v in (("key", key), ("page_id", pid)) if v}, timeout=30)
+        if resp.status_code != 200:
+            return f"反查失败：{_err_of(resp)}"
+        r = resp.json()
+        if key:
+            cb = r.get("cited_by", [])
+            if not cb:
+                return f"没有任何综合页引用论文 {key}。（若刚读完这篇，可考虑写一页综合。）"
+            out = [f"引用了论文 {key} 的综合页共 {len(cb)} 个——新增/更新这篇后，逐一判断是否需要 mark_stale 或重生："]
+            for p in cb:
+                out.append(f"- [{p['id']}] {p['kind']} {p['title']}{'（已标过时）' if p.get('stale') else ''}")
+            return "\n".join(out)
+        out = [f"综合页「{r.get('title')}」（{pid}）："]
+        out.append(f"- 引用论文 {len(r.get('sources', []))} 篇：" +
+                   "、".join((s.get("citation") or s.get("key", ""))[:40] for s in r.get("sources", [])[:8]))
+        out.append(f"- 出链到 {len(r.get('links_out', []))} 页；被 {len(r.get('links_in', []))} 页链入")
+        if r.get("orphan"):
+            out.append("- ⚠ 这是一个**孤儿页**：既不链出、也无人链入。考虑给它补互链。")
+        return "\n".join(out)
+
+    # ── 维护权 ──
+    if name == "update_wiki_page":
+        if not ensure_up():
+            return "错误：知识库服务启动失败。"
+        pid = str(args.get("page_id", "")).strip()
+        if not pid:
+            return "需要 page_id。新建时自取，建议带类型前缀（entity-xxx / concept-xxx / overview-main）。"
+        body = {"kind": args.get("kind"), "title": args.get("title"),
+                "content": args.get("content", ""),
+                "sources": [{"key": k} for k in (args.get("sources") or [])],
+                "mode": args.get("mode", "replace"), "links": args.get("links"),
+                "by_agent": True, "model": "agent"}
+        resp = requests.post(URL + "/wiki/page/" + pid, json=body, timeout=120)
+        if resp.status_code == 409:
+            return "拒绝写入：" + _err_of(resp)
+        if resp.status_code != 200:
+            return "写入失败：" + _err_of(resp)
+        r = resp.json()
+        state = "已入表可检索" if r.get("indexed") else "已存盘"
+        tail = f"，互链 {len(r.get('links') or [])} 条" if r.get("links") else ""
+        return (f"已{'追加到' if args.get('mode') == 'append' else '写入'}「{r.get('title')}」"
+                f"（id={r.get('id')}，kind={r.get('kind')}，{state}，引用 {r.get('n_sources')} 篇{tail}）。")
+
+    if name == "set_wiki_links":
+        if not ensure_up():
+            return "错误：知识库服务启动失败。"
+        pid = str(args.get("page_id", "")).strip()
+        resp = requests.post(URL + "/wiki/links/" + pid,
+                             json={"links": args.get("links") or [], "mode": args.get("mode", "replace")},
+                             timeout=30)
+        if resp.status_code != 200:
+            return "写互链失败：" + _err_of(resp)
+        r = resp.json()
+        msg = f"「{pid}」现有 {len(r['links'])} 条互链：{'、'.join(r['links']) or '（无）'}"
+        if r.get("skipped"):
+            msg += f"\n⚠ 已跳过 {len(r['skipped'])} 个无效目标（自链或不存在的页）：{'、'.join(r['skipped'])}"
+        return msg
+
+    # ── gist 的 Lint 与 Ingest 编排 ──
+    if name == "lint_wiki":
+        if not ensure_up():
+            return "错误：知识库服务启动失败。"
+        resp = requests.get(URL + "/wiki/lint", params={"min_mentions": args.get("min_mentions", 2)}, timeout=60)
+        if resp.status_code != 200:
+            return "体检失败：" + _err_of(resp)
+        r = resp.json()
+        if r.get("healthy"):
+            return f"综合层健康（共 {r['n_pages']} 页）：无孤儿页、无过时页、无断链、无缺 provenance 的页。"
+        iss = r["issues"]
+        out = [f"综合层体检：{r['n_pages']} 页，发现 {r['n_issues']} 个问题。\n"]
+        label = {"orphan": "孤儿页（无任何互链）", "stale": "已标过时", "broken_link": "断链",
+                 "no_sources": "无来源论文", "degraded": "降级页（未配 AI 模型时生成）",
+                 "missing_concept": "被反复提及却无独立页的概念"}
+        for k, items in iss.items():
+            if not items:
+                continue
+            out.append(f"■ {label[k]}（{len(items)}）：")
+            for x in items[:8]:
+                if k == "broken_link":
+                    out.append(f"   - [{x['page_id']}] {x['title']} → 指向不存在的 {x['dangling']}")
+                elif k == "missing_concept":
+                    out.append(f"   - 「{x['concept']}」被 {x['mentioned_in']} 个页提及")
+                else:
+                    extra = f"（{x['reason']}）" if x.get("reason") else ""
+                    out.append(f"   - [{x['id']}] {x['title']}{extra}")
+            if len(items) > 8:
+                out.append(f"   …… 还有 {len(items) - 8} 个")
+        out.append("\n建议动作：")
+        out += [f"  · {s}" for s in r.get("suggestions", [])]
+        return "\n".join(out)
+
+    if name == "propose_wiki_updates":
+        if not ensure_up():
+            return "错误：知识库服务启动失败。"
+        key = str(args.get("key", "")).strip()
+        resp = requests.get(URL + "/wiki/propose/" + key, params={"topk": args.get("topk", 12)}, timeout=90)
+        if resp.status_code != 200:
+            return "分析失败：" + _err_of(resp)
+        r = resp.json()
+        out = [f"论文 {key} 触及 {r['n_affected']} 个既有综合页：\n"]
+        for a in r.get("affected", []):
+            rel = "直接引用了这篇" if a["relation"] == "cites_this_source" else "同主题但未引用这篇"
+            flag = "（已标过时）" if a.get("stale") else ""
+            out.append(f"■ [{a['id']}] {a['kind']} · {a['title']}{flag}\n   关系：{rel}\n   建议：{a['action']}")
+        for h in r.get("hints", []) or [r.get("note", "")]:
+            if h:
+                out.append(f"\n提示：{h}")
+        return "\n".join(out)
+
     return f"未知工具：{name}"
+
+
+# ══ resources / prompts 的读取实现 ══
+def read_resource(uri):
+    if uri == "localkb://schema":
+        return _wiki_schema_text() or "（WIKI.md 尚未生成）", "text/markdown"
+    if not ensure_up():
+        raise RuntimeError("知识库服务启动失败")
+    if uri == "localkb://index":
+        r = requests.get(URL + "/wiki/list", timeout=30).json()
+        return json.dumps(r, ensure_ascii=False, indent=1), "application/json"
+    if uri == "localkb://lint":
+        r = requests.get(URL + "/wiki/lint", timeout=60).json()
+        return json.dumps(r, ensure_ascii=False, indent=1), "application/json"
+    if uri.startswith("localkb://page/"):
+        pid = uri[len("localkb://page/"):]
+        resp = requests.get(URL + "/wiki/page/" + pid, timeout=30)
+        if resp.status_code != 200:
+            raise RuntimeError(f"无此综合页：{pid}")
+        return resp.json().get("markdown", ""), "text/markdown"
+    raise RuntimeError(f"未知资源 uri：{uri}")
 
 def main():
     log("MCP server 就绪（stdio）")
@@ -397,8 +878,9 @@ def main():
         if m == "initialize":
             send({"jsonrpc": "2.0", "id": rid, "result": {
                 "protocolVersion": PROTO,
-                "capabilities": {"tools": {}},
-                "serverInfo": {"name": "localkb", "version": "1.0.0"}}})
+                "capabilities": {"tools": {}, "resources": {}, "prompts": {}},
+                "serverInfo": {"name": "localkb", "version": "1.2.0"},
+                "instructions": instructions()}})
         elif m == "tools/list":
             send({"jsonrpc": "2.0", "id": rid, "result": {"tools": TOOLS}})
         elif m == "tools/call":
@@ -408,6 +890,29 @@ def main():
             except Exception as e:
                 send({"jsonrpc": "2.0", "id": rid,
                       "result": {"content": [{"type": "text", "text": "错误：" + str(e)}], "isError": True}})
+        elif m == "resources/list":
+            send({"jsonrpc": "2.0", "id": rid, "result": {"resources": RESOURCES}})
+        elif m == "resources/read":
+            try:
+                uri = req["params"]["uri"]
+                text, mime = read_resource(uri)
+                send({"jsonrpc": "2.0", "id": rid,
+                      "result": {"contents": [{"uri": uri, "mimeType": mime, "text": text}]}})
+            except Exception as e:
+                send({"jsonrpc": "2.0", "id": rid,
+                      "error": {"code": -32602, "message": str(e)}})
+        elif m == "prompts/list":
+            send({"jsonrpc": "2.0", "id": rid, "result": {"prompts": PROMPTS}})
+        elif m == "prompts/get":
+            try:
+                pname = req["params"]["name"]
+                text = prompt_text(pname, req["params"].get("arguments", {}))
+                desc = next((p["description"] for p in PROMPTS if p["name"] == pname), pname)
+                send({"jsonrpc": "2.0", "id": rid, "result": {
+                    "description": desc,
+                    "messages": [{"role": "user", "content": {"type": "text", "text": text}}]}})
+            except Exception as e:
+                send({"jsonrpc": "2.0", "id": rid, "error": {"code": -32602, "message": str(e)}})
         elif m == "ping":
             send({"jsonrpc": "2.0", "id": rid, "result": {}})
         elif m and m.startswith("notifications/"):

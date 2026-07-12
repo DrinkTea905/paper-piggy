@@ -42,6 +42,8 @@
     <ul id="dp-items" class="dp-items"></ul>
     <div class="dp-actions">
       <button id="dp-pause" class="ghost">暂停</button>
+      <button id="dp-cancel" class="ghost danger" hidden
+              title="停止整库深索。已深索的文献都已保存，下次可以接着跑">停止整库深索</button>
       <span id="dp-msg" class="hint"></span>
     </div>
   </div>
@@ -169,12 +171,30 @@
             <option value="topic">🗂 主题综述</option>
             <option value="digest">📚 资料汇编</option>
             <option value="outline">🧭 选题框架</option>
+            <option value="entity">👤 实体页</option>
+            <option value="overview">🧭 总论页</option>
           </select>
           <label class="wk-agent-only"><input type="checkbox" id="wk-agent" /> 只看 🤖 未核验</label>
+          <button id="wk-lint" class="ghost" title="体检：孤儿页 / 过时页 / 断链 / 无来源页">🩺 体检</button>
+          <button id="wk-view" class="ghost" title="切换列表 / 关系图">🕸 关系图</button>
         </div>
       </div>
       <div id="wk-msg" class="msg"></div>
+      <div id="wk-lint-panel" class="wk-lint-panel" hidden></div>
       <div id="wk-list" class="wk-list"></div>
+      <!-- 关系图：节点=综述页，边=互链。用户不装 Obsidian，图就长在应用里 -->
+      <div id="wk-graph" class="wk-graph" hidden>
+        <div class="wk-graph-bar">
+          <span id="wk-graph-stat" class="hint"></span>
+          <span class="wk-graph-legend">
+            <i class="lg lg-answer"></i>对话沉淀 <i class="lg lg-concept"></i>概念
+            <i class="lg lg-entity"></i>实体 <i class="lg lg-overview"></i>总论
+            <i class="lg lg-orphan"></i>孤儿页
+          </span>
+        </div>
+        <svg id="wk-graph-svg" role="img" aria-label="综述页关系图"></svg>
+        <div id="wk-graph-empty" class="wk-empty" hidden></div>
+      </div>
     </div>
   </main>
 
@@ -448,8 +468,12 @@
       </div>
       <div id="wiki-body" class="wiki-body"></div>
       <div id="wiki-sources" class="wiki-sources"></div>
+      <!-- 互链（出链）与反向链接（入链）：把孤立的页变成可走的图 -->
+      <div id="wiki-links" class="wiki-links"></div>
+      <div id="wiki-history" class="wiki-history" hidden></div>
       <div class="modal-actions">
         <a id="wiki-export" class="ghost wiki-export-btn" download>⬇ 导出 Word</a>
+        <button id="wiki-hist" class="ghost" title="查看这一页的修改历史，可回滚">🕘 历史</button>
         <button id="wiki-regen" class="ghost">↻ 重新生成</button>
         <button id="wiki-discard" class="ghost danger">🗑 不保存此答案</button>
         <button id="wiki-close" class="ghost">关闭</button>

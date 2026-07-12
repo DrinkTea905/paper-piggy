@@ -47,8 +47,12 @@ WIKI_CONCEPTS_DIR = WIKI_DIR / "concepts"    # Phase 1：概念页 <slug>.md
 WIKI_TOPICS_DIR   = WIKI_DIR / "topics"      # Phase 1：主题页 <id>.md
 WIKI_DIGEST_DIR   = WIKI_DIR / "digests"     # 研究助手：带页级引注的资料汇编 <id>.md
 WIKI_OUTLINE_DIR  = WIKI_DIR / "outlines"    # 研究助手：选题/框架/大纲 <id>.md
+# gist 反复点名、此前缺失的两个骨干页种：
+WIKI_ENTITY_DIR   = WIKI_DIR / "entities"    # 实体页：作者/机构/案件/制度（随 ingest 增量加厚）
+WIKI_OVERVIEW_DIR = WIKI_DIR / "overviews"   # 总论页：随全库演进的 thesis（每次 ingest 强化或挑战它）
 WIKI_INDEX        = WIKI_DIR / "index.json"  # 页面清单 id→元数据（provenance/stale 命脉）
 WIKI_SCHEMA_MD    = WIKI_DIR / "WIKI.md"     # 第3层 schema：页面约定/引用格式/写回纪律
+WIKI_HISTORY_DIR  = WIKI_DIR / ".history"    # 无 git 时的版本快照兜底（见 wiki_vcs.py）
 
 # ---- 模型路径解析（分发包内优先，回退开发机的知识库目录）----
 # 优先级：环境变量 LOCALKB_MODELS > 包内相对目录(APP/models) > 开发机知识库目录。
@@ -76,7 +80,7 @@ for _d in (EXTRACTED, CHUNKS, LANCEDB_DIR, BM25_DIR, STATE, LOGS,
            DATA / "summaries", META_DIR, BM25_META_DIR, CATEGORIES_DIR,
            FOLDER_DIR_STATE, PAGEMAP_DIR,
            WIKI_DIR, WIKI_ANSWERS_DIR, WIKI_CONCEPTS_DIR, WIKI_TOPICS_DIR,
-           WIKI_DIGEST_DIR, WIKI_OUTLINE_DIR):
+           WIKI_DIGEST_DIR, WIKI_OUTLINE_DIR, WIKI_ENTITY_DIR, WIKI_OVERVIEW_DIR):
     _d.mkdir(parents=True, exist_ok=True)
 
 # HF 缓存指向复用的模型目录；离线加载，防联网 etag 检查
@@ -128,7 +132,10 @@ TIER_BONUS = {
 WEIGHT_BONUS_SCALE = 0.5
 
 # ---- 综合层检索排序（wiki 行是"附加缓存"，不喧宾夺主，符合 §0"provenance 居中"）----
-# blend 排序对 wiki 行降权：新鲜页仅象征性让位于原始文献（同分优先文献），
-# stale 页（被新论文影响、待重生）显著降权。单位与 TIER_BONUS 同量纲（reranker 分 + bonus）。
+# 新鲜综合页：**减法**小惩罚，只在同分时让位于原始文献（provenance 居中）。
 WIKI_BASE_PENALTY  = 0.05
-WIKI_STALE_PENALTY = 0.5
+# 过时综合页：**乘法**重罚。此处必须是乘法——reranker 分尺度是 0~10+（实测一个 answer 页 7.99，
+# 同题最相关的真论文才 4.34），减 0.5 根本拉不动它。而 answer 页的标题就是用户的原问题，
+# reranker 拿 query 对 query 打分，分数天然虚高：agent 写回一页，下次同样的问题必然命中它自己
+# 写的页排第一 —— 这正是幻觉复利的引擎。乘 0.3 才能让被推翻的旧综合真正沉到真论文之下。
+WIKI_STALE_FACTOR  = 0.3

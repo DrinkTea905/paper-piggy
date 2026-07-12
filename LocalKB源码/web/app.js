@@ -246,8 +246,11 @@
         ? items.map((it) => `<li title="${esc(it.title || it.key || "")}">${esc(it.title || it.key || "（未命名）")}</li>`).join("")
         : `<li class="dp-empty">${listEmpty}</li>`;
       const btn = $("#dp-pause");
-      // 仅当队列确有可暂停对象(在跑/排队)时显示暂停；整库深索停不了、空闲无对象→隐藏
+      // 仅当队列确有可暂停对象(在跑/排队)时显示暂停；空闲无对象→隐藏
       if (btn) { btn.hidden = !queueActive; btn.textContent = DP.paused ? "继续" : "暂停"; btn.classList.toggle("primary-btn", DP.paused); btn.classList.toggle("ghost", !DP.paused); }
+      // 整库深索走 subprocess、不进队列，「暂停」对它无效——给它一个真正的「停止」（终止子进程）
+      const cb = $("#dp-cancel");
+      if (cb) cb.hidden = !bulkDeep;
     } catch (e) {
       $("#dp-stat").textContent = "读取失败：" + e.message;
     }
@@ -280,6 +283,18 @@
         deepPanelPoll();
       } catch (e) { $("#dp-msg").textContent = "操作失败：" + e.message; }
       finally { pb.disabled = false; }
+    });
+    // 停止整库深索：终止子进程。深索是增量的，已完成的篇不会白跑。
+    const cb = $("#dp-cancel");
+    if (cb) cb.addEventListener("click", async () => {
+      if (!confirm("停止整库深索？\n\n已经深索完成的文献都已保存，不会白跑。\n之后可以随时再点「深索」继续未完成的部分。")) return;
+      cb.disabled = true; $("#dp-msg").textContent = "正在停止…";
+      try {
+        await jpost("/build/cancel", {});
+        $("#dp-msg").textContent = "已停止。已完成的部分已保存，可随时继续。";
+        deepPanelPoll();
+      } catch (e) { $("#dp-msg").textContent = "停止失败：" + e.message; }
+      finally { cb.disabled = false; }
     });
     // 点面板外部关闭（不含进度条本身，避免点进度条时刚开又被关）
     document.addEventListener("click", (e) => {
@@ -1358,23 +1373,63 @@
   function renderWiki(p) {
     $("#wiki-title").textContent = p.title || "综述页";
     const stale = p.stale ? " · ⚠ 可能已过时" : "";
-    $("#wiki-meta").textContent = `本地综述 · 基于 ${(p.sources || []).length} 篇 · 生成于 ${(p.generated_at || "").slice(0, 10)} · 模型 ${p.generated_by || "未知"}${stale}`;
-    // unverified-flag-missing-in-modal：模态里也显示 🤖 未核验 / 📝 我保存的
+    // 降级页不显示「模型 fallback(no-key)」这种黑话——它对读者毫无意义，还让人以为是正常综述
+    $("#wiki-meta").textContent = p.degraded
+      ? `基于 ${(p.sources || []).length} 篇 · 生成于 ${(p.generated_at || "").slice(0, 10)}${stale}`
+      : `本地综述 · 基于 ${(p.sources || []).length} 篇 · 生成于 ${(p.generated_at || "").slice(0, 10)} · 模型 ${p.generated_by || "未知"}${stale}`;
+    // unverified-flag-missing-in-modal：模态里也显示 🤖 未核验 / 📝 我保存的；降级页优先警示
     const flag = $("#wiki-flag");
-    if (flag) flag.innerHTML = p.by_agent
+    if (flag) flag.innerHTML = p.degraded
+      ? `<span class="wk-flag degraded" title="${esc(p.degraded_reason || "")}">⚠ 证据清单（非 AI 综述）</span>`
+      : p.by_agent
       ? `<span class="wk-flag agent" title="agent 写回、未经人工核验，请核对来源原文">🤖 未核验</span>`
       : `<span class="wk-flag" title="你保存/生成的综述页">📝 我保存的</span>`;
-    $("#wiki-body").innerHTML = mdToHtml(p.markdown);   // 极简 md 渲染（已转义防 XSS）
-    // F10：来源可点，点击回到检索溯源
-    $("#wiki-sources").innerHTML = (p.sources || []).length
-      ? `<div class="ws-h">参考来源（可点击溯源 · 可回溯到论文页码）</div>` +
-        p.sources.map((s, i) => `<div class="ws-item ws-click" data-key="${esc(s.key || "")}" data-cite="${esc(s.citation || "")}">[${i + 1}] ${esc(s.citation || s.key)}</div>`).join("")
+    // 降级页在正文顶部挂一条醒目横幅，说明它为什么不是综述、怎么补救
+    const banner = p.degraded
+      ? `<div class="wk-degraded-banner">⚠ <b>这不是 AI 综述。</b>${esc(p.degraded_reason || "")}。` +
+        `<br>配置 AI 模型后，点下方「↻ 重新生成」即可得到真正的综述。本页也不参与检索。</div>`
       : "";
-    $("#wiki-sources").querySelectorAll(".ws-click").forEach((el) => el.addEventListener("click", () => {
-      $("#wiki-modal").hidden = true;
+    // 旧版存量降级页的斜体尾注里仍写着「模型 fallback(no-key)」这类黑话（新页已不再这样写）。
+    // 顶部横幅已把话说清楚，这里只在显示层隐去那一行，不改盘上的 .md。
+    const mdSrc = p.degraded
+      ? p.markdown.replace(/^\*（[^\n]*(?:fallback\(|no-key|no-hits)[^\n]*）\*\s*$/gm, "")
+      : p.markdown;
+    $("#wiki-body").innerHTML = banner + mdToHtml(mdSrc);   // 极简 md 渲染（已转义防 XSS）
+    // 参考来源：一页综述的全部可信度，都建立在「能一跳回到原文核对」上。
+    // 所以主操作是「📄 打开原文」（直接开 PDF），不是跳去「找相似」。
+    $("#wiki-sources").innerHTML = (p.sources || []).length
+      ? `<div class="ws-h">参考来源（打开原文核对，或按引文检索溯源）</div>` +
+        p.sources.map((s, i) =>
+          `<div class="ws-item" data-key="${esc(s.key || "")}" data-cite="${esc(s.citation || "")}">` +
+            `<span class="ws-txt">[${i + 1}] ${esc(s.citation || s.key)}</span>` +
+            `<span class="ws-btns">` +
+              (s.key ? `<button class="ghost2 ws-pdf" title="用系统阅读器打开这篇 PDF 原文">📄 打开原文</button>` : "") +
+              (s.key ? `<button class="ghost2 ws-sim" title="在库里找与这篇相似的文献">🔍 找相似</button>` : "") +
+            `</span>` +
+          `</div>`).join("")
+      : "";
+    $("#wiki-sources").querySelectorAll(".ws-item").forEach((el) => {
       const k = el.dataset.key, c = el.dataset.cite;
-      if (k) findSimilar(k, c); else switchToSearch(c || "");
-    }));
+      const pdf = el.querySelector(".ws-pdf");
+      if (pdf) pdf.addEventListener("click", async (ev) => {
+        ev.stopPropagation();
+        pdf.disabled = true;
+        try {
+          const r = await jpost("/open_pdf", { key: k });
+          if (r && r.ok === false) alert(r.msg || "打开失败：这篇可能没有 PDF 原文。");
+        } catch (e) { alert("打开原文失败：" + (e.message || e)); }
+        finally { pdf.disabled = false; }
+      });
+      const sim = el.querySelector(".ws-sim");
+      if (sim) sim.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        $("#wiki-modal").hidden = true;
+        if (k) findSimilar(k, c); else switchToSearch(c || "");
+      });
+    });
+    renderWikiLinks(p);
+    $("#wiki-hist").dataset.id = p.id;
+    $("#wiki-history").hidden = true;
     $("#wiki-regen").dataset.id = p.id;
     // discard-button-wrong-wording：按 kind 改文案（对话沉淀＝不保存此答案；其它＝删除此综述）
     const disc = $("#wiki-discard");
@@ -1387,6 +1442,64 @@
     if (exp) { exp.href = "/research/export_docx/" + encodeURIComponent(p.id); }
     $("#wiki-modal").hidden = false;
   }
+  // 互链（本页链出）与反向链接（哪些页链到本页）——把孤立的页面走成一张图。
+  // 这是 karpathy 用 Obsidian graph view 看的东西，这里长在应用自己的界面里。
+  async function renderWikiLinks(p) {
+    const box = $("#wiki-links");
+    if (!box) return;
+    box.innerHTML = "";
+    let bl = null;
+    try { bl = await jget("/wiki/backlinks?page_id=" + encodeURIComponent(p.id)); } catch (e) { /* 静默：互链是增强，不是主功能 */ }
+    const out = (bl && bl.links_out) || [];
+    const inn = (bl && bl.links_in) || [];
+    if (!out.length && !inn.length) {
+      box.innerHTML = `<div class="wl-empty">🔗 这一页还没有和其它综述页互链（孤儿页）。
+        可以让 agent 调 <code>set_wiki_links</code> 把它接进知识图。</div>`;
+      return;
+    }
+    const chip = (x) => `<button class="wl-chip" data-id="${esc(x.id)}" title="打开这一页">${esc(x.title || x.id)}</button>`;
+    let html = "";
+    if (out.length) html += `<div class="wl-row"><span class="wl-h">🔗 本页链向</span>${out.map(chip).join("")}</div>`;
+    if (inn.length) html += `<div class="wl-row"><span class="wl-h">↩ 被这些页引用</span>${inn.map(chip).join("")}</div>`;
+    box.innerHTML = html;
+    box.querySelectorAll(".wl-chip").forEach((el) =>
+      el.addEventListener("click", () => openWikiPage(el.dataset.id)));   // 顺着链走，像真的 wiki
+  }
+
+  // 版本历史 + 回滚。有 git 用 git，没 git 用快照——用户不必知道区别。
+  async function toggleWikiHistory(id) {
+    const box = $("#wiki-history");
+    if (!box) return;
+    if (!box.hidden) { box.hidden = true; return; }
+    box.hidden = false;
+    box.innerHTML = `<div class="wh-loading">读取修改历史…</div>`;
+    try {
+      const h = await jget("/wiki/history/" + encodeURIComponent(id));
+      const vs = h.versions || [];
+      if (!vs.length) { box.innerHTML = `<div class="wh-loading">还没有历史版本。</div>`; return; }
+      const fmt = (ts) => new Date(ts * 1000).toLocaleString("zh-CN", { hour12: false });
+      box.innerHTML = `<div class="wh-h">修改历史（${vs.length} 版）</div>` +
+        vs.map((v, i) =>
+          `<div class="wh-item">
+             <span class="wh-ts">${esc(fmt(v.ts))}</span>
+             <span class="wh-msg">${esc(v.message || "（无说明）")}</span>
+             ${i === 0 ? `<span class="wh-cur">当前</span>`
+                       : `<button class="ghost2 wh-restore" data-rev="${esc(v.rev)}">回滚到这一版</button>`}
+           </div>`).join("");
+      box.querySelectorAll(".wh-restore").forEach((el) => el.addEventListener("click", async () => {
+        if (!confirm("把这一页回滚到该版本？\n\n当前内容会先存成一个新版本，之后还能再滚回来。")) return;
+        el.disabled = true; el.textContent = "回滚中…";
+        try {
+          await jpost("/wiki/restore/" + encodeURIComponent(id), { rev: el.dataset.rev });
+          await openWikiPage(id);
+          if (wikiLoaded) loadWikiList("silent");
+        } catch (e) { alert("回滚失败：" + (e.message || e)); el.disabled = false; el.textContent = "回滚到这一版"; }
+      }));
+    } catch (e) {
+      box.innerHTML = `<div class="wh-loading">读取历史失败：${esc(e.message || e)}</div>`;
+    }
+  }
+
   async function openWikiPage(id) {
     try { renderWiki(await jget("/wiki/page/" + encodeURIComponent(id))); }
     catch (e) { alert("打开综合页失败：" + (e.message || e)); }
@@ -1451,13 +1564,15 @@
       const d = await jget("/wiki/list");
       WK.pages = d.pages || [];
       renderWikiList();
+      if (GV.on) drawGraph();      // 关系图开着时（删页/回滚/新建后）同步重画
       wikiLoaded = true;   // 成功才置位，失败保持 false 便于切回重试
     } catch (e) {
       box.innerHTML = `<div class="wk-loading">加载失败：${esc(e.message)}</div>`;
     }
   }
   const WK_KIND = { answer: "📝 对话沉淀", concept: "🧩 概念综述", topic: "🗂 主题综述",
-                    digest: "📚 资料汇编", outline: "🧭 选题框架" };
+                    digest: "📚 资料汇编", outline: "🧭 选题框架",
+                    entity: "👤 实体页", overview: "🧭 总论页" };
   function renderWikiList() {
     const box = $("#wk-list");
     let list = WK.pages;
@@ -1477,9 +1592,11 @@
   }
   function wikiCard(p) {
     const div = document.createElement("div");
-    div.className = "wk-card" + (p.stale ? " stale" : "");
+    div.className = "wk-card" + (p.stale ? " stale" : "") + (p.degraded ? " degraded" : "");
     const kind = WK_KIND[p.kind || "answer"] || (p.kind || "");
-    const prov = p.by_agent
+    const prov = p.degraded
+      ? `<span class="wk-flag degraded" title="${esc(p.degraded_reason || "")}">⚠ 证据清单（非 AI 综述）</span>`
+      : p.by_agent
       ? `<span class="wk-flag agent" title="agent 写回、未经人工核验">🤖 未核验</span>`
       : `<span class="wk-flag" title="你保存/生成的综述页">📝 我保存的</span>`;
     const stale = p.stale ? `<span class="wk-flag stale" title="有新论文可能影响此综述，建议重生">⚠ 可能已过时</span>` : "";
@@ -1531,11 +1648,157 @@
     } catch (e) { $("#wk-msg").textContent = "生成失败：" + (e.message || e); }
     finally { btn.disabled = false; btn.textContent = "＋ 生成综述"; }
   }
+  // ── 体检（lint）：孤儿页 / 过时页 / 断链 / 无来源页 / 降级页 / 缺失概念页 ──
+  const LINT_LABEL = { orphan: "孤儿页（没有任何互链）", stale: "已标记过时", broken_link: "断链",
+                       no_sources: "没有来源论文", degraded: "降级页（未配 AI 模型时生成）",
+                       missing_concept: "被反复提及、却没有独立页的概念" };
+  async function runLint() {
+    const box = $("#wk-lint-panel"), btn = $("#wk-lint");
+    if (!box) return;
+    if (!box.hidden) { box.hidden = true; return; }
+    box.hidden = false;
+    box.innerHTML = `<div class="wh-loading">正在体检…</div>`;
+    if (btn) btn.disabled = true;
+    try {
+      const r = await jget("/wiki/lint");
+      if (r.healthy) {
+        box.innerHTML = `<div class="lint-ok">✅ 综述库健康：${r.n_pages} 页，没有孤儿页、过时页、断链，来源齐全。</div>`;
+        return;
+      }
+      let html = `<div class="lint-h">🩺 体检结果：${r.n_pages} 页，发现 <b>${r.n_issues}</b> 个待处理的问题</div>`;
+      for (const [k, items] of Object.entries(r.issues || {})) {
+        if (!items.length) continue;
+        html += `<div class="lint-grp"><div class="lint-grp-h">${esc(LINT_LABEL[k] || k)}（${items.length}）</div><div class="lint-items">`;
+        html += items.slice(0, 10).map((x) => {
+          if (k === "broken_link") return `<span class="lint-chip" data-id="${esc(x.page_id)}">${esc(x.title)} → ${esc(x.dangling)}</span>`;
+          if (k === "missing_concept") return `<span class="lint-chip plain">${esc(x.concept)}（被 ${x.mentioned_in} 页提及）</span>`;
+          return `<span class="lint-chip" data-id="${esc(x.id)}">${esc(x.title || x.id)}</span>`;
+        }).join("");
+        if (items.length > 10) html += `<span class="lint-chip plain">…… 还有 ${items.length - 10} 个</span>`;
+        html += `</div></div>`;
+      }
+      html += `<div class="lint-sug"><b>怎么修：</b><ul>` +
+        (r.suggestions || []).map((s) => `<li>${esc(s)}</li>`).join("") + `</ul>` +
+        `<div class="lint-tip">这些都可以让 agent 代劳：在 Claude Code 里输入 <code>/lint-wiki</code>。</div></div>`;
+      box.innerHTML = html;
+      box.querySelectorAll(".lint-chip[data-id]").forEach((el) =>
+        el.addEventListener("click", () => openWikiPage(el.dataset.id)));
+    } catch (e) {
+      box.innerHTML = `<div class="wh-loading">体检失败：${esc(e.message || e)}</div>`;
+    } finally { if (btn) btn.disabled = false; }
+  }
+
+  // ── 关系图：节点=综述页，边=互链。纯手写力导向，无外部依赖，替代 Obsidian graph view ──
+  const GRAPH_COLOR = { answer: "#60a5fa", concept: "#34d399", topic: "#fbbf24",
+                        digest: "#a78bfa", outline: "#f472b6", entity: "#fb923c", overview: "#f87171" };
+  let GV = { on: false, raf: 0 };
+
+  async function toggleGraph() {
+    GV.on = !GV.on;
+    $("#wk-list").hidden = GV.on;
+    $("#wk-graph").hidden = !GV.on;
+    $("#wk-view").textContent = GV.on ? "📋 列表" : "🕸 关系图";
+    if (GV.on) await drawGraph();
+    else if (GV.raf) { cancelAnimationFrame(GV.raf); GV.raf = 0; }
+  }
+
+  async function drawGraph() {
+    const svg = $("#wk-graph-svg"), empty = $("#wk-graph-empty"), stat = $("#wk-graph-stat");
+    let g;
+    try { g = await jget("/wiki/graph"); }
+    catch (e) { stat.textContent = "读取关系图失败：" + (e.message || e); return; }
+
+    const nodes = g.nodes || [], edges = g.edges || [];
+    if (!nodes.length) {
+      svg.innerHTML = ""; empty.hidden = false;
+      empty.innerHTML = `<div class="wk-empty-ic">🕸</div><div class="wk-empty-h">还没有综述页</div>
+        <div class="wk-empty-s">先生成几页综述，它们之间的互链会在这里连成一张知识图。</div>`;
+      stat.textContent = ""; return;
+    }
+    empty.hidden = true;
+    stat.innerHTML = `${nodes.length} 页 · ${edges.length} 条互链` +
+      (g.n_orphan ? ` · <b class="gs-orphan">${g.n_orphan} 个孤儿页</b>（没有任何连线）` : " · 无孤儿页 ✓");
+
+    const W = svg.clientWidth || 900, H = Math.max(380, Math.min(560, 120 + nodes.length * 26));
+    svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    svg.style.height = H + "px";
+
+    // 初始位置：环形铺开（比随机更稳，避免每次打开图都长得不一样）
+    const N = nodes.length, R = Math.min(W, H) * 0.34;
+    nodes.forEach((n, i) => {
+      const a = (i / N) * Math.PI * 2;
+      n.x = W / 2 + R * Math.cos(a); n.y = H / 2 + R * Math.sin(a); n.vx = n.vy = 0;
+    });
+    const idx = Object.fromEntries(nodes.map((n, i) => [n.id, i]));
+    const links = edges.map((e) => ({ s: idx[e.source], t: idx[e.target] })).filter((l) => l.s != null && l.t != null);
+
+    // 力导向：斥力 + 弹簧 + 向心力。迭代若干帧后停下（不做成永动，省电）。
+    let step = 0;
+    const tick = () => {
+      for (let iter = 0; iter < 2; iter++) {
+        for (let i = 0; i < N; i++) {
+          const a = nodes[i];
+          for (let j = i + 1; j < N; j++) {
+            const b = nodes[j];
+            let dx = b.x - a.x, dy = b.y - a.y, d2 = dx * dx + dy * dy || 0.01;
+            if (d2 > 90000) continue;
+            const f = 1400 / d2, d = Math.sqrt(d2);
+            const ux = dx / d * f, uy = dy / d * f;
+            a.vx -= ux; a.vy -= uy; b.vx += ux; b.vy += uy;
+          }
+          a.vx += (W / 2 - a.x) * 0.0016; a.vy += (H / 2 - a.y) * 0.0016;
+        }
+        for (const l of links) {
+          const a = nodes[l.s], b = nodes[l.t];
+          const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy) || 0.01;
+          const f = (d - 110) * 0.012, ux = dx / d * f, uy = dy / d * f;
+          a.vx += ux; a.vy += uy; b.vx -= ux; b.vy -= uy;
+        }
+        for (const n of nodes) {
+          n.vx *= 0.82; n.vy *= 0.82;
+          n.x = Math.max(30, Math.min(W - 30, n.x + n.vx));
+          n.y = Math.max(24, Math.min(H - 24, n.y + n.vy));
+        }
+      }
+      paint();
+      if (++step < 140) GV.raf = requestAnimationFrame(tick);
+      else GV.raf = 0;
+    };
+
+    const paint = () => {
+      const eHtml = links.map((l) =>
+        `<line x1="${nodes[l.s].x.toFixed(1)}" y1="${nodes[l.s].y.toFixed(1)}" x2="${nodes[l.t].x.toFixed(1)}" y2="${nodes[l.t].y.toFixed(1)}" class="gv-edge"/>`).join("");
+      const nHtml = nodes.map((n) => {
+        const r = 6 + Math.min(7, n.degree * 1.6);
+        const cls = "gv-node" + (n.orphan ? " orphan" : "") + (n.stale ? " stale" : "");
+        const fill = n.orphan ? "#94a3b8" : (GRAPH_COLOR[n.kind] || "#94a3b8");
+        const label = (n.title || n.id).slice(0, 14);
+        return `<g class="${cls}" data-id="${esc(n.id)}" tabindex="0" role="button" aria-label="${esc(n.title || n.id)}">
+            <title>${esc(n.title || n.id)}（${esc(WK_KIND[n.kind] || n.kind)}·${n.n_sources} 篇来源${n.orphan ? "·孤儿页" : ""}${n.stale ? "·已过时" : ""}）</title>
+            <circle cx="${n.x.toFixed(1)}" cy="${n.y.toFixed(1)}" r="${r}" fill="${fill}"/>
+            <text x="${n.x.toFixed(1)}" y="${(n.y + r + 11).toFixed(1)}" text-anchor="middle" class="gv-label">${esc(label)}</text>
+          </g>`;
+      }).join("");
+      svg.innerHTML = eHtml + nHtml;
+      svg.querySelectorAll(".gv-node").forEach((el) => {
+        const open = () => openWikiPage(el.dataset.id);
+        el.addEventListener("click", open);
+        el.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } });
+      });
+    };
+
+    if (GV.raf) cancelAnimationFrame(GV.raf);
+    step = 0; tick();
+  }
+
   (function wireWikiPage() {
     const gen = $("#wk-gen"); if (gen) gen.addEventListener("click", genConcept);
     const inp = $("#wk-concept"); if (inp) inp.addEventListener("keydown", (e) => { if (e.key === "Enter") genConcept(); });
     const kind = $("#wk-kind"); if (kind) kind.addEventListener("change", () => { WK.kind = kind.value; renderWikiList(); });
     const ag = $("#wk-agent"); if (ag) ag.addEventListener("change", () => { WK.agentOnly = ag.checked; renderWikiList(); });
+    const lint = $("#wk-lint"); if (lint) lint.addEventListener("click", runLint);
+    const view = $("#wk-view"); if (view) view.addEventListener("click", toggleGraph);
+    const hist = $("#wiki-hist"); if (hist) hist.addEventListener("click", () => toggleWikiHistory(hist.dataset.id));
   })();
 
   // ══════════════════════════════════════════

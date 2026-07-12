@@ -124,10 +124,9 @@ def _empty_body(subject):
 
 def _degraded_gb(gb):
     """R6：判断一页是否为「降级产物」（未配 key / LLM 失败 / 无命中）。
-       这类页不应被当权威缓存长期复用——命中缓存时自动重生（修好 key/补文献后即刷新）。
-       成功的 LLM 综述 generated_by=模型名，不以 fallback( 开头、也不等于 no-hits/no-key。"""
-    gb = gb or ""
-    return gb.startswith("fallback(") or gb in ("no-hits", "no-key")
+       这类页不被当权威缓存复用（命中缓存时自动重生），也不入检索表
+       （由 wiki_store._persist_page 拦下）。判定只此一份，勿另写副本。"""
+    return W.is_degraded(gb)
 
 
 def _indexed_of(page_id):

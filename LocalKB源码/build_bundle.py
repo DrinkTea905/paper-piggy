@@ -22,6 +22,7 @@ APP_OUT = BUNDLE / "app"
 DEV_ONLY = {
     "build_bundle.py", "pack_models.py", "setup_reranker_onnx.py", "setup_onnx.py",
     "import_fulltext.py", "fix_schema.py",
+    "gen_mcp_doc.py",   # 从 mcp_server.TOOLS 生成文档工具表；只在开发机跑，不进分发包
 }
 KEEP_MD = {"README.md", "MCP接入说明.md"}
 

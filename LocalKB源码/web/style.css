@@ -30,11 +30,18 @@ body {
 .status.ok { background: #064e3b; color: #6ee7b7; }
 .status.warn { background: #78350f; color: #fcd34d; }
 .status.err { background: #7f1d1d; color: #fca5a5; }
-.tabs { display: flex; gap: 2px; margin-left: 4px; }
+/* 窗口拖窄时 6 个 tab 会把顶栏撑爆、整页出现横向滚动条。
+   让 tab 区自己横向滚动（隐藏滚动条），顶栏内其余元素不再被挤出画面。 */
+.tabs { display: flex; gap: 2px; margin-left: 4px; min-width: 0; flex: 1 1 auto; overflow-x: auto;
+  scrollbar-width: none; -ms-overflow-style: none; }
+.tabs::-webkit-scrollbar { display: none; }
+.tabs .tab { flex: 0 0 auto; }
+/* 品牌区可被压缩（极窄时截断文字），但操作按钮永远留在画面内 */
+.topbar > .brand { flex: 0 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; }
 .tab { background: transparent; border: none; color: var(--muted); padding: 8px 11px; border-radius: 8px; cursor: pointer; font-size: 13.5px; white-space: nowrap; }
 .tab:hover { background: rgba(127,127,127,.14); color: var(--fg); }
 .tab.active { background: var(--brand); color: #fff; }
-.actions { margin-left: auto; display: flex; gap: 8px; }
+.actions { margin-left: auto; display: flex; gap: 8px; flex: 0 0 auto; }
 .ghost { background: transparent; border: 1px solid var(--line); color: var(--muted); padding: 6px 12px; border-radius: 8px; cursor: pointer; font-size: 13px; }
 .ghost:hover { border-color: var(--accent); color: var(--accent); }
 /* 副本#1：顶栏改浅色系后，右侧按钮沿用通用 ghost 样式即可（原深底半透明白描边已随之移除） */
@@ -455,7 +462,74 @@ button:disabled { opacity: .6; cursor: default; }
 .wk-flag { font-size: 11px; padding: 1px 6px; border-radius: 7px; background: #f1f5f9; color: #475569; }
 .wk-flag.agent { background: #fef3c7; color: #92400e; }
 .wk-flag.stale { background: #fff7ed; color: #b45309; }
+/* 降级页（未配 AI / 生成失败）：正文只是原文片段清单，不是综述——比 stale 更需要醒目 */
+.wk-flag.degraded { background: #fee2e2; color: #b91c1c; font-weight: 600; }
+.wk-card.degraded { border-color: #fca5a5; }
+.wk-degraded-banner { background: #fef2f2; border: 1px solid #fca5a5; color: #991b1b;
+  border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; font-size: 13px; line-height: 1.6; }
 .wk-card-btns { display: flex; gap: 6px; flex-wrap: wrap; }
+
+/* ── 综述页互链 / 反向链接：把孤立页面走成一张图 ── */
+.wiki-links { margin-top: 12px; }
+.wl-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 6px; }
+.wl-h { font-size: 12px; color: var(--muted); margin-right: 4px; white-space: nowrap; }
+.wl-chip { font-size: 12px; padding: 3px 9px; border-radius: 12px; cursor: pointer;
+  border: 1px solid var(--line); background: var(--card); color: var(--fg); }
+.wl-chip:hover { border-color: #60a5fa; color: #2563eb; }
+.wl-empty { font-size: 12px; color: var(--muted); background: rgba(148,163,184,.10);
+  border-radius: 8px; padding: 8px 10px; line-height: 1.6; }
+.wl-empty code { font-size: 11px; }
+
+/* 参考来源：主操作是「打开原文」，可信度全靠这一跳 */
+.ws-item { display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 6px 0; border-bottom: 1px dashed var(--line); }
+.ws-item:last-child { border-bottom: none; }
+.ws-txt { flex: 1; min-width: 0; font-size: 13px; line-height: 1.5; }
+.ws-btns { display: flex; gap: 6px; flex-shrink: 0; }
+
+/* 版本历史 */
+.wiki-history { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px; }
+.wh-h { font-size: 12px; font-weight: 600; color: var(--muted); margin-bottom: 6px; }
+.wh-loading { font-size: 12px; color: var(--muted); padding: 8px 0; }
+.wh-item { display: flex; align-items: center; gap: 10px; padding: 5px 0; font-size: 12px; }
+.wh-ts { color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.wh-msg { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wh-cur { color: #059669; font-weight: 600; white-space: nowrap; }
+
+/* 体检面板 */
+.wk-lint-panel { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px;
+  margin-bottom: 12px; background: var(--card); }
+.lint-ok { color: #059669; font-size: 13px; }
+.lint-h { font-size: 13px; margin-bottom: 10px; }
+.lint-grp { margin-bottom: 8px; }
+.lint-grp-h { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+.lint-items { display: flex; gap: 6px; flex-wrap: wrap; }
+.lint-chip { font-size: 12px; padding: 3px 9px; border-radius: 12px; cursor: pointer;
+  background: #fff7ed; color: #b45309; border: 1px solid #fed7aa; }
+.lint-chip:hover { border-color: #f59e0b; }
+.lint-chip.plain { cursor: default; background: var(--card); color: var(--muted); border-color: var(--line); }
+.lint-sug { margin-top: 10px; font-size: 12px; line-height: 1.7; }
+.lint-sug ul { margin: 4px 0 0; padding-left: 18px; }
+.lint-tip { margin-top: 6px; color: var(--muted); }
+
+/* 关系图（替代 Obsidian graph view，长在应用里） */
+.wk-graph { border: 1px solid var(--line); border-radius: 12px; background: var(--card); padding: 10px; }
+.wk-graph-bar { display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; flex-wrap: wrap; margin-bottom: 6px; font-size: 12px; }
+.gs-orphan { color: #b45309; }
+.wk-graph-legend { display: flex; align-items: center; gap: 10px; color: var(--muted); flex-wrap: wrap; }
+.wk-graph-legend .lg { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 3px; vertical-align: -1px; }
+.lg-answer { background: #60a5fa; } .lg-concept { background: #34d399; }
+.lg-entity { background: #fb923c; } .lg-overview { background: #f87171; }
+.lg-orphan { background: #94a3b8; }
+#wk-graph-svg { width: 100%; display: block; }
+/* 不用 var(--line)：#ece7ea 是分隔线色，画成连线几乎看不见 */
+.gv-edge { stroke: rgba(100,116,139,.45); stroke-width: 1.4; }
+.gv-node { cursor: pointer; }
+.gv-node circle { transition: r .12s ease; stroke: var(--card); stroke-width: 1.5; }
+.gv-node:hover circle, .gv-node:focus circle { stroke: #2563eb; stroke-width: 2.5; outline: none; }
+.gv-node.stale circle { stroke: #f59e0b; stroke-width: 2.5; stroke-dasharray: 3 2; }
+.gv-label { font-size: 10px; fill: var(--muted); pointer-events: none; }
 .wk-empty { text-align: center; padding: 48px 20px; color: var(--muted); grid-column: 1 / -1; }
 .wk-empty-ic { font-size: 40px; }
 .wk-empty-h { font-size: 16px; font-weight: 700; color: var(--fg); margin: 8px 0 4px; }
@@ -745,6 +819,12 @@ a.wk-export:hover { border-color: var(--accent); color: var(--accent); }
 :root[data-theme="dark"] .snippet { background: rgba(110,168,254,.10); }
 :root[data-theme="dark"] .dash-loading, :root[data-theme="dark"] .donut-total { color: var(--fg); }
 :root[data-theme="dark"] .brec, :root[data-theme="dark"] .tag.review, :root[data-theme="dark"] .wk-flag.agent { filter: brightness(.9); }
+:root[data-theme="dark"] .wk-flag.degraded { filter: brightness(.9); }
+:root[data-theme="dark"] .wk-degraded-banner { background: rgba(220,38,38,.12); border-color: #7f1d1d; color: #fca5a5; }
+:root[data-theme="dark"] .lint-chip { background: rgba(245,158,11,.12); border-color: #78350f; color: #fbbf24; }
+:root[data-theme="dark"] .lint-chip.plain { background: transparent; border-color: var(--line); color: var(--muted); }
+:root[data-theme="dark"] .wl-empty { background: rgba(148,163,184,.10); }
+:root[data-theme="dark"] .gv-edge { stroke: rgba(148,163,184,.40); }
 
 /* 字号档位：整体缩放正文（相对单位组件随之变化） */
 :root[data-fontsize="small"] body { font-size: 13px; }
