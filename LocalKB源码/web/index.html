@@ -158,11 +158,6 @@
   <main id="panel-wiki" class="panel" data-panel="wiki" hidden>
     <div class="wiki-page">
       <div class="wk-bar">
-        <div class="wk-new">
-          <input id="wk-concept" type="text"
-            placeholder="输入一个概念/主题，生成一页综述（如：认罪认罚从宽的证据法争议）" />
-          <button id="wk-gen" class="primary-btn">＋ 生成综述</button>
-        </div>
         <div class="wk-tools">
           <select id="wk-kind" title="按类型筛选">
             <option value="">全部类型</option>
@@ -175,8 +170,20 @@
             <option value="overview">🧭 总论页</option>
           </select>
           <label class="wk-agent-only"><input type="checkbox" id="wk-agent" /> 只看 🤖 未核验</label>
+          <span class="wk-tools-sp"></span>
           <button id="wk-lint" class="ghost" title="体检：孤儿页 / 过时页 / 断链 / 无来源页">🩺 体检</button>
           <button id="wk-view" class="ghost" title="切换列表 / 关系图">🕸 关系图</button>
+          <button id="wk-gen-toggle" class="ghost" title="手动生成一页概念/主题综述">＋ 生成综述</button>
+        </div>
+      </div>
+      <!-- 生成综述：默认收起。推荐用 Agent 生成（效果更好），这里只作网页端兜底入口 -->
+      <div id="wk-gen-panel" class="wk-gen-panel" hidden>
+        <p class="wk-gen-tip">💡 更推荐用 <b>🤖 Agent</b> 生成综述——它能读全文、跨篇综合、自动建互链，效果好得多。
+          <button type="button" id="wk-to-agent" class="link-btn">怎么接入 Agent →</button></p>
+        <div class="wk-new">
+          <input id="wk-concept" type="text"
+            placeholder="输入一个概念/主题，生成一页综述（如：认罪认罚从宽的证据法争议）" />
+          <button id="wk-gen" class="primary-btn">生成</button>
         </div>
       </div>
       <div id="wk-msg" class="msg"></div>
@@ -201,37 +208,27 @@
   <!-- Agent 页面板（MCP 接入引导：真实命令 + 工具表 + prompt 示例） -->
   <main id="panel-agent" class="panel" data-panel="agent" hidden>
     <div class="agent-page">
+      <!-- 紧凑标题栏（跨满一行） -->
       <section class="ag-hero">
         <div class="ag-hero-ic">🤖</div>
-        <div>
-          <h2>把你的文库接进 Claude Code / Codex</h2>
-          <p>让 AI 助手直接「查你的库、读页码、写回综合」——不用复制粘贴、不用切窗口。
-             你的文献和综合始终留在本机，只有你选的模型服务商会看到检索请求。</p>
+        <div class="ag-hero-txt">
+          <h2>把文库接进 Claude Code / Codex</h2>
+          <p>让 AI 直接查你的库、读页码、写回综合——文献始终留在本机。</p>
         </div>
         <div class="ag-run" id="ag-run"><span class="ag-dot"></span><span id="ag-run-txt">检查服务状态…</span></div>
       </section>
 
-      <section class="ag-card ag-intro">
-        <h3>先决条件：你得先装好 Claude Code 或 Codex</h3>
-        <p class="ag-note">本页是把 PaperPiggy 接进一个 <b>AI 命令行助手（CLI）</b>。它不是 PaperPiggy 自带的，需要你在电脑上单独安装其中一个，<b>装了才能用本页</b>：</p>
-        <ul class="ag-intro-list">
-          <li><b>Claude Code</b>（Anthropic 出品）——官方安装说明：
-            <a href="https://docs.claude.com/en/docs/claude-code/overview" target="_blank" rel="noopener">docs.claude.com/claude-code</a></li>
-          <li><b>Codex</b>（OpenAI 出品）——官方仓库/安装：
-            <a href="https://github.com/openai/codex" target="_blank" rel="noopener">github.com/openai/codex</a></li>
-        </ul>
-        <p class="ag-note ag-intro-check">不确定装没装？打开系统终端输入 <code>claude</code> 或 <code>codex</code>：能进入对话就是装好了；提示「找不到命令」就还没装，按上面链接装完再回来。装好后，照下面 ① 粘贴一行配置即可。</p>
-      </section>
-
+      <!-- 左列：① 一键接入（含先决条件一行提示） -->
       <section class="ag-card">
-        <h3>① 一键接入（本机真实路径已填好）</h3>
+        <h3>① 一键接入（本机路径已填好）</h3>
+        <p class="ag-prereq">需先装好 <b>Claude Code</b>（<a href="https://docs.claude.com/en/docs/claude-code/overview" target="_blank" rel="noopener">装法</a>）或 <b>Codex</b>（<a href="https://github.com/openai/codex" target="_blank" rel="noopener">装法</a>）。装没装？终端里输 <code>claude</code> 或 <code>codex</code>，能进对话就是装好了。</p>
         <div class="ag-tabs">
           <button class="ag-t active" data-agtab="claude">Claude Code</button>
           <button class="ag-t" data-agtab="codex">Codex</button>
           <button class="ag-t" data-agtab="json">通用 mcp.json</button>
         </div>
         <div class="ag-pane" data-agpane="claude">
-          <p class="ag-step">在任意 Claude Code 会话里粘贴运行这一行：</p>
+          <p class="ag-step">在任意 Claude Code 会话里粘贴运行：</p>
           <div class="ag-code"><code id="ag-claude"></code><button class="ag-copy" data-copy="ag-claude">复制</button></div>
           <label class="ag-scope"><input type="checkbox" id="ag-scope-user" /> 让所有项目都能用
             <span class="ag-scope-tip" title="默认只在当前项目/目录里能用 PaperPiggy；勾选后在你电脑上的任何项目里都能用（相当于全局安装）。">（这是什么？）</span></label>
@@ -241,51 +238,41 @@
           <div class="ag-code"><code id="ag-codex"></code><button class="ag-copy" data-copy="ag-codex">复制</button></div>
         </div>
         <div class="ag-pane" data-agpane="json" hidden>
-          <p class="ag-step">项目根目录建 <code>.mcp.json</code>（或填进你的客户端 MCP 配置），粘贴：</p>
+          <p class="ag-step">项目根目录建 <code>.mcp.json</code>，粘贴：</p>
           <div class="ag-code"><code id="ag-json"></code><button class="ag-copy" data-copy="ag-json">复制</button></div>
         </div>
-        <div class="ag-warn">⚠ <b>配好后要新开一个会话才生效</b>——当前正在运行的 Claude Code / Codex 会话不会热加载新 MCP。新会话里输入 <code>/mcp</code> 应能看到 <code>localkb</code><span id="ag-tool-count"></span>。</div>
+        <div class="ag-warn">⚠ <b>配好后新开一个会话才生效</b>。新会话输入 <code>/mcp</code> 应能看到 <code>localkb</code><span id="ag-tool-count"></span>。</div>
       </section>
 
-      <!-- 副本#2：② 直接对话 与 ③ 内置工作流 合并成一屏（两列并排），一屏内可看完不用下滚 -->
+      <!-- 右列：② 接好后说什么 -->
       <section class="ag-card">
-        <div class="ag-use-grid">
-          <div class="ag-use-col">
-            <h3>② 接好后，直接说大白话</h3>
-            <p class="ag-note">不用记命令、不用手动调工具——在新会话里用大白话跟它说，它自己查库、读页码、写回综合。比如：</p>
-            <ul class="ag-prompts" id="ag-prompts"></ul>
-            <details class="ag-tools-more"><summary>它到底能调用哪些能力？（一般不用管）</summary>
-              <table class="ag-tools"><thead><tr><th>你可以说</th><th>做什么</th></tr></thead>
-              <tbody id="ag-tools"></tbody></table>
-            </details>
+        <h3>② 接好后，直接说大白话</h3>
+        <p class="ag-note">不用记命令，用大白话说，它自己查库、读页码、写回综合。比如：</p>
+        <ul class="ag-prompts" id="ag-prompts"></ul>
+        <p class="ag-note ag-flow-hint">💡 更进一步：说「<b>帮我做一份带页码引用的资料汇编</b>」，它会检索 → 分节综述（引注到期刊印刷页）→ 诚实标缺口，产出自动存进「📖 综述库」随时复用。</p>
+      </section>
+
+      <!-- 底部折叠：深索 / 权限 / 完整能力表（默认收起，一屏能装下上面的核心） -->
+      <details class="ag-more ag-full">
+        <summary class="ag-more-sum">▸ 更多：深索是什么 · 它怎么动你的库 · 完整能力表</summary>
+        <div class="ag-more-body">
+          <div class="ag-more-col">
+            <h4>📖 关于「深索」</h4>
+            <p class="ag-note"><b>已深索</b>的文献 AI 能读到精确页码的正文；<b>未深索</b>的只有题录+摘要。想某方向问答更扎实，先去「📚 浏览」深索它。</p>
+            <div id="ag-deep" class="ag-deep">读取深索进度…</div>
           </div>
-          <div class="ag-use-col ag-workflow">
-            <h3>③ 内置工作流：带页级引注的资料汇编</h3>
-            <p class="ag-note">给 AI 装了套「半自动研究助手」，把库里材料按选题梳理成<b>带期刊印刷页码引注</b>的汇编：</p>
-            <ol class="ag-flow">
-              <li><b>选题拆解＋大纲</b>：检索你的库，拆关键词与核心命题，生成挂 ★核心/☆辅助 文献的三级大纲。</li>
-              <li><b>分节综述（引注到印刷页）</b>：每个论点后紧跟「作者《题名》，期刊，第 X 页」——X 是期刊印刷页，非 PDF 顺序页。</li>
-              <li><b>诚实标缺口</b>：每节末如实标「资料缺口」，并建议库里缺、值得补的文献。</li>
-            </ol>
-            <p class="ag-note ag-flow-say">直接说：<span class="ag-flow-eg">「就『…』帮我做一份带页码引用的资料汇编」</span>
-              或 <span class="ag-flow-eg">「先给我一个大纲」</span>。产出存进「📖 综述库」随时复用。</p>
+          <div class="ag-more-col">
+            <h4>🔒 它怎么动你的库</h4>
+            <p class="ag-note">默认<b>只读检索 + 另存综合</b>，不改你的原始文献；写回的综述标 🤖 未核验、不覆盖你的内容、可一键删。写回规约文件：</p>
+            <div class="ag-code"><code id="ag-schema"></code><button class="ag-copy" data-copy="ag-schema">复制路径</button></div>
+          </div>
+          <div class="ag-more-col ag-more-tools">
+            <h4>🛠 它能调用的能力（举例）</h4>
+            <table class="ag-tools"><thead><tr><th>你可以说</th><th>做什么</th></tr></thead>
+            <tbody id="ag-tools"></tbody></table>
           </div>
         </div>
-      </section>
-
-      <section class="ag-card">
-        <h3>④ 关于「深索」——AI 能读到多深，取决于这个</h3>
-        <p class="ag-note">AI 检索时，<b>已深索</b>的文献能返回精确到页码的正文段落；<b>未深索</b>的只能返回题录+摘要。
-          想让某个方向的问答更扎实，先去「📚 浏览」把该收藏夹/主题里有 PDF 的文献深索了。</p>
-        <div id="ag-deep" class="ag-deep">读取深索进度…</div>
-      </section>
-
-      <section class="ag-card">
-        <h3>⑤ 它默认怎么动你的库？</h3>
-        <p class="ag-note">默认是「<b>只读检索 + 另存综合</b>」：查库、读页码都是只读的，<b>不会改动你的原始文献</b>；它写回的综述会<b>新建</b>一页并标 🤖「未核验」，默认可被检索命中、但排序不会盖过原始文献，<b>不会覆盖或修改</b>你已有的内容，不满意随时在「📖 综述库」一键删。深索、更新这类会动索引的操作，也只在你（或你明确让它）触发时才做。
-          AI 写回时会遵守本机的写回规约（引用格式 / 来源纪律），规约文件在：</p>
-        <div class="ag-code"><code id="ag-schema"></code><button class="ag-copy" data-copy="ag-schema">复制路径</button></div>
-      </section>
+      </details>
     </div>
   </main>
 
@@ -317,6 +304,8 @@
       <label>限定分类
         <select id="chat-cat"><option value="">全部文献</option></select>
       </label>
+      <button id="chat-agent-link" class="chat-agent-link" type="button"
+        title="接入 Claude Code / Codex，可跨会话积累、系统化综述、把结论沉淀复用">💡 想跨会话积累、系统综述？接入 🤖 Agent 效果更好 →</button>
     </div>
     <div class="chat-input">
       <textarea id="chat-q" rows="1" placeholder="问一个关于你文献库的问题…（Enter 发送，Shift+Enter 换行）"></textarea>
@@ -472,11 +461,22 @@
       <div id="wiki-links" class="wiki-links"></div>
       <div id="wiki-history" class="wiki-history" hidden></div>
       <div class="modal-actions">
-        <a id="wiki-export" class="ghost wiki-export-btn" download>⬇ 导出 Word</a>
         <button id="wiki-hist" class="ghost" title="查看这一页的修改历史，可回滚">🕘 历史</button>
         <button id="wiki-regen" class="ghost">↻ 重新生成</button>
-        <button id="wiki-discard" class="ghost danger">🗑 不保存此答案</button>
+        <button id="wiki-discard" class="ghost danger">🗑 删除此综述</button>
         <button id="wiki-close" class="ghost">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 通用应用内确认框（替代浏览器原生 confirm 灰框；uiConfirm() 用它） -->
+  <div id="confirm-modal" class="modal" hidden>
+    <div class="modal-box confirm-box">
+      <h3 id="confirm-title">请确认</h3>
+      <p id="confirm-msg" class="confirm-msg"></p>
+      <div class="modal-actions">
+        <button id="confirm-cancel" class="ghost">取消</button>
+        <button id="confirm-ok">确定</button>
       </div>
     </div>
   </div>

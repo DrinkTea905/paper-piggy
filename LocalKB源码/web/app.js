@@ -4,6 +4,40 @@
   const $ = (s) => document.querySelector(s);
   const $$ = (s) => document.querySelectorAll(s);
 
+  // 应用内确认框：替代浏览器原生 confirm 灰框（那个会显示「127.0.0.1:8770 显示」很突兀）。
+  // 用法：if (!(await uiConfirm("正文", {title, okText, danger}))) return;
+  function uiConfirm(message, opts = {}) {
+    return new Promise((resolve) => {
+      const m = $("#confirm-modal"), ok = $("#confirm-ok"), cancel = $("#confirm-cancel");
+      $("#confirm-title").textContent = opts.title || "请确认";
+      $("#confirm-msg").textContent = message || "";
+      ok.textContent = opts.okText || "确定";
+      cancel.textContent = opts.cancelText || "取消";
+      ok.className = opts.danger ? "danger-btn" : "";
+      m.hidden = false;
+      setTimeout(() => ok.focus(), 0);
+      const done = (v) => {
+        m.hidden = true;
+        ok.removeEventListener("click", onOk);
+        cancel.removeEventListener("click", onCancel);
+        m.removeEventListener("mousedown", onBackdrop);
+        document.removeEventListener("keydown", onKey, true);
+        resolve(v);
+      };
+      const onOk = () => done(true);
+      const onCancel = () => done(false);
+      const onBackdrop = (e) => { if (e.target === m) done(false); };   // 点遮罩=取消
+      const onKey = (e) => {
+        if (e.key === "Escape") { e.preventDefault(); done(false); }
+        else if (e.key === "Enter") { e.preventDefault(); done(true); }
+      };
+      ok.addEventListener("click", onOk);
+      cancel.addEventListener("click", onCancel);
+      m.addEventListener("mousedown", onBackdrop);
+      document.addEventListener("keydown", onKey, true);
+    });
+  }
+
   // 前端错误自动上报到后端 logs/errors.log（方便测试时反馈问题）
   const reportErr = (msg, ctx) => {
     try {
@@ -287,7 +321,8 @@
     // 停止整库深索：终止子进程。深索是增量的，已完成的篇不会白跑。
     const cb = $("#dp-cancel");
     if (cb) cb.addEventListener("click", async () => {
-      if (!confirm("停止整库深索？\n\n已经深索完成的文献都已保存，不会白跑。\n之后可以随时再点「深索」继续未完成的部分。")) return;
+      if (!(await uiConfirm("已经深索完成的文献都已保存，不会白跑。之后可以随时再点「深索」继续未完成的部分。",
+            { title: "停止整库深索？", okText: "停止", danger: true }))) return;
       cb.disabled = true; $("#dp-msg").textContent = "正在停止…";
       try {
         await jpost("/build/cancel", {});
@@ -457,15 +492,13 @@
     const ctxHead = "📖 该片段所在整段原文" + (ctxTitleBits.length ? " · " + ctxTitleBits.join(" · ") : "");
     // C2：深索结果（有 key、非 wiki）可一键打开原文 PDF 核对页码
     const openPdf = (!r.is_wiki && r.key && r.depth === "full") ? `<button class="ghost2 open-pdf" title="用系统默认阅读器打开这篇的原文 PDF">📄 打开原文</button>` : "";
-    // D3/F1：一键复制规范引文（GB/T 7714 国标）与 BibTeX（非 wiki 行）
-    const citeBtns = (!r.is_wiki) ? `<button class="ghost2 copy-cite" title="复制 GB/T 7714 国标引文">⧉ 复制引文</button><button class="ghost2 copy-bib" title="复制 BibTeX 条目">⧉ BibTeX</button>` : "";
     div.innerHTML =
       `<div class="card-head"><span class="idx">#${i}</span>${wikiBadge(r)}${tierBadge(r)}${weightBadge(r)}${depthTag(r)}</div>` +
       `<div class="cite">${esc(r.title || r.citation || "")}</div>` +
       metaRow(r) +
       `<div class="snippet">${esc((r.text || "").trim())}</div>` +
       `<div class="card-btns">` +
-        (hasCtx ? `<button class="ghost2 ctx-toggle">查看原文上下文</button>` : "") + openPdf + citeBtns + gotoWiki + discard +
+        (hasCtx ? `<button class="ghost2 ctx-toggle">查看原文上下文</button>` : "") + openPdf + gotoWiki + discard +
       `</div>` +
       (hasCtx ? `<div class="ctx hidden"><div class="ctx-h">${ctxHead}</div><div class="ctx-body">${esc(rawCtx)}</div></div>` : "");
     const btn = div.querySelector(".ctx-toggle"), ctx = div.querySelector(".ctx");
@@ -476,10 +509,6 @@
     if (dbtn) dbtn.addEventListener("click", () => discardWiki(r.key, () => div.remove(), dbtn));
     const obtn = div.querySelector(".open-pdf");
     if (obtn) obtn.addEventListener("click", () => openPdfByKey(r.key, obtn));
-    const cbtn = div.querySelector(".copy-cite");
-    if (cbtn) cbtn.addEventListener("click", () => copyText(citationGBT(r), cbtn));
-    const bbtn = div.querySelector(".copy-bib");
-    if (bbtn) bbtn.addEventListener("click", () => copyText(bibtexEntry(r), bbtn));
     // F12：检索结果里的「未深索」徽标可点击单篇深索
     const rdb = div.querySelector(".deep-one");
     if (rdb) {
@@ -833,7 +862,7 @@
       else btn = `<span class="rc-tag nopdf" title="无 PDF，无法深索">无PDF</span>`;
       return `<li><div class="rc-main"><div class="rt">${esc(t)}</div><div class="rd">${esc(r.ingested_at || "")}</div></div>${btn}</li>`;
     };
-    const head = recent.slice(0, 6).map(row).join("");
+    const head = recent.slice(0, 5).map(row).join("");
     return `<div class="dcard"><h4>最近入库</h4>
       <ul class="recent-list">${head}</ul>
       <button class="rc-expand" id="rc-expand">去「浏览」页看全部 →</button></div>`;
@@ -959,11 +988,12 @@
           ${deep > 0 ? `<a class="dh-link" id="dash-see-deep">查看已深索 ${num(deep)} 篇 →</a>` : ""}
           ${remain > 0 ? `<a class="dh-link" id="dash-go-deep">深索全部未深索文献 →</a>` : ""}
           ${withPdf > 0 ? `<a class="dh-link dash-deep-detail" id="dash-deep-detail">深索详情 / 暂停 →</a>` : ""}</div>
-        ${remain > 0 ? `<div class="dh-deep-note">深索会把 PDF 全文切块并向量化，之后 AI 才能精读到页码、跨篇综合、生成带引用的综述。全部深索较耗时（每篇约数秒，可放后台慢慢跑，不影响你继续使用）。</div>` : ""}
+        ${remain > 0 ? `<div class="dh-deep-note">深索＝把 PDF 全文切块向量化，之后 AI 才能读到页码、跨篇综合。可放后台慢慢跑，不影响使用。</div>` : ""}
       </div></div>`;
     $("#dash").innerHTML = header
       + `<div class="dash-grid dash-2col">${overviewCard(d)}${recentCard(d.recent)}</div>`
-      + agentGuideCard();
+      // 四步新手引导默认折叠成一行——老用户不用每次看，首页一屏能装下概览+最近入库
+      + `<details class="dash-teach"><summary class="dash-teach-sum">📖 新手引导：四步把小猪养成你的专属知识库</summary>${agentGuideCard()}</details>`;
     // 事件
     const seeD = $("#dash-see-deep"); if (seeD) seeD.addEventListener("click", () => _goDeepBrowse("yes"));
     const goD = $("#dash-go-deep"); if (goD) goD.addEventListener("click", async () => {
@@ -1215,7 +1245,8 @@
     });
     m.querySelector(".ctx-del").addEventListener("click", async () => {
       m.hidden = true;
-      if (!confirm(`删除分类「${c.name}」？只删这个分类清单，不会删除文献，也不会撤销已建好的深索。`)) return;
+      if (!(await uiConfirm("只删这个分类清单，不会删除文献，也不会撤销已建好的深索。",
+            { title: `删除分类「${c.name}」？`, okText: "删除", danger: true }))) return;
       try {
         await fetch("/kb/categories/" + encodeURIComponent(c.id), { method: "DELETE" });
         if (BR.scope.type === "kbcat" && BR.scope.id === c.id) selectCollection(null, "全部", null);
@@ -1431,15 +1462,9 @@
     $("#wiki-hist").dataset.id = p.id;
     $("#wiki-history").hidden = true;
     $("#wiki-regen").dataset.id = p.id;
-    // discard-button-wrong-wording：按 kind 改文案（对话沉淀＝不保存此答案；其它＝删除此综述）
-    const disc = $("#wiki-discard");
-    if (disc) disc.textContent = (p.kind || "answer") === "answer" ? "🗑 不保存此答案" : "🗑 删除此综述";
     // R11：对话沉淀页禁止「重新生成」（点了必报错）——隐藏该按钮并记录 kind 供二次拦截
     const regenBtn = $("#wiki-regen");
     if (regenBtn) { regenBtn.dataset.kind = p.kind || "answer"; regenBtn.style.display = (p.kind || "answer") === "answer" ? "none" : ""; }
-    // C3：导出 Word（GET FileResponse，直接 <a download>）
-    const exp = $("#wiki-export");
-    if (exp) { exp.href = "/research/export_docx/" + encodeURIComponent(p.id); }
     $("#wiki-modal").hidden = false;
   }
   // 互链（本页链出）与反向链接（哪些页链到本页）——把孤立的页面走成一张图。
@@ -1487,7 +1512,8 @@
                        : `<button class="ghost2 wh-restore" data-rev="${esc(v.rev)}">回滚到这一版</button>`}
            </div>`).join("");
       box.querySelectorAll(".wh-restore").forEach((el) => el.addEventListener("click", async () => {
-        if (!confirm("把这一页回滚到该版本？\n\n当前内容会先存成一个新版本，之后还能再滚回来。")) return;
+        if (!(await uiConfirm("当前内容会先存成一个新版本，之后还能再滚回来。",
+              { title: "回滚到这一版？", okText: "回滚" }))) return;
         el.disabled = true; el.textContent = "回滚中…";
         try {
           await jpost("/wiki/restore/" + encodeURIComponent(id), { rev: el.dataset.rev });
@@ -1507,7 +1533,7 @@
   // 「🗑 不保存此答案」——与「💾 保存此答案」互为反操作（删文件+索引+检索行）。仅人用。
   async function discardWiki(id, onDone, btn) {
     if (!id) return;
-    if (!confirm("删除这条本地综合页？会同时删文件、索引与检索行——不影响文献库，可日后重新生成。")) return;
+    if (!(await uiConfirm("不影响文献库。", { title: "删除这条本地综合页？", okText: "删除", danger: true }))) return;
     const old = btn ? btn.textContent : null;
     if (btn) { btn.disabled = true; btn.textContent = "删除中…"; }
     try {
@@ -1600,36 +1626,21 @@
       ? `<span class="wk-flag agent" title="agent 写回、未经人工核验">🤖 未核验</span>`
       : `<span class="wk-flag" title="你保存/生成的综述页">📝 我保存的</span>`;
     const stale = p.stale ? `<span class="wk-flag stale" title="有新论文可能影响此综述，建议重生">⚠ 可能已过时</span>` : "";
-    const isAnswer = (p.kind || "answer") === "answer";
+    // 整卡可点即打开；删除按钮浮在右上角，点它不触发打开。其余操作（重新生成/历史）都在详情页里。
+    div.className += " wk-card-click";
     div.innerHTML =
+      `<button class="wk-card-del" title="删除这条综述">🗑</button>` +
       `<div class="wk-card-head"><span class="wk-badge k-${esc(p.kind || "answer")}">${esc(kind)}</span>` +
         `<span class="wk-title">${esc(p.title || "(无标题)")}</span></div>` +
       `<div class="wk-card-meta">基于 ${num(p.n_sources)} 篇 · ${esc((p.generated_at || "").slice(0, 10) || "未知日期")}` +
-        ` · 模型 ${esc(p.generated_by || "未知")} ${prov} ${stale}</div>` +
-      `<div class="wk-card-btns">` +
-        `<button class="ghost2 wk-open">📖 打开</button>` +
-        `<a class="ghost2 wk-export" href="/research/export_docx/${encodeURIComponent(p.id)}" download>⬇ 导出Word</a>` +
-        `<button class="ghost2 wk-tosearch">🔍 按标题检索</button>` +
-        (isAnswer ? "" : `<button class="ghost2 wk-regen">↻ 重新生成</button>`) +   // R11：对话沉淀不给重新生成
-        `<button class="ghost2 danger wk-del">🗑 删除</button>` +
-      `</div>`;
-    div.querySelector(".wk-open").addEventListener("click", () => openWikiPage(p.id));
-    div.querySelector(".wk-tosearch").addEventListener("click", () => switchToSearch(p.title || ""));
-    div.querySelector(".wk-del").addEventListener("click", (e) =>
-      discardWiki(p.id, () => loadWikiList("silent"), e.currentTarget));
-    const rb = div.querySelector(".wk-regen");
-    if (rb)
-    rb.addEventListener("click", async () => {
-      if (!(await ensureLlmKey())) return;
-      if ((p.kind || "answer") === "answer") { alert("「对话沉淀」页由对话生成，请回「💬 对话」重新提问后再保存。"); return; }
-      const old = rb.textContent; rb.disabled = true; rb.textContent = "重新生成中…";
-      try {
-        const r = await jpost("/wiki/regenerate/" + encodeURIComponent(p.id), llmBody({}));
-        if (!r.ok) throw new Error(r.detail || "失败");
-        await openWikiPage(r.id);
-        loadWikiList("silent");
-      } catch (e) { alert("重新生成失败：" + (e.message || e)); }
-      finally { rb.disabled = false; rb.textContent = old; }
+        ` · 模型 ${esc(p.generated_by || "未知")} ${prov} ${stale}</div>`;
+    div.addEventListener("click", () => openWikiPage(p.id));
+    div.setAttribute("role", "button");
+    div.setAttribute("tabindex", "0");
+    div.addEventListener("keydown", (e) => { if (e.key === "Enter") openWikiPage(p.id); });
+    div.querySelector(".wk-card-del").addEventListener("click", (e) => {
+      e.stopPropagation();
+      discardWiki(p.id, () => loadWikiList("silent"), e.currentTarget);
     });
     return div;
   }
@@ -1652,6 +1663,15 @@
   const LINT_LABEL = { orphan: "孤儿页（没有任何互链）", stale: "已标记过时", broken_link: "断链",
                        no_sources: "没有来源论文", degraded: "降级页（未配 AI 模型时生成）",
                        missing_concept: "被反复提及、却没有独立页的概念" };
+  // 体检建议的大白话版（给法学用户看；后端 suggestions 带工具名是给 agent 的，这里不用）
+  const LINT_FIX = {
+    orphan: (n) => `有 ${n} 页没跟其它综述连起来（成了"孤岛"）。可以让 AI 把它们和相关的页互相关联，以后顺着就能查到；或者确认它们本来就该单独放。`,
+    stale: (n) => `有 ${n} 页被标了"可能过时"。找几篇新文献让 AI 重写更新，再把过时标记去掉就行。`,
+    broken_link: (n) => `有 ${n} 处关联指向了已经删掉的页（点了会扑空）。让 AI 把这些失效的关联清理掉。`,
+    no_sources: (n) => `有 ${n} 页没标是根据哪些文献写的。没有出处的综述不可靠——让 AI 补上来源，或者干脆删掉。`,
+    degraded: (n) => `有 ${n} 页是没配 AI 模型时生成的，其实只是原文片段的清单、不是真正的综述。配好 AI 模型后重新生成一下。`,
+    missing_concept: (n, items) => `有些概念被好几页反复提到、却没有自己的独立页（比如${(items || []).slice(0, 3).map((x) => "「" + x.concept + "」").join("、")}）。可以让 AI 各写一页，查起来更方便。`,
+  };
   async function runLint() {
     const box = $("#wk-lint-panel"), btn = $("#wk-lint");
     if (!box) return;
@@ -1661,11 +1681,15 @@
     if (btn) btn.disabled = true;
     try {
       const r = await jget("/wiki/lint");
+      // 大白话：为什么要维护、维护了有什么用（法学用户看得懂）
+      const why = `<div class="lint-why">📖 <b>综述库为什么要"维护"？</b>你和 AI 生成的每页综述，会随着你不断加新文献而<b>慢慢过时、或彼此脱节</b>。
+        定期体检能揪出：没跟其它页连起来的<b>孤立页</b>、被新文献推翻的<b>过时页</b>、指向已删页的<b>断链</b>、没有来源出处的<b>可疑页</b>。
+        把这些理顺，你的知识库才会<b>越用越准、越查越省事</b>，而不是越堆越乱。这些整理活儿都可以交给 AI 代劳。</div>`;
       if (r.healthy) {
-        box.innerHTML = `<div class="lint-ok">✅ 综述库健康：${r.n_pages} 页，没有孤儿页、过时页、断链，来源齐全。</div>`;
+        box.innerHTML = why + `<div class="lint-ok">✅ 综述库很健康：${r.n_pages} 页，没有孤立页、过时页、断链，来源齐全，暂时不用维护。</div>`;
         return;
       }
-      let html = `<div class="lint-h">🩺 体检结果：${r.n_pages} 页，发现 <b>${r.n_issues}</b> 个待处理的问题</div>`;
+      let html = why + `<div class="lint-h">🩺 体检结果：共 ${r.n_pages} 页，发现 <b>${r.n_issues}</b> 处可以理顺的地方</div>`;
       for (const [k, items] of Object.entries(r.issues || {})) {
         if (!items.length) continue;
         html += `<div class="lint-grp"><div class="lint-grp-h">${esc(LINT_LABEL[k] || k)}（${items.length}）</div><div class="lint-items">`;
@@ -1677,9 +1701,14 @@
         if (items.length > 10) html += `<span class="lint-chip plain">…… 还有 ${items.length - 10} 个</span>`;
         html += `</div></div>`;
       }
-      html += `<div class="lint-sug"><b>怎么修：</b><ul>` +
-        (r.suggestions || []).map((s) => `<li>${esc(s)}</li>`).join("") + `</ul>` +
-        `<div class="lint-tip">这些都可以让 agent 代劳：在 Claude Code 里输入 <code>/lint-wiki</code>。</div></div>`;
+      // 大白话建议（前端按问题类型生成，不用后端带工具名的版本）
+      const fixes = [];
+      for (const [k, items] of Object.entries(r.issues || {})) {
+        if (items.length && LINT_FIX[k]) fixes.push(LINT_FIX[k](items.length, items));
+      }
+      html += `<div class="lint-sug"><b>怎么办：</b><ul>` +
+        fixes.map((s) => `<li>${esc(s)}</li>`).join("") + `</ul>` +
+        `<div class="lint-tip">💡 这些都不用你亲自动手：<b>接入 AI 助手（在「🤖 Agent」页照着做一次）</b>后，跟它说一句「<b>帮我整理一下综述库</b>」，它就会自动把上面这些补关联、重写、清理好。</div></div>`;
       box.innerHTML = html;
       box.querySelectorAll(".lint-chip[data-id]").forEach((el) =>
         el.addEventListener("click", () => openWikiPage(el.dataset.id)));
@@ -1799,6 +1828,13 @@
     const lint = $("#wk-lint"); if (lint) lint.addEventListener("click", runLint);
     const view = $("#wk-view"); if (view) view.addEventListener("click", toggleGraph);
     const hist = $("#wiki-hist"); if (hist) hist.addEventListener("click", () => toggleWikiHistory(hist.dataset.id));
+    // 生成综述折叠入口（推荐用 Agent，这里只是网页端兜底）
+    const gt = $("#wk-gen-toggle"); if (gt) gt.addEventListener("click", () => {
+      const panel = $("#wk-gen-panel"); panel.hidden = !panel.hidden;
+      gt.classList.toggle("primary-btn", !panel.hidden);
+      if (!panel.hidden) { const c = $("#wk-concept"); if (c) c.focus(); }
+    });
+    const ta = $("#wk-to-agent"); if (ta) ta.addEventListener("click", () => switchTab("agent"));
   })();
 
   // ══════════════════════════════════════════
@@ -1829,8 +1865,9 @@
   function renderAgentTools() {
     $("#ag-tools").innerHTML = AG_TOOLS.map(
       ([say, tool, desc]) => `<tr><td>${esc(say)}</td><td>${esc(desc)}</td></tr>`).join("");
-    // mcp-verify-wrong-tool-count：工具数量动态填，不写死
-    const tc = $("#ag-tool-count"); if (tc) tc.textContent = `（${AG_TOOLS.length} 个工具）`;
+    // 工具数用后端真实值（当前 21 个），别用下面这张示例表的行数（只列了 6 个代表性的）
+    const n = (AG.cfg && AG.cfg.tool_count) || AG_TOOLS.length;
+    const tc = $("#ag-tool-count"); if (tc) tc.textContent = `（${n} 个工具）`;
   }
   function renderAgentPrompts() {
     $("#ag-prompts").innerHTML = AG_PROMPTS.map((p) => `<li>${esc(p)}</li>`).join("");
@@ -2360,6 +2397,7 @@
   });
   initChatModel();
   const _c2a = $("#chat-to-agent"); if (_c2a) _c2a.addEventListener("click", () => switchTab("agent"));
+  const _c2a2 = $("#chat-agent-link"); if (_c2a2) _c2a2.addEventListener("click", () => switchTab("agent"));
 
   // 对话「限定分类」下拉：只列知识库分类（用户分类 + AI 主题；Zotero 收藏夹多未深索，不列）
   async function loadChatCats() {
@@ -2378,7 +2416,8 @@
   // 恢复默认设置：清后端 settings + 本机对话 key，回填面板
   const _reset = $("#set-reset");
   if (_reset) _reset.addEventListener("click", async () => {
-    if (!confirm("恢复默认设置？会清空：检索引擎回本地、期刊学科回标准法学、API/摘要 key、以及本机保存的对话模型 Key。文献索引不受影响。")) return;
+    if (!(await uiConfirm("会清空：检索引擎回本地、期刊学科回标准法学、API/摘要 key、以及本机保存的对话模型 Key。文献索引不受影响。",
+          { title: "恢复默认设置？", okText: "恢复默认", danger: true }))) return;
     try {
       await jpost("/setup/reset", {});
       localStorage.removeItem("localkb.cfg");   // 清对话 LLM 配置（存 localStorage）

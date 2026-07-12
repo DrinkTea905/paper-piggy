@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 import config as C
 
 KEEP_SNAPSHOTS = 20          # 无 git 时每页保留的历史份数
-_GIT = {"checked": False, "exe": None}
+_GIT = {"checked": False, "exe": None, "source": "?"}   # source: bundle/env/system/none
 
 # 自动提交用的身份。不读用户全局 git 配置——分发版机器多半没配 user.email，
 # 没有它 `git commit` 会直接失败。gpgsign 同理关掉：这是应用自己的数据目录，
@@ -34,16 +34,52 @@ def log(*a):
 
 
 # ═══ git 探测 ═══════════════════════════════════════════════════
+def _verify(exe):
+    """确认这个 git 真能跑（存在≠可执行）。"""
+    if not exe:
+        return None
+    try:
+        subprocess.run([exe, "--version"], capture_output=True, timeout=5, check=True,
+                       creationflags=(0x08000000 if sys.platform == "win32" else 0))
+        return exe
+    except Exception:
+        return None
+
+
+def _find_git():
+    """查 git，优先级：分发包自带的 MinGit > 环境变量 > 系统 PATH。
+       分发版（exe）机器上多半没装 git，所以安装包自带一份 MinGit（见 build_bundle.py），
+       放在 <bundle>/git/ 下。开发机没有这个目录，自动走系统 git。"""
+    # 1) 包内自带 MinGit：C.APP 是 app/，其上级即 bundle 根（LocalKB/）
+    try:
+        bundle = C.APP.parent
+        for rel in ("git/cmd/git.exe", "git/bin/git.exe", "git/mingw64/bin/git.exe"):
+            p = bundle / rel
+            if p.exists():
+                got = _verify(str(p))
+                if got:
+                    _GIT["source"] = "bundle"
+                    return got
+    except Exception:
+        pass
+    # 2) 环境变量显式指定
+    env = os.environ.get("LOCALKB_GIT")
+    if env and _verify(env):
+        _GIT["source"] = "env"
+        return env
+    # 3) 系统 PATH（开发机的常态）
+    got = _verify(shutil.which("git"))
+    if got:
+        _GIT["source"] = "system"
+        return got
+    _GIT["source"] = "none"
+    return None
+
+
 def git_exe():
     if not _GIT["checked"]:
         _GIT["checked"] = True
-        exe = shutil.which("git")
-        if exe:
-            try:
-                subprocess.run([exe, "--version"], capture_output=True, timeout=5, check=True)
-                _GIT["exe"] = exe
-            except Exception:
-                _GIT["exe"] = None
+        _GIT["exe"] = _find_git()
     return _GIT["exe"]
 
 
@@ -100,8 +136,8 @@ def backend():
 
 
 def status():
-    return {"backend": backend(), "git_available": bool(git_exe()), "repo": _is_repo(),
-            "dir": str(C.WIKI_DIR)}
+    return {"backend": backend(), "git_available": bool(git_exe()), "git_source": _GIT.get("source"),
+            "repo": _is_repo(), "dir": str(C.WIKI_DIR)}
 
 
 # ═══ 快照后端（无 git）══════════════════════════════════════════

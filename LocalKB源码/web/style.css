@@ -159,6 +159,11 @@ button:disabled { opacity: .6; cursor: default; }
 .modal-actions .ghost { background: transparent; border: 1px solid var(--line); color: var(--muted); }
 /* F7：关闭＝主按钮（填色，右侧），恢复默认设置＝次要危险项（描边红，左侧） */
 .modal-actions #set-close { background: var(--accent); color: #fff; border: none; padding: 8px 24px; }
+/* 应用内确认框 */
+.confirm-box { width: 400px; }
+.confirm-msg { font-size: 14px; line-height: 1.7; color: var(--fg); margin: 0; }
+.modal-actions .danger-btn { background: #dc2626; color: #fff; border: none; }
+.modal-actions .danger-btn:hover { background: #b91c1c; }
 .modal-actions #set-close:hover { background: var(--accent-d); }
 .modal-actions .ghost.danger { color: #b91c1c; border-color: #b91c1c; }  /* 静止态即显危险红，压过 .modal-actions .ghost 的灰 */
 /* 综合层 Phase 1：主题综述按钮 + 综合页查看器 */
@@ -443,7 +448,8 @@ button:disabled { opacity: .6; cursor: default; }
 
 /* ══ Phase 1：wiki 页 / Agent 页 / 对话页模型设置 ══ */
 /* wiki 页 */
-.wiki-page { max-width: 980px; margin: 0 auto; }
+/* 铺满（与库总览/浏览/对话一致），卡片列表本就是 auto-fill 网格，宽屏自然多列 */
+.wiki-page { flex: 1; overflow-y: auto; padding: 16px 20px 40px; }
 .wk-bar { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 12px; }
 .wk-new { display: flex; gap: 8px; flex: 1 1 420px; }
 .wk-new input { flex: 1; padding: 9px 12px; border: 1px solid var(--line); border-radius: 8px; font-size: 14px; }
@@ -451,8 +457,18 @@ button:disabled { opacity: .6; cursor: default; }
 .wk-tools select { padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; }
 .wk-agent-only { font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 5px; }
 .wk-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }
-.wk-card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
+.wk-card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; position: relative; }
 .wk-card.stale { border-color: #f59e0b; }
+/* 整卡可点即打开 */
+.wk-card-click { cursor: pointer; transition: border-color .12s, box-shadow .12s; padding-right: 40px; }
+.wk-card-click:hover { border-color: var(--accent); box-shadow: 0 2px 10px rgba(0,0,0,.06); }
+.wk-card-click:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* 删除按钮浮在右上角，只在悬停/聚焦时明显，点它不打开卡片 */
+.wk-card-del { position: absolute; top: 8px; right: 8px; width: 26px; height: 26px; padding: 0;
+  border: none; background: transparent; color: var(--muted); font-size: 14px; cursor: pointer;
+  border-radius: 7px; opacity: .45; transition: opacity .12s, background .12s, color .12s; }
+.wk-card-click:hover .wk-card-del { opacity: .8; }
+.wk-card-del:hover { opacity: 1; background: #fee2e2; color: #dc2626; }
 .wk-card-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 6px; }
 .wk-badge { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 8px; background: #eef2ff; color: #4338ca; white-space: nowrap; }
 .wk-badge.k-answer { background: #ecfeff; color: #0e7490; }
@@ -499,7 +515,18 @@ button:disabled { opacity: .6; cursor: default; }
 /* 体检面板 */
 .wk-lint-panel { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px;
   margin-bottom: 12px; background: var(--card); }
+.lint-why { font-size: 12.5px; line-height: 1.75; color: var(--muted); background: rgba(96,165,250,.08);
+  border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; }
+.lint-why b { color: var(--fg); }
 .lint-ok { color: #059669; font-size: 13px; }
+/* 生成综述折叠入口 */
+.wk-gen-panel { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+  padding: 12px 14px; margin-bottom: 12px; }
+.wk-gen-tip { font-size: 12.5px; color: var(--muted); margin: 0 0 10px; line-height: 1.6; }
+.wk-gen-tip b { color: var(--fg); }
+.wk-tools-sp { flex: 1; }
+.link-btn { background: transparent; border: none; color: var(--accent); cursor: pointer;
+  font-size: inherit; padding: 0 2px; text-decoration: underline; }
 .lint-h { font-size: 13px; margin-bottom: 10px; }
 .lint-grp { margin-bottom: 8px; }
 .lint-grp-h { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
@@ -537,11 +564,16 @@ button:disabled { opacity: .6; cursor: default; }
 .wk-loading { padding: 40px; text-align: center; color: var(--muted); grid-column: 1 / -1; }
 
 /* Agent 页 */
-.agent-page { max-width: 900px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
-.ag-hero { display: flex; align-items: center; gap: 16px; background: var(--topbar); color: #e2e8f0; border-radius: 14px; padding: 18px 22px; }
-.ag-hero-ic { font-size: 40px; }
-.ag-hero h2 { margin: 0 0 4px; font-size: 18px; }
-.ag-hero p { margin: 0; font-size: 13px; color: #cbd5e1; line-height: 1.6; }
+/* 铺满 + 网格重排：横幅跨满、①②两列并排、次要说明折叠到底部——核心一屏装下。 */
+.agent-page { flex: 1; overflow-y: auto; padding: 14px 18px 18px;
+  display: grid; grid-template-columns: 1fr 1fr; gap: 12px; align-content: start; align-items: start; }
+.agent-page .ag-hero, .agent-page .ag-full { grid-column: 1 / -1; }
+@media (max-width: 900px) { .agent-page { grid-template-columns: 1fr; } }
+.ag-hero { display: flex; align-items: center; gap: 14px; background: var(--topbar); color: #e2e8f0; border-radius: 12px; padding: 11px 18px; }
+.ag-hero-ic { font-size: 28px; }
+.ag-hero-txt { flex: 1; min-width: 0; }
+.ag-hero h2 { margin: 0 0 2px; font-size: 16px; }
+.ag-hero p { margin: 0; font-size: 12.5px; color: #cbd5e1; line-height: 1.5; }
 .ag-run { margin-left: auto; display: flex; align-items: center; gap: 6px; font-size: 12px; white-space: nowrap; color: #94a3b8; }
 .ag-run .ag-dot { width: 9px; height: 9px; border-radius: 50%; background: #94a3b8; }
 .ag-run.ok .ag-dot { background: #22c55e; box-shadow: 0 0 6px #22c55e; }
@@ -564,6 +596,29 @@ button:disabled { opacity: .6; cursor: default; }
 .ag-tools code { background: #f1f5f9; padding: 1px 6px; border-radius: 5px; font-size: 12px; }
 .ag-prompts { margin: 0; padding-left: 20px; font-size: 13px; line-height: 1.9; color: var(--fg); }
 .ag-note { font-size: 13px; color: var(--muted); line-height: 1.7; margin: 0 0 10px; }
+/* 先决条件缩成一行小字（原先是独立黄卡，太占地方） */
+.ag-prereq { font-size: 12px; color: var(--muted); line-height: 1.6; margin: 0 0 10px;
+  background: rgba(148,163,184,.08); border-radius: 8px; padding: 7px 10px; }
+.ag-prereq a { color: var(--accent); }
+.ag-prereq code { background: #f1f5f9; padding: 1px 5px; border-radius: 4px; font-size: 11.5px; }
+/* ②里的「工作流」缩成一句提示 */
+.ag-flow-hint { background: linear-gradient(180deg, rgba(232,84,138,.06), transparent);
+  border-radius: 8px; padding: 9px 11px; margin: 10px 0 0; }
+.ag-flow-hint b { color: var(--fg); }
+/* 底部折叠：深索/权限/能力表，展开后三列 */
+.ag-more { background: var(--card); border: 1px solid var(--line); border-radius: 12px; }
+.ag-more-sum { cursor: pointer; list-style: none; padding: 11px 16px; font-size: 13px;
+  color: var(--muted); user-select: none; }
+.ag-more-sum::-webkit-details-marker { display: none; }
+.ag-more[open] .ag-more-sum { border-bottom: 1px solid var(--line); }
+.ag-more[open] .ag-more-sum::before { content: "▾ "; }
+.ag-more-sum:hover { color: var(--fg); }
+.ag-more-body { display: grid; grid-template-columns: 1fr 1fr 1.2fr; gap: 18px; padding: 14px 16px 16px; }
+.ag-more-col h4 { margin: 0 0 8px; font-size: 13px; }
+.ag-more-col .ag-note { font-size: 12.5px; }
+@media (max-width: 900px) { .ag-more-body { grid-template-columns: 1fr; } }
+:root[data-theme="dark"] .ag-prereq { background: rgba(148,163,184,.10); }
+:root[data-theme="dark"] .ag-prereq code { background: #1e293b; }
 .ag-deep { font-size: 13px; color: var(--fg); }
 .ag-link { color: var(--accent); cursor: pointer; font-weight: 600; }
 .ag-link:hover { text-decoration: underline; }
@@ -600,8 +655,12 @@ button:disabled { opacity: .6; cursor: default; }
 .ctx-menu .ctx-item:hover { background: rgba(37,99,235,.1); }
 .ctx-menu .ctx-item.danger { color: #c0392b; }
 .ctx-menu .ctx-item.ctx-new { border-top: 1px solid var(--line); margin-top: 4px; color: var(--accent); }
-.chat-scope { padding: 6px 14px 0; }
+.chat-scope { padding: 6px 14px 0; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .chat-scope label { font-size: 12.5px; color: var(--muted); display: inline-flex; align-items: center; gap: 6px; }
+/* 对话页常驻引导：对话开始后欢迎语会消失，这条一直在，提醒 Agent 效果更好 */
+.chat-agent-link { background: transparent; border: none; color: var(--accent); font-size: 12.5px;
+  cursor: pointer; padding: 2px 4px; border-radius: 6px; white-space: nowrap; }
+.chat-agent-link:hover { text-decoration: underline; }
 .chat-scope select { padding: 4px 8px; border: 1px solid var(--line); border-radius: 7px; font-size: 12.5px; max-width: 260px; }
 
 /* R2：左树收起/标题/生成主题 + 内联输入弹层 + 拖拽高亮 + 悬停图例 */
@@ -652,6 +711,15 @@ button:disabled { opacity: .6; cursor: default; }
 .rc-tag.nopdf { background: #f1f5f9; color: #94a3b8; }
 .rc-expand { margin-top: 8px; border: none; background: none; color: var(--accent); cursor: pointer; font-size: 12.5px; }
 /* F5：首页横板四步示意图（替代原 dash-guide 密排文字；作用域 .howto，宽度自适应、一页显示） */
+/* 新手引导折叠：默认一行，点开才展开四步图，让首页一屏装下 */
+.dash-teach { margin-top: 16px; }
+.dash-teach-sum { cursor: pointer; list-style: none; font-size: 13px; color: var(--muted);
+  padding: 10px 14px; border: 1px dashed var(--line); border-radius: 10px; user-select: none; }
+.dash-teach-sum::-webkit-details-marker { display: none; }
+.dash-teach-sum::before { content: "▸ "; }
+.dash-teach[open] .dash-teach-sum::before { content: "▾ "; }
+.dash-teach-sum:hover { color: var(--fg); border-color: var(--accent); }
+.dash-teach[open] .dash-teach-sum { margin-bottom: 12px; }
 .howto { width: 100%; border: 1px solid var(--line); border-radius: 16px; padding: 20px 22px 22px;
   background: linear-gradient(120deg, rgba(232,84,138,.08), rgba(37,99,235,.06)); }
 .howto .ht-head { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; }

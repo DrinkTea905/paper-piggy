@@ -23,6 +23,7 @@ DEV_ONLY = {
     "build_bundle.py", "pack_models.py", "setup_reranker_onnx.py", "setup_onnx.py",
     "import_fulltext.py", "fix_schema.py",
     "gen_mcp_doc.py",   # 从 mcp_server.TOOLS 生成文档工具表；只在开发机跑，不进分发包
+    "fetch_mingit.py",  # 下载 MinGit 塞进包；构建期跑，不进分发包（它下载的 git/ 才进）
 }
 KEEP_MD = {"README.md", "MCP接入说明.md"}
 
@@ -144,6 +145,17 @@ def ensure_vc_runtime():
     print(f"[bundle] VC++ 运行库补齐：从 {srcdir} copy {n} 个 msvcp140* (v{'.'.join(map(str,ver))}) → python/")
 
 
+def ensure_git():
+    """把 MinGit 放进 bundle/git/（综合层版本历史/回滚用）。已就位则跳过；
+    缺了只提示、不阻断——wiki_vcs 会自动退回 .history 快照，功能不坏，只是看不了逐字 diff。"""
+    exe = BUNDLE / "git" / "cmd" / "git.exe"
+    if exe.exists():
+        print(f"[bundle] MinGit 已就位：{exe}")
+        return
+    print("[bundle] ⚠ bundle/git/ 缺 MinGit（版本历史将退回快照模式）。"
+          f"如需自带真 git，跑：python fetch_mingit.py --dest \"{BUNDLE}\"")
+
+
 def slim_python():
     py = BUNDLE / "python"
     n = 0
@@ -241,6 +253,7 @@ def main():
     (BUNDLE / "data").mkdir(exist_ok=True)
     (BUNDLE / "models").mkdir(exist_ok=True)
     ensure_vc_runtime()     # 补齐 onnxruntime 需要的 msvcp140*.dll（本地嵌入模式必需）
+    ensure_git()            # 自带 MinGit（综合层版本历史/回滚用；缺了会退回快照，不阻断构建）
     slim_python()
     write_launchers()
     if args.slim_models:

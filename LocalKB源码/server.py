@@ -236,10 +236,15 @@ def agent_mcp_config():
     codex_toml = (f'[mcp_servers.localkb]\n'
                   f'command = {json.dumps(py)}\n'
                   f'args = [{json.dumps(mcp)}]')
+    try:                                       # 真实 MCP 工具数（前端"看到 N 个工具"用它，别写死）
+        import mcp_server as MCP
+        tool_count = len(MCP.TOOLS)
+    except Exception:
+        tool_count = 0
     return {
         "python": py, "mcp_server": mcp,
         "daemon_url": C.DAEMON_URL, "server_running": True,
-        "wiki_schema_md": str(C.WIKI_SCHEMA_MD),
+        "wiki_schema_md": str(C.WIKI_SCHEMA_MD), "tool_count": tool_count,
         "claude_cmd": add_core,
         "claude_cmd_user": add_core.replace("claude mcp add localkb ",
                                             "claude mcp add localkb --scope user "),
