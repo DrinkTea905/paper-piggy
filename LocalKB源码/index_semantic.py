@@ -44,18 +44,41 @@ def meta_row(p, vec):
         "ingested_at": p.get("ingested_at", ""),
     }
 
+def _purge_deleted(papers, tbl):
+    """清掉数据源里已删条目的残留：Zotero 删条目（含进回收站）后 index_light 重写的 papers.jsonl
+       已无该篇，但表内 meta/chunk 行、进度文件、产物全部残留——会继续出现在语义/深索结果里，
+       点开走 404，/stats 的深索数也把它算进去。folder 模式有对称清理，zotero 模式此前完全没有。
+       用 papers.jsonl 现有 key 集合与表内 key 作差，对消失的 key 调 folder_ingest 同款 purge。"""
+    if tbl is None:
+        return
+    try:
+        import folder_ingest as FI
+        live = {p["key"] for p in papers}
+        tbl_keys = set(k for k in tbl.to_arrow().to_pydict().get("key", []) if k)
+        gone = [k for k in tbl_keys if k not in live]
+        if not gone:
+            return
+        print(f"[semantic] 清理 {len(gone)} 条已从数据源删除的残留（表行+进度+产物）", flush=True)
+        FI._purge_db_rows(gone)
+        FI._purge_key_artifacts(gone)
+    except Exception as e:
+        print(f"[semantic] 清理残留失败（不阻断）：{e!r}", flush=True)
+
+
 def main(batch=64):
     t0 = time.time()
     if not C.PAPERS_JSONL.exists():
         print("[semantic] 未找到 papers.jsonl，请先跑 index_light", flush=True)
         return
     papers = [json.loads(l) for l in open(C.PAPERS_JSONL, encoding="utf-8") if l.strip()]
-    done = load_done()
-    todo = [p for p in papers if p.get("stem") not in done]
-    print(f"[semantic] 题录 {len(papers)}，待嵌入 {len(todo)}（已嵌 {len(done)}）", flush=True)
 
     db = lancedb.connect(str(C.LANCEDB_DIR))
     tbl = db.open_table(C.TABLE_NAME) if C.TABLE_NAME in db.table_names() else None
+    _purge_deleted(papers, tbl)   # 先清已删条目残留，再算待嵌入（done 里被删 stem 已被 purge 剔除）
+
+    done = load_done()
+    todo = [p for p in papers if p.get("stem") not in done]
+    print(f"[semantic] 题录 {len(papers)}，待嵌入 {len(todo)}（已嵌 {len(done)}）", flush=True)
 
     if todo:
         from embedder import get_embedder
@@ -103,6 +126,16 @@ def main(batch=64):
         r.save(str(C.BM25_DIR))
         (C.BM25_DIR / "bm25_ids.json").write_text(json.dumps(ids, ensure_ascii=False), encoding="utf-8")
         print(f"[semantic] bm25 完成，{len(ids)} 行", flush=True)
+    # backend 一致性基准：只有真正产出向量的这里写 manifest.backend（light 不写、不覆写）。
+    # 换后端后的“强制全量重嵌”路径（清进度+删表）会让这里以新后端重建、并写回新 backend。
+    if tbl is not None:
+        try:
+            import settings as S
+            man = json.loads(C.INDEX_MANIFEST.read_text(encoding="utf-8")) if C.INDEX_MANIFEST.exists() else {}
+            man["backend"] = S.backend()
+            C.INDEX_MANIFEST.write_text(json.dumps(man, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception as e:
+            print(f"[semantic] 写 manifest.backend 失败：{e}", flush=True)
     print(f"[semantic] 表总行数 ≈ {tbl.count_rows() if tbl else 0}，总用时 {time.time()-t0:.0f}s", flush=True)
 
 if __name__ == "__main__":

@@ -20,6 +20,7 @@ EN-A4（契约7，G1 核验器）：把一句论断（claim）核到库内证据
 import sys, re, math
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
+import config as C
 import textloc as TL
 
 # 铁律三的固定尾注：无论判成什么，都要提醒"未覆盖≠为假"
@@ -74,6 +75,21 @@ def _mk_evidence(matches, seg, exact_score=1.0, fuzzy_score=0.9):
             for m in matches]
 
 
+def _has_extracted_text(key):
+    """声称出处是否已深索且有正文：读 extracted/<stem>.json，任一页 text 非空即算有。
+       没正文时 textloc.locate 在该篇必然落空——那是"没得对"而非"对不上"，不能据此判 mismatch。"""
+    try:
+        st = TL._stem_of(key)
+        if not st:
+            return False
+        d = TL._read_doc(C.EXTRACTED / f"{st}.json")
+        if not d:
+            return False
+        return any((pg.get("text") or "").strip() for pg in (d.get("pages") or []))
+    except Exception:
+        return False
+
+
 def verify(claim, keys=None, topk=8):
     """三态核验。返回契约7：{"verdict","confidence","evidence":[...],"note"}。"""
     import retriever as R
@@ -109,10 +125,17 @@ def verify(claim, keys=None, topk=8):
         except Exception:
             elsewhere = []
         if elsewhere:
+            # 判 mismatch 前必须确认：声称出处里至少有一篇真的深索过且有正文——否则声称篇根本
+            # 没正文可比，上面 locate 落空只是"没得对"而非"对不上"，据此改判他篇是冤案（对抗审查 #5）。
+            if any(_has_extracted_text(k) for k in keys):
+                ev = _mk_evidence(elsewhere[:3], seg)
+                return {"verdict": "mismatch", "confidence": ev[0]["score"], "evidence": ev,
+                        "note": f"claim 中的直接引文定位到了原文，但不在声称的出处（{'、'.join(list(keys)[:3])}）里"
+                                "——疑似引用错篇或转引，请按 evidence 的实际落点核对。" + FIXED_NOTE}
+            # 声称出处都没深索/无正文：无从核对，仅提示、不改判他篇（附他处落点供参考）
             ev = _mk_evidence(elsewhere[:3], seg)
-            return {"verdict": "mismatch", "confidence": ev[0]["score"], "evidence": ev,
-                    "note": f"claim 中的直接引文定位到了原文，但不在声称的出处（{'、'.join(list(keys)[:3])}）里"
-                            "——疑似引用错篇或转引，请按 evidence 的实际落点核对。" + FIXED_NOTE}
+            return {"verdict": "not_in_lib", "confidence": 0.0, "evidence": ev,
+                    "note": "声称出处未深索/无正文，无法核对，仅供参考（引文在库内他处出现，见 evidence 落点）。" + FIXED_NOTE}
         # 引文库内无踪 → 不下判词，继续常规检索通道（铁律三：找不到 ≠ 引文是假的）
 
     # ── ② 常规通道：检索召回 + 支撑句 ──

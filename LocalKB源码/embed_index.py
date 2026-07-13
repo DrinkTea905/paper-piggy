@@ -52,6 +52,9 @@ def load_no_text():
 
 def mark_no_text(key):
     """C1/A2：把空 chunks 的 stem 记进 deep_no_text.txt（而非 embedded_keys.txt），供前端标「扫描件·需OCR」。"""
+    # BF27 同款去重：并发/孤儿双跑会把同 stem 追加多遍、扫描件计数虚高——追加前先读现有集合防重。
+    if NO_TEXT_FILE.exists() and key in set(NO_TEXT_FILE.read_text(encoding="utf-8").split()):
+        return
     with open(NO_TEXT_FILE, "a", encoding="utf-8") as f:
         f.write(key + "\n")
 
@@ -170,7 +173,11 @@ def main():
                                      row_type="chunk" if "row_type" in tbl.schema.names else None)
                 if pred:
                     tbl.delete(pred)
-                tbl.add(rows)
+                # BF：chunk.py 现在恒发 journal_tier，但旧表可能没有该列，直接 add 会
+                # 抛 ValueError: field 'journal_tier' does not exist in table schema。
+                # add 前把每行裁到表真实列集，多出的键丢弃，确保 add 永不因列不匹配失败。
+                cols = set(tbl.schema.names)
+                tbl.add([{k: v for k, v in r.items() if k in cols} for r in rows])
             mark_done(f.stem); done.add(f.stem); n_chunks += len(rows)
             if i % 50 == 0 or i == len(todo):
                 el = time.time() - t0

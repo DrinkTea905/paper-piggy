@@ -37,6 +37,7 @@ TIER_RANK = {
 }
 DEFAULT_TIER = "普刊"
 _CACHE = None
+_CACHE_KEY = None    # (路径, mtime)：任一变化就重解析，实现进程内热重载（索引期后补词表即时生效）
 
 
 def _norm(name: str) -> str:
@@ -50,30 +51,38 @@ def _norm(name: str) -> str:
 
 
 def _load() -> dict:
-    global _CACHE
-    if _CACHE is None:
-        m = {}
-        if TIERS_FILE.exists():
-            try:
-                raw = json.loads(TIERS_FILE.read_text(encoding="utf-8"))
-                data = raw.get("journals", raw)
-                for k, v in data.items():
-                    if isinstance(k, str) and k.startswith("_"):
-                        continue
-                    m[_norm(k)] = v
-            except Exception as e:
-                # 不静默：手工编辑 journal_tiers.json 引入语法错误时，若悄悄退化为空表，
-                # 会把全部刊物打成默认档并被 03 持久写入 LanceDB（只 add 不改）。告警到 stderr。
-                print(f"[journal_tiers] 解析 {TIERS_FILE} 失败，期刊分级退化为默认档"
-                      f"（中文→普刊/外文→外文一般）：{e}", file=sys.stderr, flush=True)
-                m = {}
-        else:
-            # 数据文件缺失（新机/打包漏带最常见）：同样告警，否则全部刊物静默退化为默认档，
-            # 且会被 index_light 持久化进 papers.jsonl/stats_cache，仪表盘只见 普刊/外文一般/未知。
-            print(f"[journal_tiers] 未找到分级数据 {TIERS_FILE}，期刊分级退化为默认档"
-                  f"（中文→普刊/外文→外文一般）。请将 journal_tiers.json 放到 {C.DATA} 或源码目录后重建索引。",
-                  file=sys.stderr, flush=True)
-        _CACHE = m
+    global _CACHE, _CACHE_KEY
+    # 每次现算路径（DATA 用户档优先，缺失退 APP 种子）：索引期后补 journal_tiers.json 无需重启
+    # 即可被拾起；再按 (路径, mtime) 判断是否需重解析，文件没变则直接吃缓存。
+    f = _resolve_tiers_file()
+    try:
+        key = (str(f), f.stat().st_mtime)
+    except OSError:
+        key = (str(f), None)
+    if _CACHE is not None and _CACHE_KEY == key:
+        return _CACHE
+    m = {}
+    if f.exists():
+        try:
+            raw = json.loads(f.read_text(encoding="utf-8"))
+            data = raw.get("journals", raw)
+            for k, v in data.items():
+                if isinstance(k, str) and k.startswith("_"):
+                    continue
+                m[_norm(k)] = v
+        except Exception as e:
+            # 不静默：手工编辑 journal_tiers.json 引入语法错误时，若悄悄退化为空表，
+            # 会把全部刊物打成默认档并被 03 持久写入 LanceDB（只 add 不改）。告警到 stderr。
+            print(f"[journal_tiers] 解析 {f} 失败，期刊分级退化为默认档"
+                  f"（中文→普刊/外文→外文一般）：{e}", file=sys.stderr, flush=True)
+            m = {}
+    else:
+        # 数据文件缺失（新机/打包漏带最常见）：同样告警，否则全部刊物静默退化为默认档，
+        # 且会被 index_light 持久化进 papers.jsonl/stats_cache，仪表盘只见 普刊/外文一般/未知。
+        print(f"[journal_tiers] 未找到分级数据 {f}，期刊分级退化为默认档"
+              f"（中文→普刊/外文→外文一般）。请将 journal_tiers.json 放到 {C.DATA} 或源码目录后重建索引。",
+              file=sys.stderr, flush=True)
+    _CACHE, _CACHE_KEY = m, key
     return _CACHE
 
 
@@ -98,6 +107,7 @@ def rank_of(tier: str) -> int:
 
 
 def reload():
-    """清缓存（编辑 json 后热重载用）。"""
-    global _CACHE
+    """清缓存 + 重新定位数据文件（编辑或后补 json 后热重载用；下次 _load 会重解析）。"""
+    global _CACHE, _CACHE_KEY
     _CACHE = None
+    _CACHE_KEY = None

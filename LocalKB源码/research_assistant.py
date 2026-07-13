@@ -45,13 +45,19 @@ def _digest_id(query):
 
 
 def _recall(query, topk):
-    """召回命中 chunk（剔除 wiki 行防自证）。返回 hits。"""
+    """召回命中 chunk（剔除 wiki 行防自证）。返回 (hits, err)。
+       err 非空 = 检索后端异常（API 余额0/断网）或索引未就绪——调用方据此**报错**，
+       绝不把它当成「库内无文献」落一页假结论（与 verify_claim 的处理对齐）。"""
+    if not (query or "").strip():
+        return [], None
     try:
         import retriever as R
-        hits = R.search(query, topk, "blend") if R.STATE.get("ready") else []
-    except Exception:
-        hits = []
-    return [h for h in hits if not h.get("is_wiki")]
+        if not R.STATE.get("ready"):
+            return [], "检索索引未就绪（正在重建/加载或尚未建库），请稍后重试。"
+        hits = R.search(query, topk, "blend")
+    except Exception as e:
+        return [], f"检索后端异常：{e}（→ 请到 设置 检查检索引擎 API Key 或余额）"
+    return [h for h in hits if not h.get("is_wiki")], None
 
 
 def _coverage(hits):
@@ -106,9 +112,14 @@ def _resolve_llm(llm):
     return base, model, key
 
 
-def _fallback_body(subject, hits):
-    """无 LLM key 时的退化产物：带源证据清单（诚实标注非合成综述）。"""
-    out = [f"> ⚠ 未配置 LLM，本节为**带源证据清单**（非合成综述）。每条为库内命中片段 + 印刷页引注，供人工整理。\n"]
+def _fallback_body(subject, hits, reason=None):
+    """LLM 不可用时的退化产物：带源证据清单（诚实标注非合成综述）。
+       reason 非空=已配 key 但调用失败（写出人话真因，如「密钥无效或余额不足」，别再谎称未配置）；
+       reason 为空=确未配置 LLM。"""
+    head = (f"> ⚠ AI 生成失败（{reason}），本节为**带源证据清单**（非合成综述）。每条为库内命中片段 + 印刷页引注，供人工整理。\n"
+            if reason else
+            "> ⚠ 未配置 LLM，本节为**带源证据清单**（非合成综述）。每条为库内命中片段 + 印刷页引注，供人工整理。\n")
+    out = [head]
     for h in hits:
         cite = CF.compact(h)
         snip = (h.get("text") or "")[:180].strip().replace("\n", " ")
@@ -150,12 +161,16 @@ def digest(query, topk=14, llm=None, force=False, by_agent=False):
         if cached and not _degraded_gb(cached.get("generated_by", "")):
             m = dict(cached); m["cached"] = True; m["indexed"] = _indexed_of(page_id)
             return m
-    hits = _recall(query, topk)
+    hits, err = _recall(query, topk)
+    if err:                            # 后端异常/未就绪：报错，绝不落「本库无文献」的假结论页
+        raise RuntimeError(err)
     sym, label, n, n_high = _coverage(hits)
     ctx = _build_ctx(hits)
     base, model, key = _resolve_llm(llm)
+    degraded_reason = None
     if not hits:                       # R5：库内无命中 ≠ 未配 LLM，分开提示
         body = _empty_body(query); gen_by = "no-hits"
+        degraded_reason = "库内暂无与该题直接相关的文献命中"
     elif key:
         messages = [{"role": "system", "content": DIGEST_SYS.format(subject=query, ctx=ctx)},
                     {"role": "user", "content": f"请就「{query}」写这一节综述，每个论点后保留原引注。"}]
@@ -163,9 +178,11 @@ def digest(query, topk=14, llm=None, force=False, by_agent=False):
             body = L.chat_once(messages, base, key, model, temperature=0.2, timeout=180)
             gen_by = model
         except Exception as e:
-            body = _fallback_body(query, hits); gen_by = f"fallback({e.__class__.__name__})"
+            degraded_reason = str(e)   # str(e) 已是 llm._friendly_error 翻译好的人话（如「密钥无效或余额不足」）
+            body = _fallback_body(query, hits, reason=degraded_reason); gen_by = f"fallback({e.__class__.__name__})"
     else:
         body = _fallback_body(query, hits); gen_by = "fallback(no-key)"
+        degraded_reason = "未配置 AI 模型（LLM key）"
     # 覆盖评级 + 缺口 + AI 披露，拼进正文尾
     body = (body.strip()
             + f"\n\n**知识库覆盖**：{sym} {label}（本库命中 {n} 篇，其中高层级 {n_high} 篇）。"
@@ -173,12 +190,15 @@ def digest(query, topk=14, llm=None, force=False, by_agent=False):
             + "\n\n> *生成式 AI 使用声明（草稿）：本节由本地检索库召回、AI 辅助梳理成带源初稿，"
               "参与阶段=检索/材料梳理；引注页码为期刊印刷页码（标『页码推算』者为连续性推算，请核对）；"
               "内容与观点归属由作者核校负责，判例/法条未由 AI 生成。*")
-    sources = [{"key": h.get("key", ""), "citation": h.get("citation", "")} for h in hits if h.get("key")]
+    # 带上检索分 score，让 wiki_store._norm_sources→filter_provenance 能剔除长尾离题命中（#10/#28）
+    sources = [{"key": h.get("key", ""), "citation": h.get("citation", ""), "score": h.get("score")}
+               for h in hits if h.get("key")]
     title = f"资料汇编·{query[:30]}"
     meta = W.save_research_page(page_id, "digest", title, query, body, sources,
                                generated_by=gen_by, by_agent=by_agent)
     meta["cached"] = False
     meta["degraded"] = _degraded_gb(gen_by)      # R6：降级页标记，前端可提示、下次命中自动重试
+    meta["degraded_reason"] = degraded_reason    # 人话真因（未配置/余额不足/无命中），透传给前端与 MCP
     meta["coverage"] = {"symbol": sym, "label": label, "n": n, "n_high": n_high}
     return meta
 
@@ -207,7 +227,9 @@ def scope(topic, topk=20, llm=None, force=False, by_agent=False):
         if cached and not _degraded_gb(cached.get("generated_by", "")):
             m = dict(cached); m["cached"] = True; m["indexed"] = _indexed_of(page_id)
             return m
-    hits = _recall(topic, topk)
+    hits, err = _recall(topic, topk)
+    if err:                            # 后端异常/未就绪：报错，绝不落假结论页
+        raise RuntimeError(err)
     # 范围映射：命中的 tier 分布
     tiers = {}
     for h in hits:
@@ -215,8 +237,10 @@ def scope(topic, topk=20, llm=None, force=False, by_agent=False):
         tiers[t] = tiers.get(t, 0) + 1
     ctx = "\n".join(f"{i+1}. {CF.compact(h)}" for i, h in enumerate(hits))
     base, model, key = _resolve_llm(llm)
+    degraded_reason = None
     if not hits:                       # R5：库内无命中 ≠ 未配 LLM
         body = _scope_empty(topic); gen_by = "no-hits"
+        degraded_reason = "库内暂无与该主题直接相关的文献命中"
     elif key:
         messages = [{"role": "system", "content": SCOPE_SYS.format(topic=topic, ctx=ctx)},
                     {"role": "user", "content": f"请就「{topic}」产出选题拆解、标题参考与三级大纲。"}]
@@ -224,23 +248,30 @@ def scope(topic, topk=20, llm=None, force=False, by_agent=False):
             body = L.chat_once(messages, base, key, model, temperature=0.3, timeout=180)
             gen_by = model
         except Exception as e:
-            body = _scope_fallback(topic, hits, tiers); gen_by = f"fallback({e.__class__.__name__})"
+            degraded_reason = str(e)
+            body = _scope_fallback(topic, hits, tiers, reason=degraded_reason); gen_by = f"fallback({e.__class__.__name__})"
     else:
         body = _scope_fallback(topic, hits, tiers); gen_by = "fallback(no-key)"
+        degraded_reason = "未配置 AI 模型（LLM key）"
     body = (f"> **研究主题**：{topic}　本库相关命中 {len(hits)} 篇，层级分布："
             + "、".join(f"{k} {v}" for k, v in sorted(tiers.items())) + "\n\n"
             + body.strip()
             + "\n\n> *AI 使用声明：本大纲为 AI 辅助的选题启发初稿，论证主线须由作者自定；★/☆ 标注仅供参考。*")
-    sources = [{"key": h.get("key", ""), "citation": h.get("citation", "")} for h in hits if h.get("key")]
+    sources = [{"key": h.get("key", ""), "citation": h.get("citation", ""), "score": h.get("score")}
+               for h in hits if h.get("key")]
     meta = W.save_research_page(page_id, "outline", f"选题框架·{topic[:28]}", topic, body, sources,
                                generated_by=gen_by, by_agent=by_agent)
     meta["cached"] = False
     meta["degraded"] = _degraded_gb(gen_by)      # R6：降级页标记
+    meta["degraded_reason"] = degraded_reason
     return meta
 
 
-def _scope_fallback(topic, hits, tiers):
-    out = [f"> ⚠ 未配置 LLM，以下为**库内召回线索清单**（非合成大纲），供人工拟题/搭框架。\n",
+def _scope_fallback(topic, hits, tiers, reason=None):
+    head = (f"> ⚠ AI 生成失败（{reason}），以下为**库内召回线索清单**（非合成大纲），供人工拟题/搭框架。\n"
+            if reason else
+            "> ⚠ 未配置 LLM，以下为**库内召回线索清单**（非合成大纲），供人工拟题/搭框架。\n")
+    out = [head,
            f"### 本库与「{topic}」相关的命中（按检索相关性）"]
     for i, h in enumerate(hits, 1):
         out.append(f"{i}. {CF.compact(h)}")
@@ -292,7 +323,9 @@ def _mine_citations(hits, limit_pdfs=20):
 def suggest_sources(topic, topk=20, llm=None):
     """能力三：覆盖评估 + 脚注引文挖掘缺失文献 + 库内错配。按被引频次排。不写库（读）。"""
     llm = llm or {}
-    hits = _recall(topic, topk)
+    hits, err = _recall(topic, topk)
+    if err:                            # 后端异常/未就绪：报错，别返回假的覆盖评级 ▽ 与「未检索到文献」缺口结论
+        raise RuntimeError(err)
     sym, label, n, n_high = _coverage(hits)
     mined = _mine_citations(hits)
     # 与库内 papers.jsonl 比对：题名/作者已有的剔除（粗匹配）

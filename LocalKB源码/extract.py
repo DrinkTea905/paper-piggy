@@ -72,10 +72,26 @@ def filter_scope(papers, scope):
         return [p for p in todo if p.get("key") in ks]
     return todo
 
+def _prev_ok(out):
+    """读既有提取产物的 ok 标志：读不到/损坏 → None。"""
+    try:
+        return json.loads(out.read_text(encoding="utf-8")).get("ok")
+    except Exception:
+        return None
+
 def extract_one(p):
     out = C.EXTRACTED / f"{p['stem']}.json"
     if out.exists() and out.stat().st_size > 0:
-        return "skip"
+        prev = _prev_ok(out)
+        # 成功产物（有正文）→ 跳过；损坏/读不出 → 也跳过（重抽也是同样输入）。
+        # 但失败产物(ok=False：曾 PDF 不在盘/被占用/坏 PDF) 若现在 PDF 可读 → 重抽，
+        # 别再因『产物文件已存在』把修好的 PDF 永久跳过（BF：Zotero 链接附件/OneDrive 占用等瞬时错误）。
+        if prev is None or prev:
+            return "skip"
+        _pdf = p.get("pdf_path")
+        if not (_pdf and os.path.exists(_pdf)):
+            return "skip"     # PDF 仍不可读，重抽无意义（避免每轮空转坏 PDF）
+        # 落到下面重抽
     pdf = p.get("pdf_path")
     meta = {k: p.get(k) for k in META_FIELDS}
     meta["collections"] = p.get("collections", [])
@@ -110,10 +126,17 @@ def main():
     todo = filter_scope(papers, args.scope)
     if args.limit:
         todo = todo[:args.limit]
-    todo = [p for p in todo
-            if not ((C.EXTRACTED / f"{p['stem']}.json").exists()
-                    and (C.EXTRACTED / f"{p['stem']}.json").stat().st_size > 0)]
-    print(f"[extract] scope={args.scope}  待提取 {len(todo)} 篇（有 PDF、未提取）", flush=True)
+    def _needs(p):
+        f = C.EXTRACTED / f"{p['stem']}.json"
+        if not (f.exists() and f.stat().st_size > 0):
+            return True
+        ok = _prev_ok(f)
+        if ok is None or ok:
+            return False              # 成功/损坏产物：跳过
+        pdf = p.get("pdf_path")       # 失败产物：仅当 PDF 现在可读才重抽
+        return bool(pdf and os.path.exists(pdf))
+    todo = [p for p in todo if _needs(p)]
+    print(f"[extract] scope={args.scope}  待提取 {len(todo)} 篇（有 PDF、未提取或失败可重抽）", flush=True)
 
     t0 = time.time(); done = {}
     with ThreadPoolExecutor(max_workers=args.workers) as ex:

@@ -31,8 +31,8 @@ def health():
         return None
 
 def ensure_up(wait=120):
-    h = health()
-    if h and h.get("ready"):
+    # 判活按“服务是否应答”而非“索引 ready”：空库/重载时 ready 恒 False，旧逻辑会重复拉起进程并空等 120s。
+    if health() is not None:
         return True
     flags = 0
     if sys.platform == "win32":
@@ -45,7 +45,7 @@ def ensure_up(wait=120):
     while time.time() - t0 < wait:
         time.sleep(2)
         h = health()
-        if h and h.get("ready"):
+        if h is not None:   # 只等服务应答（空库 ready 恒 False；--build 正是要在空库上建，不能等 ready）
             print(f"[localkb] 就绪（{time.time()-t0:.0f}s, mode={h.get('mode')}, {h.get('n')} 条）", file=sys.stderr)
             return True
     return False

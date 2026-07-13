@@ -34,30 +34,3 @@ def key_predicate(keys, row_type=None):
     if row_type:
         pred = f"({pred}) AND row_type = '{sql_quote(row_type)}'"
     return pred
-
-
-def original_key_for_stem(stem: str):
-    """由 safe_name(stem) 反查表内真实原始文献 key。
-
-    读 data/chunks/<stem>.json（首块的 'key'）或 data/extracted/<stem>.json 的 'key' 字段。
-    找不到返回 None（调用方应视为异常，勿静默继续删除）。
-    """
-    p = C.CHUNKS / f"{stem}.json"
-    if p.exists():
-        try:
-            data = json.loads(p.read_text(encoding="utf-8"))
-            if isinstance(data, list) and data:
-                k = data[0].get("key")
-                if k:
-                    return k
-        except Exception:
-            pass
-    p = C.EXTRACTED / f"{stem}.json"
-    if p.exists():
-        try:
-            data = json.loads(p.read_text(encoding="utf-8"))
-            if isinstance(data, dict) and data.get("key"):
-                return data.get("key")
-        except Exception:
-            pass
-    return None

@@ -544,6 +544,12 @@ def _persist_page(page_id, kind, title, subject, body, norm_sources, generated_b
             raise WikiWriteDenied(
                 f"「{existing.get('title') or page_id}」是人工保存/核验过的综合页，agent 不得覆盖。"
                 f"请换一个标题，或先用 get_wiki_page({page_id}) 读它再决定。")
+        # 已人工核验（verified_at）的页——即便原是 agent 页——同样不许 agent 覆盖；
+        # 发现被新文献推翻应 mark_stale 标脏写理由，而非抹掉核验结论（护栏此前只挡「人写的页」，漏了「人核验过的 agent 页」）。
+        if existing and by_agent and existing.get("verified_at"):
+            raise WikiWriteDenied(
+                f"「{existing.get('title') or page_id}」已经人工核验，agent 不得覆盖。"
+                f"若它被新文献推翻，请用 mark_stale 标脏并写清理由。")
         meta = {
             "id": page_id, "kind": kind,
             "title": (title or _title_from(subject, body)).strip(),
@@ -747,6 +753,37 @@ def get_page(page_id):
             "degraded": is_degraded(meta.get("generated_by", "")),
             "degraded_reason": degraded_reason(meta.get("generated_by", "")),
             "links": meta.get("links", []), "sources": src_cites, "markdown": md}
+
+
+def reindex_missing_pages():
+    """存量回灌：把「非降级、但不在检索表」的综合页补嵌回检索表，兑现『重建索引后可检索』的承诺。
+       触发场景：① light 模式下保存过的页；② full 模式嵌入曾失败（如 API 余额0→403）的页；
+       ③ 全量重建表(overwrite)把已入表的 wiki 行一并冲掉后——它们在任何重建/重载路径里都不会被自动补回。
+       只在 full 模式（检索表已载入）下有意义，由 retriever._load_wiki_index 在表载入后调用。返回回灌页数。"""
+    try:
+        import retriever as R
+    except Exception:
+        return 0
+    if "tbl" not in R.M or R.M.get("records") is None:
+        return 0
+    n = 0
+    for pid, meta in list(index_map().items()):
+        if is_degraded(meta.get("generated_by", "")):
+            continue                                   # 降级页按设计不入表
+        if f"{pid}::wiki" in R.M["records"]:
+            continue                                   # 已在表内
+        try:
+            pg = get_page(pid)
+            if not pg:
+                continue
+            if R.index_wiki_page(pid, meta.get("title", ""),
+                                 _plain_body(pg.get("markdown", ""), meta.get("sources") or []), meta):
+                n += 1
+        except Exception as e:
+            print(f"[wiki] 回灌综合页 {pid} 失败（跳过）：{e}", file=sys.stderr, flush=True)
+    if n:
+        print(f"[wiki] 回灌 {n} 个未入表的综合页到检索表", file=sys.stderr, flush=True)
+    return n
 
 
 # ═══ 对外：stale 写侧（此前只有消费端：检索降权 / UI 徽章 / config 惩罚值，

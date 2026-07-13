@@ -901,11 +901,13 @@ a.wk-export:hover { border-color: var(--accent); color: var(--accent); }
 :root[data-theme="dark"] .wl-empty { background: rgba(148,163,184,.10); }
 :root[data-theme="dark"] .gv-edge { stroke: rgba(148,163,184,.40); }
 
-/* 字号档位：整体缩放正文（相对单位组件随之变化） */
-:root[data-fontsize="small"] body { font-size: 13px; }
-:root[data-fontsize="normal"] body { font-size: 14px; }
-:root[data-fontsize="large"] body { font-size: 15.5px; }
-:root[data-fontsize="xlarge"] body { font-size: 17px; }
+/* 字号档位：本 CSS 全部用绝对 px 字号（无 rem/em），只改 body font-size 几乎不级联生效，
+   故改用 zoom 等比缩放整个 UI（WebView2/WKWebView 均为 Chromium/WebKit，zoom 支持良好；
+   position:fixed 的遮罩用 inset:0，0×zoom 仍为 0，全屏覆盖不受影响）。 */
+:root[data-fontsize="small"]  body { zoom: 0.9;  }
+:root[data-fontsize="normal"] body { zoom: 1;    }
+:root[data-fontsize="large"]  body { zoom: 1.12; }
+:root[data-fontsize="xlarge"] body { zoom: 1.25; }
 
 /* W1：浏览页「加载更多」分页按钮（居中独立一行，追加下一页时不打断勾选与滚动） */
 .bl-more { display: block; margin: 12px auto 20px; padding: 8px 26px; }

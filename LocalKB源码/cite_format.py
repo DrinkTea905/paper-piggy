@@ -52,7 +52,12 @@ def _first_author(author):
 
 
 def _clean_title(title):
-    t = (title or "").strip().strip("《》")
+    t = (title or "").strip()
+    # 只有题名【整体】被一层《》包裹时才剥掉，否则原样保留。
+    # 旧写法 .strip("《》") 会把「《刑法》第201条…」误剥成「刑法》第201条…」，
+    # 再被 compact/footnote 外层 f"《{t}》" 包裹后塌成单层《、尾部多出不配平的》。
+    if len(t) >= 2 and t.startswith("《") and t.endswith("》") and t.count("《") == 1 and t.count("》") == 1:
+        t = t[1:-1]
     return t
 
 

@@ -27,7 +27,13 @@ def _conf():
         for src in (S.sac_conf(), S.api_conf()):
             if src.get("key"):
                 c["key"] = src["key"]
-                c["base"] = c.get("base") or src.get("base")
+                # 借 key 也借 base——本地 base 恒为 SiliconFlow 默认值，不让 src.base 优先的话，
+                # 借来的（非硅基）key 仍被发往硅基 base → 必然失败。src.base 优先、无则退回本地。
+                c["base"] = src.get("base") or c.get("base")
+                # base 一旦不是 SiliconFlow，就别硬套默认的 Qwen 模型（该 provider 未必有）——
+                # 有 src.model 就借它，没有则维持用户可配的 folder_meta.model。
+                if src.get("model") and "siliconflow" not in (c.get("base") or "").lower():
+                    c["model"] = src["model"]
                 break
     return c
 
@@ -66,7 +72,10 @@ def extract_meta(head_text):
                 ("title", "author", "year", "journal", "official_pages", "abstract", "itemtype", "langid")}
         ym = re.search(r"\d{4}", meta.get("year", "") or "")
         meta["year"] = ym.group(0) if ym else ""
-        return meta, True, None
+        # needs_review 反映抽取成色，不再恒 True：题名齐、且作者或年份至少有一 → 视为合格（False）；
+        # 缺核心字段仍置 True 让上层标待复核。err 另行表示调用/解析是否异常，语义不变。
+        ok = bool(meta.get("title")) and bool(meta.get("author") or meta.get("year"))
+        return meta, (not ok), None
     except NoKeyError:
         raise
     except Exception as e:

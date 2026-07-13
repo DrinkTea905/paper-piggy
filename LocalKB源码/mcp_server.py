@@ -98,8 +98,11 @@ def _server_log():
 
 
 def ensure_up(wait=120):
-    h = health()
-    if h and h.get("ready"):
+    # BLOCKER 修复：判活按“服务是否应答”而非“索引是否 ready”。
+    # 旧逻辑用 ready 判活：全新库（未建索引，ready 恒 False）或重载窗口里，即便 server 正常在跑，
+    # 也会再 Popen 一个注定 bind 失败的重复进程、并空等 120s 后误报“服务启动失败”——27 个走 ensure_up
+    # 的工具全体死锁且报错误导。改为：只要 /health 有应答就放行，让各端点自己的 503/人话错误透传给 agent。
+    if health() is not None:
         return True
     flags = 0x00000008 | 0x00000200 if sys.platform == "win32" else 0
     logf = _server_log()
@@ -110,8 +113,7 @@ def ensure_up(wait=120):
     t0 = time.time()
     while time.time() - t0 < wait:
         time.sleep(2)
-        h = health()
-        if h and h.get("ready"):
+        if health() is not None:   # 只等服务起来能应答，不等 ready（空库 ready 恒 False，会白等满 120s）
             return True
     return False
 
@@ -170,6 +172,15 @@ TOOLS = [
         "inputSchema": {"type": "object", "properties": {
             "topic": {"type": "string", "description": "研究主题"}},
             "required": ["topic"]},
+    },
+    {
+        "name": "export_disclosure",
+        "description": "半自动研究助手·G4：按所选综合页(digest/outline 等的 id)生成《生成式 AI 使用声明》文本（规则拼装、零 LLM），"
+                       "用于论文投稿的 AIGC 合规披露。传入相关 wiki 页 id 列表即可。",
+        "inputSchema": {"type": "object", "properties": {
+            "page_ids": {"type": "array", "items": {"type": "string"},
+                         "description": "要纳入声明的综合页 id（如 digest-xxxx / outline-xxxx），可传多个"}},
+            "required": ["page_ids"]},
     },
     {
         "name": "localkb_status",
@@ -612,6 +623,12 @@ def do_tool(name, args):
         if not r.get("ok"):
             return f"生成资料汇编失败：{r.get('detail', '未知')}"
         cov = r.get("coverage") or {}
+        # 降级页（未配/失效 key、LLM 调用失败、或库内无命中）按设计不入检索表——别再无条件宣称「可被检索」。
+        if r.get("degraded"):
+            reason = r.get("degraded_reason") or "未配置 AI 模型 / 调用失败 / 库内无命中"
+            return (f"资料汇编「{r.get('title')}」已生成，但为**降级产物**（{reason}）：仅是带源证据清单，"
+                    f"**未入检索表、不可被检索**（覆盖 {cov.get('symbol', '')}{cov.get('label', '')}，{r.get('n_sources')} 篇来源）。"
+                    f"配好 AI 模型/补足余额后重新生成即得正式综述。用 get_wiki_page({r.get('id')!r}) 取正文。")
         return (f"已生成资料汇编「{r.get('title')}」（id={r.get('id')}，覆盖 {cov.get('symbol', '')}{cov.get('label', '')}，"
                 f"{r.get('n_sources')} 篇来源，已写回 wiki 页、可被检索）。用 get_wiki_page({r.get('id')!r}) 取正文。")
     if name == "research_outline":
@@ -621,6 +638,10 @@ def do_tool(name, args):
                           json={"topic": args.get("topic", ""), "by_agent": True}, timeout=300).json()
         if not r.get("ok"):
             return f"生成大纲失败：{r.get('detail', '未知')}"
+        if r.get("degraded"):
+            reason = r.get("degraded_reason") or "未配置 AI 模型 / 调用失败 / 库内无命中"
+            return (f"已生成选题框架「{r.get('title')}」，但为**降级产物**（{reason}）：为库内线索清单、未入检索表。"
+                    f"用 get_wiki_page({r.get('id')!r}) 取大纲。")
         return (f"已生成选题框架「{r.get('title')}」（id={r.get('id')}，{r.get('n_sources')} 篇线索）。"
                 f"论证主线请自定；用 get_wiki_page({r.get('id')!r}) 取大纲。")
     if name == "suggest_new_sources":
@@ -644,6 +665,16 @@ def do_tool(name, args):
             for it in mm[:10]:
                 out.append(f"- {it.get('citation') or it.get('title')}")
         return "\n".join(x for x in out if x)
+    if name == "export_disclosure":
+        if not ensure_up():
+            return "错误：知识库服务启动失败。"
+        pids = args.get("page_ids") or []
+        if not pids:
+            return "请提供要纳入声明的综合页 id（page_ids）。"
+        r = requests.post(URL + "/research/disclosure", json={"page_ids": pids}, timeout=60).json()
+        if not r.get("text"):
+            return f"生成 AI 使用声明失败：{r.get('detail', '未知')}"
+        return r["text"]
     if name == "localkb_status":
         h = health() or {"status": "down"}
         try:
@@ -928,15 +959,18 @@ def do_tool(name, args):
             return f"综合层健康（共 {r['n_pages']} 页）：无孤儿页、无过时页、无断链、无缺 provenance 的页。"
         iss = r["issues"]
         out = [f"综合层体检：{r['n_pages']} 页，发现 {r['n_issues']} 个问题。\n"]
+        # body_broken_link（正文 [[wikilink]] 断链）是后端 lint 必返回的第 7 类；旧字典漏配它，
+        # 一旦任何页正文有断链（agent 先引后建是常态）就 KeyError，整份体检报告崩掉。
         label = {"orphan": "孤儿页（无任何互链）", "stale": "已标过时", "broken_link": "断链",
+                 "body_broken_link": "正文互链指向不存在的页",
                  "no_sources": "无来源论文", "degraded": "降级页（未配 AI 模型时生成）",
                  "missing_concept": "被反复提及却无独立页的概念"}
         for k, items in iss.items():
             if not items:
                 continue
-            out.append(f"■ {label[k]}（{len(items)}）：")
+            out.append(f"■ {label.get(k, k)}（{len(items)}）：")
             for x in items[:8]:
-                if k == "broken_link":
+                if k in ("broken_link", "body_broken_link"):  # 二者条目同构：page_id/title/dangling
                     out.append(f"   - [{x['page_id']}] {x['title']} → 指向不存在的 {x['dangling']}")
                 elif k == "missing_concept":
                     out.append(f"   - 「{x['concept']}」被 {x['mentioned_in']} 个页提及")
@@ -1190,6 +1224,8 @@ def main():
         try:
             req = json.loads(line)
         except Exception:
+            continue
+        if not isinstance(req, dict):   # 非对象 JSON 行（数组/字符串/数字…）：req.get 会 AttributeError 崩掉整个进程
             continue
         m, rid = req.get("method"), req.get("id")
         if m == "initialize":

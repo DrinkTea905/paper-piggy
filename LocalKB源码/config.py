@@ -15,6 +15,41 @@ from pathlib import Path
 APP = Path(__file__).parent                 # D:\LocalKB（源码/程序目录；分发版=bundle/app）
 RAG = APP                                    # 兼容：引擎脚本都在项目根
 
+# ---- 分发包路径引导（BLOCKER 修复）----
+# MCP / CLI 由 Claude Code 直接拉起 mcp_server.py / localkb.py 时不经过 run_localkb.py，
+# 进程 env 里没有 LOCALKB_DATA/LOCALKB_MODELS。若不在此补上：DATA 会错落到 app/data
+# （只读、且自动更新替换 app/ 时被清掉），MCP/CLI 看到空库、拉起的假 server 占住 8770，
+# 与用户随后打开的真应用“数据脑裂”。此处复刻 run_localkb.py 的 HOME 解析，**仅在确为分发包时**
+# 接管；开发机（源码目录，其上一级探测不到 bundle 结构）原样跳过，数据仍落在源码 data/。
+def _bootstrap_bundle_env():
+    if os.environ.get("LOCALKB_DATA"):
+        return                                   # 已由启动器/用户设定，尊重之
+    root = APP.parent                            # 分发版=bundle/ ；开发机=项目根
+    is_bundle = ((root / "run_localkb.py").exists()
+                 or (root / "python" / "python.exe").exists()
+                 or (root / "portable.txt").exists())
+    if not is_bundle:
+        return                                   # 开发机：让 DATA 默认落在源码目录 data/
+    if (root / "portable.txt").exists():
+        home = root                              # 便携模式：数据/模型放包内
+    else:
+        appdata = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~\\AppData\\Local")
+        home = Path(os.environ.get("LOCALKB_HOME") or (Path(appdata) / "LocalKB"))
+    try:
+        (home / "data").mkdir(parents=True, exist_ok=True)
+        (home / "models").mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    os.environ.setdefault("LOCALKB_DATA", str(home / "data"))
+    # 模型优先用包内 models/（--slim-models 打进包 或 首启已下载都落这里）；否则退回 HOME/models
+    bundled = root / "models"
+    if (bundled / "bge-m3-onnx" / "model_quantized.onnx").exists():
+        os.environ.setdefault("LOCALKB_MODELS", str(bundled))
+    else:
+        os.environ.setdefault("LOCALKB_MODELS", str(home / "models"))
+
+_bootstrap_bundle_env()
+
 # ---- 独立数据（本项目自有，随便删不影响知识库）----
 # LOCALKB_DATA 环境变量可把数据目录挪出 APP（分发版指向 bundle/data），
 # 这样自动更新替换 app/ 时不会误删用户已建的索引。
@@ -24,7 +59,9 @@ CHUNKS      = DATA / "chunks"               # 每篇 <safe_key>.json（切块）
 LANCEDB_DIR = DATA / "lancedb"              # 独立向量库
 BM25_DIR    = DATA / "bm25"                 # 独立词法索引
 STATE       = DATA / "state"               # 增量进度（embedded_keys.txt）
-LOGS        = APP / "logs"
+# 日志跟随 DATA（写在可写的用户数据区）：放 app/logs 会在自动更新替换 app/ 时丢失，
+# 且装到 Program Files 等只读位置时 app/logs 不可写会导致启动写日志即崩。
+LOGS        = DATA / "logs"
 LEGAL_DICT  = DATA / "jieba_legal_dict.txt" # extract 会重新生成到这里（不碰知识库的词典）
 
 # ---- 三档渐进索引（产品版）新增路径 ----
@@ -64,6 +101,9 @@ def _resolve_models():
     local = APP / "models"
     if (local / "bge-m3-onnx").exists():        # 分发包：模型已下载到包内
         return local
+    parent = APP.parent / "models"              # 分发版模型在 bundle 根的 models/（app 的上一级）
+    if (parent / "bge-m3-onnx").exists():
+        return parent
     # 开发机回退：模型可能复用别处已下好的目录，用环境变量 LOCALKB_DEV_MODELS 指定，
     # 不再裸写某台开发机的绝对路径（换机/分发时那条路径无意义，且泄漏本机目录结构）。
     dev_env = os.environ.get("LOCALKB_DEV_MODELS")

@@ -43,6 +43,18 @@ def init_jieba():
         jieba.initialize()
         _inited = True
 
+def reload_userdict():
+    """强制重载 jieba 用户词典。index_light 重建法律词典后，查询侧分词器仍是进程启动时的旧词典
+       （_inited 一次性初始化会把旧词典钉死整个进程），新加的法律术语切不出来。本函数清掉初始化
+       标记后重跑 init_jieba()：让 jieba 从主词典重建 FREQ 再叠加最新 LEGAL_DICT。首次懒加载行为不变。"""
+    global _inited
+    _inited = False
+    try:
+        jieba.dt.initialized = False   # 迫使下次 initialize() 从主词典重建，抹掉旧 userdict 词
+    except Exception:
+        pass                            # jieba 内部结构异变时不拦路，init_jieba 仍会补加最新词
+    init_jieba()
+
 def tokenize(text):
     init_jieba()
     out = []

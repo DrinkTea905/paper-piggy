@@ -55,7 +55,9 @@ def chat_once(messages, base_url, api_key, model, temperature=0.3, timeout=120):
         r.raise_for_status()
     except requests.exceptions.RequestException as e:   # C5：网络/HTTP 错误翻成人话
         raise _friendly_error(e)
-    return ((r.json().get("choices") or [{}])[0].get("message", {}) or {}).get("content", "").strip()
+    # content 可能为 null（部分模型在 finish_reason=length/内容过滤时返回 "content": null）——
+    # 用 (... or "") 兜底，直接 .get("content","").strip() 会 AttributeError。
+    return (((r.json().get("choices") or [{}])[0].get("message", {}) or {}).get("content") or "").strip()
 
 def chat_stream(messages, base_url, api_key, model, temperature=0.3):
     """生成器：逐段 yield 文本增量（OpenAI 兼容 /chat/completions, stream=true）。"""

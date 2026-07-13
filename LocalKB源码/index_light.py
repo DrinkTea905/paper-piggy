@@ -173,8 +173,11 @@ def main():
         import settings as _S
         if _S.source() == "zotero" and _S.load().get("import_only_pdf"):
             before = len(papers)
-            papers = [p for p in papers if p.get("has_pdf")]
-            print(f"[light] 仅导入有 PDF：{before} → {len(papers)} 篇", flush=True)
+            # 豁免法源类条目：法规/案例/标准/报告在 Zotero 里通常只有网页快照或纯题录（has_pdf=False），
+            # 若被「只导入有 PDF」一并剔除，其法源定档/法条时效/法律词典取词等整条链路全失效，用户还难以察觉。
+            papers = [p for p in papers if p.get("has_pdf")
+                      or (p.get("itemtype") in ("statute", "case", "standard", "report"))]
+            print(f"[light] 仅导入有 PDF（法源类不受此限）：{before} → {len(papers)} 篇", flush=True)
     except Exception:
         pass
     print(f"[light] 数据源={source}，{len(papers)} 篇", flush=True)
@@ -211,12 +214,19 @@ def main():
     stats = compute_stats(papers)
     # BF3：stats/manifest 同样原子写——server 轮询读它们，半截 JSON 会让仪表盘/状态页报解析错
     _atomic_write_text(C.STATS_CACHE, json.dumps(stats, ensure_ascii=False, indent=2))
-    import settings as _S
-    _atomic_write_text(C.INDEX_MANIFEST, json.dumps(
-        {"source": source, "light_done": True, "light_at": now,
-         "papers": len(papers), "with_pdf": stats["coverage"]["with_pdf"],
-         "backend": _S.backend()},   # 记录建库时的检索引擎，供一致性校验
-        ensure_ascii=False, indent=2))
+    _man = {"source": source, "light_done": True, "light_at": now,
+            "papers": len(papers), "with_pdf": stats["coverage"]["with_pdf"]}
+    # backend 只由真正产出向量的阶段(index_semantic/embed_index)写入并作为一致性校验基准；
+    # light 绝不覆写它——否则切换后端后一次轻量重建/自动增量就把「原引擎」证据抹掉，
+    # 新旧两套向量混用无从检测。保留 manifest 里已有的 backend。
+    try:
+        if C.INDEX_MANIFEST.exists():
+            _old = json.loads(C.INDEX_MANIFEST.read_text(encoding="utf-8"))
+            if _old.get("backend"):
+                _man["backend"] = _old["backend"]
+    except Exception:
+        pass
+    _atomic_write_text(C.INDEX_MANIFEST, json.dumps(_man, ensure_ascii=False, indent=2))
     print(f"[light] 完成 {len(papers)} 篇（源：{source}），用时 {time.time()-t0:.1f}s", flush=True)
     return stats
 

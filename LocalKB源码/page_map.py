@@ -184,7 +184,8 @@ def _load(stem):
             doc = None
     if doc is None:
         doc = build(stem)          # 按需 lazy 建 + 缓存
-    _MEMO[stem] = doc
+    if doc is not None:
+        _MEMO[stem] = doc          # 只缓存成功结果；None 不入缓存，否则 sidecar 重建后仍被旧空值毒住
     return doc
 
 

@@ -28,12 +28,29 @@ import uvicorn
 
 STATE = {"last_active": time.time(), "ready": False, "mode": None}
 M = {}  # 模型与索引句柄
+_DICT_MTIME = 0   # 上次载入时 jieba 法律词典的 mtime；变化才热重载（见 load_all）
 
 def log(*a): print("[retriever]", *a, flush=True)
 
 # ═══ 加载 ════════════════════════════════════════════════════════
 def load_all():
     t0 = time.time()
+    _WEIGHT_MEMO.clear()   # 换库/改档/重载后清权重缓存，避免串旧值
+    # 词典/分级热重载：build 子进程重写了 jieba 法律词典与 journal_tiers.json 后，server 进程若不重载，
+    # 查询侧分词/期刊分级会一直用旧数据、新入典术语搜不到（#48/#49）。按 mtime 变化才重载，避免每次重建 FREQ。
+    try:
+        import textutil as _TU
+        global _DICT_MTIME
+        _mt = os.path.getmtime(C.LEGAL_DICT) if C.LEGAL_DICT.exists() else 0
+        if _mt != _DICT_MTIME:
+            _TU.reload_userdict()
+            _DICT_MTIME = _mt
+    except Exception as e:
+        log("jieba 词典热重载跳过：", e)
+    try:
+        JT.reload()
+    except Exception as e:
+        log("journal_tiers 热重载跳过：", e)
     db = lancedb.connect(str(C.LANCEDB_DIR))
     tbl_exists = C.TABLE_NAME in db.table_names()
     meta_ready = (C.BM25_META_DIR / "bm25_meta_ids.json").exists()
@@ -130,6 +147,12 @@ def _load_wiki_index():
             log(f"清理降级页 {pid} 失败：", e)
     if stale_rows:
         M["wiki"] = W.index_map()      # delete_wiki_page 会 pop 掉条目，重载回其余页的 meta
+    # 存量回灌：非降级、却不在检索表里的综合页（light 保存 / 嵌入曾失败 / 全量重建冲掉）补嵌回表——
+    # 否则前端/MCP 承诺的「重建索引后可检索」永远兑现不了。放在建表后调用（此处 M["tbl"]/records 已就绪）。
+    try:
+        W.reindex_missing_pages()
+    except Exception as e:
+        log("综合页回灌失败（不影响其余检索）：", e)
 
 # ═══ 检索：full 模式 ════════════════════════════════════════════
 def dense_search(q, k):
@@ -199,6 +222,8 @@ def _active_discipline():
     except Exception:
         return "law"
 
+_WEIGHT_MEMO = {}   # (discipline, journal, issn) -> weight_result；load_all 时清空（改档/换库后不串旧值）
+
 def _weight_res(r):
     """算一条候选的权重（检索期动态）。优先级：手动改档 > 法源/报告规则 > 期刊分级引擎。
        全部算不出 → None（排序回退旧离散档）。wiki 行 itemtype="wiki"，不进规则、走引擎兜底。"""
@@ -211,12 +236,21 @@ def _weight_res(r):
         pass
     if JG is None:
         return None
+    # 进程级 memo：一次检索里同刊多条候选、以及未收录书名/长刊名每次都要做上万条归一名的 SequenceMatcher
+    # 全库 fuzzy 扫描（实测未收录长名单条最高数百 ms），此前每条候选都重付。缓存 None 也是有意的——
+    # 未收录刊反复扫描代价最大。key 带 discipline，改学科即换命名空间，不会串档。
+    disc = _active_discipline()
+    journal = r.get("journal", "") or ""
+    issn = r.get("issn", "") or ""
+    ck = (disc, journal, issn)
+    if ck in _WEIGHT_MEMO:
+        return _WEIGHT_MEMO[ck]
     try:
-        return JG.resolve_journal_weight(
-            {"journal": r.get("journal", "") or "", "issn": r.get("issn", "") or ""},
-            _active_discipline())
+        wr = JG.resolve_journal_weight({"journal": journal, "issn": issn}, disc)
     except Exception:
-        return None
+        wr = None
+    _WEIGHT_MEMO[ck] = wr
+    return wr
 
 # F38-B：tier code → 面向用户中文档名（与 grading_svc.TIER_CN 保持一致；前端 tierBadge 统一读中文 weight_tier）
 _TIER_CN = {"T1": "权威", "T1b": "准权威", "T2": "核心", "T3": "次核心",
@@ -295,17 +329,25 @@ def search_full(query, topk, sort, keys=None):
     ranked = sorted(zip(cand, scores), key=lambda x: -x[1])
     # 同 key 去重（chunk 行优先于 meta 行：更具体）+ MAX_PER_KEY
     per_key, picked, overflow = {}, [], []
+    meta_idx = {}   # key -> 已入选 meta 行在 picked 中的下标，供随后到达的同篇 chunk 顶替
     for cid, sc in ranked:
         r = M["records"][cid]
         k = r.get("key", cid)
-        # 若该 key 已有 chunk 行入选，跳过它的 meta 行（避免同篇既出摘要又出正文）
-        if r.get("row_type") == "meta" and any(M["records"][c].get("key") == k and M["records"][c].get("row_type") == "chunk"
-                                                for c, _ in picked):
+        rtype = r.get("row_type")
+        # 若该 key 已有 chunk 行入选，跳过它的 meta 行（避免同篇既出摘要又出正文、前端深索徽章自相矛盾）
+        if rtype == "meta" and any(M["records"][c].get("key") == k and M["records"][c].get("row_type") == "chunk"
+                                   for c, _ in picked):
+            continue
+        # meta 先入选、随后到了同篇更具体的 chunk：用 chunk 顶替那条 meta（名额不变，不新造共存）
+        if rtype == "chunk" and k in meta_idx:
+            picked[meta_idx.pop(k)] = (cid, sc)
             continue
         if per_key.get(k, 0) >= C.MAX_PER_KEY:
             overflow.append((cid, sc)); continue
         per_key[k] = per_key.get(k, 0) + 1
         picked.append((cid, sc))
+        if rtype == "meta":
+            meta_idx[k] = len(picked) - 1
         if len(picked) >= topk:
             break
     if len(picked) < topk:

@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
 bge-reranker-v2-m3 重排。
-优先 ONNX-INT8（裸 onnxruntime，不 import torch，CPU 上约 3.5x 快、且打包可砍 torch 526MB）；
-若 ONNX 模型不存在则回退 torch 版（兼容未转换的环境）。M4。
+只用 ONNX-INT8（裸 onnxruntime，不 import torch，CPU 上约 3.5x 快、且打包可砍 torch 526MB）。M4。
+不再回退 torch 全量模型（约 2GB、未随包分发，缺失时回退会挂死）——模型缺失/损坏直接明确报错。
 转换：python setup_reranker_onnx.py（开发机一次）。
 """
 import sys, time
@@ -18,8 +18,12 @@ class Reranker:
         self.max_length = max_length
         self.bs = batch_size
         onnx_path = ONNX_DIR / INT8
-        if onnx_path.exists():
-            self.backend = "onnx"
+        # 只用打包内的 ONNX-INT8 模型；torch 全量模型约 2GB、未随包分发，缺失时回退会拉起下载或
+        # 直接崩，反而挂死。故移除 torch 回退：模型缺失/损坏一律明确报错，指引去设置重下或切 API。
+        if not onnx_path.exists():
+            raise RuntimeError("重排模型缺失或损坏，请到设置重新下载模型，或切换到 API 检索引擎")
+        self.backend = "onnx"
+        try:
             import onnxruntime as ort
             from transformers import AutoTokenizer
             self.tok = AutoTokenizer.from_pretrained(ONNX_DIR)
@@ -27,13 +31,9 @@ class Reranker:
             so.intra_op_num_threads = 0  # 用满 CPU 核
             self.sess = ort.InferenceSession(str(onnx_path), sess_options=so, providers=["CPUExecutionProvider"])
             self.innames = {i.name for i in self.sess.get_inputs()}
-        else:
-            self.backend = "torch"
-            import torch
-            from transformers import AutoTokenizer, AutoModelForSequenceClassification
-            self._torch = torch
-            self.tok = AutoTokenizer.from_pretrained(model)
-            self.mdl = AutoModelForSequenceClassification.from_pretrained(model).eval()
+        except Exception as e:
+            # 文件在但损坏/不完整：同样给清晰指引，不让底层 ORT 异常裸奔
+            raise RuntimeError("重排模型缺失或损坏，请到设置重新下载模型，或切换到 API 检索引擎") from e
 
     def scores(self, query, texts):
         """返回每个 text 对 query 的相关性分数（越高越相关）。"""

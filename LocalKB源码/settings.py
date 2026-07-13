@@ -117,13 +117,25 @@ def save(patch):
 
 
 def reset():
-    """恢复默认：把 settings.json 覆盖为 DEFAULT（清 API/SAC key、学科回 law、后端回 local）。
+    """恢复默认：清 API/SAC/folder_meta key、学科回 law、检索后端回 local。
+       **保留数据源设置**（source/folder_dir/zotero_dir）与自动更新开关——否则文件夹模式用户点「恢复默认」后
+       source 被打回 zotero，自动更新会按 zotero 源全量重写 papers.jsonl，原文件夹库(f_ 前缀 key)及挂在其上的
+       深索/分类派生数据整体失联（前端确认文案也承诺『文献索引不受影响』，必须名副其实）。
        不动浏览器里的 LLM 对话 key（那存 localStorage，由前端单独清）。"""
     with _LOCK:
-        _write_json_atomic(SETTINGS_FILE, DEFAULT)
-        _CACHE["data"] = dict(DEFAULT)
+        cur = load()
+        keep = {
+            "source": cur.get("source", DEFAULT["source"]),
+            "folder_dir": cur.get("folder_dir", ""),
+            "zotero_dir": cur.get("zotero_dir", ""),
+            "import_only_pdf": cur.get("import_only_pdf", DEFAULT["import_only_pdf"]),
+            "auto_update": cur.get("auto_update", DEFAULT["auto_update"]),
+        }
+        merged = _merge(DEFAULT, keep)
+        _write_json_atomic(SETTINGS_FILE, merged)
+        _CACHE["data"] = dict(merged)
         _CACHE["mtime"] = SETTINGS_FILE.stat().st_mtime
-        return dict(DEFAULT)
+        return dict(merged)
 
 
 def backend():

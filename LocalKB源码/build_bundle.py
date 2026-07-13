@@ -209,7 +209,13 @@ try:
 except Exception:
     pass
 os.environ.setdefault("LOCALKB_DATA", str(HOME / "data"))
-os.environ.setdefault("LOCALKB_MODELS", str(HOME / "models"))
+# 模型优先用包内 models/（--slim-models 打进包/首启已下载都落这里），否则退回 HOME/models：
+# 否则非便携首启会把 LOCALKB_MODELS 指向空的 HOME/models，忽略包内已带模型、误报“需下载”。
+_bundled = ROOT / "models"
+if (_bundled / "bge-m3-onnx" / "model_quantized.onnx").exists():
+    os.environ.setdefault("LOCALKB_MODELS", str(_bundled))
+else:
+    os.environ.setdefault("LOCALKB_MODELS", str(HOME / "models"))
 sys.path.insert(0, str(ROOT / "app"))
 
 # server 无模型也能起（检索器空库优雅降级），模型下载/引擎选择交给网页向导。

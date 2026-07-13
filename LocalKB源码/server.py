@@ -174,11 +174,15 @@ def _auto_update_loop():
                 stage = "folder" if S.source() == "folder" else "all"   # 只轻量层+语义，深索永远手动
                 # A4：只有 build 真正成功(rc==0)才推进 sig，失败留待下轮重试（与 A3 returncode 贯通）。
                 def _auto_done(rc, _sig=sig):
+                    # append 到尾部（与其余日志一致；insert(0) 会插在窗口外、且下次构建即被重置，用户永远看不到）；
+                    # 另存 AUTO["last_result"] 供 /index/status 直接返回，前端可展示上次自动更新结果。
                     if rc == 0:
                         AUTO["sig"] = _sig
-                        BUILD["log"].insert(0, "[auto] 检测到新增文献，已自动增量更新。")
+                        AUTO["last_result"] = "检测到新增文献，已自动增量更新。"
+                        BUILD["log"].append("[auto] 检测到新增文献，已自动增量更新。")
                     else:
-                        BUILD["log"].insert(0, f"[auto] 自动增量更新未成功(rc={rc})，下轮将重试。")
+                        AUTO["last_result"] = f"自动增量更新未成功(rc={rc})，下轮将重试。"
+                        BUILD["log"].append(f"[auto] 自动增量更新未成功(rc={rc})，下轮将重试。")
                     try:
                         _drain_deep_queue()   # 沿用旧默认行为：build 后推进自动深索队列
                     except Exception as e:
@@ -470,10 +474,43 @@ class BackendQ(BaseModel):
     embed_model: Optional[str] = None
     rerank_model: Optional[str] = None
 
+def _reset_vectors_for_reembed():
+    """换引擎：删掉旧引擎建的全部向量与嵌入进度，让下次 build 用新引擎【全量】重嵌。
+       保留 extracted/chunks 产物（深索只需重嵌、不必重抽）。wiki 行会在 load_all 时由
+       reindex_missing_pages 自动回灌。返回 True=已重置。"""
+    try:
+        for f in (C.META_EMBEDDED, C.STATE / "embedded_keys.txt"):
+            try:
+                if f.exists():
+                    f.unlink()
+            except Exception as e:
+                log_error("reembed unlink", repr(e))
+        import lancedb
+        db = lancedb.connect(str(C.LANCEDB_DIR))
+        if C.TABLE_NAME in db.table_names():
+            db.drop_table(C.TABLE_NAME)   # meta+chunk+wiki 行全删，下次 index_semantic 以 overwrite 重建
+        R.STATE["ready"] = False          # 表已删，检索先返回未就绪，别拿到半截结果
+        try:                              # 清 manifest.backend（旧值已失效，等 index_semantic 写新值）
+            if C.INDEX_MANIFEST.exists():
+                man = json.loads(C.INDEX_MANIFEST.read_text(encoding="utf-8"))
+                man.pop("backend", None)
+                C.INDEX_MANIFEST.write_text(json.dumps(man, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+        return True
+    except Exception as e:
+        log_error("reset vectors for reembed", repr(e), traceback.format_exc())
+        return False
+
 @app.post("/setup/backend")
 def setup_backend(q: BackendQ):
-    """保存检索引擎后端选择（本地/API）。API 模式存 SiliconFlow 等的 key。"""
+    """保存检索引擎后端选择（本地/API）。API 模式存 SiliconFlow 等的 key。
+       引擎（后端 或 嵌入模型）变化且已有向量时：清进度+删表，让随后的重建用新引擎【全量】重嵌，
+       避免新旧两套向量在同一张表里混用、dense 召回静默劣化（此前只发一句 warn、实际增量根本不重嵌）。"""
     import settings as S
+    old = S.load()
+    old_backend = old.get("backend")
+    old_embed = (old.get("api") or {}).get("embed_model")
     patch = {"backend": "api" if q.backend == "api" else "local"}
     api = {}
     if q.base: api["base"] = q.base
@@ -482,17 +519,20 @@ def setup_backend(q: BackendQ):
     if q.rerank_model: api["rerank_model"] = q.rerank_model
     if api: patch["api"] = api
     st = S.save(patch)
-    # 一致性提醒：若已建库且原引擎与新选不同，语义/深索向量会不匹配，需重建
-    warn = None
-    if C.INDEX_MANIFEST.exists():
+    new_backend = st.get("backend")
+    new_embed = (st.get("api") or {}).get("embed_model")
+    # 引擎变化 = 后端切换，或 API 模式下换了嵌入模型（维度可能不同，查询向量与表维度不符会直接报错）
+    engine_changed = (old_backend != new_backend) or (new_backend == "api" and old_embed and old_embed != new_embed)
+    has_vectors = C.META_EMBEDDED.exists() or R.STATE.get("mode") == "full"
+    reembed, had_deep, warn = False, 0, None
+    if engine_changed and has_vectors:
         try:
-            man = json.loads(C.INDEX_MANIFEST.read_text(encoding="utf-8"))
-            built = man.get("backend")
-            if built and built != st.get("backend") and (man.get("meta_done") or R.STATE.get("mode") == "full"):
-                warn = "检索引擎已切换，但现有语义/深索索引是用另一引擎建的，向量不兼容——建议重建索引。"
+            had_deep = len(_deep_keys())
         except Exception:
-            pass
-    return {"ok": True, "backend": st.get("backend"),
+            had_deep = 0
+        reembed = _reset_vectors_for_reembed()
+        warn = "检索引擎已切换：旧向量已清除，请重建索引以用新引擎全量重嵌。"
+    return {"ok": True, "backend": st.get("backend"), "reembed": reembed, "had_deep": had_deep,
             "api_key_set": bool((st.get("api") or {}).get("key")), "warn": warn}
 
 @app.post("/setup/test_api")
@@ -643,10 +683,12 @@ def index_status():
     # BF33：去重计数——标记文件出现重复行时 len(split()) 虚高，与 /health 的 _deep_keys()（set）口径不一
     ek = C.STATE / "embedded_keys.txt"
     deep = len(set(ek.read_text(encoding="utf-8").split())) if ek.exists() else 0
-    meta_done = len(C.META_EMBEDDED.read_text(encoding="utf-8").split()) if C.META_EMBEDDED.exists() else 0
+    # 去重计数（与 deep/_deep_keys() 同口径）：标记文件出现重复行时 len(split()) 会虚高，
+    # 前端据 meta_done<papers 判断语义层是否待完成，虚高到 ≥papers 会误隐藏「正在提升检索质量」提示。
+    meta_done = len(set(C.META_EMBEDDED.read_text(encoding="utf-8").split())) if C.META_EMBEDDED.exists() else 0
     # C1/A2：扫描件/无文本篇数（记在 deep_no_text.txt，不算已深索）——供前端与深索汇总提示。
     nt = C.STATE / "deep_no_text.txt"
-    deep_no_text = len(nt.read_text(encoding="utf-8").split()) if nt.exists() else 0
+    deep_no_text = len(set(nt.read_text(encoding="utf-8").split())) if nt.exists() else 0
     with _Q_LOCK:
         q_pending = len(QUEUE["pending"]); q_inflight = len(QUEUE["in_flight"])
     return {
@@ -659,6 +701,7 @@ def index_status():
         # BF14：cancelled=本次构建是否被 /build/cancel 取消；rc=上次构建子进程退出码（未结束为 null）。
         # 前端据此把「取消后仍显示构建中/误报完成」纠正为真实终态。
         "cancelled": bool(BUILD.get("cancelled")), "rc": BUILD.get("rc"),
+        "auto_last": AUTO.get("last_result"),   # 上次自动增量更新的结果（成功/失败/无），前端可展示
     }
 
 @app.get("/stats")
@@ -741,10 +784,22 @@ def _deep_no_text_keys():
     nt = C.STATE / "deep_no_text.txt"
     return set(nt.read_text(encoding="utf-8").split()) if nt.exists() else set()
 
+def _is_siliconflow_base(base):
+    """BF8 加固：判断 base_url 是否**真的**指向 SiliconFlow（按 host 精确匹配，而非子串包含）。
+       旧写法 "siliconflow" in base 会把 evilsiliconflow.cn 之类的后缀伪造 base 也放行，
+       导致用户填入恶意 base 时把回填的 SiliconFlow key 外发。"""
+    try:
+        from urllib.parse import urlsplit
+        h = (urlsplit(base or "").hostname or "").lower()
+    except Exception:
+        return False
+    return h in ("siliconflow.cn", "siliconflow.com") or h.endswith(".siliconflow.cn") or h.endswith(".siliconflow.com")
+
+
 def _dedup_deep_marks():
     """BF34：深索标记文件是追加写，批次重试/进程中断会留下重复行——启动时保序去重、
        tmp+os.replace 原子重写自愈（与 BF33 的读侧去重配套，治本在此）。"""
-    for f in (C.STATE / "embedded_keys.txt", C.STATE / "deep_no_text.txt"):
+    for f in (C.STATE / "embedded_keys.txt", C.STATE / "deep_no_text.txt", C.META_EMBEDDED):
         try:
             if not f.exists():
                 continue
@@ -1030,6 +1085,7 @@ def deep_queue_status():
     eta_seconds = int(remaining * spp) if (spp and remaining) else None
     return {"pending": pending, "in_flight": in_flight, "paused": paused,
             "deep_done": deep_done, "with_pdf": manifest.get("with_pdf", 0),
+            "deep_no_text": len(_deep_no_text_keys()),   # 扫描件/无正文篇数——供前端「重试扫描件」入口
             "eta_seconds": eta_seconds, "items": items,
             # 兼容旧前端字段
             "in_flight_keys": inflight_keys,
@@ -1268,7 +1324,7 @@ def similar_keywords(q: SimilarQ):
     key = q.api_key
     # BF8：key 外发守卫（仿 /chat）——检索引擎的 SiliconFlow key 只准回填给 SiliconFlow 的 base，
     # 否则用户任填一个第三方 base 就会把 key 发出去。无 key 时返回空 keywords，前端退本地分词。
-    if not key and "siliconflow" in (base or "").lower():
+    if not key and _is_siliconflow_base(base):
         try:
             import settings as S
             key = (S.api_conf() or {}).get("key", "")
@@ -1609,8 +1665,11 @@ def research_digest(q: ResearchQ):
     try:
         import research_assistant as RA
         m = RA.digest(q.query or q.topic, topk=q.topk, llm=_research_llm(q), force=q.force, by_agent=q.by_agent)
+        # 透传 degraded（未配/失效 key、LLM 调用失败、或库内无命中的降级页）：降级页不入检索表，
+        # MCP/前端据此如实措辞，别再无条件宣称「已写回 wiki 页、可被检索」。
         return {"ok": True, "id": m["id"], "title": m["title"], "kind": m.get("kind"),
                 "cached": m.get("cached", False), "indexed": m.get("indexed", False),
+                "degraded": m.get("degraded", False), "degraded_reason": m.get("degraded_reason"),
                 "coverage": m.get("coverage"), "n_sources": len(m.get("sources", []))}
     except W.WikiWriteDenied as e:
         return JSONResponse({"ok": False, "detail": str(e)}, status_code=409)
@@ -1626,6 +1685,7 @@ def research_scope(q: ResearchQ):
         m = RA.scope(q.topic or q.query, topk=q.topk, llm=_research_llm(q), force=q.force, by_agent=q.by_agent)
         return {"ok": True, "id": m["id"], "title": m["title"], "kind": m.get("kind"),
                 "cached": m.get("cached", False), "indexed": m.get("indexed", False),
+                "degraded": m.get("degraded", False), "degraded_reason": m.get("degraded_reason"),
                 "n_sources": len(m.get("sources", []))}
     except W.WikiWriteDenied as e:
         return JSONResponse({"ok": False, "detail": str(e)}, status_code=409)
@@ -1736,9 +1796,10 @@ def paper_detail(key: str):
     }
 
 @app.get("/cite/{key}")
-def cite_paper(key: str, page: Optional[int] = None, style: str = "footnote"):
+def cite_paper(key: str, page: Optional[int] = None, style: str = "footnote", heading: Optional[str] = None):
     """EN-A2（契约5，G2 引注引擎出口）：薄封装 cite_format——格式由规则做、绝不交 LLM。
        只透传 style 与 page；statute/report 模板由 cite_format 按 itemtype 自动分派。
+       heading（可选）：法条条号（如「第201条」）——不传时对 statute 按 (key,page) 反查该页 chunk 的 heading 自动补。
        missing_fields 让 agent 知道哪些字段缺了该去补题录，而不是让它自己瞎编。"""
     if style not in ("footnote", "compact"):
         return JSONResponse({"detail": "style 仅支持 footnote | compact"}, status_code=400)
@@ -1749,7 +1810,17 @@ def cite_paper(key: str, page: Optional[int] = None, style: str = "footnote"):
     import page_map as PM
     hit = dict(p)                      # papers.jsonl 字段名与检索结果 hit 一致，直接当 hit 用
     hit["page"] = page
-    formatted = CF.footnote(hit) if style == "footnote" else CF.compact(hit)
+    # 法条条号：优先用调用方传入的 heading；否则 statute + page 给定时，从命中 chunk 行按 (key,page) 反查该页 heading。
+    head = (heading or "").strip()
+    if not head and page is not None and (p.get("itemtype") or "").strip() == "statute":
+        try:
+            for r in (R.M.get("records") or {}).values():
+                if r.get("key") == key and r.get("page") == page and "条" in (r.get("heading") or ""):
+                    head = r.get("heading") or ""
+                    break
+        except Exception as e:
+            log_error("cite heading lookup", repr(e))
+    formatted = CF.footnote(hit, heading=head) if style == "footnote" else CF.compact(hit, heading=head)
     # 印刷页展示串 + 推算标记：只有映射真产出了推算值才算 estimated（没映射不算）
     printed_disp, page_estimated = "", False
     if page is not None:
@@ -1919,7 +1990,9 @@ def papers(collection: Optional[str] = None, topic: Optional[int] = None,
     # 没有 ingested_at 的老条目（空串）在 since 模式下会被滤掉——它们本来就不是"新入库"。
     papers = _load_papers(); cats = _load_cats(); deepk = _deep_keys()
     notextk = _deep_no_text_keys()   # C1/A2：扫描件集合
-    if category and category.startswith("kbc_"):
+    if category:
+        # 统一走 _resolve_category_keys（与 /search 同一条路）：kbc_/topic:/zotero: 都能过滤；
+        # 旧写法只认 kbc_ 前缀，topic:/zotero: 会静默落到全库，list_sources 聚焦失效。
         ks = _resolve_category_keys(category) or set()
         items = [papers[k] for k in ks if k in papers]
     elif topic is not None:
@@ -2132,6 +2205,11 @@ def index_light_ep():
         with _BUILD_LOCK:
             BUILD["running"] = False
             BUILD["stage"] = ""
+        # 与 _run_build 收尾对齐：补跑构建期间被 4s 防抖 timer 丢弃的深索入队请求，否则它们滞留到下次偶然事件。
+        try:
+            _drain_deep_queue()
+        except Exception as e:
+            log_error("index/light drain", repr(e))
 
 def _child_env():
     """任务五：子进程统一 env——强制 UTF-8 输出（PYTHONIOENCODING）+ 开 UTF-8 模式（PYTHONUTF8=1），
@@ -2222,7 +2300,11 @@ def _run_build(stage, extra=None, on_done=None):
 # _run_build("all") 走 build_all.py 的增量管线（已入库跳过），深索仍由用户手动触发。
 @app.post("/build")
 def build_ep():
-    return {"ok": _run_build("all")}
+    # 文件夹模式必须走 stage=folder（含 folder_ingest 的 LLM 抽题录），否则手动「更新知识库」
+    # 只跑 all 管线、跳过题录抽取，新 PDF 永远停留在文件名占位题录（与自动更新循环同一分派）。
+    import settings as S
+    stage = "folder" if S.source() == "folder" else "all"
+    return {"ok": _run_build(stage)}
 
 def _kill_tree(p):
     """BF7：Windows 下 p.terminate() 只杀 build_all 本体，它派生的孙进程（嵌入/抽取 worker）
@@ -2267,7 +2349,29 @@ def build_status():
             "log": BUILD["log"][-300:], "started": BUILD["started"],
             # cancellable：有活着的子进程句柄才能取消（供前端决定是否显示「取消」按钮）
             "cancellable": bool(BUILD["running"] and BUILD.get("proc") is not None),
-            "cancelled": bool(BUILD.get("cancelled"))}
+            "cancelled": bool(BUILD.get("cancelled")),
+            "rc": BUILD.get("rc")}   # 构建返回码：前端据此区分「更新完成」与「更新失败」（余额0/子进程崩溃）
+
+@app.post("/index/retry_no_text")
+def retry_no_text():
+    """C1/A2 重试入口：把被判「扫描件/无正文」的篇清除标记 + 删旧产物，让它们重新进入深索管线。
+       适用：PDF 曾被 OneDrive/杀软占用、链接附件路径修好、或补下载后现在可读——此前一旦被标 no_text
+       就被前端与 Agent 深索候选永久排除，无路可回。清除后重新点深索即会重抽。"""
+    notext = _deep_no_text_keys()   # safe_name(stem) 集合
+    if not notext:
+        return {"ok": True, "cleared": 0, "msg": "当前没有被判『无正文/扫描件』的篇。"}
+    papers = _load_papers()
+    keys = [k for k in papers if T.safe_name(k) in notext]
+    if not keys:
+        return {"ok": True, "cleared": 0, "msg": "无正文标记对应的篇已不在库中。"}
+    try:
+        import folder_ingest as FI
+        FI._purge_key_artifacts(keys)   # 清 deep_no_text/embedded 标记 + 删 extracted/chunks/pagemap/summaries
+    except Exception as e:
+        log_error("retry_no_text purge", repr(e), traceback.format_exc())
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=500)
+    return {"ok": True, "cleared": len(keys),
+            "msg": f"已清除 {len(keys)} 篇的『无正文』标记与旧产物，现在可对它们重新深索（PDF 可读则会成功抽取）。"}
 
 # ── 文件夹模式：建库（后台，含 N 次 LLM 抽题录）+ 拖入入库 ──
 @app.post("/index/folder_build")
@@ -2458,6 +2562,12 @@ def _deep_agent_run(q: DeepAgentQ):
             R.load_all()
         except Exception as e:
             log_error("deep_agent reload", repr(e))
+        # EN-W2 Ingest 扳机：Agent 深索循环也要触发 wiki 更新建议。本批 summaries 的 key 已成功嵌入并重载，
+        # 逐一分析哪些综合页引用了它们、是否需标脏/重生（整库 pre_deep 差集路径不覆盖此 Agent 循环）。
+        try:
+            _wiki_suggest_async([s.key for s in q.summaries])
+        except Exception as e:
+            log_error("deep_agent wiki suggest", repr(e))
     # ② 选下一批 pending-deep（有PDF、未深索、非扫描件），阻塞跑 deep_prepare(extract+chunk)
     papers = _load_papers(); deepk = _deep_keys(); notext = _deep_no_text_keys()
     cand = [p for p in papers.values()
@@ -2503,6 +2613,10 @@ def index_deep_agent(q: DeepAgentQ):
         with _BUILD_LOCK:
             BUILD["running"] = False
             BUILD["stage"] = ""          # F4：deep_agent 结束同样复位 stage
+        try:
+            _drain_deep_queue()          # 与 _run_build/light 收尾对齐：补跑构建期被防抖丢弃的深索入队
+        except Exception as e:
+            log_error("deep_agent drain", repr(e))
 
 # ── 检索 ──────────────────────────────────────────────────
 class SearchQ(BaseModel):
@@ -2530,6 +2644,16 @@ def search(q: SearchQ):
         log_error("search", repr(e), traceback.format_exc())
         raise HTTPException(status_code=500,
                             detail=f"{e}（→ 请到 设置 检查检索引擎 API Key 或余额）")
+    # 给命中行补 no_text 标记（与 /papers 同口径）：扫描件/无正文的篇不该在前端显示「⚡深索该篇」入口，
+    # 否则用户点了只会空跑一整轮 build_all（extract 见已有产物即跳过），界面毫无变化。
+    try:
+        notext = _deep_no_text_keys()
+        for x in res:
+            k = x.get("key")
+            if k and T.safe_name(k) in notext:
+                x["no_text"] = True
+    except Exception as e:
+        log_error("search no_text tag", repr(e))
     return {"query": q.query, "mode": R.STATE.get("mode"), "category": q.category,
             "took_ms": round((time.time() - t0) * 1000), "results": res}
 
@@ -2572,7 +2696,7 @@ def chat(q: ChatQ):
     base, model = L.resolve(q.provider, q.base_url, q.model)
     api_key = q.api_key
     # 对话选 SiliconFlow 但没单独填 key 时，自动复用检索引擎已配的 SiliconFlow key（一个 key 通吃，免费模型开箱即用）
-    if not api_key and "siliconflow" in (base or "").lower():
+    if not api_key and _is_siliconflow_base(base):
         try:
             import settings as S
             api_key = (S.api_conf() or {}).get("key", "") or api_key

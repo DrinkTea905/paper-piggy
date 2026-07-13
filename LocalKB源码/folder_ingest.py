@@ -46,7 +46,8 @@ def _save_cache(cache):
             return
         except PermissionError:
             time.sleep(0.15 * (i + 1))
-    C.FOLDER_META_CACHE.write_text(json.dumps(cache, ensure_ascii=False, indent=1), encoding="utf-8")
+    # R4：兜底直写也必须用持锁下的快照 snap（而非活字典 cache），否则重新引入并发迭代崩溃
+    C.FOLDER_META_CACHE.write_text(json.dumps(snap, ensure_ascii=False, indent=1), encoding="utf-8")
 
 
 def _file_sha1(path):
@@ -98,7 +99,9 @@ def _purge_key_artifacts(keys):
                     p.write_text("".join(l + "\n" for l in kept), encoding="utf-8")
             except Exception:
                 pass
-    for d in (C.EXTRACTED, C.CHUNKS):
+    # BF10：抽取产物 + 页码映射 sidecar（PAGEMAP_DIR）一并按 stem 删——换内容的同名文件
+    # 若残留旧 pagemap，页级引注会指向别篇文章的印刷页码。
+    for d in (C.EXTRACTED, C.CHUNKS, C.PAGEMAP_DIR):
         for st in stems:
             try:
                 f = d / f"{st}.json"
@@ -106,6 +109,21 @@ def _purge_key_artifacts(keys):
                     f.unlink()
             except Exception:
                 pass
+    # BF10：SAC 摘要（summaries.json）也按 stem 剔——否则换内容的同名文件仍拼着旧文章的
+    # 检索摘要做嵌入前缀，误导语义检索。持锁下原子读-改-写（并发 purge 的读-改-写会丢条目）。
+    sumf = C.DATA / "summaries" / "summaries.json"
+    with _CACHE_LOCK:
+        try:
+            if sumf.exists():
+                sums = json.loads(sumf.read_text(encoding="utf-8"))
+                if any(st in sums for st in stems):
+                    for st in stems:
+                        sums.pop(st, None)
+                    tmp = sumf.with_suffix(".json.tmp")
+                    tmp.write_text(json.dumps(sums, ensure_ascii=False, indent=1), encoding="utf-8")
+                    os.replace(tmp, sumf)
+        except Exception:
+            pass
 
 
 def _head_text(pdf, key):
@@ -131,9 +149,10 @@ def ingest_one(folder, pdf, cache):
         _entry = cache.get(key) or {}
         _has_meta = bool(_entry.get("meta"))
         _old_sha = _entry.get("sha1", "")
-    if _has_meta:
+        _no_text = _entry.get("note") == "no_text"
+    if _has_meta and not _no_text:
         # BF10：skip 前比对 sha1——同路径文件被替换（key 不变、内容变）时，旧题录/旧索引
-        # 全是别篇文章的，必须作废重抽。旧条目没存 sha1（如 no_text 退化条目）维持原跳过行为。
+        # 全是别篇文章的，必须作废重抽。旧条目没存 sha1 维持原跳过行为（不强制重抽全部老库）。
         if not _old_sha or _file_sha1(pdf) == _old_sha:
             return "skip"
         with _CACHE_LOCK:                               # R4：持锁写
@@ -141,10 +160,18 @@ def ingest_one(folder, pdf, cache):
         # BF10：替换=旧内容作废——表行也删（否则旧文章的 chunk 行在下次手动深索前一直被命中）
         _purge_db_rows([key])
         _purge_key_artifacts([key])
+    elif _no_text:
+        # BF：曾判无正文（扫描件）的条目——存了 sha1 且内容未变则跳过（重抽仍无正文，白费）；
+        # sha1 变了或旧条目没存 sha1（老版本 no_text 未记 sha1）时重试一次：内容若已可抽则
+        # 升级成正式题录，否则回写 no_text（这次补上 sha1，下次即可秒判未变而跳过）。
+        if _old_sha and _file_sha1(pdf) == _old_sha:
+            return "skip"
+        with _CACHE_LOCK:                               # R4：持锁写
+            cache.pop(key, None)
     text = _head_text(pdf, key)
     if not text:
         with _CACHE_LOCK:                               # R4：持锁写
-            cache[key] = {"meta": {"title": Path(pdf).stem}, "file": pdf,
+            cache[key] = {"meta": {"title": Path(pdf).stem}, "file": pdf, "sha1": _file_sha1(pdf),
                           "needs_review": True, "note": "no_text", "extracted_at": _now()}
         return "empty"
     meta, needs_review, err = FM.extract_meta(text)
@@ -172,12 +199,17 @@ def main():
     live = {FS.stable_key(folder, p) for p in pdfs}
     gone = [k for k in list(cache) if k not in live]
     if gone:
-        for k in gone:
-            del cache[k]
         # BF10：光剔 meta_cache 不够——表行、进度 stem、抽取产物都残留着，
         # 已删除的文献会继续被检索命中；一并清（表删行含 meta+chunk，见 _purge_db_rows）。
-        _purge_db_rows(gone)
-        _purge_key_artifacts(gone)
+        # 顺序要紧：先 purge、成功后才从 cache 删 key——反了的话 purge 抛异常时 DB 旧行成孤儿，
+        # 且 cache 已无记录触发下次自愈，会被持续检索命中。purge 失败则保留 key 下次重试。
+        try:
+            _purge_db_rows(gone)
+            _purge_key_artifacts(gone)
+            for k in gone:
+                del cache[k]
+        except Exception as e:
+            print(f"[folder] 清理已删除文件残留失败（保留 cache 键下次重试）：{e!r}", flush=True)
 
     if not FM.available():
         print(f"[folder] 未配置 LLM，跳过题录抽取（{len(pdfs)} 篇退回文件名题名）", flush=True)
@@ -186,12 +218,14 @@ def main():
 
     # BF10：除"没题录"的新文件外，已有题录但存过 sha1 的也要送进 worker——
     # ingest_one 里比对 sha1 做替换检测（内容没变的秒 skip），否则同名替换永远检不出来。
+    # BF：曾判 no_text 的条目也一并送——新条目已存 sha1（走上面 elif），老版本 no_text 未记 sha1
+    # 靠 note 兜住，让其重试一次（内容变了则升级题录、没变则补上 sha1，下轮即秒跳）。
     todo, n_new = [], 0
     for p in pdfs:
         e = cache.get(FS.stable_key(folder, p)) or {}
         if not e.get("meta"):
             todo.append(p); n_new += 1
-        elif e.get("sha1"):
+        elif e.get("sha1") or e.get("note") == "no_text":
             todo.append(p)
     if args.limit:
         todo = todo[:args.limit]

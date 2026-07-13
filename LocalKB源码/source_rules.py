@@ -97,8 +97,11 @@ def set_override(key, tier):
         try:
             if OVERRIDE_FILE.exists():
                 data = json.loads(OVERRIDE_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            data = {}
+        except Exception as e:
+            # 读旧表失败（OneDrive/杀软共享锁、文件损坏）时绝不能拿空表覆写——那会静默清空
+            # 用户全部手动改档。直接抛错中止本次写入，由调用方 try/except 返回错误并提示重试。
+            # 注意：_LOCK 不可重入且此刻已持有，不能再调 _load_overrides（会死锁）。
+            raise RuntimeError(f"读取现有改档表失败，已中止写入以防丢失既有改档：{e}")
         if tier:
             data[key] = tier
         else:

@@ -79,7 +79,10 @@ def _port_in_use(host, port):
 def _rotate_and_open_server_log():
     """server 子进程 stdout/stderr 落 logs/server.log（换机排障命脉，替代原来的 DEVNULL 静默）。
     超 2MB 先轮转一份 server.log.1，避免无限增长。返回可传给 Popen 的二进制句柄。"""
-    C.LOGS.mkdir(parents=True, exist_ok=True)
+    try:
+        C.LOGS.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
     p = C.LOGS / "server.log"
     try:
         if p.exists() and p.stat().st_size > 2 * 1024 * 1024:
@@ -190,6 +193,26 @@ def _tint_titlebar_async():
     threading.Thread(target=work, daemon=True).start()
 
 
+class _JsApi:
+    """暴露给前端的原生桥（window.pywebview.api）。必须住在 launcher 进程——原生窗口在这里，
+       server 是独立子进程、其 webview.windows 恒空，之前的 /setup/pick_folder 在 server 里
+       调 create_file_dialog 永远失败（死按钮）。"""
+    def pick_folder(self):
+        """弹原生目录选择器，返回选中的绝对路径（取消/失败返回空串）。"""
+        try:
+            import webview
+            w = webview.windows[0] if getattr(webview, "windows", None) else None
+            if not w:
+                return ""
+            r = w.create_file_dialog(webview.FOLDER_DIALOG)
+            if not r:
+                return ""
+            return (r[0] if isinstance(r, (list, tuple)) else str(r)) or ""
+        except Exception as e:
+            _logline(f"pick_folder 失败：{repr(e)}")
+            return ""
+
+
 def main():
     _check_path_ascii()
     proc = None
@@ -243,7 +266,7 @@ def main():
         # 导致「检索结果不可复制」——根因在此，非 CSS）。改后须重启原生窗口实测。
         webview.create_window("PaperPiggy", C.DAEMON_URL,
                               width=1300, height=880, min_size=(960, 640),
-                              text_select=True)
+                              text_select=True, js_api=_JsApi())   # 原生目录选择器桥（pick_folder）
         _tint_titlebar_async()   # #1：标题栏跟随系统浅/深色，别再是突兀的黑条
         webview.start()   # 阻塞直到窗口关闭
         if proc:          # 关窗口 → 停掉本次启动的 server（关窗即退出应用）

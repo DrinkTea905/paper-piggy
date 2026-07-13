@@ -146,8 +146,19 @@ def main():
     args = ap.parse_args()
     files = sorted(C.EXTRACTED.glob("*.json"))
     if args.limit: files = files[:args.limit]
-    todo = [f for f in files if not (C.CHUNKS / f.name).exists()]
-    print(f"[chunk] 提取文件 {len(files)}，待切块 {len(todo)}")
+    def _needs(f):
+        cf = C.CHUNKS / f.name
+        if not cf.exists():
+            return True
+        try:
+            if cf.read_text(encoding="utf-8").strip() not in ("[]", ""):
+                return False                    # 已有真实块 → 跳过
+            # 空块（当时 extracted ok=False 写的 "[]"）：若现在 extracted 已恢复 ok=True → 重切
+            return bool(json.loads(f.read_text(encoding="utf-8")).get("ok"))
+        except Exception:
+            return False
+    todo = [f for f in files if _needs(f)]
+    print(f"[chunk] 提取文件 {len(files)}，待切块 {len(todo)}（含恢复重切）")
     imap = _itemtype_map()   # EN-L1：整批建一次 stem→itemtype 映射（历史 extracted 缺 itemtype 时兜底）
     t0 = time.time(); total = 0; ndoc = 0; skipped = 0
     for i, f in enumerate(todo, 1):

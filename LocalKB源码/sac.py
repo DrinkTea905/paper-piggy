@@ -50,7 +50,13 @@ def _conf():
         a = S.api_conf()
         if a.get("key"):
             c["key"] = a.get("key")
-            c["base"] = c.get("base") or a.get("base")
+            # 借 key 也借 base——本地 base 恒为 SiliconFlow 默认值，不让 a.base 优先的话，
+            # 借来的（非硅基）key 仍被发往硅基 base → 必然失败。a.base 优先、无则退回本地。
+            c["base"] = a.get("base") or c.get("base")
+            # base 非 SiliconFlow 时别硬套默认 Qwen 模型——有 a.model 就借它，
+            # 没有（api 段只配了嵌入/重排模型）则维持用户可配的 sac.model。
+            if a.get("model") and "siliconflow" not in (c.get("base") or "").lower():
+                c["model"] = a["model"]
     return c
 
 

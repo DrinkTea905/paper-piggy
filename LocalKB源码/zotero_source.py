@@ -56,6 +56,22 @@ def detect_data_dir():
             return d
     return None
 
+def _base_attachment_path():
+    """读 Zotero prefs.js 的 extensions.zotero.baseAttachmentPath（链接附件 'attachments:xxx' 的相对根）。
+    返回存在的 Path，或 None（未设置/目录不存在）。探测方式复用 detect_data_dir 里对 prefs.js 的解析。"""
+    appdata = os.environ.get("APPDATA") or os.path.expanduser("~/AppData/Roaming")
+    for prefs in glob.glob(os.path.join(appdata, "Zotero", "Zotero", "Profiles", "*", "prefs.js")):
+        try:
+            txt = open(prefs, encoding="utf-8", errors="replace").read()
+            m = re.search(r'extensions\.zotero\.baseAttachmentPath",\s*"([^"]+)"', txt)
+            if m:
+                d = Path(m.group(1).replace("\\\\", "\\"))
+                if d.exists():
+                    return d
+        except Exception:
+            pass
+    return None
+
 def available(data_dir=None):
     d = Path(data_dir) if data_dir else detect_data_dir()
     return bool(d and (d / "zotero.sqlite").exists())
@@ -117,6 +133,7 @@ def load_papers(data_dir=None, library_id=1):
             tags.setdefault(iid, []).append(name)
         # PDF 附件路径（storage:filename → storage/<附件key>/filename）
         pdf = {}
+        base_att = _base_attachment_path()   # 链接附件（attachments:）的相对根，解析一次复用
         for pid, akey, path in q("""SELECT ia.parentItemID, i2.key, ia.path FROM itemAttachments ia
           JOIN items i2 ON ia.itemID=i2.itemID
           WHERE ia.contentType='application/pdf' AND ia.parentItemID IS NOT NULL"""):
@@ -124,6 +141,12 @@ def load_papers(data_dir=None, library_id=1):
                 continue
             if path.startswith("storage:"):
                 pdf[pid] = str(storage / akey / path.split(":", 1)[1])
+            elif path.startswith("attachments:"):
+                # BF：链接附件相对根 baseAttachmentPath 的形式。此前把 "attachments:xxx" 原样当路径，
+                # os.path.exists 恒 False → 被误判成扫描件/需 OCR。解析成真实路径；根解析不出则
+                # 不落假路径（该 pid 不入 pdf → has_pdf=False），避免把不存在的路径当成有 PDF。
+                if base_att:
+                    pdf[pid] = str(base_att / path.split(":", 1)[1])
             else:
                 pdf[pid] = path  # 链接附件：绝对路径
         # 收藏夹
@@ -162,6 +185,10 @@ def load_papers(data_dir=None, library_id=1):
             "year": ym.group(0) if ym else "",
             "journal": _clean(f.get("publicationTitle") or f.get("bookTitle") or f.get("proceedingsTitle") or ""),
             "doi": _clean(f.get("DOI", "")),
+            # ISSN：期刊识别引擎的 ISSN 通道数据源；extra：Zotero「Extra」字段，供法条时效状态检测。
+            # 两者已在上面的 EAV 全字段拉取里（fld），此处直接透传即可。
+            "issn": _clean(f.get("ISSN", "")),
+            "extra": _clean(f.get("extra", "")),
             "langid": _clean(f.get("language", "")),
             "keywords": "; ".join(tags.get(iid, [])),
             "abstract": _clean(f.get("abstractNote", "")),

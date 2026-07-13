@@ -11,7 +11,7 @@ $app = Join-Path $Bundle 'app'
 if (-not (Test-Path $app)) { Write-Error "app not found: $app  (build/extract the bundle first)"; exit 1 }
 
 # Keep in sync with build_bundle.py DEV_ONLY / KEEP_MD
-$devOnly = @('build_bundle.py','pack_models.py','setup_reranker_onnx.py','setup_onnx.py','import_fulltext.py','fix_schema.py','gen_mcp_doc.py')
+$devOnly = @('build_bundle.py','pack_models.py','setup_reranker_onnx.py','setup_onnx.py','import_fulltext.py','fix_schema.py','gen_mcp_doc.py','fetch_mingit.py')
 $keepMd  = @('README.md','MCP接入说明.md')
 
 # 1) copy wanted top-level .py (exclude DEV_ONLY)

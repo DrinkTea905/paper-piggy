@@ -31,7 +31,7 @@
       const onKey = (e) => {
         if (e.key === "Escape") { e.preventDefault(); done(false); }
         // UX12：danger 时 Enter 默认落在「取消」上（除非用户已把焦点移到「确定」）
-        else if (e.key === "Enter") { e.preventDefault(); done(document.activeElement === ok ? true : !opts.danger); }
+        else if (e.key === "Enter") { e.preventDefault(); const ae = document.activeElement; done(ae === cancel ? false : ae === ok ? true : !opts.danger); }
       };
       ok.addEventListener("click", onOk);
       cancel.addEventListener("click", onCancel);
@@ -297,9 +297,19 @@
         stat = `深索队列已空 · ` + (undeep > 0
           ? `待深索 <b>${num(undeep)}</b> 篇（可在「浏览」页勾选后深索）`
           : `全部 PDF 已深索 ✓`);
+        // 有被判「扫描件/无正文」的篇时，给一个重试入口：PDF 曾被占用/坏、或链接附件修好后可重新深索
+        const nt = q.deep_no_text || 0;
+        if (nt > 0) stat += ` · <a href="#" id="dp-retry-nt" title="清除这些篇的『无正文』标记与旧产物，可重新深索（PDF 现在可读则会成功）">🔁 重试 ${num(nt)} 篇扫描件/失败篇</a>`;
         listEmpty = "暂无正在深索的文献"; eta = "";
       }
       $("#dp-stat").innerHTML = stat;
+      const rnt = $("#dp-retry-nt");
+      if (rnt) rnt.addEventListener("click", async (ev) => {
+        ev.preventDefault();
+        if (!(await uiConfirm("将清除这些篇的『无正文/扫描件』标记与旧提取产物，之后可在「浏览」页重新勾选深索。不影响其它文献。", { title: "重试扫描件/失败篇？", okText: "清除并可重试" }))) return;
+        try { const r = await jpost("/index/retry_no_text", {}); flashToast(r.msg || `已清除 ${num(r.cleared || 0)} 篇。`); deepPanelPoll(); }
+        catch (e) { flashToast("重试失败：" + (e.message || e)); }
+      });
       $("#dp-eta").textContent = DP.paused ? "⏸ 已暂停（正在跑的那批会跑完，队列保留）" : (eta || "");
       const items = q.items || [];
       $("#dp-items").innerHTML = items.length
@@ -1641,6 +1651,13 @@
         }
       });
     }
+    // C3：研究助手产出的资料汇编(digest)/大纲(outline) 可一键导出 Word（有 python-docx 出 .docx，否则降级 .md），
+    // 产出可直接拿去写作。用 <a download> 直接触发下载（GET /research/export_docx/{id}）。此前该出口无任何入口=死机制。
+    if (flag && !p.degraded && (p.kind === "digest" || p.kind === "outline")) {
+      flag.innerHTML += `<a class="wk-flag" style="text-decoration:none;cursor:pointer" ` +
+        `href="/research/export_docx/${encodeURIComponent(p.id)}" download ` +
+        `title="导出为 Word 文档（含参考文献，可直接拿去写作）">⬇ 导出 Word</a>`;
+    }
     // 降级页在正文顶部挂一条醒目横幅，说明它为什么不是综述、怎么补救
     const banner = p.degraded
       ? `<div class="wk-degraded-banner">⚠ <b>这不是 AI 综述。</b>${esc(p.degraded_reason || "")}。` +
@@ -2634,7 +2651,7 @@
         bot.textContent = "⚠ 服务返回错误：" + (detail || ("HTTP " + resp.status));
         return;
       }
-      const reader = resp.body.getReader(); const dec = new TextDecoder("utf-8"); let buf = "", answer = "", errored = false, srcHits = [];
+      const reader = resp.body.getReader(); const dec = new TextDecoder("utf-8"); let buf = "", answer = "", srcHits = [], warnEl = null, errMsg = "";
       while (true) {
         const { value, done } = await reader.read(); if (done) break;
         buf += dec.decode(value, { stream: true });
@@ -2647,13 +2664,24 @@
           let j; try { j = JSON.parse(data); } catch (e) { continue; }
           if (j.sources) { srcHits = j.sources || []; addSources(j.sources); }
           else if (j.delta) { answer += j.delta; bot.textContent = answer; $("#chat-log").scrollTop = 1e9; }
-          else if (j.error) { errored = true; bot.textContent = "⚠ " + j.error; }
+          else if (j.error) {
+            // C6：检索后端失败是【前置警告】——server 随后仍会照常流式作答。渲染成独立警示条（不占正文，
+            // delta 不会把它冲掉），且不阻止把回答留进 history / 出「保存此答案」按钮。仅「全程无回答」才算终止性错误。
+            errMsg = j.error;
+            if (!warnEl) {
+              warnEl = document.createElement("div");
+              warnEl.style.cssText = "color:#b45309;background:rgba(245,158,11,.12);border:1px solid rgba(245,158,11,.4);border-radius:8px;padding:6px 10px;margin-bottom:6px;font-size:13px";
+              if (bot.parentNode) bot.parentNode.insertBefore(warnEl, bot);
+            }
+            warnEl.textContent = "⚠ " + j.error;
+          }
         }
       }
-      // R13：仅在真有回答且未出错时才把这轮写进 history，避免空/错误回合污染后续上下文
-      if (answer && !errored) { history.push({ role: "user", content: q }, { role: "assistant", content: answer }); addSaveBtn(bot, q, answer, srcHits); }
-      // 流正常结束却一个字都没吐、也没报错：给一句兜底，避免留个空白气泡让人以为卡死
-      else if (!answer && !errored) bot.textContent = "⚠ 模型没有返回内容，请重试，或在设置里检查对话模型/Key。";
+      // 有回答就写进 history（前置警告不影响回答有效性）；出「保存此答案」按钮
+      if (answer) { history.push({ role: "user", content: q }, { role: "assistant", content: answer }); addSaveBtn(bot, q, answer, srcHits); }
+      // 全程无回答：若有 error 则为终止性错误（warnEl 已显示，bot 兜底也补一句）；否则给空回复兜底
+      else if (errMsg) { if (!warnEl) bot.textContent = "⚠ " + errMsg; }
+      else bot.textContent = "⚠ 模型没有返回内容，请重试，或在设置里检查对话模型/Key。";
     } catch (e) { bot.textContent = "⚠ 请求失败：" + e; }
     finally { $("#chat-go").disabled = false; }
   }
@@ -2946,7 +2974,7 @@
     finally { btn.disabled = false; }
   });
   // 换引擎后旧向量不兼容 → 应用时强制重建索引，并显示「正在重建中」
-  async function doRebuildIndex(msgEl) {
+  async function doRebuildIndex(msgEl, hadDeep) {
     if (msgEl) { msgEl.className = "hint"; msgEl.textContent = "正在重建索引（换引擎后旧向量不兼容）…"; }
     try {
       const r = await fetch("/build", { method: "POST" });
@@ -2961,7 +2989,12 @@
             const s = await (await fetch("/build/status")).json();
             if (!s.running || tries > 240) {   // 6min 封顶，防后端卡 running 时 await 永不返回、按钮卡死
               clearInterval(iv);
-              if (msgEl) { msgEl.className = "hint ok"; msgEl.textContent = tries > 240 ? "重建仍在进行，可关闭设置，进度见顶部。" : "✓ 索引已用新引擎重建完成。"; }
+              if (msgEl) {
+                if (tries > 240) { msgEl.className = "hint"; msgEl.textContent = "重建仍在进行，可关闭设置，进度见顶部。"; }
+                else if (s.cancelled) { msgEl.className = "hint warn"; msgEl.textContent = "重建已取消。"; }
+                else if (s.rc && s.rc !== 0) { msgEl.className = "hint warn"; msgEl.textContent = "重建未成功（可能是 API Key 无效或余额不足），请检查检索引擎设置后重试。"; }
+                else { msgEl.className = "hint ok"; msgEl.textContent = "✓ 题录索引已用新引擎重建完成。" + (hadDeep ? "已深索的正文向量需到「浏览」页重新深索，才能与新引擎一致。" : ""); }
+              }
               poll(); if (dashLoaded) loadDashboard("silent"); resolve();
             } else if (msgEl) { msgEl.textContent = "正在重建索引中…（可关闭设置，进度见顶部）"; }
           } catch (e) { clearInterval(iv); resolve(); }
@@ -2975,7 +3008,7 @@
     try {
       const r = await jpost("/setup/backend", engBody());
       msg.className = "hint"; msg.textContent = "✓ 已应用检索引擎（" + (r.backend === "api" ? "API" : "本地") + "）。" + (r.warn ? "⚠ " + r.warn + " " : "") + "开始重建索引…";
-      await doRebuildIndex(msg);
+      await doRebuildIndex(msg, r.had_deep);   // had_deep>0 → 提示深索正文向量需重跑
     } catch (e) { msg.className = "hint warn"; msg.textContent = "保存失败：" + e.message; }   // BF23：textContent 去 esc
     finally { btn.disabled = false; }
   });
@@ -3113,16 +3146,20 @@
             if (dashLoaded) loadDashboard("silent");
             if (browseLoaded) { browseLoaded = false; if (!$("#panel-browse").hidden) loadBrowse(); }
             poll();
-            // UX6：真跑完（非超时封顶）才对比基线报结果
+            // UX6：真跑完（非超时封顶）才对比基线报结果——但先看构建是否成功，别把「余额0/子进程崩溃」误报成完成
             if (!s.running) {
-              try {
-                const s1 = await jget("/stats");
-                const nowTotal = ((s1 && s1.coverage) || {}).total;
-                if (baseTotal != null && nowTotal != null) {
-                  const diff = nowTotal - baseTotal;
-                  flashToast(diff > 0 ? `更新完成：新增 ${num(diff)} 篇文献。` : "更新完成，没有新增文献。");
-                } else flashToast("更新完成 ✓");
-              } catch (e) { flashToast("更新完成 ✓"); }
+              if (s.cancelled) { flashToast("更新已取消。"); }
+              else if (s.rc && s.rc !== 0) { flashToast("更新未成功（可能是 API Key 无效或余额不足，或建库子进程出错），请检查设置后重试。"); }
+              else {
+                try {
+                  const s1 = await jget("/stats");
+                  const nowTotal = ((s1 && s1.coverage) || {}).total;
+                  if (baseTotal != null && nowTotal != null) {
+                    const diff = nowTotal - baseTotal;
+                    flashToast(diff > 0 ? `更新完成：新增 ${num(diff)} 篇文献。` : "更新完成，没有新增文献。");
+                  } else flashToast("更新完成 ✓");
+                } catch (e) { flashToast("更新完成 ✓"); }
+              }
             }
           }
         } catch (e) { clearInterval(iv); restore(); }
@@ -3461,7 +3498,8 @@
     }
   }
   async function renderStep3Folder() {
-    const nativePick = (typeof window !== "undefined" && window.pywebview !== undefined);
+    // 只有当 launcher 进程注入了原生桥 pick_folder 时才显示「浏览…」；否则（浏览器回退）隐藏，避免死按钮。
+    const nativePick = !!(typeof window !== "undefined" && window.pywebview && window.pywebview.api && window.pywebview.api.pick_folder);
     // 建议默认目录：应用自己的数据目录旁 <HOME>/papers
     let def = WZ.folderDir || "";
     if (!def) { try { def = (await jget("/setup/folder_default")).default_dir || ""; } catch (e) {} }
@@ -3487,9 +3525,10 @@
     $("#wz3-back").addEventListener("click", renderStep2);
     const browse = $("#wz-folder-browse");
     if (browse) browse.addEventListener("click", async () => {
+      // 目录选择器由 launcher 进程的 js_api 代理（原生窗口在那）；server 子进程里 create_file_dialog 恒失败。
       try {
-        const r = await jpost("/setup/pick_folder", {});
-        if (r && r.ok && r.dir) $("#wz-folder-dir").value = r.dir;
+        const dir = await window.pywebview.api.pick_folder();
+        if (dir) $("#wz-folder-dir").value = dir;
       } catch (e) {}
     });
     // 打开文件夹：先把这个目录设为受管文件夹（创建）+ 在系统里打开 + 显示 PDF 数
@@ -3706,10 +3745,18 @@
         if (isFolder) {
           // 文件夹模式：后台建库（含逐篇 LLM 抽题录），轮询进度；无 key 时用 _nokey 端点退文件名
           const ep = APP.metaReady ? "/index/folder_build" : "/index/folder_build_nokey";
-          const r = await jpost(ep, {});
-          if (r && r.need_key && !APP.metaReady) {
-            // 无 key：也可建（退文件名）——直接走 nokey
-            await jpost("/index/folder_build_nokey", {});
+          let r = await jpost(ep, {});
+          // 先判 ok===false：need_key→退文件名重试；busy→已有构建在跑，提示重试并恢复按钮（别假报「已开始」）
+          if (r && r.ok === false) {
+            if (r.need_key) { r = await jpost("/index/folder_build_nokey", {}); }
+            else {
+              $("#wz5-msg").innerHTML = `<div class="wz-note">${esc(r.msg || "已有任务在跑，请稍后再试。")}</div>`;
+              btn.disabled = false; btn.innerHTML = goLabel; return;
+            }
+          }
+          if (r && r.ok === false) {   // nokey 仍忙
+            $("#wz5-msg").innerHTML = `<div class="wz-note">${esc(r.msg || "已有任务在跑，请稍后再试。")}</div>`;
+            btn.disabled = false; btn.innerHTML = goLabel; return;
           }
           $("#wz5-msg").innerHTML = `<div class="wz-result">🚀 已开始建库，正在逐篇读取题录（进度见顶部）。可直接进入，完成后自动可搜。</div>`;
           btn.outerHTML = `<button class="primary" id="wz5-enter">进入知识库 →</button>`;
