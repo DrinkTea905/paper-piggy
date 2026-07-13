@@ -11,8 +11,15 @@ import sys, re, json, argparse, time
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import config as C
+from textutil import safe_name
 
 SENT_SPLIT = re.compile(r'(?<=[。！？；!?\n])')
+
+# EN-L1：法条"条"边界。只认**行首**的「第X条」——正文里的交叉引用（如"依照第二百
+# 八十条的规定"）出现在句中，若按任意位置切会把一条切得粉碎。法规 PDF 的每条起首
+# 基本都独立成行（提取层保留了换行），行首锚定足够稳。
+RE_ARTICLE_SPLIT = re.compile(r'(?m)(?=^\s*第[一二三四五六七八九十百千零〇\d]+条(?!例|约|件))')  # 负向前瞻：行首「第三条例外…」不是条界
+RE_ARTICLE_NO    = re.compile(r'第[一二三四五六七八九十百千零〇\d]+条')
 
 def sentences(text):
     return [s for s in SENT_SPLIT.split(text) if s.strip()]
@@ -51,43 +58,87 @@ def _parent_window(ptext, start, child_len):
     p0 = min(p0, max(0, len(ptext) - C.PARENT_MAX_CHARS))
     return ptext[p0: p0 + C.PARENT_MAX_CHARS]
 
-def chunk_doc(rec):
+def split_statute_articles(ptext):
+    """EN-L1：把一页法条文本按「条」切段，返回 [(条号, 段文本), ...]。
+       页首第一处条号之前的部分（章节名/页眉/上一条跨页的尾巴）条号为 ""，
+       调用方回退用页级标题。整页找不到行首条号（目录页/附则说明页）→ None，走普通切块。"""
+    parts = [p for p in RE_ARTICLE_SPLIT.split(ptext) if p.strip()]
+    segs = [(RE_ARTICLE_NO.match(p.lstrip()), p) for p in parts]
+    if not any(m for m, _ in segs):
+        return None
+    return [((m.group(0) if m else ""), p) for m, p in segs]
+
+def _itemtype_map():
+    """EN-L1：chunk 阶段拿 itemtype——新提取的 extracted json 的 meta 带 itemtype，
+       但历史存量文件可能没有；从 papers.jsonl 建 stem→itemtype 映射兜底。
+       papers.jsonl 不存在（如极旧库）→ 空映射，全按普通文献切，行为与旧版一致。"""
+    mp = {}
+    try:
+        if C.PAPERS_JSONL.exists():
+            with open(C.PAPERS_JSONL, encoding="utf-8") as f:
+                for line in f:
+                    if line.strip():
+                        p = json.loads(line)
+                        mp[p.get("stem") or safe_name(p.get("key", ""))] = p.get("itemtype", "")
+    except Exception:
+        return {}
+    return mp
+
+def chunk_doc(rec, itemtype_map=None):
     meta = rec["meta"]
     key = rec["key"]
+    # EN-L1：itemtype 两级来源：extracted meta 自带 > papers.jsonl 映射兜底（历史存量文件缺该字段）
+    itemtype = meta.get("itemtype") or (itemtype_map or {}).get(safe_name(key), "") or ""
     chunks = []
     for pg in rec.get("pages", []):
         page = pg["page"]
         ptext = pg["text"]
         heading = page_heading(ptext)
+        # EN-L1：法条先按"条"切段再在条内走既有句聚合；heading 置为条号（引用即指到条）
+        segs = split_statute_articles(ptext) if itemtype == "statute" else None
+        if segs is None:
+            segs = [("", ptext)]
         cursor = 0
-        for ci, child in enumerate(to_children(ptext)):
-            # 前向扫描定位 child 在整页中的起点（用前缀匹配，容忍 strip/overlap 差异）
-            core = child[:40]
-            idx = ptext.find(core, cursor)
-            if idx < 0:
-                idx = ptext.find(core)
-            start = idx if idx >= 0 else cursor
-            cursor = start + max(1, len(child) - C.CHILD_OVERLAP_CHARS)
-            chunks.append({
-                "chunk_id": f"{key}::p{page}::c{ci}",
-                "key": key,
-                "page": page,
-                "heading": heading,
-                "text": child,
-                "parent_text": _parent_window(ptext, start, len(child)),
-                "title": meta.get("title", ""),
-                "author": meta.get("author", ""),
-                "year": meta.get("year", ""),
-                "journal": meta.get("journal", ""),
-                "doi": meta.get("doi", ""),
-                "langid": meta.get("langid", ""),
-                # F 档新列（与 meta 行同 schema，便于统一表检索/去重）
-                "journal_tier": meta.get("journal_tier", ""),
-                "official_pages": meta.get("official_pages", ""),
-                "itemtype": meta.get("itemtype", ""),
-                "has_pdf": True,
-                "row_type": "chunk",
-            })
+        ci = 0
+        for seg_heading, seg_text in segs:
+            children = to_children(seg_text)
+            if not children and seg_heading and seg_text.strip():
+                # EN-L1：单条不足最小块长(MIN_CHUNK_CHARS)也**独立成块**，绝不并进下一条——
+                # "条"就是法条的引用单位，并块会让「第X条」的引注指到别的条文。
+                # 只对带条号的段兜底（seg_heading 非空）：普通文献的超短页（页码/页眉噪声）
+                # 维持旧行为产 0 块，不引入噪声块。
+                children = [seg_text.strip()]
+            for child in children:
+                # 前向扫描定位 child 在整页中的起点（用前缀匹配，容忍 strip/overlap 差异）
+                core = child[:40]
+                idx = ptext.find(core, cursor)
+                if idx < 0:
+                    idx = ptext.find(core)
+                start = idx if idx >= 0 else cursor
+                cursor = start + max(1, len(child) - C.CHILD_OVERLAP_CHARS)
+                chunks.append({
+                    "chunk_id": f"{key}::p{page}::c{ci}",
+                    "key": key,
+                    "page": page,
+                    "heading": seg_heading or heading,
+                    "text": child,
+                    "parent_text": _parent_window(ptext, start, len(child)),
+                    "title": meta.get("title", ""),
+                    "author": meta.get("author", ""),
+                    "year": meta.get("year", ""),
+                    "journal": meta.get("journal", ""),
+                    "doi": meta.get("doi", ""),
+                    "langid": meta.get("langid", ""),
+                    # F 档新列（与 meta 行同 schema，便于统一表检索/去重）
+                    "journal_tier": meta.get("journal_tier", ""),
+                    "official_pages": meta.get("official_pages", ""),
+                    # EN-L1：写解析后的 itemtype（含 papers.jsonl 兜底），statute 行下游
+                    # （retriever 的 _weight_res / cite_format 模板分派）都靠它认法条
+                    "itemtype": itemtype,
+                    "has_pdf": True,
+                    "row_type": "chunk",
+                })
+                ci += 1
     return chunks
 
 def main():
@@ -97,6 +148,7 @@ def main():
     if args.limit: files = files[:args.limit]
     todo = [f for f in files if not (C.CHUNKS / f.name).exists()]
     print(f"[chunk] 提取文件 {len(files)}，待切块 {len(todo)}")
+    imap = _itemtype_map()   # EN-L1：整批建一次 stem→itemtype 映射（历史 extracted 缺 itemtype 时兜底）
     t0 = time.time(); total = 0; ndoc = 0; skipped = 0
     for i, f in enumerate(todo, 1):
         try:
@@ -109,7 +161,7 @@ def main():
             continue
         if not rec.get("ok"):
             (C.CHUNKS / f.name).write_text("[]", encoding="utf-8"); continue
-        ch = chunk_doc(rec)
+        ch = chunk_doc(rec, itemtype_map=imap)
         (C.CHUNKS / f.name).write_text(json.dumps(ch, ensure_ascii=False), encoding="utf-8")
         total += len(ch); ndoc += 1
         if i % 100 == 0 or i == len(todo):

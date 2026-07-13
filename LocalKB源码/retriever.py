@@ -6,11 +6,11 @@
   - full 模式：有 LanceDB 表 → bge-m3 稠密 + bm25 词法 → RRF → reranker 精排（表已含 meta/chunk 行）。
 standalone（python retriever.py）为备用，产品不用。
 """
-import sys, json, time, threading, os
+import sys, json, time, threading, os, re
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import config as C
-from textutil import tokenize
+from textutil import tokenize, load_legal_synonyms
 
 import lancedb
 import bm25s
@@ -77,6 +77,7 @@ def load_all():
                 if line.strip():
                     _p = json.loads(line); pp[_p["key"]] = _p
         M["papers"] = pp
+    _build_statute_map()   # EN-L5：full 模式同样要有 key→statute_status（输出徽标+已废止降权）
     _load_wiki_index()
     STATE["mode"] = "full"; STATE["ready"] = True
     log(f"full 就绪：{len(M['records'])} 块 / {len(M.get('papers', {}))} 篇"
@@ -91,8 +92,19 @@ def _load_light():
                     p = json.loads(line)
                     papers[p["key"]] = p
     M["papers"] = papers
+    _build_statute_map()
     M["meta_bm25"] = bm25s.BM25.load(str(C.BM25_META_DIR), load_corpus=False)
     M["meta_ids"] = json.loads((C.BM25_META_DIR / "bm25_meta_ids.json").read_text(encoding="utf-8"))
+
+def _build_statute_map():
+    """EN-L5：从已载入的题录建 key→statute_status 映射（契约11）。只存非空值——
+       法条只占库的小头，内存可忽略；LanceDB 表 schema 不加列，检索输出侧按此现算。"""
+    M["statute_status"] = {k: p.get("statute_status") for k, p in (M.get("papers") or {}).items()
+                           if p.get("statute_status")}
+
+def _statute_status_of(key):
+    """EN-L5：取一篇的时效标识（""｜"已修订"｜"已废止"），无映射/非法条 → ""。"""
+    return (M.get("statute_status") or {}).get(key or "", "")
 
 def _load_wiki_index():
     """载入综合层页元数据 index.json → M["wiki"]（id→meta），供检索期标注/降权/展示。
@@ -125,8 +137,43 @@ def dense_search(q, k):
     hits = M["tbl"].search(qv.tolist()).metric("cosine").limit(k).to_list()
     return [h["chunk_id"] for h in hits]
 
+# EN-L3：同义词命中判定里的"含中文"检查（英文缩写组员如 ai/dpa 只走 token 全等通道，
+# 不走 substring 通道——"ai" 是 "chain"/"detail" 的子串，substring 会大面积误命中）
+_CJK_RE = re.compile(r'[一-鿿]')
+
+def _expand_tokens(query, toks):
+    """EN-L3：查询侧同义词 OR 扩展（契约12）。**只扩 bm25 的查询词袋**——索引侧一个字节不动，
+       所以零重建成本；dense 不参与（语义向量本身能泛化同义词，再扩是画蛇添足）。
+       命中判定双通道：① 分词后 token 恰等于组员（组员已由 build_dict 进 jieba 词典，
+       正常能整词切出）；② 中文组员兜底用原始查询串包含判断（词典未重建的旧库里组员会被
+       切碎，token 全等失配，substring 仍能接住）。命中后把组内**其它**词 tokenize 并入
+       词袋——bm25 词袋天然 OR 语义，加词只增召回不丢原词。C.SYN_EXPAND=False 一键关闭。"""
+    if not getattr(C, "SYN_EXPAND", True) or not toks:
+        return toks
+    try:
+        groups = load_legal_synonyms()
+    except Exception:
+        return toks
+    if not groups:
+        return toks
+    ql = (query or "").lower()
+    tset = set(toks)
+    extra = []
+    for g in groups:
+        # substring 兜底通道要求组员 ≥3 字：2 字简称（未检/法援/家暴…）跨词边界误命中率高
+        # （如「尚未检验」含「未检」）；它们已进 jieba 词典，走 token 全等通道即可命中
+        hit = {w for w in g if w in tset or (len(w) >= 3 and _CJK_RE.search(w) and w in ql)}
+        if not hit:
+            continue
+        for w in g - hit:
+            for t in tokenize(w):
+                if t not in tset:
+                    tset.add(t)
+                    extra.append(t)
+    return toks + extra
+
 def bm25_search(q, k):
-    toks = tokenize(q)
+    toks = _expand_tokens(q, tokenize(q))   # EN-L3：查询侧同义扩展（索引侧不动）
     if not toks:
         return []
     res, _ = M["bm25"].retrieve([toks], k=min(k, len(M["bm25_ids"])))
@@ -280,6 +327,10 @@ def search_full(query, topk, sort, keys=None):
             "depth": "full" if deep else "abstract",
             "has_pdf": r.get("has_pdf", True),
             "heading": r.get("heading", ""),
+            # EN-L2/L5：itemtype 供引注模板分派（statute/report），statute_status 是
+            # 法条时效徽标（契约11：""｜"已修订"｜"已废止"；按 papers.jsonl 现算，不动表 schema）
+            "itemtype": r.get("itemtype", ""),
+            "statute_status": _statute_status_of(r.get("key", "")),
             "text": r.get("text", ""), "context": r.get("parent_text", ""),
             "citation": _page_cite(r),
         }
@@ -355,6 +406,9 @@ def neighbors(key, topk=8):
             "depth": "full" if deep else "abstract",
             "has_pdf": r.get("has_pdf", True),
             "heading": r.get("heading", ""),
+            # EN-L2/L5：与 search_full 输出保持同构（前端复用 resultCard）
+            "itemtype": r.get("itemtype", ""),
+            "statute_status": _statute_status_of(k),
             "text": r.get("text", ""), "context": r.get("parent_text", ""),
             "citation": _page_cite(r), "is_wiki": False,
         }
@@ -442,7 +496,7 @@ def delete_wiki_page(page_id):
 
 # ═══ 检索：L-only 词法模式 ══════════════════════════════════════
 def search_light(query, topk, sort, keys=None):
-    toks = tokenize(query)
+    toks = _expand_tokens(query, tokenize(query))   # EN-L3：L 档同为 bm25，同义扩展一并生效
     if not toks:
         return []
     k = min(max(50, topk * 4), len(M["meta_ids"]))
@@ -467,6 +521,9 @@ def search_light(query, topk, sort, keys=None):
             "official_pages": p.get("official_pages", ""),
             "row_type": "meta", "depth": "abstract", "has_pdf": p.get("has_pdf", False),
             "heading": "",
+            # EN-L2/L5：itemtype/时效徽标（light 行直接来自 papers.jsonl，字段现成）
+            "itemtype": p.get("itemtype", ""),
+            "statute_status": _statute_status_of(p.get("key", "")),
             "text": (p.get("abstract") or p.get("title") or ""),
             "context": p.get("abstract", ""),
             "citation": _page_cite(p),
@@ -502,6 +559,25 @@ def _wiki_effective(score, obj):
         return score * C.WIKI_ANSWER_FACTOR if score > 0 else score / C.WIKI_ANSWER_FACTOR
     return score - C.WIKI_BASE_PENALTY
 
+def _statute_eff(score, obj):
+    """EN-L5：已废止法条的排序降权（已修订不降权、只出徽标）。
+       写法沿用 BF5 的负分安全式：正分乘 factor、负分**除** factor——reranker 分可为负，
+       负分×0.5 反而更靠近 0 = 反向提权（wiki 降权踩过的同一个坑，别再踩）。
+       obj：full 模式是 chunk_id 字符串（查 M["records"] 拿 key），light 模式是题录 dict。"""
+    key = ""
+    if isinstance(obj, str):
+        key = ((M.get("records") or {}).get(obj) or {}).get("key", "")
+    elif isinstance(obj, dict):
+        key = obj.get("key", "")
+    if key and _statute_status_of(key) == "已废止":
+        f = getattr(C, "STATUTE_REPEALED_FACTOR", 0.5)
+        return score * f if score > 0 else score / f
+    return score
+
+def _effective(score, obj):
+    """排序用的有效分 = wiki 降权（BF5）∘ 已废止法条降权（EN-L5），两者独立叠加。"""
+    return _statute_eff(_wiki_effective(score, obj), obj)
+
 def _blend_bonus(x, lex):
     """blend 排序加成：优先用 journal_weight∈[0,1]（连续、按学科），回退旧离散 TIER_BONUS。
        x = (obj, score, tier[, weight_res])。wiki 降权不在这里，见 _wiki_effective。"""
@@ -518,9 +594,10 @@ def _apply_sort(items, sort, lex=False):
 
     wiki 降权在**三种排序下都必须生效**：sort 是 MCP search_localkb 开放给 agent 的参数，
     若只有 blend 降权，agent 传 sort=relevance 即可让自己写回的未核验综合页与真论文平起平坐
-    （幻觉复利的直通车）。light 模式 obj 是题录 dict，_wiki_effective 原样返回，不受影响。"""
+    （幻觉复利的直通车）。light 模式 obj 是题录 dict，_wiki_effective 原样返回，不受影响。
+    EN-L5：已废止法条降权同理走 _effective，三种排序统一生效。"""
     if sort == "relevance":
-        items.sort(key=lambda x: -_wiki_effective(x[1], x[0]))
+        items.sort(key=lambda x: -_effective(x[1], x[0]))
     elif sort == "tier":
         # 手动改档/法源规则的结果带 rank（0~5，与旧离散 rank 同尺度）——tier 排序也要跟着走；
         # 期刊分级引擎结果不带 rank，维持旧离散档主键（行为不变）。
@@ -529,9 +606,9 @@ def _apply_sort(items, sort, lex=False):
             if wr and wr.get("rank") is not None:
                 return wr["rank"]
             return JT.rank_of(x[2])
-        items.sort(key=lambda x: (_rk(x), -_wiki_effective(x[1], x[0])))
+        items.sort(key=lambda x: (_rk(x), -_effective(x[1], x[0])))
     else:  # blend
-        items.sort(key=lambda x: -(_wiki_effective(x[1], x[0]) + _blend_bonus(x, lex)))
+        items.sort(key=lambda x: -(_effective(x[1], x[0]) + _blend_bonus(x, lex)))
 
 # ═══ 统一入口 ════════════════════════════════════════════════════
 def search(query, topk, sort=None, min_weight=0.0, keys=None):

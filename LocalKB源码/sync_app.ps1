@@ -29,9 +29,10 @@ foreach ($m in $keepMd) { if (Test-Path "$src\$m") { Copy-Item "$src\$m" (Join-P
 # 4) journal-tier seed data
 if (Test-Path "$src\journal_tiers.json") { Copy-Item "$src\journal_tiers.json" (Join-Path $app 'journal_tiers.json') -Force }
 
-# 5) mirror web/ and docs/ and journal_grading/ (exclude __pycache__)
-#    journal_grading = 期刊引用权重分级引擎（含 config/ 与 catalogs/ 目录数据；必须整包带上，否则 retriever 里 import journal_grading 失败、权重回退旧离散档）
-foreach ($sub in @('web','docs','journal_grading')) {
+# 5) mirror web/ docs/ journal_grading/ skills/ (exclude __pycache__)
+#    journal_grading = journal weight engine (must ship whole, else retriever import fails)
+#    skills = Claude Code skill bundle (EN-M7: localkb-paper writing workflow)
+foreach ($sub in @('web','docs','journal_grading','skills')) {
   if (Test-Path "$src\$sub") {
     robocopy "$src\$sub" (Join-Path $app $sub) /MIR /XD __pycache__ /NFL /NDL /NJH /NJS | Out-Null
   }

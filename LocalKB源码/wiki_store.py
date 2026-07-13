@@ -26,9 +26,11 @@ class WikiWriteDenied(PermissionError):
 # （_atomic_write 只防文件撕裂，不防 read-modify-write 的丢更新）。
 _INDEX_LOCK = threading.RLock()
 
-SCHEMA_VERSION = "v1"
+# EN-W6：v1 → v2——新增「新建页 vs 原地编辑」判定规则与正文 [[互链]] 约定。
+# 升级机制沿 v0→v1 先例（见 ensure_scaffold / _FACTORY_HASHES）：仅当用户没手改过才自动升级。
+SCHEMA_VERSION = "v2"
 
-WIKI_MD_SEED = """# 本地知识库 · 综合层（Wiki）约定 — schema v1
+WIKI_MD_SEED = """# 本地知识库 · 综合层（Wiki）约定 — schema v2
 
 > 本目录（data/wiki/）是"综合层"：把 LLM 对文献的理解**持久化**成可累积、带引用、互链的页面。
 > 它是文献库之上的**附加缓存**，不是替代——删除本目录不影响文献库/Zotero/索引。
@@ -50,6 +52,17 @@ YAML frontmatter（id/kind/title/subject/sources/generated_at/generated_by/stale
 - by_agent：agent 写回、未经人工核验（界面标 🤖）。
 - links：交叉链接到其它 wiki 页 id。用 `set_wiki_links` 维护——**这是把一堆孤岛补成一张图的唯一途径**。
 frontmatter 自足：删掉 index.json 也能从各 .md 完整重建。
+正文中也可以用 `[[page-id]]` 或 `[[page-id|显示文字]]` 互链到其它 wiki 页；
+**链接目标必须真实存在**（lint 的 body_broken_link 会查出指向不存在页的正文互链）。
+
+## 新建页 vs 原地编辑（判定规则）
+每次要写回时先做这道判断（经验上这条启发式约 90% 情况给出正确选择，靠的就是把规则写死在本 schema 里）：
+- **新建页**：内容是一个可独立成链接目标的**新概念 / 新实体**（人物、机构、案件、制度、学说）——
+  它值得被其它页 [[互链]] 指到，就为它建新页（选对 kind：概念用 concept、实体用 entity）。
+- **原地编辑**：内容是**既有页**的属性、进展、修正或补充证据——用 update_wiki_page 原地改，
+  **保留原页结构**（标题层级、小节顺序），只动需要动的段落，别整页推倒重写。
+- **拿不准**：原地 append 到最相关的既有页末尾，并在追加内容开头注明「（新增，待归置：…）」，
+  留给人工后续决定要不要拆成独立页。
 
 ## 写回纪律（给人与 agent）
 1. 每个论断后带 [n] 引用，n 对应"参考来源"里的论文；不臆造、不给无出处的断言。
@@ -133,10 +146,14 @@ def ensure_scaffold():
         return
     if f"schema {SCHEMA_VERSION}" in cur:
         return
-    if _looks_untouched_v0(cur):
-        _atomic_write(C.WIKI_DIR / "WIKI.v0.md", cur)      # 留档
+    if _looks_untouched(cur):
+        # EN-W6：留档名按旧版内容里的版本号命名（v1 起标题带 "schema vN"；探不到的老文件按 v0 处理），
+        # 别再写死 WIKI.v0.md——否则 v1→v2 升级会把 v1 存进 v0 的档。
+        m = re.search(r"schema (v\d+)", cur)
+        old_ver = m.group(1) if m else "v0"
+        _atomic_write(C.WIKI_DIR / f"WIKI.{old_ver}.md", cur)      # 留档
         _atomic_write(C.WIKI_SCHEMA_MD, WIKI_MD_SEED)
-        print(f"[wiki] WIKI.md 已升级到 schema {SCHEMA_VERSION}（旧版留档为 WIKI.v0.md）",
+        print(f"[wiki] WIKI.md 已升级到 schema {SCHEMA_VERSION}（旧版留档为 WIKI.{old_ver}.md）",
               file=sys.stderr, flush=True)
         try:
             import wiki_vcs as V
@@ -144,8 +161,8 @@ def ensure_scaffold():
         except Exception:
             pass
     else:
-        print("[wiki] WIKI.md 似乎被手工改过，保留你的版本（新页种 entity/overview 与 "
-              "mark_stale/set_wiki_links/lint_wiki 需要你自行补进规约）", file=sys.stderr, flush=True)
+        print("[wiki] WIKI.md 似乎被手工改过，保留你的版本（schema v2 新增的「新建页 vs 原地编辑」"
+              "判定规则与正文 [[互链]] 约定需要你自行补进规约）", file=sys.stderr, flush=True)
 
 
 # 各历史版本出厂 WIKI.md 的 normalized（去所有空白）sha1。
@@ -154,6 +171,7 @@ def ensure_scaffold():
 # 那样会把他写的东西直接覆盖掉。
 _FACTORY_HASHES = {
     "2d7c7749b165d5640772d62791c6f9e569aa5e47",   # schema v0
+    "21793476a7a6538582a3d14eb0651f426d4b45a6",   # schema v1（EN-W6：升 v2 时对 v1 出厂原样放行自动升级）
 }
 
 
@@ -161,7 +179,7 @@ def _norm_hash(text):
     return hashlib.sha1(re.sub(r"\s+", "", text or "").encode("utf-8")).hexdigest()
 
 
-def _looks_untouched_v0(text):
+def _looks_untouched(text):
     """WIKI.md 是否仍是某个出厂原样（没被用户改过一个字）。"""
     return _norm_hash(text) in _FACTORY_HASHES
 
@@ -461,10 +479,48 @@ def _resolve_citation(key, fallback=""):
     return fallback or key
 
 
+# ═══ EN-W4：来源相关性门槛——低相关命中不配进 provenance ═══════════════
+# 真实案例：digest-92820857 的 sources 混入了测试文件和离题文献——检索召回的长尾命中
+# 被原样落成「本页所依据的论文」，读者据此回溯就会扑空。落盘前按相对分过滤。
+def _src_score_margin():
+    """相对最高分的容差。用**相对差**而非绝对阈值，是因为两种 reranker 分数尺度天差地别：
+    本地 bge-reranker 输出 0~10+ 的 logit（史称 wiki 降权“纸糊”教训——别拿 0.05 去挡 10 分），
+    API（SiliconFlow）重排返回 0~1 的归一分。绝对阈值只能对一端有效，相对差两端通吃。
+    数值经 getattr 从 config 取（config.py 归 Worker 4，不在里面加字段，这里给默认值）。"""
+    try:
+        import settings as S
+        if S.is_api():
+            return float(getattr(C, "WIKI_SRC_SCORE_MARGIN_API", 0.3))
+    except Exception:
+        pass
+    return float(getattr(C, "WIKI_SRC_SCORE_MARGIN", 3.0))
+
+
+def filter_provenance(hits, min_keep=2):
+    """按「相对最高分」过滤：保留 score >= best - margin 的条目。
+    - 只有带数值 score 的 dict 参与比较；不带 score 的条目（纯 key 字符串、老调用方）原样保留——
+      无从判断相关性时宁可放行，也别把真来源滤掉。
+    - **至少保留 min_keep(=2) 条**带分条目：全都很差时别把 provenance 清空——
+      空 provenance 比弱 provenance 更糟（lint 会把它报成 no_sources，页也失去可回溯性）。"""
+    hits = list(hits or [])
+    scored = [(i, float(h.get("score"))) for i, h in enumerate(hits)
+              if isinstance(h, dict) and isinstance(h.get("score"), (int, float))]
+    if len(scored) <= min_keep:
+        return hits
+    best = max(sc for _, sc in scored)
+    keep = {i for i, sc in scored if sc >= best - _src_score_margin()}
+    if len(keep) < min_keep:               # 门槛卡得只剩 1 条时，放行分数最高的前 min_keep 条
+        keep = {i for i, _ in sorted(scored, key=lambda t: -t[1])[:min_keep]}
+    scored_idx = {i for i, _ in scored}
+    return [h for i, h in enumerate(hits) if i not in scored_idx or i in keep]
+
+
 def _norm_sources(sources):
-    """规整 sources：去重 key，服务端权威解析页级引用（客户端 citation 作兜底）。"""
+    """规整 sources：去重 key，服务端权威解析页级引用（客户端 citation 作兜底）。
+    EN-W4：先过相关性门槛——answer/digest 等页沉淀时，调用方若在 sources 里带了检索 score，
+    低于「最高分 - margin」的离题命中在此被剔除，不落成 provenance。"""
     seen, out = set(), []
-    for s in (sources or []):
+    for s in filter_provenance(sources):
         if isinstance(s, str):
             s = {"key": s, "citation": ""}
         k = (s.get("key") or "").strip()
@@ -572,6 +628,10 @@ def _gather_evidence(query, topk):
     except Exception:
         hits = []
     hits = [h for h in hits if not h.get("is_wiki")]
+    # EN-W4：ctx 与 srcs 必须用**同一份**过滤后的列表——LLM 按 ctx 的 [n] 写引用，
+    # 页面「参考来源」再从 srcs 编号；两边名单不一致会出现「正文引了 [n]、来源里没有 n」，
+    # 恰好毁掉 provenance 的可回溯性。离题长尾片段 LLM 少看几条无损失。
+    hits = filter_provenance(hits)
     ctx = "\n\n".join(
         f"[{i+1}] {h.get('citation','')}\n{(h.get('context') or h.get('text') or '')[:1000]}"
         for i, h in enumerate(hits)) or "（暂无检索结果）"
@@ -771,11 +831,12 @@ def set_verified(page_id):
             "title": meta.get("title", ""), "kind": meta.get("kind")}
 
 
-def set_links(page_id, links, mode="replace"):
+def set_links(page_id, links, mode="replace", by_agent=False):
     """写 links —— gist 的 cross-references。此前 links 恒为 []，wiki 是一堆孤岛而非图。
 
     mode: replace=整体替换 / add=并入 / remove=移除。
-    只接受**已存在**的页 id（拒绝断链），自动去重、剔除自链。返回 {links, skipped}。"""
+    只接受**已存在**的页 id（拒绝断链），自动去重、剔除自链。返回 {links, skipped}。
+    by_agent 只用于版本历史/时间线标注（谁动的图），不影响写入行为。"""
     want = [str(x).strip() for x in (links or []) if str(x).strip()]
     with _INDEX_LOCK:
         idx = load_index()
@@ -819,7 +880,8 @@ def set_links(page_id, links, mode="replace"):
             R.M["wiki"][page_id]["links"] = out
     except Exception:
         pass
-    _snapshot(page_id, f"set_links({mode})")
+    # 时间线按动作前缀「agent」判 by_agent（wiki_vcs.log_events）——机器改动是最该被复核的，别标成人
+    _snapshot(page_id, f"{'agent' if by_agent else '人'}调整互链({mode})")
     return {"id": page_id, "links": out, "skipped": skipped}
 
 
@@ -864,7 +926,7 @@ def update_page(page_id, kind=None, title=None, content=None, sources=None,
             meta["links"] = set_links(page_id, links, mode="replace")["links"]
         except Exception as e:
             print(f"[wiki] 写 links 失败 {page_id}：{e}", file=sys.stderr, flush=True)
-    _snapshot(page_id, f"update_page({mode})")
+    _snapshot(page_id, f"{'agent' if by_agent else '人'}修订正文({mode})")   # 前缀供时间线判 by_agent
     return meta
 
 
@@ -994,15 +1056,17 @@ def propose_updates(source_key, topk=12):
 
 
 def lint(min_mentions=2):
-    """gist 三大操作之一：wiki 健康体检。纯读 index.json，不碰检索、不调 LLM、零副作用。
+    """gist 三大操作之一：wiki 健康体检。纯读（index.json + 各页 .md），不碰检索、不调 LLM、零副作用。
 
-    查六类问题：
-      orphan          孤儿页：既不链出也无人链入（gist: "orphan pages with no inbound links"）
-      stale           已被标脏、等待重生的页
-      broken_link     links 指向了不存在的页 id
-      no_sources      没有任何来源论文的页（无 provenance，最可疑）
-      degraded        未配 AI 模型 / 生成失败的降级页（内容只是片段清单）
-      missing_concept 被 >=min_mentions 个页在标题里提到、却没有自己独立页的概念
+    查七类问题：
+      orphan           孤儿页：既不链出也无人链入（gist: "orphan pages with no inbound links"）
+      stale            已被标脏、等待重生的页
+      broken_link      frontmatter links 指向了不存在的页 id
+      body_broken_link EN-W5：**正文**里 [[page-id]] / [[page-id|文字]] 指向不存在的页
+                       （schema v2 允许正文互链，这是与之配套的核验）
+      no_sources       没有任何来源论文的页（无 provenance，最可疑）
+      degraded         未配 AI 模型 / 生成失败的降级页（内容只是片段清单）
+      missing_concept  被 >=min_mentions 个页在标题里提到、却没有自己独立页的概念
 
     返回结构化结果 + 建议动作，供 agent 逐条处理，或在 UI 里展示。
     刻意**不做矛盾检测**：那需要 LLM 判断，且规约明确「矛盾只作未核实提示，不落成 wiki 断言」。"""
@@ -1045,7 +1109,28 @@ def lint(min_mentions=2):
     missing_concept = [{"concept": k, "mentioned_in": v}
                        for k, v in sorted(mentions.items(), key=lambda kv: -kv[1])][:10]
 
+    # EN-W5：正文断链——正则解析 frontmatter 之外的正文里的 [[page-id]] / [[page-id|文字]]，
+    # 目标不在 index 里即断链。同页同目标只报一次（一页里重复引同一个坏链没必要刷屏）。
+    body_broken = []
+    for p in pages:
+        path = page_path(p["id"], p.get("kind", "answer"))
+        if not path.exists():
+            continue
+        try:
+            txt = path.read_text(encoding="utf-8")
+        except Exception:
+            continue
+        body_txt = re.sub(r"^---[\s\S]*?\n---\n?", "", txt)      # 剥掉 frontmatter，只查正文
+        seen_t = set()
+        for m in re.finditer(r"\[\[([^\[\]|\n]+?)(?:\|[^\[\]\n]*)?\]\]", body_txt):
+            target = m.group(1).strip()
+            if target and target not in by_id and target not in seen_t:
+                seen_t.add(target)
+                # 字段名与 broken_link 同构用 dangling（前端体检面板按同一渲染路径读 x.dangling）
+                body_broken.append({"page_id": p["id"], "title": p.get("title", ""), "dangling": target})
+
     issues = {"orphan": orphan, "stale": stale_pages, "broken_link": broken,
+              "body_broken_link": body_broken,
               "no_sources": no_src, "degraded": degraded_pages, "missing_concept": missing_concept}
     total = sum(len(v) for v in issues.values())
     return {
@@ -1066,6 +1151,9 @@ def _lint_suggestions(issues):
                  f"再 mark_stale(stale=false) 清除标记。")
     if issues["broken_link"]:
         s.append(f"{len(issues['broken_link'])} 条断链指向已删除的页：用 set_wiki_links(mode='remove') 清掉。")
+    if issues.get("body_broken_link"):
+        s.append(f"{len(issues['body_broken_link'])} 处正文互链 [[…]] 指向不存在的页："
+                 f"改成真实存在的页 id，或先把目标页建出来（update_wiki_page）。")
     if issues["no_sources"]:
         s.append(f"{len(issues['no_sources'])} 个页没有来源论文——没有 provenance 的综合不可信，"
                  f"补 sources 或删掉。")

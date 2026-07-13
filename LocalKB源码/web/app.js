@@ -560,6 +560,14 @@
       ? `<span class="tag wiki agent" title="agent 自动写回、未经人工核验；可点「🗑 不保存」剔除">🤖 综述页·未核验</span>`
       : `<span class="tag wiki" title="本地综述页，可能已过时，请核对来源原文">📝 综述页</span>`;
   }
+  // EN-F5：法条时效徽标——retriever 输出侧按 papers.jsonl 现算的 statute_status（""|已修订|已废止）。
+  // 引已废止/已修订的法条是硬伤，红/橙醒目提示；样式对齐既有 tier 徽标（.badge）
+  function statuteBadge(r) {
+    const s = r.statute_status || "";
+    if (s !== "已修订" && s !== "已废止") return "";
+    const cls = s === "已废止" ? "revoked" : "revised";
+    return `<span class="badge statute-badge ${cls}" title="该法条${s}，注意核对现行有效版本">${s}</span>`;
+  }
   // 共用的一行元信息（检索卡与浏览卡合用；作者深色、期刊斜体、页码强调色由 CSS 承担）
   function metaRow(o) {
     const bits = [];
@@ -602,7 +610,7 @@
     // C2：深索结果（有 key、非 wiki）可一键打开原文 PDF 核对页码
     const openPdf = (!r.is_wiki && r.key && r.depth === "full") ? `<button class="ghost2 open-pdf" title="用系统默认阅读器打开这篇的原文 PDF">📄 打开原文</button>` : "";
     div.innerHTML =
-      `<div class="card-head"><span class="idx">#${i}</span>${wikiBadge(r)}${tierBadge(r)}${weightBadge(r)}${depthTag(r)}</div>` +
+      `<div class="card-head"><span class="idx">#${i}</span>${wikiBadge(r)}${tierBadge(r)}${statuteBadge(r)}${weightBadge(r)}${depthTag(r)}</div>` +   // EN-F5：检索卡带法条时效徽标
       `<div class="cite">${esc(r.title || r.citation || "")}</div>` +
       metaRow(r) +
       `<div class="snippet">${esc((r.text || "").trim())}</div>` +
@@ -1135,7 +1143,13 @@
           ${withPdf > 0 ? `<a class="dh-link dash-deep-detail" id="dash-deep-detail">深索详情 / 暂停 →</a>` : ""}</div>
         ${remain > 0 ? `<div class="dh-deep-note">深索＝把 PDF 全文拆成可检索的小段，之后 AI 才能读到页码、跨篇综合。可放后台慢慢跑，不影响使用。</div>` : ""}
       </div></div>`;
-    $("#dash").innerHTML = header
+    // EN-F1：综述库体检角标——/stats 带 wiki_lint（后端读 data/state/wiki_lint.json；没有该键=没体检过，不显示）。
+    // gist 点名 drift（综述与库脱节）是头号失败模式——有待理顺项时在首页给一条显眼入口，点击直达体检面板
+    const wl = d.wiki_lint || null;
+    const lintLine = (wl && wl.issues > 0)
+      ? `<div class="dash-lint" id="dash-lint" role="button" tabindex="0" title="上次体检：${esc(wl.checked_at || "未知时间")}。点击去综述库查看体检详情">🩺 综述库有 <b>${num(wl.issues)}</b> 处待理顺（孤立页 / 过时页 / 断链等）→</div>`
+      : "";
+    $("#dash").innerHTML = header + lintLine
       + `<div class="dash-grid dash-2col">${overviewCard(d)}${recentCard(d.recent)}</div>`
       // 四步新手引导默认折叠成一行——老用户不用每次看，首页一屏能装下概览+最近入库
       + `<details class="dash-teach"><summary class="dash-teach-sum">📖 新手引导：四步把小猪养成你的专属知识库</summary>${agentGuideCard()}</details>`;
@@ -1149,6 +1163,17 @@
       } catch (e) { goD.textContent = "启动失败：" + (e.message || e); }
     });
     const ddD = $("#dash-deep-detail"); if (ddD) ddD.addEventListener("click", openDeepPanel);   // K1：库总览深索卡 → 深索详情面板
+    // EN-F1：点体检角标 → 切到综述库并自动展开体检面板（runLint 是开关式：仅在收起时调，避免把已开的面板反手关掉）
+    const dlint = $("#dash-lint");
+    if (dlint) {
+      const goLint = () => {
+        switchTab("wiki");
+        const lp = $("#wk-lint-panel");
+        if (lp && lp.hidden) runLint();
+      };
+      dlint.addEventListener("click", goLint);
+      dlint.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); goLint(); } });
+    }
     const chD = $("#ov-change-disc"); if (chD) chD.addEventListener("click", (e) => { e.preventDefault(); openSettings(); });  // F3：修改学科
     const exp = $("#rc-expand"); if (exp) exp.addEventListener("click", _goBrowseRecent);
     // R10：库总览「最近入库」的深索按钮自己 try/finally 恢复文字并用浮层反馈（不写进隐藏的浏览页 #bl-msg）
@@ -1539,10 +1564,27 @@
   // 零依赖极简 Markdown 渲染：先整体 esc() 防 XSS，再在已转义文本上套基本块级/行内标签（wiki-body-raw-markdown）
   function mdToHtml(md) {
     const src = stripFm(md);
-    const inline = (t) => esc(t)
-      .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
-      .replace(/(^|[^*])\*([^*]+)\*/g, "$1<i>$2</i>")
-      .replace(/`([^`]+)`/g, "<code>$1</code>");
+    // EN-F4：行内代码占位符——NUL 字符不可能出现在 esc 后的文本里；用 fromCharCode
+    // 构造避免源码里出现裸 NUL 字节（编辑器/差异工具会被它坑）
+    const CODE_PH = String.fromCharCode(0);
+    const CODE_PH_RE = new RegExp(CODE_PH + "([0-9]+)" + CODE_PH, "g");
+    const inline = (t) => {
+      let s = esc(t);
+      // EN-F4：行内代码先摘走成占位符——`[[x]]` 在 <code> 里必须原样展示不能变链接，
+      // bold/italic 也不该动到代码内容（占位符用 NUL 字符，esc 后的文本里不会出现）
+      const codes = [];
+      s = s.replace(/`([^`]+)`/g, (mm, c) => { codes.push(c); return CODE_PH + (codes.length - 1) + CODE_PH; });
+      // EN-F4：[[page-id]] / [[page-id|显示文字]] → 页内链接。整段文本已先 esc()，id/文字里的
+      // 引号尖括号都已成实体，放进 data-wk 属性是安全的；mdToHtml 输出走 innerHTML、不能挂
+      // 内联 onclick，改用 data-wk + #wiki-body 上的事件委托（见 wireWikiModal）。
+      // 放在 bold/italic 之前：[[**x**]] 这类 id 不能把 <b> 标签带进属性值；
+      // label 量词用 *（允许 [[x|]] 空文字，与后端 lint 正则口径一致，空则退回显示 id）
+      s = s.replace(/\[\[([^\[\]|]+?)(?:\|([^\[\]]*?))?\]\]/g,
+        (mm, id, label) => `<a class="wk-link" data-wk="${id.trim()}" title="打开综述页：${id.trim()}">${(label || id).trim()}</a>`);
+      s = s.replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
+        .replace(/(^|[^*])\*([^*]+)\*/g, "$1<i>$2</i>");
+      return s.replace(CODE_PH_RE, (mm, i) => `<code>${codes[+i]}</code>`);
+    };
     const lines = src.split(/\r?\n/);
     let html = "", listType = "", inCode = false, code = "";
     const closeList = () => { if (listType) { html += "</" + listType + ">"; listType = ""; } };
@@ -1650,6 +1692,9 @@
     // R11：对话沉淀页禁止「重新生成」（点了必报错）——隐藏该按钮并记录 kind 供二次拦截
     const regenBtn = $("#wiki-regen");
     if (regenBtn) { regenBtn.dataset.kind = p.kind || "answer"; regenBtn.style.display = (p.kind || "answer") === "answer" ? "none" : ""; }
+    // EN-F7：换页时清空上一页残留的核验输入与结果，避免张冠李戴
+    const wvI = $("#wv-claim"); if (wvI) wvI.value = "";
+    const wvR = $("#wv-result"); if (wvR) { wvR.hidden = true; wvR.innerHTML = ""; }
     $("#wiki-modal").hidden = false;
   }
   // 互链（本页链出）与反向链接（哪些页链到本页）——把孤立的页面走成一张图。
@@ -1741,6 +1786,43 @@
   }
   (function wireWikiModal() {
     const close = $("#wiki-close"); if (close) close.addEventListener("click", () => ($("#wiki-modal").hidden = true));
+    // EN-F4：正文 wikilink 点击委托——mdToHtml 输出走 innerHTML，不能挂内联 onclick；
+    // 委托挂在常驻容器 #wiki-body 上，正文每次重渲染也不用重挂
+    const wb = $("#wiki-body");
+    if (wb) wb.addEventListener("click", (e) => {
+      const a = e.target.closest("a.wk-link[data-wk]");
+      if (a) { e.preventDefault(); openWikiPage(a.dataset.wk); }
+    });
+    // EN-F7：核验一句话——把综述里的论断丢给核验器（/research/verify_claim），三态徽章 + 证据列表。
+    // 这是核验器的「人用入口」：不接 Agent 也能随手查一句话有没有库内依据
+    const WV_VERDICT = { supported: ["ok", "✅ 库内证据支持"], mismatch: ["warn", "⚠ 与库内证据不符"], not_in_lib: ["miss", "❓ 库里没找到依据"] };
+    async function runVerifyClaim() {
+      const inp = $("#wv-claim"), btn = $("#wv-go"), out = $("#wv-result");
+      if (!inp || !btn || !out) return;
+      const claim = (inp.value || "").trim();
+      if (!claim) { out.hidden = false; out.innerHTML = `<span class="hint">先粘贴一句要核验的论断。</span>`; return; }
+      if (btn.disabled) return;   // 核验中不重复提交
+      btn.disabled = true; const old = btn.textContent; btn.textContent = "核验中…";
+      out.hidden = false; out.innerHTML = `<span class="hint">正在库里找证据…（可能要几秒）</span>`;
+      try {
+        const r = await jpost("/research/verify_claim", { claim, keys: null, topk: 8 });
+        const v = WV_VERDICT[r.verdict] || ["miss", esc(r.verdict || "结果未知")];
+        const conf = (r.confidence != null) ? `（把握 ${Math.round(Number(r.confidence) * 100)}%）` : "";
+        const evs = (r.evidence || []).map((ev) => {
+          const pg = (ev.printed_page != null && ev.printed_page !== "") ? `第 ${esc(String(ev.printed_page))} 页`
+                   : ((ev.pdf_page != null && ev.pdf_page !== "") ? `PDF 第 ${esc(String(ev.pdf_page))} 页` : "");
+          return `<div class="wv-ev"><div class="wv-ev-t">${esc(ev.title || ev.citation || ev.key || "")}${pg ? ` · <span class="pg">${pg}</span>` : ""}</div>` +
+            (ev.quote ? `<div class="wv-ev-q">「${esc(ev.quote)}」</div>` : "") + `</div>`;
+        }).join("");
+        out.innerHTML = `<div class="wv-verdict ${v[0]}">${v[1]}${esc(conf)}</div>` +
+          (r.note ? `<div class="hint">${esc(r.note)}</div>` : "") + evs;
+      } catch (e) {
+        // jpost 已读出后端 detail/error/msg 的人话原因，原样亮出来
+        out.innerHTML = `<div class="wv-verdict warn">核验失败：${esc(e.message || e)}</div>`;
+      } finally { btn.disabled = false; btn.textContent = old; }
+    }
+    const wvGo = $("#wv-go"); if (wvGo) wvGo.addEventListener("click", runVerifyClaim);
+    const wvIn = $("#wv-claim"); if (wvIn) wvIn.addEventListener("keydown", (e) => { if (e.key === "Enter") runVerifyClaim(); });
     const disc = $("#wiki-discard");
     if (disc) disc.addEventListener("click", () => discardWiki($("#wiki-regen").dataset.id,
       () => {
@@ -1770,6 +1852,7 @@
   let WK = { kind: "", agentOnly: false, pages: [] };
   async function loadWikiList(mode) {
     const box = $("#wk-list");
+    loadWikiSuggestions();   // EN-F2：每次进综述库都刷新建议横幅（fire-and-forget，失败静默）
     if (mode !== "silent") box.innerHTML = `<div class="wk-loading">加载综合页中…</div>`;
     try {
       const d = await jget("/wiki/list");
@@ -1850,8 +1933,95 @@
     } catch (e) { $("#wk-msg").textContent = "生成失败：" + (e.message || e); }
     finally { btn.disabled = false; btn.textContent = old; }   // BF22
   }
+  // ── EN-F2：建议横幅——新深索的文献可能影响已有综述页（Ingest 环：喂了新料，提醒回头更新综述）──
+  const WSUG = { items: [], open: false };   // open：列表是否展开（跨刷新保持用户的展开选择）
+  async function loadWikiSuggestions() {
+    const box = $("#wk-suggest"); if (!box) return;
+    // 建议是增强功能：拉不到（旧后端/接口未就绪）就当没有，绝不打断综述库主流程
+    try { const d = await jget("/wiki/suggestions"); WSUG.items = d.items || []; }
+    catch (e) { WSUG.items = []; }
+    renderWikiSuggestions();
+  }
+  function renderWikiSuggestions() {
+    const box = $("#wk-suggest"); if (!box) return;
+    const items = WSUG.items;
+    if (!items.length) { box.hidden = true; box.innerHTML = ""; return; }
+    const row = (it) => {
+      // 受影响页 chips：点击直接打开该综述页复核；「忽略」= dismiss 后端记录，之后不再提示这篇
+      const chips = (it.pages || []).map((p) =>
+        `<button class="wl-chip wsg-pg" data-id="${esc(p.id)}" title="打开这页综述复核">${esc(p.title || p.id)}</button>`).join("");
+      return `<div class="wsg-row">
+        <span class="wsg-doc" title="${esc(it.title || it.key)}">📄 ${esc(it.title || it.key)}</span>
+        <span class="wsg-pages">${chips}</span>
+        <button class="ghost2b wsg-dismiss" data-key="${esc(it.key)}" title="不再为这篇提示">忽略</button>
+      </div>`;
+    };
+    box.innerHTML =
+      `<div class="wsg-head" role="button" tabindex="0">📬 <b>${num(items.length)}</b> 篇新深索文献可能影响你的综述页` +
+        `<span class="wsg-caret">${WSUG.open ? "收起 ▴" : "展开看看 ▾"}</span></div>` +
+      `<div class="wsg-body"${WSUG.open ? "" : " hidden"}>${items.map(row).join("")}</div>`;
+    box.hidden = false;
+    const head = box.querySelector(".wsg-head");
+    const toggle = () => { WSUG.open = !WSUG.open; renderWikiSuggestions(); };
+    head.addEventListener("click", toggle);
+    head.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } });
+    box.querySelectorAll(".wsg-pg").forEach((b) =>
+      b.addEventListener("click", (e) => { e.stopPropagation(); openWikiPage(b.dataset.id); }));
+    box.querySelectorAll(".wsg-dismiss").forEach((b) => b.addEventListener("click", async (e) => {
+      e.stopPropagation(); b.disabled = true;
+      try {
+        await jpost("/wiki/suggestions/dismiss", { key: b.dataset.key });
+        WSUG.items = WSUG.items.filter((x) => x.key !== b.dataset.key);   // 本地同步剔除，空了整条横幅消失
+        renderWikiSuggestions();
+      } catch (err) { b.disabled = false; flashToast("忽略失败：" + (err.message || err)); }
+    }));
+  }
+
+  // ── EN-F3：时间线——综述库演化史（/wiki/timeline：git log 解析优先，退 .history 快照目录）──
+  // 动作文案后端已是中文（「agent写入 concept 页」「人修订正文(append)」…），直接展示；
+  // 仅剥掉 by_agent 判定用的「agent/人」前缀（🤖/👤 图标已承担这份信息，不重复念）
+  async function openTimeline() {
+    const m = $("#wk-tl-modal"), list = $("#wk-tl-list"), src = $("#wk-tl-src");
+    if (!m || !list) return;
+    m.hidden = false;
+    src.textContent = "";
+    list.innerHTML = `<div class="wh-loading">读取时间线…</div>`;
+    try {
+      const d = await jget("/wiki/timeline?limit=100");
+      const evs = d.events || [];
+      if (!evs.length) {
+        list.innerHTML = `<div class="wh-loading">还没有记录——生成或修改综述页之后，这里会按时间列出每一次变动。</div>`;
+        return;
+      }
+      src.textContent = (d.source === "git" ? "来自 git 版本历史" : "来自本地快照记录") + ` · 最近 ${num(evs.length)} 条`;
+      list.innerHTML = evs.map((ev) => {
+        // 🤖=Agent 写回 / 👤=你本人（应用内操作）——一眼锁定该复核的机器改动
+        const who = ev.by_agent
+          ? `<span class="tl-who" title="由 Agent 写回">🤖</span>`
+          : `<span class="tl-who" title="你本人 / 应用内操作">👤</span>`;
+        const act = (ev.action || "").replace(/^(agent|人)/, "");
+        // 系统提交（git 初始化 / WIKI.md 升级）没有页 id——不渲染空链接 chip
+        const pg = ev.page_id
+          ? `<button class="wl-chip tl-pg" data-id="${esc(ev.page_id)}" title="打开这页综述">${esc(ev.page_id)}</button>`
+          : "";
+        return `<div class="tl-item">
+          <span class="tl-time">${esc(ev.time || "")}</span>${who}
+          <span class="tl-act">${esc(act)}</span>
+          ${pg}
+        </div>`;
+      }).join("");
+      // 点页链接：关时间线、开该综述页（已删除的页会由 openWikiPage 的失败浮层兜底提示）
+      list.querySelectorAll(".tl-pg").forEach((b) => b.addEventListener("click", () => {
+        m.hidden = true; openWikiPage(b.dataset.id);
+      }));
+    } catch (e) {
+      list.innerHTML = `<div class="wh-loading">读取时间线失败：${esc(e.message || e)}</div>`;
+    }
+  }
+
   // ── 体检（lint）：孤儿页 / 过时页 / 断链 / 无来源页 / 降级页 / 缺失概念页 ──
   const LINT_LABEL = { orphan: "孤儿页（没有任何互链）", stale: "已标记过时", broken_link: "断链",
+                       body_broken_link: "正文链接指向不存在的页",   // EN-F4：正文 [[wikilink]] 的断链
                        no_sources: "没有来源论文", degraded: "降级页（未配 AI 模型时生成）",
                        missing_concept: "被反复提及、却没有独立页的概念" };
   // 体检建议的大白话版（给法学用户看；后端 suggestions 带工具名是给 agent 的，这里不用）
@@ -1859,6 +2029,8 @@
     orphan: (n) => `有 ${n} 页没跟其它综述连起来（成了"孤岛"）。可以让 AI 把它们和相关的页互相关联，以后顺着就能查到；或者确认它们本来就该单独放。`,
     stale: (n) => `有 ${n} 页被标了"可能过时"。找几篇新文献让 AI 重写更新，再把过时标记去掉就行。`,
     broken_link: (n) => `有 ${n} 处关联指向了已经删掉的页（点了会扑空）。让 AI 把这些失效的关联清理掉。`,
+    // EN-F4：正文里 [[双方括号链接]] 的断链，与上面的元数据关联断链分开说
+    body_broken_link: (n) => `有 ${n} 处正文链接指向不存在的页（点了会扑空）。让 AI 把这些链接改成正确的页，或补写目标页。`,
     no_sources: (n) => `有 ${n} 页没标是根据哪些文献写的。没有出处的综述不可靠——让 AI 补上来源，或者干脆删掉。`,
     degraded: (n) => `有 ${n} 页是没配 AI 模型时生成的，其实只是原文片段的清单、不是真正的综述。配好 AI 模型后重新生成一下。`,
     missing_concept: (n, items) => `有些概念被好几页反复提到、却没有自己的独立页（比如${(items || []).slice(0, 3).map((x) => "「" + x.concept + "」").join("、")}）。可以让 AI 各写一页，查起来更方便。`,
@@ -1885,7 +2057,8 @@
         if (!items.length) continue;
         html += `<div class="lint-grp"><div class="lint-grp-h">${esc(LINT_LABEL[k] || k)}（${items.length}）</div><div class="lint-items">`;
         html += items.slice(0, 10).map((x) => {
-          if (k === "broken_link") return `<span class="lint-chip" data-id="${esc(x.page_id)}">${esc(x.title)} → ${esc(x.dangling)}</span>`;
+          // EN-F4：body_broken_link 结构同 broken_link（page_id/title/dangling），chip 点开出问题的那页
+          if (k === "broken_link" || k === "body_broken_link") return `<span class="lint-chip" data-id="${esc(x.page_id)}">${esc(x.title || x.page_id)} → ${esc(x.dangling)}</span>`;
           if (k === "missing_concept") return `<span class="lint-chip plain">${esc(x.concept)}（被 ${x.mentioned_in} 页提及）</span>`;
           return `<span class="lint-chip" data-id="${esc(x.id)}">${esc(x.title || x.id)}</span>`;
         }).join("");
@@ -2017,6 +2190,9 @@
     const kind = $("#wk-kind"); if (kind) kind.addEventListener("change", () => { WK.kind = kind.value; renderWikiList(); });
     const ag = $("#wk-agent"); if (ag) ag.addEventListener("change", () => { WK.agentOnly = ag.checked; renderWikiList(); });
     const lint = $("#wk-lint"); if (lint) lint.addEventListener("click", runLint);
+    // EN-F3：时间线按钮 + 弹层关闭（Esc/遮罩关闭统一走 W2 的通用弹窗处理，见「W2」段）
+    const tl = $("#wk-timeline"); if (tl) tl.addEventListener("click", openTimeline);
+    const tlc = $("#wk-tl-close"); if (tlc) tlc.addEventListener("click", () => ($("#wk-tl-modal").hidden = true));
     const view = $("#wk-view"); if (view) view.addEventListener("click", toggleGraph);
     const hist = $("#wiki-hist"); if (hist) hist.addEventListener("click", () => toggleWikiHistory(hist.dataset.id));
     // 生成综述折叠入口（推荐用 Agent，这里只是网页端兜底）
@@ -2086,6 +2262,17 @@
         ? "本地库服务在线（不代表 MCP 已接好）· 127.0.0.1:8770" : "本地库服务未就绪";
       renderAgentCmds();
       $("#ag-schema").textContent = d.wiki_schema_md || "";
+      // EN-F6：技能包本机绝对路径——由 mcp_server 路径（app/mcp_server.py）推导 app/skills/localkb-paper；
+      // 拿不到时保留 HTML 里写好的相对路径兜底文案
+      const sp = $("#ag-skill-path");
+      if (sp && d.mcp_server) {
+        const ms = String(d.mcp_server);
+        const cut = Math.max(ms.lastIndexOf("\\"), ms.lastIndexOf("/"));
+        if (cut > 0) {
+          const sep = ms.includes("\\") ? "\\" : "/";
+          sp.textContent = ms.slice(0, cut) + sep + "skills" + sep + "localkb-paper";
+        }
+      }
       agentLoaded = true;   // 成功才置位
     } catch (e) {
       $("#ag-run-txt").textContent = "读取接入信息失败：" + e.message;
@@ -2104,7 +2291,10 @@
     $$(".ag-copy").forEach((b) => b.addEventListener("click", async () => {
       const el = $("#" + b.dataset.copy);
       const txt = (el && el.textContent) || "";
-      const revert = b.dataset.copy === "ag-schema" ? "复制路径" : "复制";
+      // EN-F6：恢复文案改为快照按钮原始文字（首次点击时存 data-lbl）——新增「📋 复制路径」等
+      // 不同文案的复制按钮不用再逐个写死；连点两次也不会把「已复制 ✓」误存成原文案
+      if (!b.dataset.lbl) b.dataset.lbl = b.textContent;
+      const revert = b.dataset.lbl;
       try { await navigator.clipboard.writeText(txt); b.textContent = "已复制 ✓"; }
       catch (_) {
         const ta = document.createElement("textarea");
@@ -2143,7 +2333,7 @@
     div.innerHTML =
       `<label class="bcard-cb"><input type="checkbox" ${checked} data-key="${esc(p.key)}"/></label>` +
       `<div class="bcard-body">` +
-        `<div class="bcard-head">${scoreBadge(p)}${tierBadge(p)}${deepBadge(p)}${reviewBadge(p)}` +
+        `<div class="bcard-head">${scoreBadge(p)}${tierBadge(p)}${statuteBadge(p)}${deepBadge(p)}${reviewBadge(p)}` +   // EN-F5：浏览卡带法条时效徽标
           // UX4：直接开原文 PDF（复用检索卡的 /open_pdf 通道）；无 PDF 禁用。标题点击仍保持「找相似」不动
           `<button class="bcard-open" title="${p.has_pdf ? "用系统阅读器打开这篇的 PDF 原文" : "无 PDF，无法打开原文"}"${p.has_pdf ? "" : " disabled"}>📄 打开</button>` +
           `<button class="bcard-addcat" title="加入「手动分类」">＋分类</button></div>` +   // D1：可见入口
@@ -2612,7 +2802,8 @@
 
   // W2：设置 / wiki 详情 / 入库进度三个弹窗补 Esc 与点遮罩关闭（参照 uiConfirm 的 onBackdrop/onKey 写法）。
   // 只是收起视图，后台任务（入库/构建）不中断；确认框开着时让 uiConfirm 自己吃掉 Esc，不连带关底下的弹窗。
-  ["#settings-modal", "#wiki-modal", "#ingest-modal"].forEach((sel) => {
+  // EN-F3：时间线弹层 #wk-tl-modal 一并纳入（它可能叠在 wiki 详情之上，Esc 列表里放最前、先关最上层）
+  ["#settings-modal", "#wiki-modal", "#ingest-modal", "#wk-tl-modal"].forEach((sel) => {
     const m = $(sel);
     if (m) m.addEventListener("mousedown", (e) => { if (e.target === m) m.hidden = true; });
   });
@@ -2622,7 +2813,7 @@
     // 必须靠 defaultPrevented 识别「这次 Esc 已被确认框消费」，否则会连带关掉底下的弹窗
     if (e.defaultPrevented) return;
     const cm = $("#confirm-modal"); if (cm && !cm.hidden) return;
-    for (const sel of ["#ingest-modal", "#wiki-modal", "#settings-modal"]) {
+    for (const sel of ["#wk-tl-modal", "#ingest-modal", "#wiki-modal", "#settings-modal"]) {   // EN-F3：时间线在最上层，先关它
       const m = $(sel);
       if (m && !m.hidden) { m.hidden = true; return; }   // 一次只关最上层一个
     }

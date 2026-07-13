@@ -18,7 +18,8 @@ END = "<!-- TOOLS:END -->"
 # 写工具（会改动 data/wiki 或触发建库）；其余为只读
 WRITE_TOOLS = {"save_synthesis", "build_digest", "research_outline",
                "localkb_build", "deep_index", "mark_stale",
-               "update_wiki_page", "set_wiki_links"}
+               "update_wiki_page", "set_wiki_links",
+               "add_source"}   # EN-M1：收单篇 PDF 进库（只加不删，仍属写）
 
 
 def _sig(t):

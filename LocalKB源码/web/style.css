@@ -922,3 +922,65 @@ a.wk-export:hover { border-color: var(--accent); color: var(--accent); }
 .bcard-open:hover:not(:disabled) { border-color: var(--brand); color: var(--brand); }
 .bcard-open:disabled { opacity: .45; cursor: not-allowed; }
 .bcard-open + .bcard-addcat { margin-left: 6px; }
+
+/* ══ EN 轮：wiki 三环（lint 角标 / 建议横幅 / 时间线）+ 正文 wikilink + 法条徽标 + 核验入口 ══ */
+/* EN-F1：库总览体检角标行（琥珀警示，与体检 lint-chip 同色系） */
+.dash-lint { background: #fff7ed; border: 1px solid #fed7aa; color: #b45309; border-radius: 10px;
+  padding: 9px 14px; margin-bottom: 14px; font-size: 13px; cursor: pointer; user-select: none; }
+.dash-lint:hover { border-color: #f59e0b; }
+.dash-lint b { font-size: 14px; }
+:root[data-theme="dark"] .dash-lint { background: rgba(245,158,11,.10); border-color: #78350f; color: #fbbf24; }
+
+/* EN-F2：综述库建议横幅（蓝底信息条，与 .bl-tip / deep-invite 同一视觉家族） */
+.wk-suggest { border: 1px solid #bfdbfe; background: #eff6ff; border-radius: 10px;
+  padding: 10px 14px; margin-bottom: 12px; font-size: 13px; }
+.wk-suggest .wsg-head { cursor: pointer; user-select: none; }
+.wk-suggest .wsg-head:hover .wsg-caret { color: var(--accent); }
+.wk-suggest .wsg-caret { color: var(--muted); font-size: 12px; margin-left: 8px; }
+.wk-suggest .wsg-body { margin-top: 4px; }
+.wk-suggest .wsg-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 7px 0; border-top: 1px dashed #bfdbfe; }
+.wk-suggest .wsg-doc { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 46%; }
+.wk-suggest .wsg-pages { display: flex; gap: 6px; flex-wrap: wrap; min-width: 0; }
+.wk-suggest .wsg-dismiss { margin-left: auto; flex: 0 0 auto; padding: 3px 10px; font-size: 12px; }
+:root[data-theme="dark"] .wk-suggest { background: rgba(110,168,254,.10); border-color: #2b4468; }
+:root[data-theme="dark"] .wk-suggest .wsg-row { border-top-color: #2b4468; }
+
+/* EN-F3：时间线弹层（复用 .modal / .modal-box；条目样式对齐版本历史 .wh-item） */
+.wk-tl-box { width: 560px; }
+.wk-tl-list { max-height: 56vh; overflow-y: auto; }
+.tl-item { display: flex; align-items: center; gap: 8px; padding: 6px 0;
+  border-bottom: 1px dashed var(--line); font-size: 12.5px; }
+.tl-item:last-child { border-bottom: none; }
+.tl-time { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; flex: 0 0 auto; }
+.tl-who { flex: 0 0 auto; }
+.tl-act { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }  /* 长动作文案不撑破行 */
+.tl-pg { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* EN-F4：正文 [[wikilink]]（mdToHtml 渲出的 a.wk-link，点击走事件委托 openWikiPage） */
+.wiki-body a.wk-link { color: var(--accent); cursor: pointer; text-decoration: underline dotted; }
+.wiki-body a.wk-link:hover { text-decoration: underline; }
+
+/* EN-F5：法条时效徽标（样式对齐 tier 徽标 .badge；红＝已废止 / 橙＝已修订） */
+.statute-badge.revoked { background: #dc2626; }
+.statute-badge.revised { background: #ea580c; }
+
+/* EN-F7：综述详情弹窗底部「核验一句话」小工具 */
+.wiki-vtool { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px; }
+.wiki-vtool .wv-row { display: flex; gap: 8px; align-items: center; }
+.wiki-vtool .wv-lbl { font-size: 12.5px; font-weight: 600; white-space: nowrap; cursor: help; }
+/* 压过 .modal-box input 的 width:100% + margin-top，让输入框在 flex 行里占满剩余宽度 */
+.wiki-vtool .wv-row input { flex: 1; width: auto; margin-top: 0; padding: 7px 10px; font-size: 13px; }
+.wiki-vtool .wv-row .ghost2b { flex: 0 0 auto; }
+.wv-result { margin-top: 8px; font-size: 12.5px; }
+.wv-verdict { display: inline-block; font-weight: 700; font-size: 12.5px; padding: 2px 10px;
+  border-radius: 10px; margin-bottom: 4px; }
+.wv-verdict.ok { background: var(--ok-bg); color: var(--ok-fg); }
+.wv-verdict.warn { background: #fef3c7; color: #b45309; }
+.wv-verdict.miss { background: #f1f5f9; color: #64748b; }
+.wv-ev { padding: 6px 0; border-top: 1px dashed var(--line); }
+.wv-ev-t { font-weight: 600; }
+.wv-ev-t .pg { color: var(--accent); font-weight: 600; }
+.wv-ev-q { color: var(--muted); margin-top: 2px; line-height: 1.6; }
+:root[data-theme="dark"] .wv-verdict.warn { filter: brightness(.9); }
+:root[data-theme="dark"] .wv-verdict.miss { background: rgba(255,255,255,.06); color: var(--muted); }

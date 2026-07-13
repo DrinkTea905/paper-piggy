@@ -11,7 +11,7 @@ from pathlib import Path
 from collections import Counter
 sys.path.insert(0, str(Path(__file__).parent))
 import config as C
-from textutil import tokenize, clean, safe_name, de_emoji, EMOJI
+from textutil import tokenize, clean, safe_name, de_emoji, EMOJI, load_core_terms, load_legal_synonyms
 import journal_tiers as JT
 import source_rules as SR
 
@@ -65,14 +65,38 @@ def get_papers():
                            "或在向导里手动指定 Zotero 数据目录）")
     return Z.load_papers(), "zotero.sqlite"
 
+# EN-L4①：词典来源条目的 itemtype 白名单——只有学术/法源类条目的 keywords 才可信；
+# webpage/blogPost 等网摘的标签常是「EXCEL技巧」「《三体》」这类与法学无关的噪声，
+# 混进 jieba 词典会扭曲建库/查询两侧的分词。
+DICT_ITEMTYPES = {"journalArticle", "statute", "report", "case", "thesis", "book", "bookSection"}
+
 def build_dict(papers):
-    """从题录 keywords 生成 jieba 法律词典（数据源无关）。"""
+    """从题录 keywords 生成 jieba 法律词典（数据源无关）。
+       EN-L4 治理：①来源条目按 itemtype 白名单过滤；②丢弃含书名号/教程式纯英文词条；
+       ③长度上限 12→8——超长短语进词典后，查询里只出现其子串时分词错配反而搜不到
+       （案例：「以审判为中心的诉讼制度」整词入典，查「以审判为中心」被切碎、无法命中）；
+       ④叠加出厂核心术语与同义词组成员（后者必须整词切分，查询侧同义扩展才能按 token 命中）。"""
     terms = set()
     for p in papers:
+        if (p.get("itemtype") or "") not in DICT_ITEMTYPES:      # EN-L4①
+            continue
         for t in re.split(r'[,;，；]', p.get("keywords", "") or ""):
             t = clean(t)
-            if 2 <= len(t) <= 12 and re.search(r'[一-鿿]', t) and not EMOJI.search(t):
+            if not t or "《" in t or "》" in t:                   # EN-L4②：含书名号=作品名，不是术语
+                continue
+            if " " in t and not re.search(r'[一-鿿]', t):        # EN-L4②：纯英文含空格=教程式短语
+                continue
+            if 2 <= len(t) <= 8 and re.search(r'[一-鿿]', t) and not EMOJI.search(t):   # EN-L4③
                 terms.add(t)
+    # EN-L4④：叠加核心术语 + 同义词组成员（只收含中文的；上限放宽到 12——出厂表是人工
+    # 核过的真术语，如「帮助信息网络犯罪活动罪」11 字，不受 keywords 噪声上限约束）
+    try:
+        terms.update(t for t in load_core_terms()
+                     if 2 <= len(t) <= 12 and re.search(r'[一-鿿]', t))
+        for g in load_legal_synonyms():
+            terms.update(w for w in g if 2 <= len(w) <= 12 and re.search(r'[一-鿿]', w))
+    except Exception:
+        pass                                                     # 词表异常不阻塞建库
     C.LEGAL_DICT.write_text("\n".join(f"{t} 100 n" for t in sorted(terms)), encoding="utf-8")
     return len(terms)
 
@@ -93,6 +117,17 @@ def enrich(m, now, old_ingested=None):
     # BF1：入库时间三级来源——meta 自带（zotero dateAdded）＞ 旧 papers.jsonl 同 key 继承 ＞ now。
     # 此前每次重建全体打 now，「最近入库」永远是重建时间，毫无信息量。
     m["ingested_at"] = m.get("ingested_at") or (old_ingested or {}).get(m["key"]) or now
+    # EN-L5：法条时效标识，写进 papers.jsonl（检索输出侧按它现算徽标/降权，不改 LanceDB 表 schema）。
+    # 判据来自 title/extra——Zotero 里法规版本状态通常直接写在标题（如"（2012修正）〔已被修订〕"）
+    # 或 extra 备注里。已废止/已失效 → "已废止"（检索降权）；YYYY年修正/修订 或 已修订 → "已修订"（只标识）。
+    if (m.get("itemtype") or "") == "statute":
+        blob = f"{m.get('title', '') or ''} {m.get('extra', '') or ''}"
+        if re.search(r"已废止|已失效", blob):
+            m["statute_status"] = "已废止"
+        elif re.search(r"\d{4}\s*年?\s*(修正|修订)|已修订|已被修订", blob):
+            m["statute_status"] = "已修订"
+        else:
+            m["statute_status"] = ""
     return m
 
 def compute_stats(papers):

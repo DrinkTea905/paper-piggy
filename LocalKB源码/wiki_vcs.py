@@ -265,6 +265,73 @@ def history(page_id, kind_dir_name=None, limit=30):
         return []
 
 
+def _fmt_ts(ts):
+    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(int(ts)))
+
+
+def log_events(limit=100):
+    """EN-W3：全库时间线——最近的 wiki 变更事件（新的在前），给前端「综合层在长什么」一条脉络。
+
+    返回 {"events":[{"time","page_id","action","by_agent"}], "source":"git"|"history"}。
+    - git 后端：解析 git log。提交信息格式是「page_id: 动作」（见 snapshot/_git_commit_all）；
+      提交**作者恒为 PaperPiggy**（_GIT_ID 写死，避免分发机没配 user.email），所以没法从作者
+      区分人/agent——但 wiki_store._snapshot 的动作文案是「agent写入 …」/「人写入 …」，
+      据动作前缀判 by_agent。无前缀的系统提交（init / WIKI.md 升级）page_id 给空串。
+    - 无 git：退回 .history/<page_id>/<时间戳>.md 快照的 mtime + 同名 .msg 文案。
+    任何一步失败都退空列表，绝不抛给上层——时间线是展示件，不是关卡。"""
+    limit = max(1, int(limit or 100))
+    try:
+        if backend() == "git":
+            rc, out, _ = _git("log", f"-{limit}", "--format=%ct\t%s")
+            if rc == 0:
+                events = []
+                for ln in out.strip().splitlines():
+                    parts = ln.split("\t", 1)
+                    if len(parts) != 2:
+                        continue
+                    try:
+                        t = _fmt_ts(parts[0])
+                    except Exception:
+                        continue
+                    subj = parts[1].strip()
+                    pid, sep, act = subj.partition(": ")
+                    if not sep:                    # 系统提交（初始化/WIKI.md 升级）没有页前缀
+                        pid, act = "", subj
+                    events.append({"time": t, "page_id": pid, "action": act,
+                                   "by_agent": act.strip().startswith("agent")})
+                return {"events": events, "source": "git"}
+            log("git log 失败（退快照目录）：rc=", rc)
+    except Exception as e:
+        log("读 git 时间线失败（退快照目录）：", e)
+
+    # 快照兜底：每份 <ts>.md 就是一次事件，动作取旁边的 .msg
+    events = []
+    try:
+        hd = C.WIKI_HISTORY_DIR
+        if hd.exists():
+            for d in hd.iterdir():
+                if not d.is_dir():
+                    continue
+                for f in d.glob("*.md"):
+                    msg = ""
+                    m = d / f"{f.stem}.msg"
+                    if m.exists():
+                        try:
+                            msg = m.read_text(encoding="utf-8").strip()
+                        except Exception:
+                            pass
+                    try:
+                        t = _fmt_ts(f.stat().st_mtime)
+                    except Exception:
+                        continue
+                    events.append({"time": t, "page_id": d.name, "action": msg or "写入",
+                                   "by_agent": msg.strip().startswith("agent")})
+    except Exception as e:
+        log("读快照时间线失败：", e)
+    events.sort(key=lambda ev: ev["time"], reverse=True)
+    return {"events": events[:limit], "source": "history"}
+
+
 def read_at(page_id, rev, kind_dir_name=None):
     """取某版本的 .md 全文（含 frontmatter）。"""
     if backend() == "git":

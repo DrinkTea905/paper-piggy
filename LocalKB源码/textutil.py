@@ -54,3 +54,55 @@ def tokenize(text):
             continue
         out.append(t)
     return out
+
+# ═══ EN-L3：法学同义词/核心术语 loader（契约12）═══════════════════
+# 出厂词表在 legal_lexicon.py（纯数据模块）；运行期若存在 data/legal_synonyms.txt
+# （每行一组、顿号/逗号分隔，# 起注释）则**叠加**在出厂表之后——用户不用改代码就能补组。
+# 模块级缓存：同义词按文件 mtime 失效（用户改完词表即时生效，不用重启）；核心词表纯静态缓存一次。
+_LEX_CACHE = {"syn": None, "syn_mtime": "unset", "core": None}
+
+def _syn_file():
+    return getattr(C, "LEGAL_SYNONYMS_FILE", C.DATA / "legal_synonyms.txt")
+
+def load_legal_synonyms():
+    """返回 list[set[str]]（组员统一小写，与 tokenize 输出对齐）。任何一步失败都退空表/出厂表，
+       绝不让词表问题炸掉检索主链路。"""
+    p = _syn_file()
+    try:
+        mt = p.stat().st_mtime
+    except OSError:
+        mt = None                       # 文件不存在：只用出厂表
+    if _LEX_CACHE["syn"] is not None and _LEX_CACHE["syn_mtime"] == mt:
+        return _LEX_CACHE["syn"]
+    groups = []
+    try:
+        import legal_lexicon as LX
+        for g in LX.SYNONYMS:
+            gs = {str(w).strip().lower() for w in g if str(w).strip()}
+            if len(gs) >= 2:            # 单词成不了"组"，丢弃防手滑
+                groups.append(gs)
+    except Exception:
+        pass
+    if mt is not None:
+        try:
+            for line in p.read_text(encoding="utf-8").splitlines():
+                line = line.split("#", 1)[0].strip()   # 支持行内注释
+                if not line:
+                    continue
+                gs = {w.strip().lower() for w in re.split(r'[、，,;；\t]', line) if w.strip()}
+                if len(gs) >= 2:
+                    groups.append(gs)
+        except Exception:
+            pass                        # 用户文件损坏：出厂表照常工作
+    _LEX_CACHE["syn"], _LEX_CACHE["syn_mtime"] = groups, mt
+    return groups
+
+def load_core_terms():
+    """返回出厂核心术语 list[str]（原样大小写；进 jieba 词典用，不需 lower）。"""
+    if _LEX_CACHE["core"] is None:
+        try:
+            import legal_lexicon as LX
+            _LEX_CACHE["core"] = [str(t).strip() for t in LX.CORE_TERMS if str(t).strip()]
+        except Exception:
+            _LEX_CACHE["core"] = []
+    return _LEX_CACHE["core"]

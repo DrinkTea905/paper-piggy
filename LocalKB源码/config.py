@@ -135,6 +135,16 @@ TIER_BONUS = {
 # journal_grading 不可用/算不出时，_apply_sort 自动回退到上面的离散 TIER_BONUS。
 WEIGHT_BONUS_SCALE = 0.5
 
+# ---- 法学检索增强（EN 系列，2026-07）----
+# EN-L3：查询侧同义词扩展开关。只扩 bm25 的**查询**词袋（索引侧一个字节不动→零重建成本；
+# dense 语义向量本身能泛化同义词，不参与扩展）。出厂词表在 legal_lexicon.py，
+# 用户可用 data/legal_synonyms.txt 叠加（每行一组、顿号/逗号分隔）。关掉即完全回旧行为。
+SYN_EXPAND = True
+LEGAL_SYNONYMS_FILE = DATA / "legal_synonyms.txt"
+# EN-L5：已废止法条的降权因子。**乘性**且分正负域：正分乘、负分除（BF5 教训：reranker 分
+# 可为负，负分×0.5 反而离 0 更近=反向提权）。已修订不降权、只输出 statute_status 徽标。
+STATUTE_REPEALED_FACTOR = 0.5
+
 # ---- 综合层检索排序（wiki 行是"附加缓存"，不喧宾夺主，符合 §0"provenance 居中"）----
 # 新鲜综合页：**减法**小惩罚，只在同分时让位于原始文献（provenance 居中）。
 WIKI_BASE_PENALTY  = 0.05

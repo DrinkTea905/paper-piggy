@@ -122,6 +122,32 @@ def _source_signature():
     except Exception:
         return None
 
+# ── EN-W1：wiki lint 挂上自动更新定时器——gist 点名 drift（wiki 与文献库渐行渐远）是头号
+#    失败模式，体检必须自动跑，不能指望用户想起来点按钮。lint 纯读、零 LLM、毫秒级，
+#    顺搭在自动更新循环里即可，不必单开线程。
+_WIKI_LINT_TTL = 24 * 3600      # 距上次体检超过 24h（或从没体检过）才重跑
+
+def _wiki_lint_refresh():
+    """距 data/state/wiki_lint.json 的 checked_at 超过 24h（或文件不存在/损坏）→ 重跑 W.lint()，
+       把 {"issues":总数, "by_type":{...}, "checked_at":now} 原子写回。/stats 读它（契约3）。
+       wiki 尚无任何页（index.json 由首次写页产生）时优雅跳过——别为了体检去初始化空库。"""
+    f = C.STATE / "wiki_lint.json"
+    try:
+        if f.exists():
+            d = json.loads(f.read_text(encoding="utf-8"))
+            ts = time.mktime(time.strptime(d.get("checked_at", ""), "%Y-%m-%d %H:%M:%S"))
+            if time.time() - ts < _WIKI_LINT_TTL:
+                return
+    except Exception:
+        pass                                # 文件损坏/时间戳不合法 → 视为过期，重算一份盖掉
+    if not C.WIKI_INDEX.exists():
+        return                              # wiki 目录为空/未初始化：跳过
+    res = W.lint()
+    _atomic_json_write(f, {
+        "issues": int(res.get("n_issues", 0)),
+        "by_type": {k: len(v) for k, v in (res.get("issues") or {}).items()},
+        "checked_at": time.strftime("%Y-%m-%d %H:%M:%S")})
+
 def _auto_update_loop():
     import settings as S
     time.sleep(20)                         # 等首次加载完
@@ -132,6 +158,12 @@ def _auto_update_loop():
             # BF24：兜底值统一取 settings.DEFAULT（此前 30/15/60 三处各说各话，改设置后行为不可预期）
             interval = max(5, int(conf.get("interval_min", S.DEFAULT["auto_update"]["interval_min"]))) * 60
             time.sleep(60)
+            # EN-W1：每轮顺带保鲜 wiki 体检（刻意放在 enabled 判断之前——体检零成本，
+            # 不该随「自动更新」开关一起被关掉）；异常只记日志，绝不阻断自动更新主流程。
+            try:
+                _wiki_lint_refresh()
+            except Exception as e:
+                log_error("wiki lint refresh", repr(e))
             if not conf.get("enabled", True):
                 continue
             if time.time() - AUTO["last"] < interval:
@@ -669,6 +701,16 @@ def stats_ep():
             s["grading_pending"] = True
     except Exception as e:
         log_error("stats grading", repr(e))
+    # EN-W1：附 wiki 体检摘要（契约3：{"issues":int,"checked_at":str}）。
+    # 读 data/state/wiki_lint.json（由自动更新循环保鲜）；文件不存在/损坏则不带该键。
+    try:
+        lf = C.STATE / "wiki_lint.json"
+        if lf.exists():
+            d = json.loads(lf.read_text(encoding="utf-8"))
+            s["wiki_lint"] = {"issues": int(d.get("issues", 0)),
+                              "checked_at": str(d.get("checked_at", ""))}
+    except Exception as e:
+        log_error("stats wiki_lint", repr(e))
     return s
 
 # ── 浏览：收藏夹 + 推荐「值得读」──────────────────────────
@@ -897,8 +939,79 @@ def _on_deep_done(rc=0):
             QUEUE["fails"] = 0
             should_drain = bool(QUEUE["pending"])
         _q_persist()
+    # EN-W2：Ingest 扳机——本批深索成功后，后台算「这批新文献影响了哪些综述页」。
+    # 挂在锁外、daemon 线程里跑，绝不阻塞队列继续排空。
+    if rc == 0 and batch:
+        try:
+            _wiki_suggest_async(batch)
+        except Exception as e:
+            log_error("wiki suggest (queue batch)", repr(e))
     if should_drain:
         _drain_deep_queue()
+
+# ── EN-W2：Ingest 扳机——深索成功后自动算「新文献影响了哪些综述页」──────
+# gist 三环里 Ingest 环此前为 0：新文献入库后 wiki 毫无反应，drift 就是这么积累的。
+# 这里只**建议**不动手（复用 wiki_store.propose_updates：by_source 反查 + 检索同题页），
+# 结果落 data/state/wiki_suggestions.json，前端/agent 拿去逐条处理或 dismiss。
+_WIKI_SUGG_FILE = C.STATE / "wiki_suggestions.json"
+_WIKI_SUGG_LOCK = threading.Lock()      # 读-改-写串行：深索回调与 dismiss 端点可能并发
+_WIKI_SUGG_MAX = 50                     # 只保留最近 50 条（旧建议早该被处理或已过时）
+_WIKI_SUGG_BATCH_CAP = 20               # 单批最多算 20 篇：整库深索后一批可能几百篇，每篇要跑
+                                        # 一次检索（propose_updates 内含 R.search），全算会把
+                                        # 后台线程拖住几十分钟——挑批次前 20 篇，其余等下批
+
+def _wiki_sugg_load():
+    """读建议清单（items 列表）。文件缺失/损坏退空表——建议是提示件，不值得为它报错。"""
+    try:
+        if _WIKI_SUGG_FILE.exists():
+            d = json.loads(_WIKI_SUGG_FILE.read_text(encoding="utf-8"))
+            if isinstance(d, dict) and isinstance(d.get("items"), list):
+                return d["items"]
+    except Exception as e:
+        log_error("wiki_suggestions load", repr(e))
+    return []
+
+def _wiki_sugg_save(items):
+    """调用方须持 _WIKI_SUGG_LOCK。原子写（契约2 数据源）。"""
+    _atomic_json_write(_WIKI_SUGG_FILE, {
+        "items": items[:_WIKI_SUGG_MAX],
+        "updated_at": time.strftime("%Y-%m-%d %H:%M:%S")}, indent=1)
+
+def _wiki_suggest_batch(keys):
+    """对一批新深索的 raw key 逐篇跑 propose_updates，pages 非空的追加进建议文件。
+       每篇失败单独吞并记日志——一篇坏文献（题录缺失/检索异常）不能毁掉整批。"""
+    _all = [k for k in dict.fromkeys(keys or []) if k]
+    keys = _all[:_WIKI_SUGG_BATCH_CAP]
+    if len(_all) > len(keys):
+        # bulk 整库深索没有"下一批"来补算——如实留痕，别让注释谎称"其余等下批"
+        BUILD["log"].append(f"[wiki建议] 本批仅分析前 {len(keys)} 篇，其余 {len(_all)-len(keys)} 篇未算建议"
+                            f"（可对个别文献用 propose_wiki_updates 单独补算）。")
+    if not keys:
+        return
+    papers = _load_papers()
+    found = []
+    for k in keys:
+        try:
+            r = W.propose_updates(k)
+            pages = [{"id": a.get("id", ""), "title": a.get("title", "")}
+                     for a in (r.get("affected") or []) if a.get("id")]
+            if pages:
+                found.append({"key": k, "title": (papers.get(k) or {}).get("title", ""),
+                              "pages": pages,
+                              "created_at": time.strftime("%Y-%m-%d %H:%M:%S")})
+        except Exception as e:
+            log_error(f"wiki suggest {k}", repr(e))     # 单篇失败不毁整批
+    if not found:
+        return
+    with _WIKI_SUGG_LOCK:
+        have = {x.get("key") for x in found}
+        # 新建议在前；同 key 旧建议被顶掉（按 key 去重——同一篇重复深索只留最新一条）
+        items = found + [x for x in _wiki_sugg_load() if x.get("key") not in have]
+        _wiki_sugg_save(items)
+
+def _wiki_suggest_async(keys):
+    """起 daemon 线程算建议（propose_updates 含检索调用，不能在深索回调线程里同步跑）。"""
+    threading.Thread(target=_wiki_suggest_batch, args=(list(keys),), daemon=True).start()
 
 @app.get("/index/queue")
 def deep_queue_status():
@@ -1211,8 +1324,43 @@ def wiki_answer(q: WikiSaveQ):
         return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
 
 @app.get("/wiki/list")
-def wiki_list():
-    return {"pages": W.list_pages()}
+def wiki_list(offset: int = 0, limit: int = 0):
+    """EN-A0：分页（契约10）。offset/limit 可选；limit<=0 = 不截断（兼容旧调用方一把全拉）。
+       响应新增 total=全量页数，页内字段保持不变。"""
+    pages = W.list_pages()
+    total = len(pages)
+    off = max(0, int(offset or 0))
+    lim = int(limit or 0)
+    out = pages[off:off + lim] if lim > 0 else pages[off:]
+    return {"pages": out, "total": total}
+
+@app.get("/wiki/timeline")
+def wiki_timeline(limit: int = 100):
+    """EN-W3：全库时间线（契约1）。git log 解析优先，无 git 退 .history 快照目录。
+       events=[{time,page_id,action,by_agent}]，新的在前；source=git|history。"""
+    try:
+        import wiki_vcs as V
+        return V.log_events(max(1, min(int(limit or 100), 500)))
+    except Exception as e:
+        log_error("wiki/timeline", repr(e), traceback.format_exc())
+        return {"events": [], "source": "history"}     # 时间线是展示件，失败退空不报 500
+
+# ── EN-W2：wiki 更新建议（Ingest 扳机的消费端，契约2）──────────────
+@app.get("/wiki/suggestions")
+def wiki_suggestions():
+    """深索扳机算出的「新文献 → 受影响综述页」建议清单（新的在前，最多 50 条）。"""
+    return {"items": _wiki_sugg_load()}
+
+class WikiSuggDismissQ(BaseModel):
+    key: str
+
+@app.post("/wiki/suggestions/dismiss")
+def wiki_suggestions_dismiss(q: WikiSuggDismissQ):
+    """忽略某条建议（按 key 从文件剔除）。幂等：key 不在清单里也返回 ok。"""
+    with _WIKI_SUGG_LOCK:
+        items = [x for x in _wiki_sugg_load() if x.get("key") != q.key]
+        _wiki_sugg_save(items)
+    return {"ok": True}
 
 @app.get("/wiki/page/{page_id}")
 def wiki_page(page_id: str):
@@ -1280,12 +1428,13 @@ def wiki_backlinks(key: Optional[str] = None, page_id: Optional[str] = None):
 class WikiLinksQ(BaseModel):
     links: List[str] = []
     mode: str = "replace"           # replace | add | remove
+    by_agent: bool = False          # 只用于时间线标注（MCP 侧传 true）
 
 @app.post("/wiki/links/{page_id}")
 def wiki_set_links(page_id: str, q: WikiLinksQ):
     """写 links —— 把一堆孤岛补成一张图。拒绝自链与断链，返回 skipped。"""
     try:
-        return {"ok": True, **W.set_links(page_id, q.links, q.mode)}
+        return {"ok": True, **W.set_links(page_id, q.links, q.mode, by_agent=q.by_agent)}
     except ValueError as e:
         return JSONResponse({"ok": False, "detail": str(e)}, status_code=404)
     except Exception as e:
@@ -1549,10 +1698,225 @@ def research_export_docx_get(page_id: str):
     """C3：GET 版——前端用 <a href download> 直接触发下载。"""
     return _export_docx(page_id)
 
+# ══════════════════════════════════════════════════════════════════
+#  EN-A：Agent 接入的服务端地基（蓝图 G1/G2/G4 + 入库闭环）
+#  单篇题录 / 引注引擎出口 / 引文定位 / 论断核验 / 本地路径入库 / AI 使用声明
+# ══════════════════════════════════════════════════════════════════
+
+@app.get("/paper/{key}")
+def paper_detail(key: str):
+    """EN-A1（契约4）：单篇完整题录——agent 写引注/核出处前先拿全字段，别再从 /papers
+       整表里大海捞针。cited_by_wiki 走 wiki index.json 的 by_source 反查（W.backlinks）；
+       statute_status 读 papers.jsonl 同名字段（法源改造写入；缺省空串）。"""
+    p = _load_papers().get(key)
+    if not p:
+        return JSONResponse({"detail": f"未找到文献 {key}（可先用 /papers 枚举）"}, status_code=404)
+    import grading_svc as GS
+    g = GS.grade_paper(p, compute=False)     # 快路径：只用已预热 memo，与 /papers 同口径
+    cited_by_wiki = []
+    try:
+        cited_by_wiki = [{"id": c.get("id"), "title": c.get("title", "")}
+                         for c in W.backlinks(key=key).get("cited_by", [])]
+    except Exception as e:
+        log_error("paper detail backlinks", repr(e))   # 反查失败不拦题录主体
+    return {
+        "key": key, "title": p.get("title", ""), "author": p.get("author", ""),
+        "year": p.get("year", ""), "journal": p.get("journal", ""),
+        "itemtype": p.get("itemtype", ""),
+        "weight_tier": (g["cn"] if g else p.get("journal_tier", "")),
+        "collections": p.get("collections", []),
+        "official_pages": p.get("official_pages", ""),
+        "has_pdf": bool(p.get("has_pdf", False)),
+        "deep": is_deep(key),
+        "no_text": T.safe_name(key) in _deep_no_text_keys(),
+        "abstract": p.get("abstract", ""),
+        "ingested_at": p.get("ingested_at", ""),
+        "statute_status": p.get("statute_status", "") or "",
+        "cited_by_wiki": cited_by_wiki,
+    }
+
+@app.get("/cite/{key}")
+def cite_paper(key: str, page: Optional[int] = None, style: str = "footnote"):
+    """EN-A2（契约5，G2 引注引擎出口）：薄封装 cite_format——格式由规则做、绝不交 LLM。
+       只透传 style 与 page；statute/report 模板由 cite_format 按 itemtype 自动分派。
+       missing_fields 让 agent 知道哪些字段缺了该去补题录，而不是让它自己瞎编。"""
+    if style not in ("footnote", "compact"):
+        return JSONResponse({"detail": "style 仅支持 footnote | compact"}, status_code=400)
+    p = _load_papers().get(key)
+    if not p:
+        return JSONResponse({"detail": f"未找到文献 {key}"}, status_code=404)
+    import cite_format as CF
+    import page_map as PM
+    hit = dict(p)                      # papers.jsonl 字段名与检索结果 hit 一致，直接当 hit 用
+    hit["page"] = page
+    formatted = CF.footnote(hit) if style == "footnote" else CF.compact(hit)
+    # 印刷页展示串 + 推算标记：只有映射真产出了推算值才算 estimated（没映射不算）
+    printed_disp, page_estimated = "", False
+    if page is not None:
+        try:
+            pm = PM.printed(key, page) or {}
+            printed_disp = pm.get("display") or ""
+            page_estimated = bool(pm.get("printed") is not None
+                                  and (pm.get("method") in ("interp", "offset", "pdfseq")
+                                       or float(pm.get("conf") or 0) < 0.7))
+        except Exception as e:
+            log_error("cite printed", repr(e))
+    # 缺字段按 itemtype 分派（与 cite_format 的模板字段一一对应）
+    it = (p.get("itemtype") or "").strip()
+    miss = []
+    has_pg = bool(printed_disp or (p.get("official_pages") or "").strip())
+    if it == "statute":
+        if not (p.get("title") or "").strip(): miss.append("title")
+        # 与 cite_format._statute_cite 同口径：法规标题惯例「（2018修正）」不含「年」字，判四位数字
+        if not str(p.get("year") or "").strip() and not re.search(r"\d{4}", p.get("title") or ""):
+            miss.append("year")
+    elif it == "report":
+        if not ((p.get("author") or "").strip() or (p.get("journal") or "").strip()):
+            miss.append("author")      # 机构作者：author 首位，退 journal 位（模板同款回退）
+        if not (p.get("title") or "").strip(): miss.append("title")
+        if not str(p.get("year") or "").strip(): miss.append("year")
+    else:                              # 期刊式（含 itemtype 不认识的回退）
+        for f, v in (("author", p.get("author")), ("title", p.get("title")),
+                     ("journal", p.get("journal")), ("year", p.get("year"))):
+            if not str(v or "").strip():
+                miss.append(f)
+        if not has_pg:
+            miss.append("page")        # 手册脚注式没页码是硬伤，必须让 agent 知道
+    return {"ok": True, "key": key, "style": style, "page": page,
+            "printed_page": printed_disp, "itemtype": it,
+            "formatted": formatted, "missing_fields": miss,
+            "page_estimated": page_estimated}
+
+class LocateQuoteQ(BaseModel):
+    quote: str
+    key: Optional[str] = None
+    fuzzy: bool = True
+
+@app.post("/research/locate_quote")
+def research_locate_quote(q: LocateQuoteQ):
+    """EN-A3（契约6）：在提取全文里定位一段引文 → 哪篇/PDF第几页/印刷第几页。
+       key 给定只搜单篇；否则全库（cap 500 篇，截断会在结果里注明）。"""
+    try:
+        import textloc as TL
+        return TL.locate(q.quote, key=q.key, fuzzy=bool(q.fuzzy))
+    except ValueError as e:
+        return JSONResponse({"detail": str(e)}, status_code=400)   # 引文太短等参数性拒绝
+    except Exception as e:
+        log_error("research/locate_quote", repr(e), traceback.format_exc())
+        return JSONResponse({"detail": str(e)}, status_code=400)
+
+class VerifyClaimQ(BaseModel):
+    claim: str
+    keys: Optional[List[str]] = None
+    topk: int = 8
+
+@app.post("/research/verify_claim")
+def research_verify_claim(q: VerifyClaimQ):
+    """EN-A4（契约7，G1 核验器）：论断→三态判定 supported/mismatch/not_in_lib。
+       保守原则见 verify_claim.py 模块注释（铁律三：库内无 ≠ 论断为假）。"""
+    try:
+        import verify_claim as VC
+        return VC.verify(q.claim, keys=q.keys, topk=q.topk)
+    except ValueError as e:
+        return JSONResponse({"detail": str(e)}, status_code=400)
+    except Exception as e:
+        log_error("research/verify_claim", repr(e), traceback.format_exc())
+        return JSONResponse({"detail": str(e)}, status_code=400)
+
+class LocalPathQ(BaseModel):
+    path: str
+    note: Optional[str] = None
+
+@app.post("/ingest/local_path")
+def ingest_local_path(q: LocalPathQ):
+    """EN-A5（契约8）：按本地绝对路径把一个 PDF 收进受管文件夹并触发增量建库——
+       agent 替用户"把桌面上这篇收进库里"的入库闭环。仅文件夹模式；Zotero 模式的
+       入库动作属于 Zotero（改它的库文件是越权），400 提示走 Zotero。"""
+    import settings as S, hashlib as _hl, shutil
+    if S.source() != "folder":
+        return JSONResponse({"detail": "Zotero 模式请把 PDF 附到 Zotero 条目上（Zotero 是它库的唯一主人），"
+                                       "随后等自动更新或点「更新知识库」即可入库。"}, status_code=400)
+    folder = S.folder_dir()
+    if not folder:
+        return JSONResponse({"detail": "未配置受管文件夹，请先在向导/设置里选定"}, status_code=400)
+    # 路径安全：只接受绝对路径（相对路径取决于服务进程 cwd，agent 传来毫无意义且易被诱导）、拒绝目录
+    src = Path((q.path or "").strip())
+    if not str(src) or not src.is_absolute():
+        return JSONResponse({"detail": "只接受绝对路径"}, status_code=400)
+    if src.is_dir():
+        return JSONResponse({"detail": "只接受单个 PDF 文件，不接受目录"}, status_code=400)
+    if not src.exists():
+        return JSONResponse({"detail": f"文件不存在：{src}"}, status_code=400)
+    if src.suffix.lower() != ".pdf":
+        return JSONResponse({"detail": "只支持 .pdf 文件"}, status_code=400)
+    try:
+        data = src.read_bytes()
+    except Exception as e:
+        return JSONResponse({"detail": f"读取文件失败：{e}"}, status_code=400)
+    import folder_source as FS
+    fp = Path(folder)
+    # sha1 查重（同 /ingest/files 的 R2 思路：先按大小粗筛，同大小才读盘算 sha1，大库不卡）
+    h = _hl.sha1(data).hexdigest()
+    dup = None
+    for pth in fp.rglob("*.pdf"):
+        try:
+            if pth.stat().st_size != len(data):
+                continue
+            if _hl.sha1(pth.read_bytes()).hexdigest() == h:
+                dup = pth; break
+        except Exception:
+            continue
+    if dup is not None:
+        return {"ok": True, "status": "duplicate", "key": FS.stable_key(folder, str(dup)),
+                "building": False, "need_review": True,
+                "hint": f"内容相同的 PDF 已在库中（{dup.name}），未重复入库。"}
+    dst = _dedupe_name(fp / src.name)     # 同名不同容 → 加序号，绝不覆盖既有文件
+    try:
+        shutil.copy2(str(src), str(dst))
+    except Exception as e:
+        log_error("ingest/local_path copy", repr(e), traceback.format_exc())
+        return JSONResponse({"detail": f"复制进受管文件夹失败：{e}"}, status_code=500)
+    key = FS.stable_key(folder, str(dst))
+    if q.note:                            # 入库备注留痕（追加 jsonl，供人日后查"这篇谁让收的"）
+        try:
+            nf = C.FOLDER_DIR_STATE / "ingest_notes.jsonl"
+            with open(nf, "a", encoding="utf-8") as f:
+                f.write(json.dumps({"time": time.strftime("%Y-%m-%d %H:%M:%S"), "key": key,
+                                    "file": dst.name, "note": q.note}, ensure_ascii=False) + "\n")
+        except Exception as e:
+            log_error("ingest/local_path note", repr(e))
+    # 触发增量建库：BUILD 忙时不建（building:false），调用方稍后触发即可——文件已落
+    # 受管文件夹，下一次任何 folder build/自动更新都会把它捎上，不会丢
+    building = False
+    if not BUILD["running"]:
+        building = bool(_run_build("folder"))
+    return {"ok": True, "status": "added", "key": key, "building": building, "need_review": True,
+            "hint": ("已复制进受管文件夹并开始后台抽题录+建索引。" if building
+                     else "已复制进受管文件夹；当前有构建在跑，稍后自动更新或手动「更新知识库」即可入索引。")
+                    + "题录由 AI 抽取，请在「浏览」页核对（needs_review）。"}
+
+class DisclosureQ(BaseModel):
+    page_ids: List[str] = []
+
+@app.post("/research/disclosure")
+def research_disclosure(q: DisclosureQ):
+    """EN-A6（契约9，G4）：按所选 wiki 页的元数据生成《生成式 AI 使用声明》模板文本。
+       规则拼装、零 LLM——披露必须是机械的事实陈述（实现在 research_assistant.disclosure）。"""
+    try:
+        import research_assistant as RA
+        return {"text": RA.disclosure(q.page_ids)}
+    except Exception as e:
+        log_error("research/disclosure", repr(e), traceback.format_exc())
+        return JSONResponse({"detail": str(e)}, status_code=400)
+
 @app.get("/papers")
 def papers(collection: Optional[str] = None, topic: Optional[int] = None,
            category: Optional[str] = None, deep: Optional[str] = None,
-           sort: str = "recommend", limit: int = 300, offset: int = 0):
+           sort: str = "recommend", limit: int = 300, offset: int = 0,
+           since: Optional[str] = None):
+    # EN-A7：since=YYYY-MM-DD 按 ingested_at 过滤（配合 whats_new：「上次见面后新入了什么」）。
+    # ingested_at 形如 "YYYY-MM-DD HH:MM:SS"，与 since 直接字典序比较即可；
+    # 没有 ingested_at 的老条目（空串）在 since 模式下会被滤掉——它们本来就不是"新入库"。
     papers = _load_papers(); cats = _load_cats(); deepk = _deep_keys()
     notextk = _deep_no_text_keys()   # C1/A2：扫描件集合
     if category and category.startswith("kbc_"):
@@ -1574,6 +1938,8 @@ def papers(collection: Optional[str] = None, topic: Optional[int] = None,
             continue
         if deep == "no" and _isdeep:
             continue
+        if since and (p.get("ingested_at") or "") < since:   # EN-A7：早于 since（或无入库时间）的滤掉
+            continue
         # F38-B：按当前学科取分级（快路径 compute=False，只用已预热 memo；未预热则回退旧 journal_tier）
         # 手动改档/法源报告规则在 grade_paper 里优先命中（不走 memo，即改即显）。
         g = GS.grade_paper(p, compute=False)
@@ -1591,6 +1957,8 @@ def papers(collection: Optional[str] = None, topic: Optional[int] = None,
             "needs_review": bool(p.get("needs_review", False)),   # folder 模式：AI 抽的题录待核对
             "no_text": T.safe_name(p["key"]) in notextk,          # C1/A2：扫描件（有 PDF 但无可抽文本，需 OCR，不可深索）
             "ingested_at": p.get("ingested_at", ""),               # 供「最新入库」排序
+            "itemtype": p.get("itemtype", ""),
+            "statute_status": p.get("statute_status", ""),         # EN-L5：法条时效徽标（浏览卡 statuteBadge 读它）
             "score": _rec_score(p, g), "deep": _isdeep,
         })
     if sort == "recommend":
@@ -1605,7 +1973,8 @@ def papers(collection: Optional[str] = None, topic: Optional[int] = None,
     # W1：分页出口——大库此前只能看到前 limit 篇，其余永远翻不到；total=过滤后总数供前端算页数
     off = max(0, int(offset or 0))
     return {"papers": out[off:off + limit], "total": len(out),
-            "collection": collection, "topic": topic, "category": category, "deep": deep, "sort": sort}
+            "collection": collection, "topic": topic, "category": category, "deep": deep,
+            "sort": sort, "since": since}
 
 # ── 单篇手动改档（法源权重改造 2026-07-12）──────────────────
 class TierOverrideQ(BaseModel):
@@ -1783,6 +2152,10 @@ def _run_build(stage, extra=None, on_done=None):
         BUILD["proc"] = None; BUILD["cancelled"] = False
         # BF35：整库深索(scope=all)标记——extra 形如 ["--scope","all"]；队列批次是 "keys:..."，不算 bulk
         BUILD["bulk"] = bool(stage == "deep" and "all" in (extra or []))
+    # EN-W2：整库深索(scope=all)记下构建前的已深索集合（safe_name(stem)），
+    # 成功收尾后与新集合作差 → 本轮真正新深索的篇 → 触发 wiki 更新建议。
+    # 队列批次不走这里（keys 已知，由 _on_deep_done 直接触发），避免双算。
+    pre_deep = _deep_keys() if BUILD["bulk"] else None
     def run():
         rc = None
         try:
@@ -1818,6 +2191,17 @@ def _run_build(stage, extra=None, on_done=None):
                 BUILD["running"] = False
                 BUILD["stage"] = ""          # F4：构建结束复位 stage，避免残留 "deep" 让顶栏误报「深索中」
                 BUILD["bulk"] = False        # BF35：构建结束复位整库深索标记
+            # EN-W2：整库深索成功收尾 → 差集出本轮新深索的篇，触发 wiki 更新建议。
+            # 放在索引重载之后：propose_updates 里的检索要用重载后的新表/新题录才准。
+            # embedded_keys.txt 存的是 safe_name(stem)，须映射回原始 key 才能给 propose_updates。
+            if rc == 0 and not BUILD.get("cancelled") and pre_deep is not None:
+                try:
+                    new_stems = _deep_keys() - pre_deep
+                    if new_stems:
+                        newk = [k for k in _load_papers() if T.safe_name(k) in new_stems]
+                        _wiki_suggest_async(newk)
+                except Exception as e:
+                    log_error("wiki suggest (bulk deep)", repr(e))
             # A3/A4：把 returncode 贯通给回调（失败时上层决定退回队列/不推进 sig）。
             if on_done:
                 try:

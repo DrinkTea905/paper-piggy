@@ -157,6 +157,8 @@
   <!-- wiki 页面板（综合页书架：新建综述 + 列表 + 打开/重生/删除） -->
   <main id="panel-wiki" class="panel" data-panel="wiki" hidden>
     <div class="wiki-page">
+      <!-- EN-F2：建议横幅——新深索的文献可能影响已有综述页（/wiki/suggestions），由 JS 填充，空则不渲染 -->
+      <div id="wk-suggest" class="wk-suggest" hidden></div>
       <div class="wk-bar">
         <div class="wk-tools">
           <select id="wk-kind" title="按类型筛选">
@@ -172,6 +174,8 @@
           <label class="wk-agent-only"><input type="checkbox" id="wk-agent" /> 只看 🤖 未核验</label>
           <span class="wk-tools-sp"></span>
           <button id="wk-lint" class="ghost" title="体检：孤儿页 / 过时页 / 断链 / 无来源页">🩺 体检</button>
+          <!-- EN-F3：时间线——谁在什么时候建/改了哪页（git log 优先，退快照记录） -->
+          <button id="wk-timeline" class="ghost" title="综述库演化时间线：每一页在什么时候被谁（🤖/👤）建立或修改">🕘 时间线</button>
           <button id="wk-view" class="ghost" title="切换列表 / 关系图">🕸 关系图</button>
           <button id="wk-gen-toggle" class="ghost" title="手动生成一页概念/主题综述">＋ 生成综述</button>
         </div>
@@ -250,6 +254,17 @@
         <p class="ag-note">不用记命令，用大白话说，它自己查库、读页码、写回综合。比如：</p>
         <ul class="ag-prompts" id="ag-prompts"></ul>
         <p class="ag-note ag-flow-hint">💡 更进一步：说「<b>帮我做一份带页码引用的资料汇编</b>」，它会检索 → 分节综述（引注到期刊印刷页）→ 诚实标缺口，产出自动存进「📖 综述库」随时复用。</p>
+      </section>
+
+      <!-- EN-F6：更多接入方式——OpenAPI 文档（自写脚本/非 MCP 框架）+ Claude Code 技能包 -->
+      <section class="ag-card">
+        <h3>③ 更多接入方式</h3>
+        <p class="ag-note"><b>🌐 自己写脚本？</b>本地服务自带一份「接口说明书」（OpenAPI 文档）：浏览器打开
+          <a href="http://127.0.0.1:8770/docs" target="_blank" rel="noopener">http://127.0.0.1:8770/docs</a>，
+          能看到全部接口、参数和试调按钮——不用 MCP 也能把库接进任何脚本或框架。</p>
+        <p class="ag-note"><b>📦 Claude Code 技能包（localkb-paper）：</b>装上它，Claude Code 不用你现场教，就知道怎么查库、按页码核对引注、写规范综述。
+          装法很简单：把下面这个文件夹<b>整个复制</b>到你项目的 <code>.claude/skills/</code> 目录下，新开一个会话就生效。</p>
+        <div class="ag-code"><code id="ag-skill-path">LocalKB\app\skills\localkb-paper</code><button class="ag-copy" data-copy="ag-skill-path">📋 复制路径</button></div>
       </section>
 
       <!-- 底部折叠：深索 / 权限 / 完整能力表（默认收起，一屏能装下上面的核心） -->
@@ -464,11 +479,32 @@
       <!-- 互链（出链）与反向链接（入链）：把孤立的页变成可走的图 -->
       <div id="wiki-links" class="wiki-links"></div>
       <div id="wiki-history" class="wiki-history" hidden></div>
+      <!-- EN-F7：核验一句话——不经 Agent 也能用核验器（调 /research/verify_claim），三态徽章+证据列表 -->
+      <div class="wiki-vtool">
+        <div class="wv-row">
+          <span class="wv-lbl" title="把综述里的一句论断粘进来，在你的文献库里查证据：支持 / 不符 / 没找到">🔎 核验一句话</span>
+          <input id="wv-claim" type="text" placeholder="粘贴综述里的一句论断，查库内证据是否支持（Enter 核验）" />
+          <button id="wv-go" class="ghost2b">核验</button>
+        </div>
+        <div id="wv-result" class="wv-result" hidden></div>
+      </div>
       <div class="modal-actions">
         <button id="wiki-hist" class="ghost" title="查看这一页的修改历史，可回滚">🕘 历史</button>
         <button id="wiki-regen" class="ghost">↻ 重新生成</button>
         <button id="wiki-discard" class="ghost danger">🗑 删除此综述</button>
         <button id="wiki-close" class="ghost">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- EN-F3：综述库时间线弹层（复用 .modal 样式；Esc/遮罩关闭对齐 W2 的做法，见 app.js） -->
+  <div id="wk-tl-modal" class="modal" hidden>
+    <div class="modal-box wk-tl-box">
+      <h3>🕘 综述库时间线</h3>
+      <p class="hint" id="wk-tl-src"></p>
+      <div id="wk-tl-list" class="wk-tl-list"></div>
+      <div class="modal-actions">
+        <button id="wk-tl-close" class="ghost">关闭</button>
       </div>
     </div>
   </div>

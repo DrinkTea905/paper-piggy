@@ -332,3 +332,75 @@ def suggest_sources(topic, topk=20, llm=None):
         "mismatch_undeep": mismatch[:20],    # 已有 PDF 但未深索的相关篇
         "gap_note": _gap_note(topic, hits, sym),
     }
+
+
+# ═══ EN-A6（契约9，G4）：生成式 AI 使用声明 ═══════════════════════════
+# 各页种 → "AI 参与环节"的表述（声明要说人话，不能让读者猜 digest 是什么）
+_KIND_ROLE = {
+    "digest": "资料汇编（带页级引注的文献综述初稿）",
+    "outline": "选题拆解与大纲启发",
+    "answer": "文献问答综合",
+    "concept": "概念综述",
+    "topic": "主题综述",
+    "entity": "实体页梳理",
+    "overview": "总论页演进",
+}
+
+
+def disclosure(page_ids):
+    """给一组 wiki 页生成《生成式人工智能使用声明》模板文本（中文）。返回纯文本 str。
+
+    只读各页 frontmatter/index 元数据（generated_by/generated_at/by_agent/verified_at），
+    **规则拼装、零 LLM**——披露必须是机械的事实陈述，声明本身绝不能再让 AI 发挥（G4）；
+    这也是它放在 research_assistant 而不用走 llm.py 的原因。"""
+    import time as _t
+    pages, missing = [], []
+    for pid in (page_ids or []):
+        p = W.get_page(pid)
+        if p:
+            pages.append(p)
+        else:
+            missing.append(str(pid))
+    if not pages:
+        tail = f"（未找到指定的页：{'、'.join(missing)}）" if missing else ""
+        return f"生成式人工智能使用声明\n\n本次未选定任何有效的综合页，无法汇总声明。{tail}"
+
+    # 模型清单：剔除降级标记（fallback/no-hits 不是模型名，写进声明会闹笑话）
+    models = sorted({(p.get("generated_by") or "").strip() for p in pages
+                     if (p.get("generated_by") or "").strip()
+                     and not W.is_degraded(p.get("generated_by", ""))})
+    dates = sorted({(p.get("generated_at") or "")[:10] for p in pages if p.get("generated_at")})
+    roles = sorted({_KIND_ROLE.get(p.get("kind"), "文献检索与材料梳理") for p in pages})
+    n_ver = sum(1 for p in pages if p.get("verified_at"))
+    n_agent = sum(1 for p in pages if p.get("by_agent"))
+
+    lines = ["生成式人工智能使用声明", "",
+             "本文写作过程中使用了生成式人工智能（AI）辅助工具（本地知识库应用 LocalKB），特此声明：", ""]
+    lines.append("一、使用的模型："
+                 + ("、".join(models) if models else "（未记录到模型标识：相应页为规则拼装或降级产物，未经 LLM 生成）")
+                 + "。")
+    if dates:
+        span = dates[0] if len(dates) == 1 else f"{dates[0]} 至 {dates[-1]}"
+        lines.append(f"二、使用日期：{span}。")
+    else:
+        lines.append("二、使用日期：（页面未记录生成时间）。")
+    lines.append(f"三、AI 参与环节：{'；'.join(roles)}。"
+                 "检索召回与引注页码由本地规则引擎生成（非 AI 生成），AI 仅依据本地文献库片段辅助起草综述文字。")
+    lines.append(f"四、人工核验状态：所涉 {len(pages)} 个综合页中 {n_ver} 页已人工核验"
+                 + (f"（其中 {n_agent} 页由 Agent 自动生成，需重点复核）" if n_agent else "")
+                 + "；未核验部分的事实、引注与观点归属均由作者逐一复核后方采用。")
+    lines.append("五、责任声明：文中最终观点、论证与文字由作者负责；AI 未用于生成判例、法条等规范性内容；"
+                 "全部引注均可回溯至本地文献库原文。")
+    lines.append("")
+    lines.append("附：所涉 AI 辅助产出页面明细")
+    for p in pages:
+        ver = p.get("verified_at") or "未核验"
+        by = "Agent 生成" if p.get("by_agent") else "人工触发生成"
+        lines.append(f"  - 《{p.get('title', '')}》（id={p.get('id')}，模型={p.get('generated_by') or '—'}，"
+                     f"生成于 {p.get('generated_at') or '—'}，{by}，核验：{ver}）")
+    if missing:
+        lines.append(f"  - （未找到的页 id：{'、'.join(missing)}，已跳过）")
+    lines.append("")
+    lines.append(f"（本声明由 LocalKB 依据各综合页元数据自动汇总生成，生成时间：{_t.strftime('%Y-%m-%d %H:%M:%S')}；"
+                 "内容为模板文本，投稿前请按目标期刊/院校的披露规范增删。）")
+    return "\n".join(lines)

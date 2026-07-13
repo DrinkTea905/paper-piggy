@@ -75,7 +75,8 @@ def copy_app():
             shutil.copy2(p, APP_OUT / p.name)
     # journal_grading = 期刊引用权重分级引擎（含 config/ 与 catalogs/ 目录数据）；必须整包带上，
     # 否则 retriever 里 import journal_grading 失败、权重回退旧离散档。
-    for sub in ("web", "docs", "journal_grading"):
+    # skills = Claude Code 技能包（EN-M7：localkb-paper 论文写作工作流），用户从包里复制到项目 .claude/skills/。
+    for sub in ("web", "docs", "journal_grading", "skills"):
         s = SRC / sub
         if s.exists():
             shutil.copytree(s, APP_OUT / sub, ignore=shutil.ignore_patterns("__pycache__"))
@@ -89,7 +90,7 @@ def copy_app():
     # 清理 pycache
     for pc in APP_OUT.rglob("__pycache__"):
         shutil.rmtree(pc, onerror=_rm_ro)
-    print(f"[bundle] app/ 就绪：{len(list(APP_OUT.glob('*.py')))} 个 .py + web/ + docs/")
+    print(f"[bundle] app/ 就绪：{len(list(APP_OUT.glob('*.py')))} 个 .py + web/ + docs/ + skills/")
 
 
 def _file_ver(path):
