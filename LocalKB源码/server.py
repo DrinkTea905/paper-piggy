@@ -12,7 +12,7 @@ import config as C
 import retriever as R
 import llm as L
 import wiki_store as W
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -23,7 +23,8 @@ app = FastAPI(title="本地知识库")
 #  proc/cancelled：整库深索(scope=all)跑在 subprocess 里，此前不留句柄 → 一旦开始无法停，
 #  可能空跑数小时并烧掉 API 额度。存下 Popen 供 POST /build/cancel 终止。
 BUILD = {"running": False, "stage": None, "log": [], "started": None, "rc": None,
-         "proc": None, "cancelled": False}
+         "proc": None, "cancelled": False,
+         "bulk": False}   # BF35：当前 deep 构建是否整库深索(scope=all)，队列批次为 False
 # B1：build 守卫锁——把「判 running + 置 True」做成原子并在调用线程内同步置位，
 # 杜绝多路触发并发起两个 build_all 子进程写坏同一 LanceDB/bm25/papers.jsonl。
 _BUILD_LOCK = threading.Lock()
@@ -128,7 +129,8 @@ def _auto_update_loop():
     while True:
         try:
             conf = S.load().get("auto_update", {}) or {}
-            interval = max(5, int(conf.get("interval_min", 30))) * 60
+            # BF24：兜底值统一取 settings.DEFAULT（此前 30/15/60 三处各说各话，改设置后行为不可预期）
+            interval = max(5, int(conf.get("interval_min", S.DEFAULT["auto_update"]["interval_min"]))) * 60
             time.sleep(60)
             if not conf.get("enabled", True):
                 continue
@@ -162,7 +164,9 @@ class AutoUpdateQ(BaseModel):
 def get_auto_update():
     import settings as S
     c = S.load().get("auto_update", {}) or {}
-    return {"enabled": bool(c.get("enabled", True)), "interval_min": int(c.get("interval_min", 15))}
+    # BF24：兜底统一走 settings.DEFAULT（60 分钟）
+    return {"enabled": bool(c.get("enabled", True)),
+            "interval_min": int(c.get("interval_min", S.DEFAULT["auto_update"]["interval_min"]))}
 
 @app.post("/setup/auto_update")
 def set_auto_update(q: AutoUpdateQ):
@@ -172,7 +176,9 @@ def set_auto_update(q: AutoUpdateQ):
     if q.interval_min is not None: patch["interval_min"] = max(5, int(q.interval_min))
     S.save({"auto_update": patch})
     c = S.load().get("auto_update", {})
-    return {"ok": True, "enabled": bool(c.get("enabled", True)), "interval_min": int(c.get("interval_min", 15))}
+    # BF24：兜底统一走 settings.DEFAULT（60 分钟）
+    return {"ok": True, "enabled": bool(c.get("enabled", True)),
+            "interval_min": int(c.get("interval_min", S.DEFAULT["auto_update"]["interval_min"]))}
 
 # ── 启动加载 ──────────────────────────────────────────────
 @app.on_event("startup")
@@ -183,6 +189,11 @@ def _startup():
         W.ensure_scaffold()
     except Exception as e:
         log_error("startup ensure_scaffold", repr(e))
+    try:
+        # BF34：深索标记文件（追加写）在重试/并发下会积累重复行，计数与判断随之虚高——启动自愈去重
+        _dedup_deep_marks()
+    except Exception as e:
+        log_error("startup dedup deep marks", repr(e))
     threading.Thread(target=_safe_load, daemon=True).start()
     threading.Thread(target=_auto_update_loop, daemon=True).start()
 
@@ -307,6 +318,9 @@ class ConnectQ(BaseModel):
 def setup_connect(q: ConnectQ):
     """校验数据源并返回条目数。source=folder → 选/建文件夹并计 PDF 数；否则读 zotero.sqlite。"""
     import settings as S
+    # BF17b：建库子进程正在读源（zotero 临时副本/受管文件夹），此时切换数据源会与之互踩
+    if BUILD["running"]:
+        return JSONResponse({"ok": False, "msg": "正在建库，稍后再试"}, status_code=400)
     if q.source == "folder":
         try:
             import folder_source as FS
@@ -332,7 +346,9 @@ def setup_connect(q: ConnectQ):
             papers = Z.load_papers(q.zotero_dir)
             n = len(papers)
             with_pdf = sum(1 for p in papers if p.get("has_pdf"))   # F1：向导计数区分「全库 / 将入库」
-            S.save({"source": "zotero"})              # 选 zotero 时把 source 切回 zotero
+            # BF2：用户手选的 zotero 数据目录此前校验完即丢，重启后 zotero_source 又退回自动探测；
+            # 空串=没手选（沿用自动探测），键名 zotero_dir 与 settings.DEFAULT / zotero_source 约定一致。
+            S.save({"source": "zotero", "zotero_dir": q.zotero_dir or ""})
             return {"ok": True, "source": "zotero.sqlite", "entries": n,
                     "with_pdf": with_pdf, "no_pdf": n - with_pdf,
                     "dir": q.zotero_dir or str(Z.detect_data_dir())}
@@ -499,9 +515,11 @@ def setup_sac(q: SacQ):
     elif q.enabled is not None:                           # 老前端只传 enabled 时的兼容路径
         patch["enabled"] = bool(q.enabled)
         patch["generator"] = "server" if q.enabled else "off"
-    if q.base: patch["base"] = q.base
+    # BF契约3：判空一律用 is not None——空字符串=用户清空该项要落盘；
+    # 旧的 if q.base 会把"清空 base/model"静默吞掉（前端 base/model 每次都发，key 仅 dirty 才发）。
+    if q.base is not None: patch["base"] = q.base
     if q.key is not None: patch["key"] = q.key
-    if q.model: patch["model"] = q.model
+    if q.model is not None: patch["model"] = q.model
     S.save({"sac": patch})
     sc = S.sac_conf()
     return {"ok": True, "generator": sc.get("generator"), "effective_ready": SAC.enabled()}
@@ -590,8 +608,9 @@ def setup_download_models():
 @app.get("/index/status")
 def index_status():
     manifest = json.loads(C.INDEX_MANIFEST.read_text(encoding="utf-8")) if C.INDEX_MANIFEST.exists() else {}
+    # BF33：去重计数——标记文件出现重复行时 len(split()) 虚高，与 /health 的 _deep_keys()（set）口径不一
     ek = C.STATE / "embedded_keys.txt"
-    deep = len(ek.read_text(encoding="utf-8").split()) if ek.exists() else 0
+    deep = len(set(ek.read_text(encoding="utf-8").split())) if ek.exists() else 0
     meta_done = len(C.META_EMBEDDED.read_text(encoding="utf-8").split()) if C.META_EMBEDDED.exists() else 0
     # C1/A2：扫描件/无文本篇数（记在 deep_no_text.txt，不算已深索）——供前端与深索汇总提示。
     nt = C.STATE / "deep_no_text.txt"
@@ -605,6 +624,9 @@ def index_status():
         "meta_done": meta_done, "deep_done": deep, "deep_no_text": deep_no_text,
         "building": BUILD["running"], "stage": BUILD["stage"], "log": BUILD["log"][-40:],
         "queue_pending": q_pending, "queue_in_flight": q_inflight,
+        # BF14：cancelled=本次构建是否被 /build/cancel 取消；rc=上次构建子进程退出码（未结束为 null）。
+        # 前端据此把「取消后仍显示构建中/误报完成」纠正为真实终态。
+        "cancelled": bool(BUILD.get("cancelled")), "rc": BUILD.get("rc"),
     }
 
 @app.get("/stats")
@@ -615,7 +637,8 @@ def stats_ep():
     # 深索数以实时 embedded_keys.txt 为准：stats_cache 在建 L 档时算，深索后不重算→会偏旧
     ek = C.STATE / "embedded_keys.txt"
     if ek.exists() and isinstance(s.get("coverage"), dict):
-        s["coverage"]["deep_indexed"] = len(ek.read_text(encoding="utf-8").split())
+        # BF33：去重计数——重复行会让「已深索 N 篇」虚高甚至超过总篇数
+        s["coverage"]["deep_indexed"] = len(_deep_keys())
     # 最近入库补 has_pdf/deep（供前端三态深索按钮，F45/副本#13）
     try:
         pap = _load_papers(); deepk = _deep_keys()
@@ -623,8 +646,9 @@ def stats_ep():
             p = pap.get(r.get("key"))
             r["has_pdf"] = bool(p.get("has_pdf")) if p else False
             r["deep"] = is_deep(r.get("key"), deepk)
-    except Exception:
-        pass
+    except Exception as e:
+        # BF18：静默 pass 会把 papers.jsonl 损坏等真故障吞成「最近入库按钮不对」，至少记一笔
+        log_error("stats recent enrich", repr(e))
     # F38-B：期刊分级分布按当前锁定学科现算（命中缓存则替换 by_tier/by_journal；
     # 未命中则后台预热、本次先返回建库时的旧分布并标 grading_pending，前端稍后刷新）。
     try:
@@ -674,6 +698,23 @@ def _deep_no_text_keys():
        这些篇不算已深索、也无法深索——前端据此标「🚫 扫描件·需OCR」而非「未深索」。"""
     nt = C.STATE / "deep_no_text.txt"
     return set(nt.read_text(encoding="utf-8").split()) if nt.exists() else set()
+
+def _dedup_deep_marks():
+    """BF34：深索标记文件是追加写，批次重试/进程中断会留下重复行——启动时保序去重、
+       tmp+os.replace 原子重写自愈（与 BF33 的读侧去重配套，治本在此）。"""
+    for f in (C.STATE / "embedded_keys.txt", C.STATE / "deep_no_text.txt"):
+        try:
+            if not f.exists():
+                continue
+            lines = f.read_text(encoding="utf-8").split()
+            uniq = list(dict.fromkeys(lines))          # 保序去重
+            if len(uniq) < len(lines):
+                tmp = f.with_name(f.name + ".tmp")
+                tmp.write_text("\n".join(uniq) + "\n", encoding="utf-8")
+                os.replace(tmp, f)
+                print(f"[server] 已清理 {len(lines) - len(uniq)} 条重复深索标记（{f.name}）", flush=True)
+        except Exception as e:
+            log_error("dedup deep marks", repr(e))
 
 def _rec_score(p, g=None):
     """值得读打分：期刊权重为主 + 新近度 + 有 PDF（可深读）。
@@ -879,6 +920,9 @@ def deep_queue_status():
             "eta_seconds": eta_seconds, "items": items,
             # 兼容旧前端字段
             "in_flight_keys": inflight_keys,
+            # BF35：bulk=当前 deep 构建是整库深索(scope=all)；队列批次为 false。
+            # 前端据此区分「整库深索中」与「队列批次在跑」两种进度文案。
+            "bulk": bool(BUILD.get("bulk")),
             "building": BUILD["running"], "stage": BUILD["stage"]}
 
 class DeepPauseQ(BaseModel):
@@ -1109,7 +1153,9 @@ def similar_keywords(q: SimilarQ):
         return {"ok": True, "keywords": ""}
     base, model = L.resolve(q.provider, q.base_url, q.model)
     key = q.api_key
-    if not key:
+    # BF8：key 外发守卫（仿 /chat）——检索引擎的 SiliconFlow key 只准回填给 SiliconFlow 的 base，
+    # 否则用户任填一个第三方 base 就会把 key 发出去。无 key 时返回空 keywords，前端退本地分词。
+    if not key and "siliconflow" in (base or "").lower():
         try:
             import settings as S
             key = (S.api_conf() or {}).get("key", "")
@@ -1201,6 +1247,22 @@ def wiki_stale(page_id: str, q: WikiStaleQ):
         return JSONResponse({"ok": False, "detail": str(e)}, status_code=404)
     except Exception as e:
         log_error("wiki/stale", repr(e), traceback.format_exc())
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
+
+class WikiVerifyQ(BaseModel):
+    page_id: str
+
+@app.post("/wiki/verify")
+def wiki_verify(q: WikiVerifyQ):
+    """W3：人工核验盖章——页面 frontmatter/index/内存三处写 verified_at。
+       只给 UI 用，不做成 MCP 工具（核验是人的动作，agent 不得给自己的产出盖章）。"""
+    try:
+        r = W.set_verified(q.page_id)
+        return {"ok": True, "verified_at": r["verified_at"]}
+    except ValueError as e:
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=404)
+    except Exception as e:
+        log_error("wiki/verify", repr(e), traceback.format_exc())
         return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
 
 @app.get("/wiki/backlinks")
@@ -1490,7 +1552,7 @@ def research_export_docx_get(page_id: str):
 @app.get("/papers")
 def papers(collection: Optional[str] = None, topic: Optional[int] = None,
            category: Optional[str] = None, deep: Optional[str] = None,
-           sort: str = "recommend", limit: int = 300):
+           sort: str = "recommend", limit: int = 300, offset: int = 0):
     papers = _load_papers(); cats = _load_cats(); deepk = _deep_keys()
     notextk = _deep_no_text_keys()   # C1/A2：扫描件集合
     if category and category.startswith("kbc_"):
@@ -1540,7 +1602,9 @@ def papers(collection: Optional[str] = None, topic: Optional[int] = None,
         out.sort(key=lambda x: -_y(x))
     elif sort == "ingested":
         out.sort(key=lambda x: x.get("ingested_at", ""), reverse=True)   # 最新入库优先
-    return {"papers": out[:limit], "total": len(out),
+    # W1：分页出口——大库此前只能看到前 limit 篇，其余永远翻不到；total=过滤后总数供前端算页数
+    off = max(0, int(offset or 0))
+    return {"papers": out[off:off + limit], "total": len(out),
             "collection": collection, "topic": topic, "category": category, "deep": deep, "sort": sort}
 
 # ── 单篇手动改档（法源权重改造 2026-07-12）──────────────────
@@ -1671,6 +1735,14 @@ def read_source(key: str, from_page: int = 1, to_page: int = 0, max_chars: int =
 # ── 三档索引触发 ──────────────────────────────────────────
 @app.post("/index/light")
 def index_light_ep():
+    # BF9：即时索引此前完全绕开构建锁——与 build 子进程并发重写 papers.jsonl/bm25 会写坏索引。
+    # 与 /index/deep(scope=all) 同款约定：忙时返回 {ok:false,busy:true}，前端已能处理 ok:false。
+    with _BUILD_LOCK:
+        if BUILD["running"]:
+            return {"ok": False, "busy": True, "msg": "已有构建任务在跑，请稍后再试"}
+        BUILD["running"] = True; BUILD["stage"] = "light"
+        BUILD["started"] = time.time(); BUILD["rc"] = None; BUILD["cancelled"] = False
+        BUILD["log"] = ["[light] 即时索引启动…"]   # 不留上次构建的日志尾巴
     try:
         import importlib, index_light as IL
         importlib.reload(IL)
@@ -1680,11 +1752,17 @@ def index_light_ep():
             importlib.reload(BC); BC.main()          # 只读 zotero.sqlite，约 1s；失败不影响词法索引
         except Exception as e:
             log_error("index/light categories", repr(e), traceback.format_exc())
+        # BF9：仿 _run_build 的重载窗口——先置未就绪，防 tbl 新旧错位时检索拿到错误的空命中
+        R.STATE["ready"] = False
         R.load_all()
         return {"ok": True, **stats["coverage"]}
     except Exception as e:
         log_error("index/light", repr(e), traceback.format_exc())
         return JSONResponse({"ok": False, "msg": str(e)}, status_code=500)
+    finally:
+        with _BUILD_LOCK:
+            BUILD["running"] = False
+            BUILD["stage"] = ""
 
 def _child_env():
     """任务五：子进程统一 env——强制 UTF-8 输出（PYTHONIOENCODING）+ 开 UTF-8 模式（PYTHONUTF8=1），
@@ -1703,6 +1781,8 @@ def _run_build(stage, extra=None, on_done=None):
         BUILD["running"] = True; BUILD["stage"] = stage; BUILD["started"] = time.time()
         BUILD["log"] = [f"[{stage}] 启动…"]; BUILD["rc"] = None
         BUILD["proc"] = None; BUILD["cancelled"] = False
+        # BF35：整库深索(scope=all)标记——extra 形如 ["--scope","all"]；队列批次是 "keys:..."，不算 bulk
+        BUILD["bulk"] = bool(stage == "deep" and "all" in (extra or []))
     def run():
         rc = None
         try:
@@ -1737,6 +1817,7 @@ def _run_build(stage, extra=None, on_done=None):
             with _BUILD_LOCK:
                 BUILD["running"] = False
                 BUILD["stage"] = ""          # F4：构建结束复位 stage，避免残留 "deep" 让顶栏误报「深索中」
+                BUILD["bulk"] = False        # BF35：构建结束复位整库深索标记
             # A3/A4：把 returncode 贯通给回调（失败时上层决定退回队列/不推进 sig）。
             if on_done:
                 try:
@@ -1759,6 +1840,20 @@ def _run_build(stage, extra=None, on_done=None):
 def build_ep():
     return {"ok": _run_build("all")}
 
+def _kill_tree(p):
+    """BF7：Windows 下 p.terminate() 只杀 build_all 本体，它派生的孙进程（嵌入/抽取 worker）
+       会变孤儿继续跑、继续烧 API 额度——taskkill /T /F 终止整棵进程树；失败兜底 terminate 并记日志。"""
+    if sys.platform == "win32":
+        try:
+            r = subprocess.run(["taskkill", "/PID", str(p.pid), "/T", "/F"],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
+            if r.returncode == 0:
+                return
+            log_error("build/cancel taskkill", f"taskkill rc={r.returncode}，兜底 terminate")
+        except Exception as e:
+            log_error("build/cancel taskkill", repr(e))
+    p.terminate()
+
 @app.post("/build/cancel")
 def build_cancel():
     """取消正在跑的建库/深索子进程。整库深索(scope=all)此前一旦开始就停不下来，
@@ -1775,7 +1870,7 @@ def build_cancel():
     except Exception as e:
         log_error("build/cancel pause-queue", repr(e))
     try:
-        p.terminate()
+        _kill_tree(p)   # BF7：杀整棵进程树，孙进程不再漏网
     except Exception as e:
         log_error("build/cancel", repr(e), traceback.format_exc())
         return JSONResponse({"ok": False, "detail": f"终止失败：{e}"}, status_code=500)
@@ -1968,7 +2063,12 @@ def _deep_agent_run(q: DeepAgentQ):
     # ① 带 summaries：写进 summaries.json，再阻塞跑 deep_embed 把上一批带摘要嵌入（标记已深索）
     if q.summaries:
         wrote = SAC.write_summaries([{"key": s.key, "summary": s.summary} for s in q.summaries])
-        _run_stage_blocking("deep_embed")
+        # BF16：接住子阶段退出码——此前 rc≠0（余额不足/网络断）也照样返回 ok:true，
+        # agent 会向用户误报「已嵌入入库」，实际一篇都没进。
+        rc = _run_stage_blocking("deep_embed")
+        if rc != 0:
+            return {"ok": False, "stage": "deep_embed",
+                    "error": f"深索子阶段失败(rc={rc})：可能是 API 余额不足或网络问题，请稍后重试"}
         try:                              # 嵌入后重载索引，让新深索的篇立刻可检索
             R.STATE["ready"] = False
             R.load_all()
@@ -1984,7 +2084,11 @@ def _deep_agent_run(q: DeepAgentQ):
     to_summarize = []
     if batch:
         keys = [p["key"] for p in batch]
-        _run_stage_blocking("deep_prepare", ["--scope", "keys:" + ",".join(keys)])
+        # BF16：deep_prepare 失败（抽取/切块子进程崩）时 excerpt 都是空的，agent 拿去写摘要毫无意义
+        rc = _run_stage_blocking("deep_prepare", ["--scope", "keys:" + ",".join(keys)])
+        if rc != 0:
+            return {"ok": False, "stage": "deep_prepare",
+                    "error": f"深索子阶段失败(rc={rc})：可能是 API 余额不足或网络问题，请稍后重试"}
         for p in batch:
             to_summarize.append({"key": p["key"], "title": p.get("title", ""),
                                  "excerpt": _extracted_excerpt(p["stem"])})
@@ -2005,6 +2109,7 @@ def index_deep_agent(q: DeepAgentQ):
             return {"ok": False, "busy": True}
         BUILD["running"] = True; BUILD["stage"] = "deep_agent"
         BUILD["started"] = time.time(); BUILD["rc"] = None
+        BUILD["cancelled"] = False       # BF14：每次构建开始都复位取消标记，避免上次取消残留误报
     try:
         return _deep_agent_run(q)
     except Exception as e:
@@ -2026,10 +2131,21 @@ class SearchQ(BaseModel):
 @app.post("/search")
 def search(q: SearchQ):
     if not R.STATE.get("ready"):
-        return JSONResponse({"error": "索引未就绪，请先在首启向导里建立即时索引", "ready": False}, status_code=503)
+        # UX8：两态文案——建过库只是重建/重载窗口（稍等即可），从未建库才需要走向导；
+        # 此前一律"先建立即时索引"，害老用户在重载的几秒里被误导去重建。
+        msg = ("索引正在重建或加载，请稍候几秒再搜" if C.INDEX_MANIFEST.exists()
+               else "还没建立索引——请到 设置 → 重新查看引导 完成首次建库")
+        return JSONResponse({"error": msg, "ready": False}, status_code=503)
     t0 = time.time()
     keys = _resolve_category_keys(q.category)
-    res = R.search(q.query, q.topk, q.sort, q.min_weight, keys=keys)
+    try:
+        res = R.search(q.query, q.topk, q.sort, q.min_weight, keys=keys)
+    except Exception as e:
+        # BF36：API 模式下嵌入/重排后端挂了（余额0/断网）此前抛成裸 500「服务器内部错误」，
+        # 用户不知道该去哪修——detail 给人话，前端 jpost 已会读 detail 展示。
+        log_error("search", repr(e), traceback.format_exc())
+        raise HTTPException(status_code=500,
+                            detail=f"{e}（→ 请到 设置 检查检索引擎 API Key 或余额）")
     return {"query": q.query, "mode": R.STATE.get("mode"), "category": q.category,
             "took_ms": round((time.time() - t0) * 1000), "results": res}
 

@@ -18,15 +18,22 @@ def sql_quote(s) -> str:
     return str(s).replace("'", "''")
 
 
-def key_predicate(keys):
+def key_predicate(keys, row_type=None):
     """由**原始文献 key** 列表构造 `key = '...' OR ...` 谓词（已转义单引号）。
 
     传入空列表 / 全为假值时返回 None（调用方应据此跳过 delete，避免误删全表）。
+
+    BF4：可选 row_type 把删除圈定到单一行型。meta 行与 chunk 行同 key 共存于一张表
+    （见 import_fulltext.py:6），增量重嵌时不带 row_type 的裸 key 谓词会把另一档
+    辛苦建好的行连带删掉。调用方需自行确认表里有 row_type 列（旧表可能没有）。
     """
     keys = [k for k in keys if k]
     if not keys:
         return None
-    return " OR ".join(f"key = '{sql_quote(k)}'" for k in keys)
+    pred = " OR ".join(f"key = '{sql_quote(k)}'" for k in keys)
+    if row_type:
+        pred = f"({pred}) AND row_type = '{sql_quote(row_type)}'"
+    return pred
 
 
 def original_key_for_stem(stem: str):

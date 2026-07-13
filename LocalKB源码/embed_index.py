@@ -37,6 +37,10 @@ def load_done():
     return set()
 
 def mark_done(key):
+    # BF27：历史上曾出现两个构建进程并发双跑，同 stem 被追加两遍、深索计数虚高——
+    # 追加前先读现有集合防重（文件只有几千行，每次全读的代价可忽略）。
+    if KEYS_FILE.exists() and key in set(KEYS_FILE.read_text(encoding="utf-8").split()):
+        return
     with open(KEYS_FILE, "a", encoding="utf-8") as f:
         f.write(key + "\n")
 
@@ -81,15 +85,16 @@ def main():
             bm25_covers = (n_bm25 == tbl.count_rows())
         except Exception:
             bm25_covers = False
-    print(f"[embed] chunk文件 {len(files)}，待嵌入 {len(todo)}（已嵌 {len(done)}）")
+    # BF7b：本文件所有阶段性 print 统一 flush——孤儿进程靠写 stdout 触发 OSError 自灭，缓冲会拖慢这一步
+    print(f"[embed] chunk文件 {len(files)}，待嵌入 {len(todo)}（已嵌 {len(done)}）", flush=True)
 
     # 无新增、且 bm25 已覆盖全表 -> 秒退（不加载模型、不重建 bm25）。每日自动任务的常态。
     if not todo and bm25_covers:
-        print("[embed] 无新增文献，索引已最新，跳过。")
-        print(f"[done] 表总行数 ≈ {tbl.count_rows()}")
+        print("[embed] 无新增文献，索引已最新，跳过。", flush=True)
+        print(f"[done] 表总行数 ≈ {tbl.count_rows()}", flush=True)
         return
     if not todo and bm25_exists and not bm25_covers:
-        print("[embed] 无新增文献，但 bm25 与表行数不符（疑似上次重建前被中断），将重建 bm25。")
+        print("[embed] 无新增文献，但 bm25 与表行数不符（疑似上次重建前被中断），将重建 bm25。", flush=True)
 
     summaries = load_summaries()
     # 自动 SAC（M2）：若在设置里开启，先给待办篇里"缺摘要"的用 LLM(SiliconFlow免费) 生成，再嵌入时自动拼前缀。
@@ -119,12 +124,12 @@ def main():
     if todo:
         from embedder import get_embedder
         import settings as S
-        print("[model] 加载嵌入器（" + ("API" if S.is_api() else "本地 bge-m3 ONNX-INT8") + "）...")
+        print("[model] 加载嵌入器（" + ("API" if S.is_api() else "本地 bge-m3 ONNX-INT8") + "）...", flush=True)
         print(f"[model] 文档摘要前缀(SAC): 已加载 {len(summaries)} 篇摘要" if summaries
-              else "[model] 未发现 summaries.json，按纯文本嵌入（无 SAC 前缀）")
+              else "[model] 未发现 summaries.json，按纯文本嵌入（无 SAC 前缀）", flush=True)
         tm = time.time()
         model = get_embedder(batch_size=args.batch)
-        print(f"[model] 就绪 {time.time()-tm:.0f}s")
+        print(f"[model] 就绪 {time.time()-tm:.0f}s", flush=True)
         t0 = time.time()
         _now = time.strftime("%Y-%m-%d %H:%M:%S")
         for i, f in enumerate(todo, 1):
@@ -159,7 +164,10 @@ def main():
             else:
                 # 幂等：add 前先按原始 key 删可能残留的旧行（防上次在 add 后、mark_done 前
                 # 被杀导致同篇重复入库）。正常增量时该 key 不在表，删 0 行无副作用。
-                pred = key_predicate([rows[0].get("key")])
+                # BF4：只删 chunk 行——meta 行与 chunk 行同 key 共存（见 import_fulltext.py:6），
+                # 裸 key 谓词会把语义层的 meta 行连带删掉；旧表无 row_type 列时退回裸谓词。
+                pred = key_predicate([rows[0].get("key")],
+                                     row_type="chunk" if "row_type" in tbl.schema.names else None)
                 if pred:
                     tbl.delete(pred)
                 tbl.add(rows)
@@ -167,26 +175,28 @@ def main():
             if i % 50 == 0 or i == len(todo):
                 el = time.time() - t0
                 rate = n_chunks / el if el else 0
-                print(f"  {i}/{len(todo)}  块 {n_chunks}  {el:.0f}s  ({rate:.0f} 块/s)")
-        print(f"[embed] 完成，新增 {n_chunks} 块（含 SAC 摘要前缀的文献 {n_sum} 篇），用时 {time.time()-t0:.0f}s")
+                # BF7b：循环内进度必须 flush——父进程（server）被杀后管道断裂，带缓冲的 print
+                # 要攒满 8KB 才触发 OSError，孤儿进程能多跑几十分钟；flush 让它尽快自灭。
+                print(f"  {i}/{len(todo)}  块 {n_chunks}  {el:.0f}s  ({rate:.0f} 块/s)", flush=True)
+        print(f"[embed] 完成，新增 {n_chunks} 块（含 SAC 摘要前缀的文献 {n_sum} 篇），用时 {time.time()-t0:.0f}s", flush=True)
 
     # ---- bm25s 重建：仅当有新增或索引缺失 ----
     if not args.skip_bm25 and tbl is not None and (n_chunks > 0 or not bm25_covers):
         import bm25s
-        print("[bm25] 读取全表 ...")
+        print("[bm25] 读取全表 ...", flush=True)
         d = tbl.to_arrow().to_pydict()
         ids, texts = d["chunk_id"], d["text"]
-        print(f"[bm25] 分词 {len(texts)} 块 ...")
+        print(f"[bm25] 分词 {len(texts)} 块 ...", flush=True)
         t1 = time.time()
         corpus_tokens = [tokenize(t) for t in texts]
-        print(f"[bm25] 分词用时 {time.time()-t1:.0f}s，建索引 ...")
+        print(f"[bm25] 分词用时 {time.time()-t1:.0f}s，建索引 ...", flush=True)
         retriever = bm25s.BM25()
         retriever.index(corpus_tokens)
         retriever.save(str(C.BM25_DIR))
         (C.BM25_DIR / "bm25_ids.json").write_text(json.dumps(ids, ensure_ascii=False), encoding="utf-8")
-        print(f"[bm25] 完成，{len(ids)} 文档 -> {C.BM25_DIR}")
+        print(f"[bm25] 完成，{len(ids)} 文档 -> {C.BM25_DIR}", flush=True)
 
-    print(f"[done] 表总行数 ≈ {tbl.count_rows() if tbl is not None else 0}")
+    print(f"[done] 表总行数 ≈ {tbl.count_rows() if tbl is not None else 0}", flush=True)
 
 if __name__ == "__main__":
     main()

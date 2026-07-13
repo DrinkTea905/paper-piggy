@@ -5,7 +5,7 @@
 存 sidecar，不进 LanceDB 表。供「浏览」tab 按收藏夹探索文献。
 用法: python build_categories.py
 """
-import sys, json, sqlite3, shutil, tempfile, time
+import sys, os, json, sqlite3, shutil, tempfile, time
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import config as C
@@ -27,19 +27,48 @@ def main():
     d = Z.detect_data_dir()
     if not d:
         print("[cat] 未探测到 zotero.sqlite（收藏夹功能需要 Zotero）"); return
-    tmp = Path(tempfile.gettempdir()) / "localkb_zotero_cat.sqlite"
-    shutil.copy2(d / "zotero.sqlite", tmp)
-    con = sqlite3.connect(f"file:{tmp}?mode=ro", uri=True)
-    cur = con.cursor()
-    def q(sql, a=()): return cur.execute(sql, a).fetchall()
+    # BF17：临时副本改 mkstemp 唯一路径（同 zotero_source.load_papers）——固定文件名会与
+    # 并发的 build/自动更新互踩读到半截库；-wal/-shm 一并复制拿一致快照，用完三件套删除。
+    fd, _tmp_name = tempfile.mkstemp(prefix="localkb_zotero_cat_", suffix=".sqlite")
+    os.close(fd)
+    tmp = Path(_tmp_name)
+    con = None
+    try:
+        try:
+            shutil.copy2(d / "zotero.sqlite", tmp)
+            for ext in ("-wal", "-shm"):
+                src = d / ("zotero.sqlite" + ext)
+                if src.exists():
+                    try:
+                        shutil.copy2(src, Path(str(tmp) + ext))
+                    except Exception:
+                        pass
+        except Exception as e:
+            print(f"[cat] 复制 zotero.sqlite 到临时目录失败（{e}），本轮跳过收藏夹树", flush=True)
+            return
+        con = sqlite3.connect(f"file:{tmp}?mode=ro", uri=True)
+        cur = con.cursor()
+        def q(sql, a=()): return cur.execute(sql, a).fetchall()
 
-    LIB = 1  # 我的文库
-    cols = q("SELECT collectionID, collectionName, parentCollectionID FROM collections WHERE libraryID=?", (LIB,))
-    # 收藏夹 → item keys（排除已删除）
-    ci = q("""SELECT ci.collectionID, i.key FROM collectionItems ci
-      JOIN items i ON ci.itemID=i.itemID
-      WHERE i.libraryID=? AND i.itemID NOT IN (SELECT itemID FROM deletedItems)""", (LIB,))
-    con.close()
+        LIB = 1  # 我的文库
+        cols = q("SELECT collectionID, collectionName, parentCollectionID FROM collections WHERE libraryID=?", (LIB,))
+        # 收藏夹 → item keys（排除已删除）
+        ci = q("""SELECT ci.collectionID, i.key FROM collectionItems ci
+          JOIN items i ON ci.itemID=i.itemID
+          WHERE i.libraryID=? AND i.itemID NOT IN (SELECT itemID FROM deletedItems)""", (LIB,))
+        con.close()
+    finally:
+        # Windows 上连接不关文件删不掉，先兜底 close 再删三件套
+        try:
+            if con is not None:
+                con.close()
+        except Exception:
+            pass
+        for p in (tmp, Path(str(tmp) + "-wal"), Path(str(tmp) + "-shm")):
+            try:
+                p.unlink(missing_ok=True)
+            except Exception:
+                pass
 
     keys_of_cid = {}
     for cid, key in ci:

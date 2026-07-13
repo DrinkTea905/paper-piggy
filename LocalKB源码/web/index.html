@@ -304,6 +304,8 @@
       <label>限定分类
         <select id="chat-cat"><option value="">全部文献</option></select>
       </label>
+      <!-- UX5：新对话——清空上下文与聊天记录，恢复欢迎语（不影响已保存的综述页） -->
+      <button id="chat-new" class="ghost2b" type="button" title="清空当前对话记录与上下文，开始一个新话题">🧹 新对话</button>
       <button id="chat-agent-link" class="chat-agent-link" type="button"
         title="接入 Claude Code / Codex，可跨会话积累、系统化综述、把结论沉淀复用">💡 想跨会话积累、系统综述？接入 🤖 Agent 效果更好 →</button>
     </div>
@@ -331,7 +333,8 @@
         <p class="hint">「法学（开发者增强）」是开发者的私人法学期刊分级（含台湾刊 / 顶尖外文法评等），欢迎试用。想调具体分数或顶刊名单属于高级微调，告诉开发者即可。</p>
       </div>
 
-      <div class="set-section">
+      <!-- UX9：锚点 id 供「去配 Key」类入口 scrollIntoView 直达 -->
+      <div class="set-section" id="sec-engine">
         <h4>🔎 检索引擎（嵌入 / 重排）</h4>
         <p class="hint">检索用的向量引擎。填一个 SiliconFlow 免费 Key，检索、对话、深索摘要、文件夹抽题录都共用它——<b>一次配好、全局通用</b>。⚠️ 已建过库后更换引擎（本地↔API 或换模型），旧向量不兼容，点「应用检索引擎」会自动重建。</p>
         <label class="eng-mode"><input type="radio" name="eng-backend" value="local" /> 🔒 本地模型（离线，需 ~1.2GB 模型）</label>
@@ -354,7 +357,8 @@
       </div>
 
       <div class="set-section">
-        <h4>🧬 深索摘要（AI 摘要当检索前缀，提升召回）</h4>
+        <!-- UX11：去掉「检索前缀/召回」黑话，说人话 -->
+        <h4>🧬 深索摘要（先为每篇生成 AI 摘要，让检索更容易找准这篇）</h4>
         <p class="hint">给每篇深索文献生成 ~150 字摘要当检索前缀，更易被搜到。选择<b>由谁来生成</b>（一点即存）：</p>
         <div class="sac-gen">
           <label class="sac-gen-opt"><input type="radio" name="sac-gen" value="agent" />
@@ -362,7 +366,7 @@
           <label class="sac-gen-opt"><input type="radio" name="sac-gen" value="server" />
             <span><b>服务端自动生成</b>（用你配的 API Key，耗额度）<br><small>在应用内点深索时，后端调 SiliconFlow 等自动补摘要，全自动、无需 Agent 参与。</small></span></label>
           <label class="sac-gen-opt"><input type="radio" name="sac-gen" value="off" />
-            <span><b>不生成</b><br><small>深索只做全文切块，不额外生成摘要前缀。</small></span></label>
+            <span><b>不生成</b><br><small>深索只把全文拆成可检索的小段，不额外生成摘要。</small></span></label>
         </div>
         <div id="sac-status" class="sac-status hint"></div>
         <details class="sac-adv">

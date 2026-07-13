@@ -15,7 +15,8 @@
       cancel.textContent = opts.cancelText || "取消";
       ok.className = opts.danger ? "danger-btn" : "";
       m.hidden = false;
-      setTimeout(() => ok.focus(), 0);
+      // UX12：危险操作默认聚焦「取消」，防止手快连敲 Enter 误删
+      setTimeout(() => (opts.danger ? cancel : ok).focus(), 0);
       const done = (v) => {
         m.hidden = true;
         ok.removeEventListener("click", onOk);
@@ -29,7 +30,8 @@
       const onBackdrop = (e) => { if (e.target === m) done(false); };   // 点遮罩=取消
       const onKey = (e) => {
         if (e.key === "Escape") { e.preventDefault(); done(false); }
-        else if (e.key === "Enter") { e.preventDefault(); done(true); }
+        // UX12：danger 时 Enter 默认落在「取消」上（除非用户已把焦点移到「确定」）
+        else if (e.key === "Enter") { e.preventDefault(); done(document.activeElement === ok ? true : !opts.danger); }
       };
       ok.addEventListener("click", onOk);
       cancel.addEventListener("click", onCancel);
@@ -78,11 +80,27 @@
     _toastTimer = setTimeout(() => el.classList.remove("show"), 4000);
   }
 
-  async function jget(url) { const r = await fetch(url); if (!r.ok) throw new Error(url + " " + r.status); return r.json(); }
+  // BF11：jget 也要读后端人话（detail/error/msg），之前只修了 jpost，jget 仍吞成「/path 500」
+  async function jget(url) {
+    const r = await fetch(url);
+    if (!r.ok) {
+      let j = null; try { j = await r.json(); } catch (e) {}
+      throw new Error((j && (j.detail || j.error || j.msg)) || (url + " " + r.status));
+    }
+    return r.json();
+  }
   async function jpost(url, body) {
     const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
     let j = null; try { j = await r.json(); } catch (e) {}
     // A7：后端把「人话」错误常放在 msg（如「请先完全退出 Zotero」）——一并读取，别再吞成「/path 400」
+    if (!r.ok) throw new Error((j && (j.detail || j.error || j.msg)) || (url + " " + r.status));
+    return j;
+  }
+  // BF12：PATCH/DELETE 等任意方法的统一封装——错误解析同 jpost，别再用裸 fetch 静默吞掉 4xx 原因
+  async function jsend(url, method, body) {
+    const r = await fetch(url, { method, headers: { "Content-Type": "application/json" },
+      body: body != null ? JSON.stringify(body) : undefined });
+    let j = null; try { j = await r.json(); } catch (e) {}
     if (!r.ok) throw new Error((j && (j.detail || j.error || j.msg)) || (url + " " + r.status));
     return j;
   }
@@ -147,7 +165,8 @@
     let h = null, st = null;
     try { h = await jget("/health"); } catch (e) {}
     try { st = await jget("/index/status"); } catch (e) {}
-    if (!h) { s.textContent = "服务未连接"; s.className = "status err"; hideProgress(); return; }
+    // BF14：/health 失败早退时清掉 wasDeepBusy，防止后端重启后误弹一次「深索完成」
+    if (!h) { s.textContent = "服务未连接"; s.className = "status err"; hideProgress(); wasDeepBusy = false; return; }
     // 顶栏状态统一用「已深索 x/y 篇」口径（F47）：y=有PDF可深索的篇数，x=已深索数。
     // 全应用只保留「已深索/未深索」一套说法，去掉「词法就绪/全文就绪」等黑话。
     const papers = h.papers != null ? h.papers : h.n;
@@ -179,11 +198,13 @@
         if (dashLoaded) loadDashboard("silent");
         // B4：若正在「浏览」页且已加载，静默刷新列表与分类，否则卡片仍显示「未深索」误导重复触发
         if (browseLoaded && !$("#panel-browse").hidden) { loadPapers(); loadKbCats(); }
-        // F7：深索转闲，弹一句完成提示（跨页浮层，非浏览页也可见）
-        flashToast("✓ 深索完成，相关文献已可精读到页码。");
+        // BF14：结束≠成功——按后端 cancelled/rc 区分「手动停止 / 异常中断 / 真完成」，不再一律报 ✓
+        if (st.cancelled) flashToast("已停止深索，已完成部分已保存。");
+        else if (st.rc != null && st.rc !== 0) flashToast("⚠ 深索中断（原因见深索详情面板），已完成部分已保存。");
+        else flashToast("✓ 深索完成，相关文献已可精读到页码。");
       }
       wasDeepBusy = deepBusyNow;
-    } else { hideProgress(); }
+    } else { hideProgress(); wasDeepBusy = false; }   // BF14：status 拉不到时清标记，恢复后不凭旧标记补发迟到 toast
   }
   poll(); setInterval(poll, 4000);
 
@@ -256,7 +277,10 @@
       const pending = q.pending || 0, inflight = q.in_flight || 0;
       const building = !!q.building, stage = q.stage || "";
       const undeep = Math.max(0, withPdf - deep);
-      const bulkDeep = building && stage === "deep" && inflight === 0 && pending === 0;  // 整库深索(scope=all)不走队列
+      // BF31：整库深索以后端 /index/queue 的 bulk 字段为准（队列批次也可能瞬时 inflight=0，旧推断会误报「整库」）；
+      // 旧后端没有 bulk 字段（undefined）时回退旧推断，保持兼容
+      const bulkDeep = building && stage === "deep" &&
+        (q.bulk === true || (q.bulk === undefined && inflight === 0 && pending === 0));
       const queueActive = inflight > 0 || pending > 0;
       // F4：分「整库深索中 / 队列进行中 / 空闲」三态，空闲不再假显示「深索中」，无可暂停对象时藏起暂停按钮
       let stat, eta = _etaText(q.eta_seconds), listEmpty;
@@ -264,8 +288,10 @@
         stat = `整库深索进行中… 已深索 <b>${num(deep)}</b> / ${num(withPdf)} 篇`;
         listEmpty = "正在整库深索（本批完成后自动继续下一批）";
       } else if (queueActive) {
+        // BF31：点明队列态只深索用户点选/排队的那些，别让人误以为在整库深索
         stat = `已深索 <b>${num(deep)}</b> / ${num(withPdf)} 篇 · 队列剩余 <b>${num(pending)}</b> 篇`
-          + (inflight ? ` · 正在处理 ${num(inflight)} 篇` : "");
+          + (inflight ? ` · 正在处理 ${num(inflight)} 篇` : "")
+          + `（仅深索你勾选/排队的文献）`;
         listEmpty = DP.paused ? "已暂停，暂无正在深索的文献" : "暂无正在深索的文献";
       } else {
         stat = `深索队列已空 · ` + (undeep > 0
@@ -392,22 +418,36 @@
   async function findSimilar(key, title) {
     if (!key) { switchToSearch(title || ""); return; }
     switchTab("search");
-    $("#q").value = `与「${(title || "").slice(0, 24)}${(title || "").length > 24 ? "…" : ""}」相似`;
+    // UX7：不再把「与「XX」相似」这种伪查询塞进 #q（用户会误当成自己的检索词）——#q 保持原输入，
+    // 相似态改由 #s-msg 的提示条表达，点「清除」即回到普通检索
+    const tShort = (title || "").slice(0, 24) + ((title || "").length > 24 ? "…" : "");
+    // BF13：找相似占用检索序号——既作废在途的旧 doSearch，自己的响应也要判序
+    // （连点两篇文献标题会并发两个 /similar，后返回者不能覆盖最后点击的那篇）
+    const myseq = ++SR.reqSeq;
     $("#go").disabled = true; $("#results").innerHTML = ""; $("#s-msg").textContent = "查找相似文献中…";
     _clearSentinel();
     SR.raw = []; SR.all = []; SR.shown = 0; SR.facet = { deep: false, tier: "", year: "" };
     const fb = $("#s-facets"); if (fb) { fb.hidden = true; fb.innerHTML = ""; }
     try {
       const r = await jget("/similar/" + encodeURIComponent(key) + "?topk=8");
+      if (myseq !== SR.reqSeq) return;   // 已有更新的检索/找相似，丢弃本响应
       if (r && r.ok) {
         SR.raw = r.results || []; SR.all = SR.raw.slice();
-        $("#s-msg").textContent = `与该篇最相似的 ${SR.raw.length} 篇（向量近邻）`;
         $("#go").disabled = false;
         if (!SR.raw.length) { $("#s-msg").textContent = "没有找到相似文献。"; return; }
+        // UX11：黑话「向量近邻」→「按内容相似」
+        $("#s-msg").innerHTML = `正在显示与《${esc(tShort)}》相似的 ${SR.raw.length} 篇文献（按内容相似） · <a class="ag-link" id="s-sim-clear">清除</a>`;
+        const clr = $("#s-sim-clear");
+        if (clr) clr.addEventListener("click", () => {
+          _clearSentinel(); SR.raw = []; SR.all = []; SR.shown = 0;
+          $("#results").innerHTML = ""; $("#s-msg").textContent = "";
+          if ($("#q").value.trim()) doSearch();   // 原输入还在就直接恢复用户自己的检索
+        });
         _mountResults(); renderFacets();
         return;
       }
     } catch (e) { /* 落到抽词回退 */ }
+    if (myseq !== SR.reqSeq) return;   // BF13：过期请求不触发回退，也不动 #go
     $("#go").disabled = false;
     switchToSearch(title || "");   // 回退：无向量则用抽词法（保证无回退风险）
   }
@@ -484,7 +524,7 @@
         };
         (SR.raw || []).forEach(patch); (SR.all || []).forEach(patch);
         ((typeof BR !== "undefined" && BR.papers) || []).forEach(patch);
-      } catch (err) { alert("改档失败：" + err.message); }
+      } catch (err) { flashToast("改档失败：" + err.message); }   // UX10：应用内浮层替代浏览器灰框 alert
       closeTierMenu();
     });
   }
@@ -509,7 +549,7 @@
     if (r.no_text) return `<span class="tag nopdf" title="扫描件/无可抽文本，需先 OCR 才能深索">🚫 扫描件·需OCR</span>`;  // C1
     if (r.depth === "full") return `<span class="tag full">📄 已深索</span>`;
     // F12：有 PDF 的未深索命中→可点击深索；无 PDF 的纯题录不给深索入口（避免点了无效）
-    if (r.has_pdf) return `<span class="tag abstract deep-one" data-key="${esc(r.key || "")}" role="button" tabindex="0" title="点此深索该篇：全文切块向量化后可精读到页码"><span class="lbl-idle">📋 未深索</span><span class="lbl-hover">⚡ 深索该篇</span></span>`;
+    if (r.has_pdf) return `<span class="tag abstract deep-one" data-key="${esc(r.key || "")}" role="button" tabindex="0" title="点此深索该篇：全文拆成可检索的小段后可精读到页码"><span class="lbl-idle">📋 未深索</span><span class="lbl-hover">⚡ 深索该篇</span></span>`;
     return `<span class="tag nopdf" title="无 PDF，只有题录（题名·作者·年份·期刊）">🚫 无全文 / 仅题录</span>`;
   }
   // 综合层徽标：命中的是"已存综合"页（可能已过时；来源可展开回溯到论文页码）。
@@ -575,7 +615,13 @@
     const gbtn = div.querySelector(".wiki-goto");
     if (gbtn) gbtn.addEventListener("click", () => { switchTab("wiki"); openWikiPage(r.key); });
     const dbtn = div.querySelector(".wiki-discard");
-    if (dbtn) dbtn.addEventListener("click", () => discardWiki(r.key, () => div.remove(), dbtn));
+    if (dbtn) dbtn.addEventListener("click", () => discardWiki(r.key, () => {
+      div.remove();
+      // BF15：同时从 SR.raw 与 SR.all 剔除该行（参照改档 patch 同步两数组的先例）——
+      // 否则 facet 收窄/重渲染会用内存旧数据把已删的综述卡复活
+      const drop = (arr) => (arr || []).filter((x) => !(x.is_wiki && x.key === r.key));
+      SR.raw = drop(SR.raw); SR.all = drop(SR.all);
+    }, dbtn));
     const obtn = div.querySelector(".open-pdf");
     if (obtn) obtn.addEventListener("click", () => openPdfByKey(r.key, obtn));
     // F12：检索结果里的「未深索」徽标可点击单篇深索
@@ -640,7 +686,8 @@
   }
   // 无限滚动：一次取较大批(重排只跑一次、顺序最稳)，先渲染 10 条，滚到底再追加（原#30/副本#24）
   // raw=后端原始命中；all=facet 过滤后当前展示集（F5）。facet=当前选中的二次筛选。
-  const SR = { raw: [], all: [], shown: 0, observer: null, page: 10, facet: { deep: false, tier: "", year: "" } };
+  // reqSeq：BF13 检索请求序号守卫（同浏览页 BR.reqSeq 的 B5），防快速连发时旧响应覆盖新检索
+  const SR = { raw: [], all: [], shown: 0, observer: null, page: 10, facet: { deep: false, tier: "", year: "" }, reqSeq: 0 };
   function _renderMoreResults() {
     const end = Math.min(SR.shown + SR.page, SR.all.length);
     for (let i = SR.shown; i < end; i++) $("#results").appendChild(resultCard(SR.all[i], i + 1));
@@ -707,6 +754,7 @@
   }
   async function doSearch() {
     const q = $("#q").value.trim(); if (!q) return;
+    const myseq = ++SR.reqSeq;   // BF13：请求序号守卫，过期响应不写结果/历史、不提前解禁按钮
     $("#go").disabled = true; $("#results").innerHTML = ""; $("#s-msg").textContent = "检索中…";
     _clearSentinel();
     SR.raw = []; SR.all = []; SR.shown = 0; SR.facet = { deep: false, tier: "", year: "" };
@@ -716,6 +764,7 @@
       const TOPK = 50;   // search-hard-cap：由 20 提到 50
       const res = await jpost("/search", { query: q, topk: TOPK, sort: $("#sort").value,
         min_weight: parseFloat($("#minw") && $("#minw").value) || 0, category: cat || null });
+      if (myseq !== SR.reqSeq) return;   // BF13：已有更新的检索发出，丢弃这次陈旧响应
       if (res.error) { $("#s-msg").textContent = res.error; return; }
       SR.raw = res.results || []; SR.all = SR.raw.slice();
       // T4：不再泄漏「词法模式」黑话；深索后可精读到页码
@@ -726,12 +775,25 @@
       const unkN = mw > 0 ? SR.raw.filter((r) => (r.weight_tier || r.journal_tier) === "待确认" || (r.weight_tier || r.journal_tier) === "未知").length : 0;
       const unkTip = unkN ? `（另有 ${num(unkN)} 条来源未识别档位，已一并保留）` : "";
       $("#s-msg").textContent = `命中 ${SR.raw.length} 条 · ${res.took_ms != null ? res.took_ms : "?"}ms${modeTip}${capTip}${unkTip}`;
-      if (!SR.raw.length) { $("#s-msg").textContent += "（无结果，换个关键词试试）"; return; }
+      if (!SR.raw.length) {
+        // UX14：限定了分类且 0 命中——点明「只搜了这个分类」，给一键切回全库重搜的出口
+        const catSel = $("#s-cat");
+        if (cat && catSel) {
+          const catName = catSel.options[catSel.selectedIndex] ? catSel.options[catSel.selectedIndex].text : "";
+          $("#s-msg").innerHTML = `当前仅在『${esc(catName)}』分类内检索，无结果 · <a class="ag-link" id="s-cat-clear">切回全部文献</a>`;
+          const cc = $("#s-cat-clear");
+          if (cc) cc.addEventListener("click", () => { catSel.value = ""; doSearch(); });
+        } else { $("#s-msg").textContent += "（无结果，换个关键词试试）"; }
+        return;
+      }
       _mountResults();
       renderFacets();
       pushSearchHistory(q);   // F4
-    } catch (e) { $("#s-msg").textContent = "检索失败：" + e.message; }
-    finally { $("#go").disabled = false; }
+    } catch (e) {
+      if (myseq !== SR.reqSeq) return;   // BF13：陈旧请求的失败同样不写界面
+      $("#s-msg").textContent = "检索失败：" + e.message;
+    }
+    finally { if (myseq === SR.reqSeq) $("#go").disabled = false; }   // BF13：只有最新请求才解禁按钮
   }
   $("#go").addEventListener("click", doSearch);
   // Enter 触发检索，但按钮禁用（检索进行中）时不重复提交，避免结果闪烁
@@ -754,18 +816,31 @@
       h.map((q) => `<span class="s-chip" data-q="${esc(q)}">${esc(q)}</span>`).join("") +
       `<span class="s-chip s-chip-clear">清空</span>`;
     box.hidden = false;
-    box.querySelectorAll(".s-chip[data-q]").forEach((c) => c.addEventListener("click", () => { $("#q").value = c.dataset.q; doSearch(); }));
+    // BF13：检索进行中（按钮禁用）时 chip 不抢跑，与 #q 的 Enter 行为一致
+    box.querySelectorAll(".s-chip[data-q]").forEach((c) => c.addEventListener("click", () => { if ($("#go").disabled) return; $("#q").value = c.dataset.q; doSearch(); }));
     const clr = box.querySelector(".s-chip-clear");
     if (clr) clr.addEventListener("click", () => { localStorage.removeItem("localkb.searchHist"); renderSearchHistory(); });
   }
   // ── F9：新手示例检索词（可点 chip）──
   const EXAMPLE_QUERIES = ["认罪认罚从宽对司法信任的影响", "社会观护制度", "程序正义与结果正义", "数据合规的法律责任"];
+  let EXAMPLES_DYN = null;   // UX13：由 /stats 最近入库标题动态生成的示例词（拿不到退静态）
   function renderExamples() {
     const box = $("#s-examples"); if (!box) return;
+    const qs = (EXAMPLES_DYN && EXAMPLES_DYN.length) ? EXAMPLES_DYN : EXAMPLE_QUERIES;
     box.innerHTML = `<span class="s-chips-lbl">试试：</span>` +
-      EXAMPLE_QUERIES.map((q) => `<span class="s-chip" data-q="${esc(q)}">${esc(q)}</span>`).join("");
+      qs.map((q) => `<span class="s-chip" data-q="${esc(q)}">${esc(q)}</span>`).join("");
     box.hidden = false;
-    box.querySelectorAll(".s-chip").forEach((c) => c.addEventListener("click", () => { $("#q").value = c.dataset.q; doSearch(); }));
+    // BF13：检索进行中不抢跑
+    box.querySelectorAll(".s-chip").forEach((c) => c.addEventListener("click", () => { if ($("#go").disabled) return; $("#q").value = c.dataset.q; doSearch(); }));
+  }
+  // UX13：示例词优先贴合本库——复用 loadDashboard 已拉到的 /stats（不多打接口），
+  // 取最近入库前 4 条标题的前 8–12 字作为示例 chip
+  function updateExamplesFromStats(d) {
+    const rec = (d && d.recent) || [];
+    const qs = rec.slice(0, 4)
+      .map((r) => String(r.title || "").replace(/[《》「」“”"']/g, "").trim().slice(0, 12))
+      .filter((s) => s.length >= 4);
+    if (qs.length) { EXAMPLES_DYN = qs; renderExamples(); }
   }
   renderExamples(); renderSearchHistory();
   // 检索范围下拉（D2）：复用对话「限定分类」的数据源
@@ -1004,7 +1079,7 @@
     if (withPdf <= 0) {
       return `<div class="dcard span2 deep-prog">
         <h4>深索进度</h4>
-        <p class="dcard-sub">有 PDF 的文献全文切块+向量化后，回答可精确到页码</p>
+        <p class="dcard-sub">有 PDF 的文献全文拆成可检索的小段后，回答可精确到页码</p>
         <div class="hbar deep-prog-bar"><span class="track"><span class="fill" style="width:0%;background:#16a085"></span></span><span class="val">0%</span></div>
         <p class="deep-prog-txt">暂无可深索文献</p></div>`;
     }
@@ -1058,7 +1133,7 @@
           ${deep > 0 ? `<a class="dh-link" id="dash-see-deep">查看已深索 ${num(deep)} 篇 →</a>` : ""}
           ${remain > 0 ? `<a class="dh-link" id="dash-go-deep">深索全部未深索文献 →</a>` : ""}
           ${withPdf > 0 ? `<a class="dh-link dash-deep-detail" id="dash-deep-detail">深索详情 / 暂停 →</a>` : ""}</div>
-        ${remain > 0 ? `<div class="dh-deep-note">深索＝把 PDF 全文切块向量化，之后 AI 才能读到页码、跨篇综合。可放后台慢慢跑，不影响使用。</div>` : ""}
+        ${remain > 0 ? `<div class="dh-deep-note">深索＝把 PDF 全文拆成可检索的小段，之后 AI 才能读到页码、跨篇综合。可放后台慢慢跑，不影响使用。</div>` : ""}
       </div></div>`;
     $("#dash").innerHTML = header
       + `<div class="dash-grid dash-2col">${overviewCard(d)}${recentCard(d.recent)}</div>`
@@ -1098,6 +1173,7 @@
         jget("/index/status").catch(() => null),
       ]);
       renderDashboard(d, status);
+      updateExamplesFromStats(d);   // UX13：顺手用最近入库标题刷新检索示例词（复用本次 /stats，不另打接口）
       dashLoaded = true;   // 仅加载成功才置位；失败保持 false，切回自动重试
     } catch (e) {
       $("#dash").innerHTML = `<div class="dash-loading">统计加载失败：${esc(e.message)}<br>（需先完成即时索引）</div>`;
@@ -1110,7 +1186,7 @@
   // scope 统一左树选择态（type: all|zotero|topic|kbcat），取代旧的 collection/topic 两两互清。
   const BR = { scope: { type: "all", id: null, name: "全部" },
                deepFilter: "", sort: "recommend", papers: [], selected: new Set(),
-               cats: [], reqSeq: 0, topicIv: null };   // cats：缓存 /kb/categories；reqSeq：B5 守卫；topicIv：R12 主题轮询句柄
+               cats: [], reqSeq: 0, topicIv: null, total: 0 };   // cats：缓存 /kb/categories；reqSeq：B5 守卫；topicIv：R12 主题轮询句柄；total：W1 分页总数
 
   // 左侧收藏夹树（递归渲染，默认折叠，只展开有子节点的第一层由用户点开）
   function treeNodeEl(node, depth) {
@@ -1310,7 +1386,8 @@
     m.querySelector(".ctx-rename").addEventListener("click", async () => {
       m.hidden = true;
       const name = await askText("重命名分类", c.name); if (!name) return;
-      try { await fetch("/kb/categories/" + encodeURIComponent(c.id), { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) }); loadKbCats(); }
+      // BF12：裸 fetch 对 4xx 不抛错，重名/非法名会被静默吞掉——改走 jsend 读后端人话，成功才刷新
+      try { await jsend("/kb/categories/" + encodeURIComponent(c.id), "PATCH", { name }); loadKbCats(); }
       catch (e) { toast("重命名失败：" + e.message); }
     });
     m.querySelector(".ctx-del").addEventListener("click", async () => {
@@ -1318,7 +1395,8 @@
       if (!(await uiConfirm("只删这个分类清单，不会删除文献，也不会撤销已建好的深索。",
             { title: `删除分类「${c.name}」？`, okText: "删除", danger: true }))) return;
       try {
-        await fetch("/kb/categories/" + encodeURIComponent(c.id), { method: "DELETE" });
+        // BF12：同重命名——jsend 抛出真实失败原因，成功才切范围/刷新列表
+        await jsend("/kb/categories/" + encodeURIComponent(c.id), "DELETE");
         if (BR.scope.type === "kbcat" && BR.scope.id === c.id) selectCollection(null, "全部", null);
         loadKbCats();
       } catch (e) { toast("删除失败：" + e.message); }
@@ -1427,20 +1505,35 @@
     const c = cfg();
     return Object.assign({ provider: c.provider || "siliconflow", base_url: c.base || "", api_key: c.api_key || "", model: c.model || "" }, extra || {});
   }
-  function needKey() {   // 非硅基流动且没填 key → 先去设置（硅基流动可复用检索引擎 key，服务端兜底）
+  // UX3：缺 Key 时的引导落点分场景——只丢到设置弹窗第一屏（期刊学科）会让人找不到该填哪。
+  // 对话场景：直接去对话页展开「模型设置」折叠区并聚焦 Key 框；其余场景：进设置并滚到「检索引擎」小节锚点。
+  function gotoLlmKeySetup(scene) {
+    // UX3：非硅基流动服务商的 Key 只在对话页「⚙ 模型设置」里有输入框——不论从哪个场景触发，
+    // 都得落到对话页；只有硅基流动（可复用检索引擎 key）才去设置弹窗的检索引擎小节。
+    const prov = (cfg().provider || "siliconflow");
+    if (scene === "chat" || prov !== "siliconflow") {
+      switchTab("chat");
+      const det = $("#chat-model"); if (det) det.open = true;
+      setTimeout(() => { const k = $("#set-key"); if (k) k.focus(); }, 0);
+    } else {
+      openSettings();
+      setTimeout(() => { const sec = $("#sec-engine"); if (sec) sec.scrollIntoView({ behavior: "smooth" }); }, 100);
+    }
+  }
+  function needKey() {   // 非硅基流动且没填 key → 先去配置（硅基流动可复用检索引擎 key，服务端兜底）
     const c = cfg();
-    if (!c.api_key && (c.provider || "siliconflow") !== "siliconflow") { openSettings(); return true; }
+    if (!c.api_key && (c.provider || "siliconflow") !== "siliconflow") { gotoLlmKeySetup(); return true; }
     return false;
   }
   // A6：放行对话/综述前，据 /setup/detect 的 api_key_set 判断「是否真有可用 key」。
   // 默认本地后端（离线免 key）用户即便选硅基流动、服务端也没 key 可复用，一发即失败——此处提前拦下、引导配置。
-  async function ensureLlmKey() {
+  async function ensureLlmKey(scene) {
     const c = cfg();
     if (c.api_key) return true;   // 本机已填 key
-    if ((c.provider || "siliconflow") !== "siliconflow") { openSettings(); return false; }
+    if ((c.provider || "siliconflow") !== "siliconflow") { gotoLlmKeySetup(scene); return false; }
     try { const d = await jget("/setup/detect"); if (d && d.api_key_set) return true; } catch (e) {}
-    openSettings();
-    flashToast("对话/综述需要一个可用的 API Key——请在设置里填（硅基流动有免费模型）。");
+    gotoLlmKeySetup(scene);
+    flashToast("对话/综述需要一个可用的 API Key——硅基流动有免费模型，填一个即可。");
     return false;
   }
   // 零依赖极简 Markdown 渲染：先整体 esc() 防 XSS，再在已转义文本上套基本块级/行内标签（wiki-body-raw-markdown）
@@ -1479,12 +1572,33 @@
       ? `基于 ${(p.sources || []).length} 篇 · 生成于 ${(p.generated_at || "").slice(0, 10)}${stale}`
       : `本地综述 · 基于 ${(p.sources || []).length} 篇 · 生成于 ${(p.generated_at || "").slice(0, 10)} · 模型 ${p.generated_by || "未知"}${stale}`;
     // unverified-flag-missing-in-modal：模态里也显示 🤖 未核验 / 📝 我保存的；降级页优先警示
+    // W3：agent 写回的页可人工核验——未核验给「标为已核验」按钮，核验后徽章转 ✅（frontmatter 落 verified_at）
     const flag = $("#wiki-flag");
-    if (flag) flag.innerHTML = p.degraded
-      ? `<span class="wk-flag degraded" title="${esc(p.degraded_reason || "")}">⚠ 证据清单（非 AI 综述）</span>`
-      : p.by_agent
-      ? `<span class="wk-flag agent" title="agent 写回、未经人工核验，请核对来源原文">🤖 未核验</span>`
-      : `<span class="wk-flag" title="你保存/生成的综述页">📝 我保存的</span>`;
+    if (flag) {
+      flag.innerHTML = p.degraded
+        ? `<span class="wk-flag degraded" title="${esc(p.degraded_reason || "")}">⚠ 证据清单（非 AI 综述）</span>`
+        : p.by_agent
+        ? (p.verified_at
+            ? `<span class="wk-flag ok" title="已于 ${esc(p.verified_at)} 人工核验">✅ 已核验</span>`
+            : `<span class="wk-flag agent" title="agent 写回、未经人工核验，请核对来源原文">🤖 未核验</span>` +
+              `<button id="wiki-verify" class="ghost2b wiki-verify" title="确认内容与来源无误后，把这一页标为已人工核验">✓ 标为已核验</button>`)
+        : `<span class="wk-flag" title="你保存/生成的综述页">📝 我保存的</span>`;
+      const vb = $("#wiki-verify");
+      if (vb) vb.addEventListener("click", async () => {
+        vb.disabled = true; vb.textContent = "标记中…";
+        try {
+          const r = await jpost("/wiki/verify", { page_id: p.id });
+          const at = (r && r.verified_at) || "";
+          flag.innerHTML = `<span class="wk-flag ok" title="已于 ${esc(at)} 人工核验">✅ 已核验</span>`;
+          // 同步列表内存态，让「只看未核验」过滤即刻正确，不用重拉
+          (WK.pages || []).forEach((pg) => { if (pg.id === p.id) pg.verified_at = at; });
+          if (wikiLoaded) renderWikiList();
+        } catch (e) {
+          vb.disabled = false; vb.textContent = "✓ 标为已核验";
+          flashToast("标记核验失败：" + (e.message || e));
+        }
+      });
+    }
     // 降级页在正文顶部挂一条醒目横幅，说明它为什么不是综述、怎么补救
     const banner = p.degraded
       ? `<div class="wk-degraded-banner">⚠ <b>这不是 AI 综述。</b>${esc(p.degraded_reason || "")}。` +
@@ -1517,8 +1631,9 @@
         pdf.disabled = true;
         try {
           const r = await jpost("/open_pdf", { key: k });
-          if (r && r.ok === false) alert(r.msg || "打开失败：这篇可能没有 PDF 原文。");
-        } catch (e) { alert("打开原文失败：" + (e.message || e)); }
+          // UX10：非阻断性失败用浮层提示，不再弹浏览器灰框 alert
+          if (r && r.ok === false) flashToast(r.msg || "打开失败：这篇可能没有 PDF 原文。");
+        } catch (e) { flashToast("打开原文失败：" + (e.message || e)); }
         finally { pdf.disabled = false; }
       });
       const sim = el.querySelector(".ws-sim");
@@ -1589,7 +1704,7 @@
           await jpost("/wiki/restore/" + encodeURIComponent(id), { rev: el.dataset.rev });
           await openWikiPage(id);
           if (wikiLoaded) loadWikiList("silent");
-        } catch (e) { alert("回滚失败：" + (e.message || e)); el.disabled = false; el.textContent = "回滚到这一版"; }
+        } catch (e) { flashToast("回滚失败：" + (e.message || e)); el.disabled = false; el.textContent = "回滚到这一版"; }   // UX10
       }));
     } catch (e) {
       box.innerHTML = `<div class="wh-loading">读取历史失败：${esc(e.message || e)}</div>`;
@@ -1598,7 +1713,7 @@
 
   async function openWikiPage(id) {
     try { renderWiki(await jget("/wiki/page/" + encodeURIComponent(id))); }
-    catch (e) { alert("打开综合页失败：" + (e.message || e)); }
+    catch (e) { flashToast("打开综合页失败：" + (e.message || e)); }   // UX10
   }
   // 「🗑 不保存此答案」——与「💾 保存此答案」互为反操作（删文件+索引+检索行）。仅人用。
   async function discardWiki(id, onDone, btn) {
@@ -1607,10 +1722,10 @@
     const old = btn ? btn.textContent : null;
     if (btn) { btn.disabled = true; btn.textContent = "删除中…"; }
     try {
-      const resp = await fetch("/wiki/page/" + encodeURIComponent(id), { method: "DELETE" });
-      if (!resp.ok) throw new Error("HTTP " + resp.status);
+      // BF11：删除失败时读后端 detail/error/msg 的人话原因，不再只报「HTTP 4xx」
+      await jsend("/wiki/page/" + encodeURIComponent(id), "DELETE");
       if (onDone) onDone();
-    } catch (e) { alert("删除失败：" + (e.message || e)); }
+    } catch (e) { flashToast("删除失败：" + (e.message || e)); }   // UX10
     finally { if (btn) { btn.disabled = false; if (old != null) btn.textContent = old; } }
   }
   async function genTopic(topicId, name, btn) {
@@ -1621,7 +1736,7 @@
       const r = await jpost("/wiki/topic", llmBody({ topic_id: topicId }));
       if (!r.ok) throw new Error(r.detail || "生成失败");
       await openWikiPage(r.id);
-    } catch (e) { alert("生成「" + name + "」综述失败：" + (e.message || e)); }
+    } catch (e) { flashToast("生成「" + name + "」综述失败：" + (e.message || e)); }   // UX10
     finally { if (btn) { btn.textContent = old; btn.disabled = false; } }
   }
   (function wireWikiModal() {
@@ -1635,7 +1750,7 @@
       }, disc));
     const regen = $("#wiki-regen");
     if (regen) regen.addEventListener("click", async () => {
-      if ((regen.dataset.kind || "") === "answer") { alert("「对话沉淀」页由对话生成，请回「💬 对话」重新提问后再保存。"); return; }  // R11
+      if ((regen.dataset.kind || "") === "answer") { flashToast("「对话沉淀」页由对话生成，请回「💬 对话」重新提问后再保存。"); return; }  // R11/UX10
       if (!(await ensureLlmKey())) return;
       const id = regen.dataset.id; if (!id) return;
       regen.textContent = "重新生成中…"; regen.disabled = true;
@@ -1644,7 +1759,7 @@
         if (!r.ok) throw new Error(r.detail || "失败");
         await openWikiPage(r.id);
         if (wikiLoaded) loadWikiList("silent");
-      } catch (e) { alert("重新生成失败：" + (e.message || e)); }
+      } catch (e) { flashToast("重新生成失败：" + (e.message || e)); }   // UX10
       finally { regen.textContent = "↻ 重新生成"; regen.disabled = false; }
     });
   })();
@@ -1673,7 +1788,8 @@
     const box = $("#wk-list");
     let list = WK.pages;
     if (WK.kind) list = list.filter((p) => (p.kind || "answer") === WK.kind);
-    if (WK.agentOnly) list = list.filter((p) => p.by_agent);
+    // W3：「只看未核验」＝agent 写回且尚未人工核验（已核验的不再算待办）
+    if (WK.agentOnly) list = list.filter((p) => p.by_agent && !p.verified_at);
     if (!WK.pages.length) {
       box.innerHTML = `<div class="wk-empty">
         <div class="wk-empty-ic">📖</div>
@@ -1693,7 +1809,10 @@
     const prov = p.degraded
       ? `<span class="wk-flag degraded" title="${esc(p.degraded_reason || "")}">⚠ 证据清单（非 AI 综述）</span>`
       : p.by_agent
-      ? `<span class="wk-flag agent" title="agent 写回、未经人工核验">🤖 未核验</span>`
+      // W3：核验过的 agent 页在列表里也转 ✅，与详情弹窗口径一致
+      ? (p.verified_at
+          ? `<span class="wk-flag ok" title="已于 ${esc(p.verified_at)} 人工核验">✅ 已核验</span>`
+          : `<span class="wk-flag agent" title="agent 写回、未经人工核验">🤖 未核验</span>`)
       : `<span class="wk-flag" title="你保存/生成的综述页">📝 我保存的</span>`;
     const stale = p.stale ? `<span class="wk-flag stale" title="有新论文可能影响此综述，建议重生">⚠ 可能已过时</span>` : "";
     // 整卡可点即打开；删除按钮浮在右上角，点它不触发打开。其余操作（重新生成/历史）都在详情页里。
@@ -1718,7 +1837,9 @@
     const c = $("#wk-concept").value.trim();
     if (!c) { $("#wk-msg").textContent = "请先输入一个概念或主题。"; return; }
     if (!(await ensureLlmKey())) return;
-    const btn = $("#wk-gen"); btn.disabled = true; btn.textContent = "生成中…"; $("#wk-msg").textContent = "";
+    // BF22：进来时先存原文案、结束恢复——index.html 里按钮是「生成」，之前写死恢复成「＋ 生成综述」会越改越错
+    const btn = $("#wk-gen"); const old = btn.textContent;
+    btn.disabled = true; btn.textContent = "生成中…"; $("#wk-msg").textContent = "";
     try {
       const r = await jpost("/wiki/concept", llmBody({ concept: c }));
       if (!r.ok) throw new Error(r.detail || "生成失败");
@@ -1727,7 +1848,7 @@
       loadWikiList("silent");
       $("#wk-msg").textContent = r.cached ? "已命中已有综合（未重复生成）。" : "已生成新综述并加入列表。";
     } catch (e) { $("#wk-msg").textContent = "生成失败：" + (e.message || e); }
-    finally { btn.disabled = false; btn.textContent = "＋ 生成综述"; }
+    finally { btn.disabled = false; btn.textContent = old; }   // BF22
   }
   // ── 体检（lint）：孤儿页 / 过时页 / 断链 / 无来源页 / 降级页 / 缺失概念页 ──
   const LINT_LABEL = { orphan: "孤儿页（没有任何互链）", stale: "已标记过时", broken_link: "断链",
@@ -2023,6 +2144,8 @@
       `<label class="bcard-cb"><input type="checkbox" ${checked} data-key="${esc(p.key)}"/></label>` +
       `<div class="bcard-body">` +
         `<div class="bcard-head">${scoreBadge(p)}${tierBadge(p)}${deepBadge(p)}${reviewBadge(p)}` +
+          // UX4：直接开原文 PDF（复用检索卡的 /open_pdf 通道）；无 PDF 禁用。标题点击仍保持「找相似」不动
+          `<button class="bcard-open" title="${p.has_pdf ? "用系统阅读器打开这篇的 PDF 原文" : "无 PDF，无法打开原文"}"${p.has_pdf ? "" : " disabled"}>📄 打开</button>` +
           `<button class="bcard-addcat" title="加入「手动分类」">＋分类</button></div>` +   // D1：可见入口
         `<div class="bcard-title" title="点标题：查找相似文献">${esc(p.title || "(无标题)")}</div>` +
         metaRow(p) +
@@ -2040,6 +2163,9 @@
       bdb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fire(e); } });
     }
     div.querySelector(".bcard-title").addEventListener("click", () => findSimilar(p.key, p.title || ""));
+    // UX4：「📄 打开」——系统阅读器打开原文（stopPropagation 防触发标题/右键行为）
+    const ob = div.querySelector(".bcard-open");
+    if (ob && p.has_pdf) ob.addEventListener("click", (e) => { e.stopPropagation(); openPdfByKey(p.key, ob); });
     // D1：卡片上的「＋分类」按钮——右击的多选集优先，否则只这一篇
     const ac = div.querySelector(".bcard-addcat");
     if (ac) ac.addEventListener("click", (e) => {
@@ -2093,8 +2219,9 @@
          <span class="tip-i" title="推荐分＝期刊权威度×10＋近年加成＋有全文可深读；随「设置→期刊分级学科」变化。">ⓘ 怎么算的</span>`
       : "";
     $("#bl-tip").style.display = isRec ? "" : "none";
+    const om = $("#bl-more"); if (om) om.remove();   // W1：换范围/重载时清掉旧「加载更多」按钮
     try {
-      const params = new URLSearchParams({ sort: BR.sort, limit: "300" });
+      const params = new URLSearchParams({ sort: BR.sort, limit: "300", offset: "0" });
       const s = BR.scope;
       if (s.type === "topic") params.set("topic", s.id);
       else if (s.type === "zotero") params.set("collection", s.id);
@@ -2104,8 +2231,9 @@
       const d = await jget("/papers?" + params.toString());
       if (myseq !== BR.reqSeq) return;   // B5：已有更新的请求发出，丢弃这次陈旧响应
       BR.papers = d.papers || [];
-      $("#bl-count").textContent = `· 共 ${num(d.total != null ? d.total : BR.papers.length)} 篇` +
-        (d.total > BR.papers.length ? `（显示前 ${num(BR.papers.length)}）` : "");
+      // W1：「（显示前 300）」这种死数字标签取消——分页由底部「加载更多」承担
+      BR.total = d.total != null ? d.total : BR.papers.length;
+      $("#bl-count").textContent = `· 共 ${num(BR.total)} 篇`;
       if (BR.papers.length) { $("#bl-msg").innerHTML = ""; }
       else if (s.type === "topic") { $("#bl-msg").textContent = "（该主题暂无文献）"; }
       else if (s.type === "kbcat") {
@@ -2117,9 +2245,50 @@
       BR.papers.forEach((p) => frag.appendChild(paperCard(p)));
       $("#bl-list").appendChild(frag);
       refreshSelUI();
+      renderLoadMore();   // W1：还有没显示的就给「加载更多」
     } catch (e) {
       if (myseq !== BR.reqSeq) return;
       $("#bl-msg").textContent = "加载失败：" + e.message;
+    }
+  }
+
+  // ── W1：浏览页分页——「加载更多」追加下一页（不清勾选、不重置滚动位置）──
+  function renderLoadMore() {
+    const old = $("#bl-more"); if (old) old.remove();
+    if (!(BR.papers.length < (BR.total || 0))) return;
+    const btn = document.createElement("button");
+    btn.id = "bl-more"; btn.className = "bl-more ghost2b";
+    btn.textContent = `加载更多（已显示 ${num(BR.papers.length)} / 共 ${num(BR.total)} 篇）`;
+    btn.addEventListener("click", () => loadMorePapers(btn));
+    // 放在滚动列表内部末尾（.bl-list 是滚动容器），滚到底自然看到；loadPapers 清空列表时会一并清掉
+    $("#bl-list").appendChild(btn);
+  }
+  async function loadMorePapers(btn) {
+    const myseq = ++BR.reqSeq;   // 与 loadPapers 共用守卫：期间换了范围/排序就丢弃本次追加
+    if (btn) { btn.disabled = true; btn.textContent = "加载中…"; }
+    try {
+      const params = new URLSearchParams({ sort: BR.sort, limit: "300", offset: String(BR.papers.length) });
+      const s = BR.scope;
+      if (s.type === "topic") params.set("topic", s.id);
+      else if (s.type === "zotero") params.set("collection", s.id);
+      else if (s.type === "kbcat") params.set("category", s.id);
+      if (BR.deepFilter) params.set("deep", BR.deepFilter);
+      const d = await jget("/papers?" + params.toString());
+      if (myseq !== BR.reqSeq) return;
+      // W1：recommend/year 排序在两次请求间可能因深索完成/改档而重排——按 key 去重防重复卡片（漏条无法前端补救，可接受）
+      const seen = new Set(BR.papers.map((p) => p.key));
+      const more = (d.papers || []).filter((p) => !seen.has(p.key));
+      if (d.total != null) BR.total = d.total;
+      BR.papers = BR.papers.concat(more);
+      const frag = document.createDocumentFragment();
+      more.forEach((p) => frag.appendChild(paperCard(p)));
+      $("#bl-list").appendChild(frag);
+      $("#bl-count").textContent = `· 共 ${num(BR.total)} 篇`;
+      refreshSelUI();
+      renderLoadMore();
+    } catch (e) {
+      if (myseq !== BR.reqSeq) return;
+      if (btn) { btn.disabled = false; btn.textContent = "加载失败，点此重试"; }
     }
   }
 
@@ -2249,7 +2418,7 @@
     const q = $("#chat-q").value.trim(); if (!q) return;
     const c = cfg();
     // A6：放行前据 /setup/detect 判断是否真有可用 key（默认本地后端 + 硅基流动无 key 会直接失败）
-    if (!(await ensureLlmKey())) return;
+    if (!(await ensureLlmKey("chat"))) return;   // UX3：对话场景缺 Key 直接展开本页「模型设置」，不再跳设置弹窗
     const hint = $(".chat-hint"); if (hint) hint.remove();
     $("#chat-q").value = ""; $("#chat-q").style.height = "auto";
     addBubble("user", q);
@@ -2262,6 +2431,19 @@
           provider: c.provider || "siliconflow", base_url: c.base || "", api_key: c.api_key || "", model: c.model || "",
           topk: 6, sort: "blend", category: ($("#chat-cat") && $("#chat-cat").value) || null }),
       });
+      // BF19：先验 HTTP 状态与流类型——后端 500/返回 JSON 错误时别硬当 SSE 读（否则空气泡+误导去查 Key），
+      // 把响应体里的真实原因（detail/error/msg 或纯文本前 200 字）亮出来
+      const ctype = resp.headers.get("Content-Type") || "";
+      if (!resp.ok || ctype.indexOf("text/event-stream") < 0) {
+        let detail = "";
+        try {
+          const raw = await resp.text();
+          try { const j = JSON.parse(raw); detail = j.detail || j.error || j.msg || ""; } catch (_) {}
+          if (!detail) detail = (raw || "").slice(0, 200);
+        } catch (_) {}
+        bot.textContent = "⚠ 服务返回错误：" + (detail || ("HTTP " + resp.status));
+        return;
+      }
       const reader = resp.body.getReader(); const dec = new TextDecoder("utf-8"); let buf = "", answer = "", errored = false, srcHits = [];
       while (true) {
         const { value, done } = await reader.read(); if (done) break;
@@ -2291,6 +2473,15 @@
     if (e.key === "Enter" && !e.shiftKey && !$("#chat-go").disabled) { e.preventDefault(); doChat(); }
   });
   $("#chat-q").addEventListener("input", (e) => { e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 140) + "px"; });
+  // UX5：「🧹 新对话」——清上下文与聊天记录、恢复欢迎语（欢迎语在启动时快照；重建 DOM 后要重挂里面的按钮）
+  const CHAT_HINT_HTML = $("#chat-log") ? $("#chat-log").innerHTML : "";
+  const _chatNew = $("#chat-new");
+  if (_chatNew) _chatNew.addEventListener("click", () => {
+    if ($("#chat-go").disabled) { flashToast("正在回答中，请稍候再开新对话。"); return; }
+    history.length = 0;
+    $("#chat-log").innerHTML = CHAT_HINT_HTML;
+    const b = $("#chat-to-agent"); if (b) b.addEventListener("click", () => switchTab("agent"));
+  });
 
   // ══════════════════════════════════════════
   //  设置 —— 保留原逻辑
@@ -2303,7 +2494,13 @@
     $("#set-keyurl").innerHTML = p.keyurl ? `获取 API Key：<a href="${p.keyurl}" target="_blank">${p.keyurl}</a>` : "";
   }
   // 换服务商：套该商的预设默认（base/model），再即时落盘（对话模型设置已内联到对话页 #chat-model）
-  provSel.addEventListener("change", () => { applyProvider(provSel.value, false); saveChatModel(); });
+  provSel.addEventListener("change", () => {
+    applyProvider(provSel.value, false);
+    // BF20：各家 key 不通用——换服务商必须清空输入框与掩码占位，并把 api_key 存成空串（不得沿用旧商的 key）
+    $("#set-key").value = "";
+    $("#set-key").placeholder = "该服务商尚未配置 Key";
+    saveChatModel({ resetKey: true });
+  });
   function openSettings() {
     // LLM 服务商字段已搬到对话页折叠区，设置弹窗不再回填它们（避免覆盖对话页已填的 key）
     $("#settings-modal").hidden = false;
@@ -2320,13 +2517,13 @@
     try {
       const s = await jget("/setup/auto_update");
       en.checked = !!s.enabled;
-      if (iv) iv.value = String(s.interval_min || 15);
+      if (iv) iv.value = String(s.interval_min || 60);   // BF32：兜底与 settings.py DEFAULT=60 对齐，别再各写各的
     } catch (e) {}
   }
   async function saveAutoUpdate() {
     const en = $("#au-enabled"), iv = $("#au-interval"), msg = $("#au-msg");
     try {
-      await jpost("/setup/auto_update", { enabled: en.checked, interval_min: parseInt(iv.value, 10) || 15 });
+      await jpost("/setup/auto_update", { enabled: en.checked, interval_min: parseInt(iv.value, 10) || 60 });   // BF32：兜底统一 60 分钟
       if (msg) msg.textContent = en.checked ? `已开启：约每 ${iv.value} 分钟检查一次新增文献并自动更新。` : "已关闭：只能用顶栏「⟳ 手动更新知识库」手动更新。";
     } catch (e) { if (msg) msg.textContent = "保存失败：" + e.message; }
   }
@@ -2413,6 +2610,24 @@
   $("#btn-settings").addEventListener("click", openSettings);
   $("#set-close").addEventListener("click", () => $("#settings-modal").hidden = true);
 
+  // W2：设置 / wiki 详情 / 入库进度三个弹窗补 Esc 与点遮罩关闭（参照 uiConfirm 的 onBackdrop/onKey 写法）。
+  // 只是收起视图，后台任务（入库/构建）不中断；确认框开着时让 uiConfirm 自己吃掉 Esc，不连带关底下的弹窗。
+  ["#settings-modal", "#wiki-modal", "#ingest-modal"].forEach((sel) => {
+    const m = $(sel);
+    if (m) m.addEventListener("mousedown", (e) => { if (e.target === m) m.hidden = true; });
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    // uiConfirm 在捕获阶段已 preventDefault 并自行关闭——此时确认框 hidden 已翻真，
+    // 必须靠 defaultPrevented 识别「这次 Esc 已被确认框消费」，否则会连带关掉底下的弹窗
+    if (e.defaultPrevented) return;
+    const cm = $("#confirm-modal"); if (cm && !cm.hidden) return;
+    for (const sel of ["#ingest-modal", "#wiki-modal", "#settings-modal"]) {
+      const m = $(sel);
+      if (m && !m.hidden) { m.hidden = true; return; }   // 一次只关最上层一个
+    }
+  });
+
   // ── F8：外观（主题 / 字号）——存 localStorage，冷启动即应用。跟随系统时解析成具体 light/dark 写到 data-theme（CSS 只需处理 data-theme）──
   function applyAppearance() {
     const a = safeParse(localStorage.getItem("localkb.ui"), {});
@@ -2455,16 +2670,20 @@
     $("#set-key").value = "";
     $("#set-key").placeholder = k ? maskKey(k.slice(-4)) : "sk-…";
   }
-  function saveChatModel() {
+  function saveChatModel(opts) {
     const keyIn = $("#set-key").value.trim();
+    // BF20：resetKey（切服务商）时 api_key 落空串，不回退 cfg().api_key；input 事件传进来的是 Event 对象，天然不触发。
+    // keyDirty（用户动过 Key 输入框）时 keyIn 原样保存——空串=主动清除，否则清空输入永远删不掉旧 key。
+    const resetKey = !!(opts && opts.resetKey), keyDirty = !!(opts && opts.keyDirty);
     saveCfg({ provider: provSel.value, base: $("#set-base").value.trim(),
-              api_key: keyIn || (cfg().api_key || ""), model: $("#set-model").value.trim() });
+              api_key: (resetKey || keyDirty) ? keyIn : (keyIn || cfg().api_key || ""), model: $("#set-model").value.trim() });
     const s = $("#cm-saved");
     if (s) { s.textContent = "已保存 ✓"; s.classList.add("flash"); setTimeout(() => s.classList.remove("flash"), 800); }
   }
-  ["#set-base", "#set-key", "#set-model"].forEach((sel) => {
+  ["#set-base", "#set-model"].forEach((sel) => {
     const el = $(sel); if (el) el.addEventListener("input", saveChatModel);
   });
+  { const el = $("#set-key"); if (el) el.addEventListener("input", () => saveChatModel({ keyDirty: true })); }
   initChatModel();
   const _c2a = $("#chat-to-agent"); if (_c2a) _c2a.addEventListener("click", () => switchTab("agent"));
   const _c2a2 = $("#chat-agent-link"); if (_c2a2) _c2a2.addEventListener("click", () => switchTab("agent"));
@@ -2494,8 +2713,8 @@
       initChatModel();                          // 对话页模型设置回默认
       loadEngine(); loadSac(); loadDiscipline();
       poll();
-      alert("已恢复默认设置。");
-    } catch (e) { alert("恢复默认失败：" + (e.message || e)); }
+      flashToast("已恢复默认设置。");   // UX10：成功/失败都走应用内浮层
+    } catch (e) { flashToast("恢复默认失败：" + (e.message || e)); }
   });
 
   // ── 检索引擎（嵌入/重排）：设置里随时切换本地/API、改 key，不必重跑首启向导 ──
@@ -2530,8 +2749,9 @@
     try {
       const r = await jpost("/setup/test_api", { base: b.base, key: b.key, embed_model: b.embed_model, rerank_model: b.rerank_model });
       if (r && r.ok) { msg.className = "hint ok"; msg.textContent = `✓ 连接成功，向量维度 ${num(r.dim)}，延迟 ${num(r.latency_ms)}ms`; }
-      else { msg.className = "hint warn"; msg.textContent = "连接失败：" + esc((r && r.msg) || "未知错误"); }
-    } catch (e) { msg.className = "hint warn"; msg.textContent = "连接失败：" + esc(e.message); }
+      // BF23：textContent 本身不解析 HTML，再套 esc() 会把 & < > 显示成 &amp; 等实体（双重转义）
+      else { msg.className = "hint warn"; msg.textContent = "连接失败：" + ((r && r.msg) || "未知错误"); }
+    } catch (e) { msg.className = "hint warn"; msg.textContent = "连接失败：" + e.message; }
     finally { btn.disabled = false; }
   });
   // 换引擎后旧向量不兼容 → 应用时强制重建索引，并显示「正在重建中」
@@ -2556,7 +2776,7 @@
           } catch (e) { clearInterval(iv); resolve(); }
         }, 1500);
       });
-    } catch (e) { if (msgEl) { msgEl.className = "hint warn"; msgEl.textContent = "重建失败：" + esc(e.message || e); } }
+    } catch (e) { if (msgEl) { msgEl.className = "hint warn"; msgEl.textContent = "重建失败：" + (e.message || e); } }   // BF23：textContent 去 esc
   }
   $("#eng-save").addEventListener("click", async () => {
     const msg = $("#eng-msg"), btn = $("#eng-save"); btn.disabled = true;
@@ -2565,11 +2785,15 @@
       const r = await jpost("/setup/backend", engBody());
       msg.className = "hint"; msg.textContent = "✓ 已应用检索引擎（" + (r.backend === "api" ? "API" : "本地") + "）。" + (r.warn ? "⚠ " + r.warn + " " : "") + "开始重建索引…";
       await doRebuildIndex(msg);
-    } catch (e) { msg.className = "hint warn"; msg.textContent = "保存失败：" + esc(e.message); }
+    } catch (e) { msg.className = "hint warn"; msg.textContent = "保存失败：" + e.message; }   // BF23：textContent 去 esc
     finally { btn.disabled = false; }
   });
 
   // ── 深索摘要（SAC）：K2（副本#7）三选一 generator=server|agent|off ──
+  // BF21：key 输入框的 dirty 标记——只有用户动过才把 key 放进请求体（空串＝清除落盘）；
+  // 没动过就不带 key 字段，避免每次保存高级设置都把已存 key 清掉/覆盖
+  let sacKeyDirty = false;
+  { const sk = $("#sac-key"); if (sk) sk.addEventListener("input", () => { sacKeyDirty = true; }); }
   // 当前选中的生成方式（读单选按钮）
   function sacGen() { return (document.querySelector("input[name=sac-gen]:checked") || {}).value || "off"; }
   // 依据 generator + effective_ready 显示状态行
@@ -2599,6 +2823,7 @@
       // K3：key 是密码，后端只回末4位；已设则用掩码占位，不回填明文
       const last4 = s.key_last4 || s.sac_key_last4 || "";
       $("#sac-key").value = "";
+      sacKeyDirty = false;   // BF21：程序回填不算用户改动
       $("#sac-key").placeholder = s.key_set
         ? ((last4 ? maskKey(last4) + " " : "") + "你之前已经填过了，留空即可（不填则复用检索引擎的 key）")
         : "不用填，会自动复用检索引擎的 key";
@@ -2625,15 +2850,16 @@
     const gen = sacGen();
     const body = { generator: gen };
     const base = $("#sac-base").value.trim(), model = $("#sac-model").value.trim(), key = $("#sac-key").value.trim();
+    // BF21：base/model 每次照发（空串＝清空落盘，后端已按 is not None 判）；key 只有用户动过输入框才发，
+    // 动过且为空串＝明确清除——之前「填了清不掉」就是因为空值一律不发
     body.base = base; body.model = model;
-    if (key) body.key = key; // 留空则不改，后端复用检索引擎的 key
+    if (sacKeyDirty) body.key = key;
     msg.textContent = "保存中…";
     try {
       const r = await jpost("/setup/sac", body);
       renderSacStatus(gen, !!(r && r.effective_ready));
-      $("#sac-key").value = ""; // 存完清空明文输入
-      if (key) $("#sac-key").placeholder = "你之前已经填过了，留空即可（不填则复用检索引擎的 key）";
       msg.textContent = "已保存 ✓";
+      await loadSac();   // BF21：以后端落盘结果回显校验（顺带清空明文输入、重置 dirty）
     } catch (e) { msg.textContent = "保存失败：" + e.message; }
   });
 
@@ -2677,6 +2903,9 @@
     const btn = $("#btn-build"); const old = btn.textContent;
     const restore = () => { manualUpdating = false; btn.disabled = false; btn.textContent = old; };
     manualUpdating = true; btn.disabled = true; btn.textContent = "⟳ 更新中…";
+    // UX6：更新前记一份篇数基线（total/deep），完成后对比告诉用户到底新增了几篇；取不到就退化为普通完成提示
+    let baseTotal = null;
+    try { const s0 = await jget("/stats"); baseTotal = ((s0 && s0.coverage) || {}).total; } catch (e) {}
     try {
       const r = await fetch("/build", { method: "POST" });
       let j = null; try { j = await r.json(); } catch (e) {}
@@ -2693,6 +2922,17 @@
             if (dashLoaded) loadDashboard("silent");
             if (browseLoaded) { browseLoaded = false; if (!$("#panel-browse").hidden) loadBrowse(); }
             poll();
+            // UX6：真跑完（非超时封顶）才对比基线报结果
+            if (!s.running) {
+              try {
+                const s1 = await jget("/stats");
+                const nowTotal = ((s1 && s1.coverage) || {}).total;
+                if (baseTotal != null && nowTotal != null) {
+                  const diff = nowTotal - baseTotal;
+                  flashToast(diff > 0 ? `更新完成：新增 ${num(diff)} 篇文献。` : "更新完成，没有新增文献。");
+                } else flashToast("更新完成 ✓");
+              } catch (e) { flashToast("更新完成 ✓"); }
+            }
           }
         } catch (e) { clearInterval(iv); restore(); }
       }, 1500);
@@ -2771,8 +3011,9 @@
           if (WZ.api) WZ.api.key = k; WZ.apiTested = true;
           msg.className = "wz-test-msg ok";
           msg.textContent = `✓ 免费模型可用（向量维度 ${num(r.dim)}，延迟 ${num(r.latency_ms)}ms）。下一步会自动用 API 引擎、无需再测。`;
-        } else { WZ.apiTested = false; msg.className = "wz-test-msg err"; msg.textContent = "连接失败：" + esc((r && r.msg) || "未知错误"); }
-      } catch (e) { WZ.apiTested = false; msg.className = "wz-test-msg err"; msg.textContent = "连接失败：" + esc(e.message); }
+        // BF23：textContent 去 esc（否则报错里的 & < > 显示成 &amp; 等实体）
+        } else { WZ.apiTested = false; msg.className = "wz-test-msg err"; msg.textContent = "连接失败：" + ((r && r.msg) || "未知错误"); }
+      } catch (e) { WZ.apiTested = false; msg.className = "wz-test-msg err"; msg.textContent = "连接失败：" + e.message; }
     });
     $("#wzk-back").addEventListener("click", renderStep1);
     $("#wzk-next").addEventListener("click", async () => {
@@ -2894,12 +3135,12 @@
         } else {
           WZ.apiTested = false;
           msg.className = "wz-test-msg err";
-          msg.textContent = "连接失败：" + esc((r && r.msg) || "未知错误");
+          msg.textContent = "连接失败：" + ((r && r.msg) || "未知错误");   // BF23：textContent 去 esc
         }
       } catch (e) {
         WZ.apiTested = false;
         msg.className = "wz-test-msg err";
-        msg.textContent = "连接失败：" + esc(e.message);
+        msg.textContent = "连接失败：" + e.message;   // BF23
       } finally { btn.disabled = false; }
     });
 
@@ -2938,9 +3179,10 @@
     $("#wizard-body").innerHTML =
       `<div class="wz-engines">
         <label class="wz-engine ${zSel ? "sel" : ""}" data-src="zotero">
-          <input type="radio" name="wz-src" value="zotero" ${zSel ? "checked" : ""} ${d.zotero_detected ? "" : "disabled"} />
+          <!-- UX1：未检测到 Zotero 也允许选中——装在非默认路径的用户可手动填数据目录，不该被 disabled 卡死 -->
+          <input type="radio" name="wz-src" value="zotero" ${zSel ? "checked" : ""} />
           <div class="wz-engine-body">
-            <div class="wz-engine-h">🔗 连接 Zotero ${d.zotero_detected ? '<span class="wz-badge-rec">已检测到</span>' : '<span class="wz-badge-save">未检测到</span>'}</div>
+            <div class="wz-engine-h">🔗 连接 Zotero ${d.zotero_detected ? '<span class="wz-badge-rec">已检测到</span>' : '<span class="wz-badge-save">未检测到（可手动填目录）</span>'}</div>
             <div class="wz-engine-d">直接读取 Zotero 里每一条文献（含题录和收藏夹分类），不会改动你的 Zotero 数据。</div>
           </div>
         </label>
@@ -2963,7 +3205,10 @@
   }
   function renderStep3Zotero() {
     const d = WZ.detect || {};
-    $("#wz-src-body").innerHTML =
+    // UX1：未自动检测到时给一句明确指引——手填目录后照常走 /setup/connect（zotero_dir 会随请求提交）
+    const noDetectNote = d.zotero_detected ? "" :
+      `<div class="wz-note wz-note-warn">⚠️ 未自动检测到 Zotero，请在下方手动填写数据目录（Zotero 的「首选项 → 高级 → 文件和文件夹」里能看到，目录下有 zotero.sqlite）。</div>`;
+    $("#wz-src-body").innerHTML = noDetectNote +
       `<div class="wz-field">
         <label>Zotero 数据目录（含 zotero.sqlite，留空自动探测）</label>
         <input id="wz-zdir" value="${esc(d.zotero_dir || "")}" placeholder="如 D:\\Zotero（留空则自动探测）" />
@@ -3126,7 +3371,7 @@
         await jpost("/setup/backend", { backend: WZ.backend, key: k });  // 只存 key，不改检索后端
         WZ.api.key = k; if (WZ.detect) WZ.detect.meta_ready = true; APP.metaReady = true;
         renderMetaDep();
-      } catch (e) { msg.className = "wz-test-msg err"; msg.textContent = "保存失败：" + esc(e.message); }
+      } catch (e) { msg.className = "wz-test-msg err"; msg.textContent = "保存失败：" + e.message; }   // BF23：textContent 去 esc
     });
   }
 
@@ -3137,7 +3382,7 @@
       `<div class="wz-note">检索引擎已就绪 ✓${WZ.backend === "api" ? "（API 模式，无需本地模型）" : "（本地模型已在）"}。可直接进入下一步。</div>
       <div class="wz-actions">
         <button class="ghost2c wz-back" id="wz4-back">← 上一步</button>
-        <button class="primary" id="wz4-next">下一步：即时索引 →</button>
+        <button class="primary" id="wz4-next">下一步：建立索引 →</button>
         
       </div>`;
     $("#wizard-body").innerHTML = `<div id="wz4-inner"><div class="wz-note">正在检查检索引擎…</div></div>`;
@@ -3188,7 +3433,7 @@
       const total = Number(j.total) || 0, dl = Number(j.done) || 0;
       const pct = total > 0 ? Math.max(0, Math.min(100, Math.round((dl / total) * 100))) : 0;
       const phase = PHASE_TXT[j.phase] || j.phase || "下载";
-      if (nameEl) nameEl.textContent = `${phase}：${esc(j.name || "")}`;
+      if (nameEl) nameEl.textContent = `${phase}：${j.name || ""}`;   // BF23：textContent 去 esc
       if (pctEl) pctEl.textContent = pct + "%";
       if (fillEl) fillEl.style.width = pct + "%";
       if (subEl) subEl.textContent = total > 0 ? `${mb(dl)} / ${mb(total)} MB` : `${mb(dl)} MB`;
@@ -3283,6 +3528,12 @@
           return;
         }
         const r = await jpost("/index/light", {});
+        // BF9：/index/light 忙时返回 {ok:false,busy:true}——不能当成功渲染「已索引 0 篇」
+        if (r && r.ok === false) {
+          $("#wz5-msg").innerHTML = `<div class="wz-err">${esc(r.msg || "已有构建任务在跑，请稍后再试。")}</div>`;
+          btn.disabled = false; btn.textContent = "重试";
+          return;
+        }
         const papers = r.meta_indexed != null ? r.meta_indexed : (r.total || 0);
         const wp = r.with_pdf || 0;
         jpost("/index/semantic", {}).catch((e) => reportErr(e && e.message, "wizard auto-semantic"));
@@ -3367,7 +3618,8 @@
   // ══════════════════════════════════════════
   function openMetaKeyHelp() {
     openSettings();
-    setTimeout(() => { const e = $("#settings-modal .set-section"); if (e) e.scrollIntoView({ behavior: "smooth" }); }, 100);
+    // UX9：滚到「检索引擎」小节锚点（Key 就填在这）——原先滚到第一节（期刊学科），用户找不到该填哪
+    setTimeout(() => { const e = $("#sec-engine"); if (e) e.scrollIntoView({ behavior: "smooth" }); }, 100);
   }
   function fileToB64(file) {
     return new Promise((resolve, reject) => {
@@ -3397,6 +3649,11 @@
     $("#ingest-detail").textContent = r.building ? "已在后台建索引/抽题录，完成后自动可搜（进度见顶部）。" : "";
     $("#ingest-close").hidden = false;
     const g = $("#ing-gokey"); if (g) g.addEventListener("click", openMetaKeyHelp);
+    // W2：弹窗可能已被 Esc/遮罩收起（入库照常后台跑）——结果用浮层补告知，否则失败信息会被完全错过
+    if ($("#ingest-modal").hidden) {
+      flashToast(failed.length ? `入库完成：新增 ${num(r.added || 0)} 篇，⚠ ${num(failed.length)} 篇未入库（重新拖入可看详情）`
+                               : `入库完成：新增 ${num(r.added || 0)} 篇 ✓`);
+    }
     // 收尾刷新
     browseLoaded = false; if (!$("#panel-browse").hidden) loadBrowse();
     if (dashLoaded) loadDashboard("silent");
@@ -3419,6 +3676,7 @@
     } catch (e) {
       $("#ingest-result").innerHTML = `<div class="wz-err">入库失败：${esc(e.message)}</div>`;
       $("#ingest-close").hidden = false;
+      if ($("#ingest-modal").hidden) flashToast("⚠ 入库失败：" + (e.message || e));   // W2：弹窗已收起也要告知
     }
   }
   function initDragIngest() {

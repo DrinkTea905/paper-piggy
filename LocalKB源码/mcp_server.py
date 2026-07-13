@@ -581,7 +581,9 @@ def do_tool(name, args):
         if r.get("busy"):
             return "知识库正在建库/深索中（有其它构建任务在跑），请稍后再调用 deep_index。"
         if not r.get("ok"):
-            return "深索失败：" + str(r.get("detail") or r)
+            # BF16：后端子阶段失败返回 {ok:false,error,stage}——把人话透传给 agent，
+            # 否则 agent 拿不到真因会向用户误报「已嵌入入库」。
+            return "深索失败：" + str(r.get("error") or r.get("detail") or r)
         done, wp, rem = r.get("done"), r.get("with_pdf"), r.get("remaining")
         ts = r.get("to_summarize") or []
         if r.get("finished") and not ts:

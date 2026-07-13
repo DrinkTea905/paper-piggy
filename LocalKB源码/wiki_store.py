@@ -223,6 +223,7 @@ def _rebuild_index_from_disk():
                             for k in (fm.get("sources") or [])],
                 "generated_at": fm.get("generated_at", ""),
                 "generated_by": fm.get("generated_by", ""),
+                "verified_at": fm.get("verified_at", "") or "",   # W3：核验章随 .md 重建，不因 index 损坏而丢
                 "stale": bool(fm.get("stale")), "by_agent": bool(fm.get("by_agent")),
                 "links": fm.get("links") or [],
             })
@@ -282,8 +283,10 @@ def _upsert_index(meta):
     with _INDEX_LOCK:                     # 读-改-写必须串行，否则并发保存会丢页
         idx = load_index()
         pages = [p for p in idx.get("pages", []) if p.get("id") != meta["id"]]
+        # W3：verified_at 一并入表；正文被重写(_persist_page)时 meta 无此键 → 置空=核验自然失效
         entry = {k: meta.get(k) for k in
-                 ("id", "kind", "title", "subject", "sources", "generated_at", "generated_by", "stale", "by_agent", "links")}
+                 ("id", "kind", "title", "subject", "sources", "generated_at", "generated_by",
+                  "verified_at", "stale", "by_agent", "links")}
         pages.append(entry)
         idx["pages"] = pages
         idx["by_source"] = _build_by_source(pages)
@@ -406,6 +409,7 @@ def restore_page(page_id, rev):
             "subject": fm.get("subject", "") or fm.get("title", ""),
             "sources": [{"key": k, "citation": _resolve_citation(k)} for k in (fm.get("sources") or [])],
             "generated_at": fm.get("generated_at", ""), "generated_by": fm.get("generated_by", ""),
+            "verified_at": fm.get("verified_at", "") or "",   # W3：回滚版本里若有核验章则一并恢复
             "stale": bool(fm.get("stale")), "by_agent": bool(fm.get("by_agent")),
             "links": fm.get("links") or [],
         }
@@ -656,6 +660,7 @@ def list_pages():
     idx = load_index()
     return [{"id": p["id"], "kind": p.get("kind", "answer"), "title": p.get("title", ""),
              "generated_at": p.get("generated_at", ""), "generated_by": p.get("generated_by", ""),
+             "verified_at": p.get("verified_at") or "",   # W3：人工核验时间（无则空串）
              "stale": bool(p.get("stale")), "by_agent": bool(p.get("by_agent")),
              "degraded": is_degraded(p.get("generated_by", "")),
              "degraded_reason": degraded_reason(p.get("generated_by", "")),
@@ -677,6 +682,7 @@ def get_page(page_id):
         src_cites.append({"key": key, "citation": cite or _resolve_citation(key)})
     return {"id": page_id, "kind": meta.get("kind"), "title": meta.get("title", ""),
             "generated_at": meta.get("generated_at", ""), "generated_by": meta.get("generated_by", ""),
+            "verified_at": meta.get("verified_at") or "",   # W3：人工核验时间（无则空串）
             "stale": bool(meta.get("stale")), "by_agent": bool(meta.get("by_agent")),
             "degraded": is_degraded(meta.get("generated_by", "")),
             "degraded_reason": degraded_reason(meta.get("generated_by", "")),
@@ -720,6 +726,48 @@ def set_stale(page_id, stale=True, reason=""):
     except Exception:
         pass
     return {"id": page_id, "stale": bool(stale), "reason": reason,
+            "title": meta.get("title", ""), "kind": meta.get("kind")}
+
+
+def set_verified(page_id):
+    """W3：人工核验盖章——写 verified_at 时间戳，三处同步（index.json + .md frontmatter +
+       检索期内存 M["wiki"]，先例见 set_stale）。核验是人的动作，**不做成 MCP 工具**：
+       agent 不得给自己的产出盖「已核验」章（那会架空 by_agent 写权护栏）。"""
+    ts = _now()
+    with _INDEX_LOCK:
+        idx = load_index()
+        meta = next((p for p in idx.get("pages", []) if p.get("id") == page_id), None)
+        if not meta:
+            raise ValueError(f"无此综合页 {page_id}")
+        meta["verified_at"] = ts
+        _save_index(idx)
+
+        # 同步 .md frontmatter（只动 frontmatter 区，避免误伤正文里的 --- 分隔线）
+        path = page_path(page_id, meta.get("kind", "answer"))
+        if path.exists():
+            try:
+                txt = path.read_text(encoding="utf-8")
+                end = txt.find("\n---", 3) if txt.startswith("---") else -1
+                if end >= 0:
+                    head = txt[:end]
+                    if re.search(r"(?m)^verified_at:", head):
+                        head = re.sub(r"(?m)^verified_at:.*$", f"verified_at: {ts}", head, count=1)
+                        new = head + txt[end:]
+                    else:
+                        new = head + f"\nverified_at: {ts}" + txt[end:]
+                    if new != txt:
+                        _atomic_write(path, new)
+            except Exception as e:
+                print(f"[wiki] 同步 .md verified_at 失败 {page_id}：{e}", file=sys.stderr, flush=True)
+
+    # 同步检索期内存（供前端徽章/后续按核验态调权直接生效，无需重启）
+    try:
+        import retriever as R
+        if page_id in (R.M.get("wiki") or {}):
+            R.M["wiki"][page_id]["verified_at"] = ts
+    except Exception:
+        pass
+    return {"id": page_id, "verified_at": ts,
             "title": meta.get("title", ""), "kind": meta.get("kind")}
 
 

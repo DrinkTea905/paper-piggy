@@ -60,6 +60,54 @@ def _file_sha1(path):
         return ""
 
 
+def _purge_db_rows(keys):
+    """BF10：把消失/被替换文件的 key 从 LanceDB 全量删行（meta+chunk 都删，谓词不带 row_type）。
+       folder 首建时表还没有 / 连接失败 → 静默跳过（此时也没有可残留的行）。"""
+    if not keys:
+        return
+    try:
+        import lancedb
+        from dbutil import key_predicate
+        db = lancedb.connect(str(C.LANCEDB_DIR))
+        if C.TABLE_NAME not in db.table_names():
+            return
+        pred = key_predicate(list(keys))
+        if pred:
+            db.open_table(C.TABLE_NAME).delete(pred)
+    except Exception as e:
+        print(f"[folder] 清理索引残留行失败（不阻断，下次重试）：{e!r}", flush=True)
+
+
+def _purge_key_artifacts(keys):
+    """BF10：清掉消失/被替换文件在进度文件与抽取产物里的残留。此前只剔 meta_cache，
+       embedded_keys 里残留的 stem 会让"换了内容的同名文件"被当已深索永远跳过、
+       表里的旧内容继续被检索命中。①进度文件按 stem 保序重写 ②删 extracted/chunks 同名产物。
+       整段持 _CACHE_LOCK：ingest_one 在线程池里并发调用，无锁的读-改-写会后写覆盖前写、丢 stem。"""
+    stems = {safe_name(k) for k in keys if k}
+    if not stems:
+        return
+    with _CACHE_LOCK:
+        for fname in ("embedded_keys.txt", "meta_embedded.txt", "deep_no_text.txt"):
+            p = C.STATE / fname
+            if not p.exists():
+                continue
+            try:
+                lines = p.read_text(encoding="utf-8").splitlines()
+                kept = [l for l in lines if l.strip() and l.strip() not in stems]
+                if len(kept) != len([l for l in lines if l.strip()]):
+                    p.write_text("".join(l + "\n" for l in kept), encoding="utf-8")
+            except Exception:
+                pass
+    for d in (C.EXTRACTED, C.CHUNKS):
+        for st in stems:
+            try:
+                f = d / f"{st}.json"
+                if f.exists():
+                    f.unlink()
+            except Exception:
+                pass
+
+
 def _head_text(pdf, key):
     """取首 1-2 页文本：若深索已提取过整篇则读缓存前2页，否则现抽首2页。"""
     ex = C.EXTRACTED / f"{safe_name(key)}.json"
@@ -80,8 +128,19 @@ def _head_text(pdf, key):
 def ingest_one(folder, pdf, cache):
     key = FS.stable_key(folder, pdf)
     with _CACHE_LOCK:                                   # R4：持锁读，避免与其它 worker/存盘竞争
-        if key in cache and cache[key].get("meta"):
+        _entry = cache.get(key) or {}
+        _has_meta = bool(_entry.get("meta"))
+        _old_sha = _entry.get("sha1", "")
+    if _has_meta:
+        # BF10：skip 前比对 sha1——同路径文件被替换（key 不变、内容变）时，旧题录/旧索引
+        # 全是别篇文章的，必须作废重抽。旧条目没存 sha1（如 no_text 退化条目）维持原跳过行为。
+        if not _old_sha or _file_sha1(pdf) == _old_sha:
             return "skip"
+        with _CACHE_LOCK:                               # R4：持锁写
+            cache.pop(key, None)
+        # BF10：替换=旧内容作废——表行也删（否则旧文章的 chunk 行在下次手动深索前一直被命中）
+        _purge_db_rows([key])
+        _purge_key_artifacts([key])
     text = _head_text(pdf, key)
     if not text:
         with _CACHE_LOCK:                               # R4：持锁写
@@ -111,17 +170,29 @@ def main():
     cache = _load_cache()
     # 增量：删除的文件从 cache 剔除
     live = {FS.stable_key(folder, p) for p in pdfs}
-    for k in list(cache):
-        if k not in live:
+    gone = [k for k in list(cache) if k not in live]
+    if gone:
+        for k in gone:
             del cache[k]
+        # BF10：光剔 meta_cache 不够——表行、进度 stem、抽取产物都残留着，
+        # 已删除的文献会继续被检索命中；一并清（表删行含 meta+chunk，见 _purge_db_rows）。
+        _purge_db_rows(gone)
+        _purge_key_artifacts(gone)
 
     if not FM.available():
         print(f"[folder] 未配置 LLM，跳过题录抽取（{len(pdfs)} 篇退回文件名题名）", flush=True)
         _save_cache(cache)
         return
 
-    todo = [p for p in pdfs
-            if FS.stable_key(folder, p) not in cache or not cache[FS.stable_key(folder, p)].get("meta")]
+    # BF10：除"没题录"的新文件外，已有题录但存过 sha1 的也要送进 worker——
+    # ingest_one 里比对 sha1 做替换检测（内容没变的秒 skip），否则同名替换永远检不出来。
+    todo, n_new = [], 0
+    for p in pdfs:
+        e = cache.get(FS.stable_key(folder, p)) or {}
+        if not e.get("meta"):
+            todo.append(p); n_new += 1
+        elif e.get("sha1"):
+            todo.append(p)
     if args.limit:
         todo = todo[:args.limit]
     if not todo:
@@ -130,7 +201,7 @@ def main():
         return
 
     workers = args.workers or S.folder_meta_conf().get("workers", 3)
-    print(f"[folder] 待抽题录 {len(todo)}/{len(pdfs)} 篇，workers={workers}", flush=True)
+    print(f"[folder] 待抽题录 {n_new} 篇 + 替换检测 {len(todo) - n_new} 篇（共 {len(pdfs)} 篇），workers={workers}", flush=True)
     done = 0
     with ThreadPoolExecutor(max_workers=workers) as ex:
         futs = {ex.submit(ingest_one, folder, p, cache): p for p in todo}

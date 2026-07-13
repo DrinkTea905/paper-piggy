@@ -7,6 +7,7 @@
 只要用户装了 Zotero 就能用。
 """
 import os, glob, re, sqlite3, shutil, tempfile, sys
+from datetime import datetime, timezone
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import config as C
@@ -14,12 +15,29 @@ import config as C
 def _clean(s):
     return re.sub(r'\s+', ' ', (s or '').replace('\n', ' ').replace('\r', ' ')).strip()
 
+def _utc_to_local(s):
+    """BF1：Zotero 的 dateAdded 存 UTC "YYYY-MM-DD HH:MM:SS"，直接展示会差 8 小时——转成本地时间串。"""
+    try:
+        return (datetime.strptime(s, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+                .astimezone().strftime("%Y-%m-%d %H:%M:%S"))
+    except Exception:
+        return s or ""
+
 def detect_data_dir():
     """探测 Zotero 数据目录（含 zotero.sqlite）。返回 Path 或 None。"""
-    # ① 显式覆盖（环境变量 / config.ZOTERO_DIR）
+    # ① 显式覆盖（环境变量 / config.ZOTERO_DIR）——保持最高优先级：临时切库的逃生口不能被持久设置压住
     env = os.environ.get("LOCALKB_ZOTERO_DIR") or getattr(C, "ZOTERO_DIR", "")
     if env and (Path(env) / "zotero.sqlite").exists():
         return Path(env)
+    # ①b BF28：向导里手填的 zotero_dir 落在 settings，此前从没被读过（填了等于白填）。
+    # settings.py 不 import zotero_source（只 import config），此处反向 import 无循环。
+    try:
+        import settings as S
+        sd = S.load().get("zotero_dir") or ""
+        if sd and (Path(sd) / "zotero.sqlite").exists():
+            return Path(sd)
+    except Exception:
+        pass
     # ② Zotero profile 的 prefs.js 里记录的 dataDir（自定义目录的唯一可靠来源）
     appdata = os.environ.get("APPDATA") or os.path.expanduser("~/AppData/Roaming")
     for prefs in glob.glob(os.path.join(appdata, "Zotero", "Zotero", "Profiles", "*", "prefs.js")):
@@ -49,66 +67,88 @@ def load_papers(data_dir=None, library_id=1):
     if not d or not (d / "zotero.sqlite").exists():
         raise FileNotFoundError("未探测到 zotero.sqlite（请确认已安装 Zotero，或手动指定目录）")
     storage = d / "storage"
-    tmp = Path(tempfile.gettempdir()) / "localkb_zotero_ro.sqlite"
-    # Zotero 开着时主库处于 WAL 模式：复制主库 + -wal/-shm 一起，拿到一致快照；
-    # 复制失败（独占锁/权限）给清晰提示，而不是让上层静默失败。
+    # BF17：临时副本改 mkstemp 唯一路径——固定文件名会让并发的 build/自动更新互踩
+    # （一方读到另一方复制到一半的库，报 database disk image is malformed），用完三件套一并删除。
+    fd, _tmp_name = tempfile.mkstemp(prefix="localkb_zotero_ro_", suffix=".sqlite")
+    os.close(fd)
+    tmp = Path(_tmp_name)
+    con = None
     try:
-        shutil.copy2(d / "zotero.sqlite", tmp)
-        for ext in ("-wal", "-shm"):
-            src = d / ("zotero.sqlite" + ext)
-            if src.exists():
-                try:
-                    shutil.copy2(src, Path(str(tmp) + ext))
-                except Exception:
-                    pass
-    except Exception as e:
-        raise RuntimeError(f"无法读取 zotero.sqlite（{e}）——请先完全退出 Zotero 再试，或检查该文件的读取权限。")
-    con = sqlite3.connect(f"file:{tmp}?mode=ro", uri=True)
-    cur = con.cursor()
-    def q(sql, a=()): return cur.execute(sql, a).fetchall()
+        # Zotero 开着时主库处于 WAL 模式：复制主库 + -wal/-shm 一起，拿到一致快照；
+        # 复制失败给如实提示（带原始错误），而不是让上层静默失败。
+        try:
+            shutil.copy2(d / "zotero.sqlite", tmp)
+            for ext in ("-wal", "-shm"):
+                src = d / ("zotero.sqlite" + ext)
+                if src.exists():
+                    try:
+                        shutil.copy2(src, Path(str(tmp) + ext))
+                    except Exception:
+                        pass
+        except Exception as e:
+            raise RuntimeError(f"无法复制 zotero.sqlite 到临时目录（{e}）——请检查该文件的读取权限与磁盘剩余空间。")
+        con = sqlite3.connect(f"file:{tmp}?mode=ro", uri=True)
+        cur = con.cursor()
+        def q(sql, a=()): return cur.execute(sql, a).fetchall()
 
-    items = q("""SELECT i.itemID, i.key, it.typeName FROM items i
-      JOIN itemTypes it ON i.itemTypeID=it.itemTypeID
-      WHERE it.typeName NOT IN ('attachment','note','annotation')
-        AND i.itemID NOT IN (SELECT itemID FROM deletedItems)
-        AND i.libraryID=?""", (library_id,))
+        # BF1：带出 dateAdded（真实入库时间，替代此前每次重建都被刷新的"now"）；
+        # 显式 ORDER BY itemID 保证 papers.jsonl 顺序稳定（不再依赖 sqlite 的隐式返回序）。
+        items = q("""SELECT i.itemID, i.key, it.typeName, i.dateAdded FROM items i
+          JOIN itemTypes it ON i.itemTypeID=it.itemTypeID
+          WHERE it.typeName NOT IN ('attachment','note','annotation')
+            AND i.itemID NOT IN (SELECT itemID FROM deletedItems)
+            AND i.libraryID=?
+          ORDER BY i.itemID""", (library_id,))
 
-    # 字段值（EAV 一次性拉全）
-    fld = {}
-    for iid, fn, val in q("""SELECT id.itemID, f.fieldName, idv.value FROM itemData id
-      JOIN fields f ON id.fieldID=f.fieldID
-      JOIN itemDataValues idv ON id.valueID=idv.valueID"""):
-        fld.setdefault(iid, {})[fn] = val
-    # 作者（按顺序）
-    au = {}
-    for iid, ln, fn in q("""SELECT ic.itemID, c.lastName, c.firstName FROM itemCreators ic
-      JOIN creators c ON ic.creatorID=c.creatorID ORDER BY ic.itemID, ic.orderIndex"""):
-        au.setdefault(iid, []).append(_clean((ln or "") + (fn or "")))
-    # 标签 → 当作 keywords（BBT 也是把 tags 导成 keywords）
-    tags = {}
-    for iid, name in q("""SELECT it.itemID, t.name FROM itemTags it JOIN tags t ON it.tagID=t.tagID"""):
-        tags.setdefault(iid, []).append(name)
-    # PDF 附件路径（storage:filename → storage/<附件key>/filename）
-    pdf = {}
-    for pid, akey, path in q("""SELECT ia.parentItemID, i2.key, ia.path FROM itemAttachments ia
-      JOIN items i2 ON ia.itemID=i2.itemID
-      WHERE ia.contentType='application/pdf' AND ia.parentItemID IS NOT NULL"""):
-        if pid in pdf or not path:
-            continue
-        if path.startswith("storage:"):
-            pdf[pid] = str(storage / akey / path.split(":", 1)[1])
-        else:
-            pdf[pid] = path  # 链接附件：绝对路径
-    # 收藏夹
-    colname = dict(q("SELECT collectionID, collectionName FROM collections"))
-    itemcol = {}
-    for cid, iid in q("SELECT collectionID, itemID FROM collectionItems"):
-        if cid in colname:
-            itemcol.setdefault(iid, []).append(colname[cid])
-    con.close()
+        # 字段值（EAV 一次性拉全）
+        fld = {}
+        for iid, fn, val in q("""SELECT id.itemID, f.fieldName, idv.value FROM itemData id
+          JOIN fields f ON id.fieldID=f.fieldID
+          JOIN itemDataValues idv ON id.valueID=idv.valueID"""):
+            fld.setdefault(iid, {})[fn] = val
+        # 作者（按顺序）
+        au = {}
+        for iid, ln, fn in q("""SELECT ic.itemID, c.lastName, c.firstName FROM itemCreators ic
+          JOIN creators c ON ic.creatorID=c.creatorID ORDER BY ic.itemID, ic.orderIndex"""):
+            au.setdefault(iid, []).append(_clean((ln or "") + (fn or "")))
+        # 标签 → 当作 keywords（BBT 也是把 tags 导成 keywords）
+        tags = {}
+        for iid, name in q("""SELECT it.itemID, t.name FROM itemTags it JOIN tags t ON it.tagID=t.tagID"""):
+            tags.setdefault(iid, []).append(name)
+        # PDF 附件路径（storage:filename → storage/<附件key>/filename）
+        pdf = {}
+        for pid, akey, path in q("""SELECT ia.parentItemID, i2.key, ia.path FROM itemAttachments ia
+          JOIN items i2 ON ia.itemID=i2.itemID
+          WHERE ia.contentType='application/pdf' AND ia.parentItemID IS NOT NULL"""):
+            if pid in pdf or not path:
+                continue
+            if path.startswith("storage:"):
+                pdf[pid] = str(storage / akey / path.split(":", 1)[1])
+            else:
+                pdf[pid] = path  # 链接附件：绝对路径
+        # 收藏夹
+        colname = dict(q("SELECT collectionID, collectionName FROM collections"))
+        itemcol = {}
+        for cid, iid in q("SELECT collectionID, itemID FROM collectionItems"):
+            if cid in colname:
+                itemcol.setdefault(iid, []).append(colname[cid])
+        con.close()
+    finally:
+        # BF17：临时三件套用完即删（mkstemp 不会自动清理，长期跑会在 temp 里堆尸）；
+        # Windows 上连接不关文件删不掉，先兜底 close 再删。
+        try:
+            if con is not None:
+                con.close()
+        except Exception:
+            pass
+        for p in (tmp, Path(str(tmp) + "-wal"), Path(str(tmp) + "-shm")):
+            try:
+                p.unlink(missing_ok=True)
+            except Exception:
+                pass
 
     papers = []
-    for iid, key, typ in items:
+    for iid, key, typ, dadd in items:
         f = fld.get(iid, {})
         # statute 的标题在 nameOfAct（法规名称）字段——漏读会让全部法规被当"无标题"丢弃
         title = _clean(f.get("title") or f.get("caseName") or f.get("nameOfAct") or f.get("subject") or "")
@@ -130,6 +170,8 @@ def load_papers(data_dir=None, library_id=1):
             "has_pdf": iid in pdf,
             "pdf_path": pdf.get(iid, ""),
             "collections": itemcol.get(iid, []),
+            # BF1：真实入库时间 = Zotero 的 dateAdded（UTC→本地）；「最近入库」不再随每次重建全体刷新
+            "ingested_at": _utc_to_local(dadd),
         })
     return papers
 

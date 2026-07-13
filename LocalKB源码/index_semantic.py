@@ -77,7 +77,11 @@ def main(batch=64):
                     t = t.cast(ns)
                 tbl = db.create_table(C.TABLE_NAME, data=t, mode="overwrite")
             else:
-                pred = key_predicate([r["key"] for r in rows])
+                # BF4：只删 meta 行——同 key 的 chunk 行（深索成果，最贵的资产）与 meta 行共存
+                # 于一张表（见 import_fulltext.py:6），裸 key 谓词会把它们连带删掉；
+                # 旧表无 row_type 列时退回裸谓词。
+                pred = key_predicate([r["key"] for r in rows],
+                                     row_type="meta" if "row_type" in tbl.schema.names else None)
                 if pred:
                     tbl.delete(pred)
                 tbl.add(rows)

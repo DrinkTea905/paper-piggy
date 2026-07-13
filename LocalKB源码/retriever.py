@@ -226,16 +226,22 @@ def _page_cite(r):
     return s.strip()
 
 def search_full(query, topk, sort, keys=None):
-    di = dense_search(query, C.DENSE_TOPK)
-    bi = bm25_search(query, C.BM25_TOPK)
+    # BF6：白名单场景源头召回放大到 150（见 config.FILTER_SRC_TOPK）——限定分类后
+    # 50 条粗召回被过滤剩不下几条，池子先天不足；常规检索维持 50 不拖慢。
+    src_k = C.FILTER_SRC_TOPK if keys is not None else 0
+    di = dense_search(query, src_k or C.DENSE_TOPK)
+    bi = bm25_search(query, src_k or C.BM25_TOPK)
     # 重排池与最终 topk 解耦：重排(cross-encoder)是最贵的一步，topk 调大(无限滚动)时不让候选爆炸。
-    # dense/bm25 各取 50 → RRF 去重后约 ~100，池上限 90 足够；避免 topk=40 时重排 320 条拖到十几秒。
-    pool = min(max(50, topk * 2), 64)
-    fused = rrf(di, bi)[:pool]
-    # F11：有 key 白名单时在 rerank 前过滤候选（最省算力）；keys=None 时行为与旧版逐字一致
+    # 无 keys：dense/bm25 各取 50 → RRF 去重后约 ~100，池上限 64 足够；避免 topk=40 时重排几百条拖到十几秒。
+    # 有 keys（BF6）：候选已按白名单过滤过、rerank 每条都花在有效候选上，池放宽到 128 提召回。
+    pool = (min(max(100, topk * 4), 128) if keys is not None
+            else min(max(50, topk * 2), 64))
+    # BF6：F11 的白名单过滤必须在截池**之前**——先截 64 再过滤，限定的小分类可能一条都不剩；
+    # 对 RRF 全量融合结果先过滤再截池，keys=None 时行为与旧版一致。
+    fused = rrf(di, bi)
     cand = [cid for cid in fused
             if cid in M["records"]
-            and (keys is None or M["records"][cid].get("key") in keys)]
+            and (keys is None or M["records"][cid].get("key") in keys)][:pool]
     if not cand:
         return []
     scores = M["rerank"].scores(query, [M["records"][cid]["text"] for cid in cand])
@@ -484,8 +490,16 @@ def _wiki_effective(score, obj):
     r = (M.get("records") or {}).get(obj)
     if not r or not _is_wiki(r):
         return score
-    if _wiki_meta(r).get("stale"):
-        return score * C.WIKI_STALE_FACTOR
+    wm = _wiki_meta(r)
+    if wm.get("stale"):
+        # BF5：乘法只在正分域是"降权"——reranker 分可为负（不相关时 -5 上下），
+        # 负分 ×0.3 反而离 0 更近 = 反向提权（config.py:135-142 只量了正分尺度，漏了负分域）。
+        # 负分改除以 factor：更负 = 更靠后，正负两域都是货真价实的重罚。
+        return score * C.WIKI_STALE_FACTOR if score > 0 else score / C.WIKI_STALE_FACTOR
+    if wm.get("kind") == "answer":
+        # BF5：answer 页标题≈原查询，reranker 分虚高 3 分+，减 0.05 压不住——改乘法折减
+        # （见 config.WIKI_ANSWER_FACTOR），负分域同上用除法。
+        return score * C.WIKI_ANSWER_FACTOR if score > 0 else score / C.WIKI_ANSWER_FACTOR
     return score - C.WIKI_BASE_PENALTY
 
 def _blend_bonus(x, lex):

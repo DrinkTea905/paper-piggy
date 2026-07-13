@@ -19,6 +19,8 @@ DEFAULT = {
     # 数据源：zotero（读 zotero.sqlite）| folder（受管文件夹 + LLM 抽题录）。缺省 zotero，老用户零影响。
     "source": "zotero",
     "folder_dir": "",            # source=folder 时的受管库文件夹绝对路径
+    # BF2：用户在向导手选的 Zotero 数据目录（空=自动探测）。此前校验完即丢，重启就失忆。
+    "zotero_dir": "",
     "import_only_pdf": False,    # Zotero 模式：只导入有 PDF 的条目（向导可选，切换需重建即时索引）
     # 整库锁定单学科（journal_grading 期刊权重引擎用）。产品默认标准 "law"；
     # 个人法学库改 "law_personal"（含 2026-06-28 旧档：台湾刊/顶尖外文法评/外文权威，外刊不打折）。
@@ -26,7 +28,8 @@ DEFAULT = {
     # 自动更新：Zotero 新增条目 / 文件夹新增 PDF 时，后台定时增量更新（只跑轻量层+语义，深索永远手动）
     "auto_update": {
         "enabled": True,
-        "interval_min": 15,
+        # BF24：默认 60 分钟（唯一事实来源——server.py/app.js 的兜底一律引用/对齐此值，不再各写各的）
+        "interval_min": 60,
     },
     # 文件夹模式的题录抽取 LLM（key 空时复用 api/sac 的 key，见 folder_meta._conf）
     "folder_meta": {
