@@ -1,9 +1,9 @@
-# LocalKB / PaperPiggy 架构
+# PaperPiggy 架构
 
 面向接手本项目的 AI 开发 agent。所有事实都带 `文件:行号` 证据（行号基于 2026-07-14 的源码）。
 不确定的地方标了「待核」，请自行验证后再依赖。
 
-**唯一可改的目录是 `LocalKB源码\`。** 分发包里的 `app\` 是构建产物（`build_bundle.py --sync-only` 刷新），直接改它会被下次构建覆盖。
+**唯一可改的目录是 `src\`。** 分发包里的 `app\` 是构建产物（`build_bundle.py --sync-only` 刷新），直接改它会被下次构建覆盖。
 （历史：曾有个 `sync_app.ps1` 把源码同步进桌面上的 `LocalKB\app\`。那个常驻分发目录已删除，脚本随之删除——现在只有 `build_bundle.py` 一条生成路径。）
 
 ---
@@ -80,7 +80,7 @@ is_bundle =  (root/"run_localkb.py").exists()
 
 | 分支 | 判定 | DATA |
 |---|---|---|
-| **① 源码态（开发）** | `is_bundle` 为假 → 直接 return（`config.py:31-32`） | `LocalKB源码\data`（`config.py:56` 的默认值 `APP/data`） |
+| **① 源码态（开发）** | `is_bundle` 为假 → 直接 return（`config.py:31-32`） | `src\data`（`config.py:56` 的默认值 `APP/data`） |
 | **② 分发包 + `portable.txt`** | `config.py:33-34` | `<bundle>\data`（包内） |
 | **③ 分发包 无 `portable.txt`** | `config.py:35-37` | `%LOCALAPPDATA%\LocalKB\data`（可被 `LOCALKB_HOME` 覆盖） |
 
@@ -101,7 +101,7 @@ DATA 之下的一切派生路径见 `config.py:56-98`：`extracted/ chunks/ lanc
 5. 都没有 → 返回 `APP/models`（可能根本不存在，待首启下载）（`config.py:120`）。
 
 **关键：没有硬编码的开发机兜底路径了**（`config.py:113-114` 明写「不再裸写某台开发机的绝对路径」）。
-实测源码树下既无 `LocalKB源码\models` 也无 `知识库应用\models`，所以**源码态跑本地模型必须显式设 `LOCALKB_MODELS`（或 `LOCALKB_DEV_MODELS`）**，否则 MODELS 指向一个不存在的目录，本地 ONNX 嵌入/重排会加载失败。
+实测源码树下既无 `src\models` 也无 `知识库应用\models`，所以**源码态跑本地模型必须显式设 `LOCALKB_MODELS`（或 `LOCALKB_DEV_MODELS`）**，否则 MODELS 指向一个不存在的目录，本地 ONNX 嵌入/重排会加载失败。
 （绕开办法：设置里把 backend 切成 `api`，走 SiliconFlow 的 bge-m3 / reranker，不用本地模型。）
 
 `config.py:125-130` 只 mkdir 自有目录，**绝不 mkdir MODELS**。
@@ -274,7 +274,7 @@ light 模式走 `search_light`（`retriever.py:547`）：只有 bm25_meta + `_ap
   定时任务/ 说明.md
 ```
 
-**落点（`base_dir()`，`agent_ws.py:18-41`）**：默认 `C.DATA.parent`（源码态 = `LocalKB源码\`，分发态 = `%LOCALAPPDATA%\LocalKB\`）。
+**落点（`base_dir()`，`agent_ws.py:18-41`）**：默认 `C.DATA.parent`（源码态 = `src\`，分发态 = `%LOCALAPPDATA%\LocalKB\`）。
 若 folder 模式的受管文件夹里已有非空的 `0_Agent资料库`，就跟着它走（避免老用户记忆孤儿化）。
 历史坑：落点曾随 folder/zotero 模式漂移，表现为「记忆凭空清零」。
 
@@ -441,7 +441,7 @@ server 侧 `GET /agent/tasks`（`server.py:649`）解析 `任务.md` 的 frontma
 | `gen_mcp_doc.py` | 从 `mcp_server.TOOLS` 生成 `MCP接入说明.md` 的工具表；`--check` 可校验过期（改 TOOLS 后必跑） |
 | `check_guides.py` | 指引 ↔ 代码一致性校验（工具表/Resources/Prompts/工作流数/schema 版本/版本字面量）。`build_bundle.py` 开头会跑它，红了就中止打包 |
 | `setup_reranker_onnx.py` | 开发机一次性：导出 reranker → ONNX → INT8 量化 + 验证排序一致性 |
-| `import_fulltext.py` | 一次性迁移：把旧 rag 知识库的全文块导进 LocalKB（复用向量，省数小时）。旧库路径由 `--rag-lancedb` / `LOCALKB_RAG_LANCEDB` 显式指定 |
+| `import_fulltext.py` | 一次性迁移：把旧 rag 知识库的全文块导进本库（复用向量，省数小时）。旧库路径由 `--rag-lancedb` / `LOCALKB_RAG_LANCEDB` 显式指定 |
 | `journal_grading/migrate_legacy.py` / `selftest.py` | 分级引擎的迁移与自检脚本 |
 | `启动.bat` | 源码态/分发态的双击入口（找 pythonw → 跑 launcher / run_localkb） |
 
@@ -457,8 +457,8 @@ server 侧 `GET /agent/tasks`（`server.py:649`）解析 `任务.md` 的 frontma
 
 ## 11. 接手前必读的几条铁律
 
-1. **只改 `LocalKB源码\`**，改完用 `python build_bundle.py --sync-only` 刷新 bundle 的 `app\`。直接改 `app\` 会被覆盖。
-2. **源码态要用本地模型必须显式设 `LOCALKB_MODELS`**（§2.2），否则 MODELS 指向不存在的 `LocalKB源码\models`。
+1. **只改 `src\`**，改完用 `python build_bundle.py --sync-only` 刷新 bundle 的 `app\`。直接改 `app\` 会被覆盖。
+2. **源码态要用本地模型必须显式设 `LOCALKB_MODELS`**（§2.2），否则 MODELS 指向不存在的 `src\models`。
 3. **建索引与查询必须用同一个 backend**（local ONNX-INT8 vs API 全精度，向量不一致会掉点）——`settings.py:5-6` 把它列为铁律，backend 写进 `index_manifest.json`。
 4. **改 `WIKI_MD_SEED` 要同步追加旧版 sha1 到 `_FACTORY_HASHES`**（§5.2），否则老用户的 WIKI.md 自动升级会静默断掉。
 5. **改 `mcp_server.TOOLS` 要跑 `python gen_mcp_doc.py`**，否则 `MCP接入说明.md` 的工具表过期。

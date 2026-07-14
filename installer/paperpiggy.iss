@@ -1,5 +1,5 @@
 ; ─────────────────────────────────────────────────────────────────────────────
-; 论文猪 / PaperPiggy —— Inno Setup 安装脚本
+; PaperPiggy · 论文小猪 —— Inno Setup 安装脚本
 ;
 ; 编译：不要直接用 ISCC 跑这个文件。用 build_installer.py，它会：
 ;   ① 从 config.APP_VERSION 读版本号（唯一事实源）→ 传 /DAppVersion
@@ -31,12 +31,12 @@
   #define AppVersion "0.0.0-dev"    ; 兜底值；正常由 build_installer.py 用 /DAppVersion 传入
 #endif
 
-#define AppName        "论文猪"
+#define AppName        "论文小猪"
 #define AppNameEn      "PaperPiggy"
 #define AppPublisher   "DrinkTea905"
 #define AppURL         "https://github.com/DrinkTea905/paper-piggy"
-#define AppExeName     "LocalKB.vbs"
-#define BundleDir      "..\LocalKB源码\dist\LocalKB"
+#define AppExeName     "PaperPiggy.vbs"
+#define BundleDir      "..\src\dist\LocalKB"
 
 [Setup]
 ; ⛔ AppId 一旦发布就不能再改：改了会被 Windows 当成另一个应用，升级安装会装出两份。

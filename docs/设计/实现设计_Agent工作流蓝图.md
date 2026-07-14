@@ -1,4 +1,4 @@
-# LocalKB · Agent 工作流蓝图
+# PaperPiggy · Agent 工作流蓝图
 
 > **本文件是什么**：在《实现设计_综合层与答案沉淀.md》（把"检索到的理解"沉淀成带引用的 wiki 页 + MCP 读—综合—写回闭环）之上，回答下一个问题——**综合层建好之后，让 LocalKB 长出哪些 agent 工作流、怎么排期、每条怎么接到现有检索+wiki层+MCP 上**。
 > **怎么用**：本文是"选什么、按什么顺序做"的决策蓝图；每选定一条工作流，再据其卡片写独立的实现设计文档（如《实现设计_引注核验.md》），交给新对话实现。
@@ -72,7 +72,7 @@ LocalKB 只有 ~2000 篇，不是法学全集。任何涉及"库里有没有"的
 | **G5** | **增量 diff 钩子** | 新 key（对 papers.jsonl 快照做差/读 embedded_keys）→ 逐篇 R.search 命中的 wiki 行→ 借 `index.json` 的 `by_source` 反查(wiki_store.py:94)定位受影响页 | 复用增量 state + `by_source`；新建 diff 触发 | 4.9（并给 4.4/4.6 的 stale 重生供料） |
 | **G6** | **MCP 写工具族 + 人工闸约定** | 维持"agent 能读+综合+写回、不能删"；核验结论只标 stale 不落断言；按需加**只读**工具（如 `list_contradiction_candidates`、`verify_citation`） | 复用 `mcp_server.TOOLS`(:54)/`do_tool`(:118) 现有 6 工具 + 分权哲学（§6.4） | 全部经 agent 通道的工作流 |
 
-> **落法建议**：G1 与 G2 各写成 `verify.py` / `cite_format.py` 一个模块，暴露纯函数供 server 端点、MCP 工具、Claude Code 技能三方复用；G3/G4 在 `wiki_store.py` 小改；G5 复用现有 `state/`；G6 只在 `mcp_server.py` 加只读工具。**每加/改一个 MCP 工具，同步更新 `MCP接入说明.md` 工具表；两套代码树（`LocalKB\app` 与 `LocalKB源码`）都落一份。**
+> **落法建议**：G1 与 G2 各写成 `verify.py` / `cite_format.py` 一个模块，暴露纯函数供 server 端点、MCP 工具、Claude Code 技能三方复用；G3/G4 在 `wiki_store.py` 小改；G5 复用现有 `state/`；G6 只在 `mcp_server.py` 加只读工具。**每加/改一个 MCP 工具，同步更新 `MCP接入说明.md` 工具表；两套代码树（`LocalKB\app` 与 `src`）都落一份。**
 
 ---
 

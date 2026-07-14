@@ -1,4 +1,4 @@
-# LocalKB / PaperPiggy 发布与自动更新方案
+# PaperPiggy 发布与自动更新方案
 
 > 2026-07-13 拟定，2026-07-14 更新（目录重组 + 许可证合规）。
 > 基于当前架构（内嵌 python-build-standalone CPython + app/ 纯源码 + pywebview/WebView2
@@ -13,9 +13,9 @@
 | 素材 | 位置 | 在 git 里？ | 丢了怎么办 |
 |---|---|---|---|
 | **Python 运行时 + 全部依赖** | `build/py312/` (~800M) | ❌ | 按 §0.2 重建（**这是唯一不可自动重建的东西**） |
-| **MinGit** | `build/assets/MinGit/` (~90M) | ❌ | `python LocalKB源码/fetch_mingit.py` |
+| **MinGit** | `build/assets/MinGit/` (~90M) | ❌ | `python src/fetch_mingit.py` |
 | **ONNX 模型** | `D:\00Zotero知识库\rag\data\models\` | ❌ | **母本，勿删**。重新量化要几小时 |
-| 源码 | `LocalKB源码/` | ✅ | `git checkout` |
+| 源码 | `src/` | ✅ | `git checkout` |
 
 ### 0.2 重建 `build/py312`（唯一不可自动重建的环节）
 
@@ -28,7 +28,7 @@
 #    解压后把里面的 python/ 目录放到 build/py312/
 
 # ② 装依赖 —— 一定要用 lock，不要用 requirements.txt
-build\py312\python.exe -m pip install -r LocalKB源码\requirements.lock
+build\py312\python.exe -m pip install -r src\requirements.lock
 
 # ③ 补 VC++ 运行库（❗ 少了这步，干净机上本地模式必崩 WinError 1114）
 copy C:\Windows\System32\msvcp140.dll    build\py312\

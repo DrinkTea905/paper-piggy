@@ -1,6 +1,6 @@
 # 第三方组件声明
 
-LocalKB（论文猪）本体以 **Apache License 2.0** 发布（见 [LICENSE](LICENSE)）。
+PaperPiggy（论文小猪）本体以 **Apache License 2.0** 发布（见 [LICENSE](LICENSE)）。
 发行版（安装器 / 便携 zip）中还包含下列第三方组件，其版权与许可归各自作者所有。
 
 > 维护提示：**新增依赖时必须回来更新这份文件**，并跑一遍许可证扫描
@@ -53,7 +53,7 @@ LocalKB（论文猪）本体以 **Apache License 2.0** 发布（见 [LICENSE](LI
 
 ## 3. Python 依赖
 
-按许可证归类（完整精确清单见 [`LocalKB源码/requirements.lock`](LocalKB源码/requirements.lock)）：
+按许可证归类（完整精确清单见 [`src/requirements.lock`](src/requirements.lock)）：
 
 **Apache-2.0**
 `lancedb` · `transformers` · `tokenizers` · `huggingface_hub` · `safetensors` · `requests` · `flatbuffers` · `hf-xet` · `deprecation` · `lance-namespace`

@@ -55,7 +55,7 @@
 | 你改了 | 必须同步 | 校验 |
 |---|---|---|
 | 新增/改动 UI 功能（页签、按钮、流程） | `index.html` `#home-guide`(:87) 八章 + `#ag-guide`(:350) 十章 + `app.js` `agentGuideCard()`(:1207) 四步图 | ❌ 人肉（用 §3 的 checklist） |
-| 首启向导流程 | `index.html` `.wizard-steps`(:786) + `app.js` `renderStep1`(:3494) ~ `renderStep5`(:4025) + `LocalKB源码/README.md` 的「第一次使用」段 | ❌ 人肉 |
+| 首启向导流程 | `index.html` `.wizard-steps`(:786) + `app.js` `renderStep1`(:3494) ~ `renderStep5`(:4025) + `src/README.md` 的「第一次使用」段 | ❌ 人肉 |
 
 ### 1.5 其它
 
@@ -86,7 +86,7 @@
 - 「项目记忆.md / 变更日志.md」这类**用户数据种子**被写过 → `kept`（不塞 .new.md）
 
 > ⚠️ **维护 SOP（改模板必做）**：改完任何模板文本后跑
-> `build\py312\python.exe LocalKB源码\agent_ws.py --print-hashes`，
+> `build\py312\python.exe src\agent_ws.py --print-hashes`，
 > 把标「★ 新版：请追加」的 hash 追加进 `_FACTORY_HASHES`（**旧 hash 一个都别删**）。
 > 忘了追加 → 这一版的出厂原样文件在下下版会被误判成「用户改过」→ 用户机器上凭空多出一堆 `.new.md`。
 
@@ -108,7 +108,7 @@ const n = (AG.cfg && AG.cfg.tool_count) || AG_TOOLS.length;   // 后端真值优
 
 ### 2.3 `check_guides.py`（✅ 2026-07-14 已建成，只读校验器）
 
-在 `LocalKB源码/check_guides.py`，已进 `build_bundle.py` 的 DEV_ONLY 名单（不进分发包）。
+在 `src/check_guides.py`，已进 `build_bundle.py` 的 DEV_ONLY 名单（不进分发包）。
 **`build_bundle.py` 开头会跑它（`verify_guides()`），退出码非 0 直接中止打包**（`--skip-checks` 可临时跳过，正式发版不许跳）。
 
 现在断言这 5 条（编号即输出里的 ①~⑤）：
@@ -147,9 +147,9 @@ const n = (AG.cfg && AG.cfg.tool_count) || AG_TOOLS.length;   // 后端真值优
 
 改 `.gitignore` 之前必读。**被忽略的目录里有真实用户数据：**
 
-- `LocalKB源码/data/settings.json` —— 跑过一次应用后会写入**真实 API key**
-- `LocalKB源码/data/meta/papers.jsonl` —— 2110 条真实 Zotero 元数据，其中 1443 条含 `D:\` 本机绝对路径
-- `LocalKB源码/data/wiki/.git` —— 嵌套仓库，不忽略会变成无效 gitlink
+- `src/data/settings.json` —— 跑过一次应用后会写入**真实 API key**
+- `src/data/meta/papers.jsonl` —— 2110 条真实 Zotero 元数据，其中 1443 条含 `D:\` 本机绝对路径
+- `src/data/wiki/.git` —— 嵌套仓库，不忽略会变成无效 gitlink
 
 **发任何公开版本之前**，跑一遍：
 

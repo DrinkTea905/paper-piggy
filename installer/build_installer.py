@@ -7,7 +7,7 @@ r"""
   ③ 更新包      dist-installer\paper-piggy-app-<ver>.zip     （只含 app\，供 updater.py 用）
                 + 同名 .sha256
 
-前置：先跑 build_bundle.py 生成 LocalKB源码\dist\LocalKB\。
+前置：先跑 build_bundle.py 生成 src\dist\LocalKB\。
 
 【为什么 ① 和 ② 必须不同】
   portable.txt 决定数据落哪：
@@ -25,7 +25,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
-SRC = ROOT / "LocalKB源码"
+SRC = ROOT / "src"
 BUNDLE = SRC / "dist" / "LocalKB"
 OUT = ROOT / "dist-installer"
 
@@ -51,7 +51,7 @@ def app_version():
 def check_bundle():
     if not BUNDLE.exists():
         raise SystemExit(f"[installer] ✗ 找不到 {BUNDLE}\n"
-                         f"    先跑：python LocalKB源码\\build_bundle.py")
+                         f"    先跑：python src\\build_bundle.py")
     if not (BUNDLE / "python" / "python.exe").exists():
         raise SystemExit(f"[installer] ✗ {BUNDLE}\\python\\python.exe 不存在（bundle 不完整）")
 
