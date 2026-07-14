@@ -5,9 +5,10 @@ server 未起时自动后台拉起（首次加载模型约 30-60s，之后常驻
 任何 agent（Claude Code / Codex）用 Bash 调即可，无需记 HTTP。
 
 ⚠ 定位（EN-M6）：本 CLI 仅覆盖【检索 / 建库 / 状态】三件事。
-完整能力（读原文、综合层 wiki 维护、引注排版与核验、找相似、收单篇等 28 个工具）
-走 MCP：接入 mcp_server.py（见 MCP接入说明.md）。非 MCP 生态可直接调 HTTP，
-OpenAPI 文档在 http://127.0.0.1:8770/docs。
+完整能力（读原文、综合层 wiki 维护、引注排版与核验、找相似、收单篇……）走 MCP：
+接入 mcp_server.py（工具清单见 MCP接入说明.md，由 gen_mcp_doc.py 从代码生成）。
+非 MCP 生态可直接调 HTTP，OpenAPI 文档在 http://127.0.0.1:8770/docs。
+（这里刻意不写工具个数——写死的数字必然漂移：它曾长期停在 28，而代码里已经是 32。）
 
 用法:
   python localkb.py "认罪认罚从宽对司法信任"          # 检索，输出 JSON（results[]）

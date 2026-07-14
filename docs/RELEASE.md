@@ -1,7 +1,83 @@
 # LocalKB / PaperPiggy 发布与自动更新方案
 
-> 2026-07-13 拟定。基于当前架构（内嵌 python-build-standalone CPython + app/ 纯源码 + pywebview/WebView2 + 首启下载 onnx 模型 + MinGit + 数据模型分离在 %LOCALAPPDATA%\LocalKB）。
-> 调研结论均为 2026 年 7 月当下事实，来源见文末。
+> 2026-07-13 拟定，2026-07-14 更新（目录重组 + 许可证合规）。
+> 基于当前架构（内嵌 python-build-standalone CPython + app/ 纯源码 + pywebview/WebView2
+> + 首启下载 onnx 模型 + MinGit + 数据模型分离在 %LOCALAPPDATA%\LocalKB）。
+
+---
+
+## 0. 构建环境（先看这里）
+
+### 0.1 构建素材在哪
+
+| 素材 | 位置 | 在 git 里？ | 丢了怎么办 |
+|---|---|---|---|
+| **Python 运行时 + 全部依赖** | `build/py312/` (~800M) | ❌ | 按 §0.2 重建（**这是唯一不可自动重建的东西**） |
+| **MinGit** | `build/assets/MinGit/` (~90M) | ❌ | `python LocalKB源码/fetch_mingit.py` |
+| **ONNX 模型** | `D:\00Zotero知识库\rag\data\models\` | ❌ | **母本，勿删**。重新量化要几小时 |
+| 源码 | `LocalKB源码/` | ✅ | `git checkout` |
+
+### 0.2 重建 `build/py312`（唯一不可自动重建的环节）
+
+`build_bundle.py` 只**检查** `python/python.exe` 存不存在，**不会创建它**。所以这一步必须手工做：
+
+```powershell
+# ① 下 python-build-standalone（CPython 3.12，install_only 版）
+#    https://github.com/astral-sh/python-build-standalone/releases
+#    选 cpython-3.12.x+*-x86_64-pc-windows-msvc-install_only.tar.gz
+#    解压后把里面的 python/ 目录放到 build/py312/
+
+# ② 装依赖 —— 一定要用 lock，不要用 requirements.txt
+build\py312\python.exe -m pip install -r LocalKB源码\requirements.lock
+
+# ③ 补 VC++ 运行库（❗ 少了这步，干净机上本地模式必崩 WinError 1114）
+copy C:\Windows\System32\msvcp140.dll    build\py312\
+copy C:\Windows\System32\msvcp140_1.dll  build\py312\
+#    要求 ≥14.40。onnxruntime 的导入表同时需要 msvcp140 和 msvcp140_1，
+#    而 python-build-standalone 只自带 vcruntime140/_1。
+#    site-packages 里那几份救不了：numpy/pyarrow 的副本被 delvewheel 改名成 msvcp140-<hash>.dll。
+
+# ④ 验证
+build\py312\python.exe -c "import onnxruntime, lancedb, pypdfium2, docx; print('OK')"
+```
+
+### 0.3 许可证红线
+
+⛔ **不得引入 AGPL / Polyform Noncommercial / SSPL 依赖。**
+本项目曾因 `pymupdf4llm` → `pymupdf_layout`(Polyform NC) → `PyMuPDF`(AGPL) 而**无法合法开源发布**，
+2026-07 已换成 `pypdfium2`(BSD/Apache) 解决。新增依赖前先扫许可证，见 [THIRD-PARTY-NOTICES.md](../THIRD-PARTY-NOTICES.md)。
+
+---
+
+## 0.9 发布检查单（每次发版逐条打勾）
+
+**代码与指引**
+- [ ] `python gen_mcp_doc.py --check` 退出码 0（工具表未漂移）
+- [ ] `python check_guides.py` 全绿（指引与代码一致）
+- [ ] `CHANGELOG.md` 已更新
+- [ ] 版本号只改了 `config.APP_VERSION` 一处
+
+**构建产物**
+- [ ] `bundle/python/` 下有 `msvcp140.dll` + `msvcp140_1.dll`（≥14.40）
+- [ ] `python-docx` 已装（否则 Word 导出静默降级为 .md）
+- [ ] `models_manifest.json` 存在，且直链可匿名下载（私有仓库的 Release 资产会 404）
+- [ ] `app/version.json` 的 sha256 与磁盘文件一致
+- [ ] 包内**没有** `app/data/`、`app/logs/` 残留
+- [ ] 包内**没有** `settings.json` 里的 API 密钥
+- [ ] 便携 zip **带** `portable.txt`；Inno 安装器**绝不能带**（否则会往 Program Files 写数据，必崩）
+
+**干净机验收**（没装 VC++ 2015-2022、没装 WebView2 的全新 Windows）
+- [ ] `bundle\python\python.exe -c "import onnxruntime"` 不报 WinError 1114
+- [ ] 双击快捷方式弹出**原生窗口**（弹系统浏览器 = WebView2 没装上）
+- [ ] 首启向导能下模型（本地模式）/ 能填 key（API 模式）
+- [ ] 能建库、能检索、能深索出正文
+- [ ] 关窗后进程干净退出（任务管理器里没有残留 python.exe）
+- [ ] 卸载后 `%LOCALAPPDATA%\LocalKB\data` 仍在（用户数据不能被卸载带走）
+
+**隐私**
+- [ ] `git ls-files | grep -iE "settings\.json|papers\.jsonl|\.key"` 为空
+
+---
 
 ## 一句话结论
 
