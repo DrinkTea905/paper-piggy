@@ -149,8 +149,8 @@
         <section class="ag-ch">
           <div class="ag-ch-n">7</div>
           <div class="ag-ch-c">
-            <h3>自动更新与隐私</h3>
-            <p class="ag-note">· <b>自动更新</b>：在「⚙ 设置 → 自动更新知识库」可设按天定时增量入库（默认每天 7:00）；也能随时点顶栏「⟳ 手动更新知识库」。<br>· <b>隐私</b>：<b>全程本地</b>，文献不出你的电脑；大模型 Key 只存本机浏览器与本地服务内存，不上传第三方（除你自己选的模型服务商）。</p>
+            <h3>自动更新、备份与隐私</h3>
+            <p class="ag-note">· <b>自动更新</b>：在「⚙ 设置 → 自动更新知识库」可设按天定时增量入库（默认每天 7:00）；也能随时点顶栏「⟳ 手动更新知识库」。<br>· <b>备份</b>：「⚙ 设置 → 备份与恢复」把<b>丢了就再也没有的东西</b>（综述、Agent 写的论文与记忆、收藏夹、期刊分级）打成一个 zip。<b>想要云备份</b>：把备份位置指到 OneDrive / 坚果云的文件夹里——同步一个静态 zip 是安全的。⛔ 但<b>别把整个数据目录丢进云盘</b>：向量索引是持续读写的数据库，云盘同步它早晚会把索引搞坏。<br>· <b>隐私</b>：<b>全程本地</b>，文献不出你的电脑；大模型 Key 只存本机浏览器与本地服务内存，不上传第三方（除你自己选的模型服务商）。备份包<b>默认不含</b> API 密钥（要含得自己勾选）。</p>
           </div>
         </section>
 
@@ -655,6 +655,48 @@
             <option value="xlarge">特大</option>
           </select>
         </label>
+      </div>
+
+      <div class="set-section" id="sec-backup">
+        <h4>💾 备份与恢复</h4>
+        <p class="hint">把<b>丢了就再也没有的东西</b>打成一个 zip：综述库、Agent 写的论文与记忆、收藏夹、
+          文献元数据、期刊分级（这个是花过 API 钱的）。<br>
+          <b>想要云备份？</b>把下面的备份位置指到 OneDrive / 坚果云里的一个文件夹就行——
+          云盘同步一个<b>静态 zip</b> 是安全的。⛔ 但<b>千万别把整个数据目录丢进云盘</b>：
+          向量索引是持续读写的数据库，云盘同步它会锁文件、造重复副本，早晚把索引搞坏。</p>
+
+        <label>备份位置
+          <input id="bk-dir" placeholder="（默认：数据目录下的 backups\）" />
+        </label>
+        <div class="set-errbtns">
+          <button id="bk-pick" class="ghost" hidden>📁 浏览…</button>
+          <button id="bk-open" class="ghost">📂 打开备份文件夹</button>
+        </div>
+
+        <label class="sac-toggle">
+          <input type="checkbox" id="bk-with-index" />
+          包含向量索引（体积大，但<b>换电脑时不用重建</b>——重建 1400 篇要几小时或再花一次 API 钱）
+          <span id="bk-size" class="hint"></span>
+        </label>
+        <label class="sac-toggle">
+          <input type="checkbox" id="bk-with-key" />
+          包含 API 密钥 <b class="danger-text">（谨慎）</b>——勾了之后备份包里就有你的密钥，
+          传到云盘、发给别人、丢了 U 盘都等于泄漏。不勾的话恢复后重填一次即可。
+        </label>
+        <label class="sac-toggle">
+          <input type="checkbox" id="bk-auto" />
+          自动备份：每
+          <input type="number" id="bk-days" min="1" max="90" style="width:4em" /> 天一次
+          （只打手写资产、不含索引、不含密钥），保留最近
+          <input type="number" id="bk-keep" min="1" max="20" style="width:3.5em" /> 份
+        </label>
+
+        <div class="set-errbtns">
+          <button id="bk-create" class="ghost">💾 立即备份</button>
+          <span id="bk-msg" class="hint"></span>
+        </div>
+
+        <div id="bk-list" class="bk-list"></div>
       </div>
 
       <div class="set-section">

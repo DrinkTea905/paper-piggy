@@ -209,6 +209,19 @@ button:disabled { opacity: .6; cursor: default; }
 .set-errbtns .ghost:hover { border-color: var(--accent); color: var(--accent); }
 .err-text { width: 100%; margin-top: 10px; height: 200px; resize: vertical; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: #0f172a; color: #cbd5e1; font: 12px/1.5 Consolas, monospace; white-space: pre; overflow: auto; }
 
+/* 备份与恢复 */
+.danger-text { color: #b91c1c; }
+/* 这几个勾选项的说明文字很长（密钥泄漏、索引重建成本都得讲清楚），必须能换行——
+   .sac-toggle 默认是单行 flex，不覆盖就会把文字挤出容器 */
+#sec-backup .sac-toggle { align-items: flex-start; flex-wrap: wrap; line-height: 1.65; }
+#sec-backup .sac-toggle input[type="checkbox"] { margin-top: 2px; }
+#sec-backup input[type="number"] { padding: 3px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: var(--fg); }
+.bk-list { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
+.bk-item { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; background: var(--card); font-size: 13px; }
+.bk-item .hint { margin: 2px 0 6px; }
+.bk-item .ghost { border: 1px solid var(--line); background: transparent; color: var(--muted); padding: 5px 12px; border-radius: 8px; cursor: pointer; font-size: 12.5px; }
+.bk-item .ghost.danger:hover { border-color: #b91c1c; color: #b91c1c; }
+
 /* 深索摘要（SAC）小节 */
 .sac-toggle { display: flex; align-items: center; gap: 8px; margin: 8px 0 4px; font-size: 13px; color: var(--fg); cursor: pointer; }
 .sac-toggle input { width: 16px; height: 16px; margin: 0; flex: 0 0 auto; cursor: pointer; }

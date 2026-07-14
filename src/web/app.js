@@ -2999,6 +2999,7 @@
     loadDiscipline(); // 回填期刊分级学科下拉
     loadAutoUpdate(); // 回填自动更新开关/间隔
     loadOnlyPdf();    // 回填「只导入有 PDF」开关
+    loadBackup();     // 回填备份位置/自动备份，并列出已有备份包
   }
 
   // ── 自动更新（按天 + 指定时刻 + 补跑；即改即存）──
@@ -3181,6 +3182,169 @@
       const a = safeParse(localStorage.getItem("localkb.ui"), {}); if ((a.theme || "system") === "system") applyAppearance();
     }); } catch (e) {} } }
   applyAppearance();
+
+  // ── 备份与恢复 ────────────────────────────────────────────
+  // 设计见 backup.py 文件头。一句话：备份包是**静态 zip**，放进云盘同步是安全的；
+  // 而向量索引是持续读写的数据库，让云盘去实时同步它，早晚把索引搞坏。
+  const _bkSize = (b) => b >= 1e9 ? (b / 1e9).toFixed(2) + " GB"
+                       : b >= 1e6 ? (b / 1e6).toFixed(1) + " MB"
+                       : Math.max(1, Math.round(b / 1e3)) + " KB";
+
+  async function loadBackup() {
+    const dirEl = $("#bk-dir"); if (!dirEl) return;
+    try {
+      const c = await jget("/backup/config");
+      dirEl.value = c.dir || "";
+      dirEl.placeholder = "（默认：" + (c.effective_dir || "数据目录下的 backups") + "）";
+      $("#bk-with-index").checked = !!c.include_index;
+      $("#bk-auto").checked = !!c.auto;
+      $("#bk-days").value = c.every_days || 7;
+      $("#bk-keep").value = c.keep || 3;
+      const msg = $("#bk-msg");
+      if (msg) msg.textContent = c.last_at ? "上次备份：" + c.last_at : "还没有备份过。";
+    } catch (e) {}
+    // 原生目录选择器只有 launcher 注入了 pywebview 桥时才有；浏览器回退时藏起来，别留死按钮
+    const canPick = !!(window.pywebview && window.pywebview.api && window.pywebview.api.pick_folder);
+    const pick = $("#bk-pick"); if (pick) pick.hidden = !canPick;
+    refreshBkSize();
+    renderBkList();
+  }
+
+  async function refreshBkSize() {
+    const el = $("#bk-size"); if (!el) return;
+    const withIdx = $("#bk-with-index").checked ? 1 : 0;
+    el.textContent = "…";
+    try {
+      const r = await jget("/backup/estimate?with_index=" + withIdx);
+      el.textContent = r.ok ? "≈ " + _bkSize(r.bytes) : "";
+    } catch (e) { el.textContent = ""; }
+  }
+
+  async function renderBkList() {
+    const box = $("#bk-list"); if (!box) return;
+    let r;
+    try { r = await jget("/backup/list"); } catch (e) { return; }
+    const items = (r && r.items) || [];
+    if (!items.length) { box.innerHTML = '<p class="hint">还没有备份包。</p>'; return; }
+    box.innerHTML = items.map((it) => {
+      if (it.broken) return `<div class="bk-item"><b>${it.name}</b> <span class="danger-text">（包已损坏，不能用来恢复）</span></div>`;
+      const m = it.manifest || {};
+      const tags = [m.includes_index ? "含索引" : "仅手写资产"];
+      if (m.has_api_key) tags.push("⚠️ 含密钥");
+      const c = m.counts || {};
+      const detail = [c.wiki_pages != null ? c.wiki_pages + " 篇综述" : null,
+                      c.papers != null ? c.papers + " 条文献" : null,
+                      c.agent_outputs ? c.agent_outputs + " 个交付物主题" : null]
+                     .filter(Boolean).join(" · ");
+      return `<div class="bk-item">
+        <div><b>${it.mtime}</b> · ${_bkSize(it.size)} · ${tags.join(" / ")}</div>
+        <div class="hint">${detail || "&nbsp;"}</div>
+        <button class="ghost danger bk-restore" data-path="${it.path.replace(/"/g, "&quot;")}">↩ 从这个包恢复</button>
+      </div>`;
+    }).join("");
+    box.querySelectorAll(".bk-restore").forEach(b =>
+      b.addEventListener("click", () => doRestore(b.dataset.path)));
+  }
+
+  async function pollBackup(doneMsg) {
+    const msg = $("#bk-msg");
+    for (let i = 0; i < 3600; i++) {
+      await new Promise(r => setTimeout(r, 700));
+      let s;
+      try { s = await jget("/backup/status"); } catch (e) { continue; }
+      if (s.running) {
+        const p = s.total ? ` ${s.done}/${s.total}` : "";
+        if (msg) msg.textContent = (s.stage || "处理中") + p + "…";
+        continue;
+      }
+      if (s.error) { if (msg) msg.textContent = "❌ " + s.error; return null; }
+      if (msg) msg.textContent = doneMsg(s.result || {});
+      return s.result || {};
+    }
+    return null;
+  }
+
+  async function doBackup() {
+    const btn = $("#bk-create"), msg = $("#bk-msg");
+    const withKey = $("#bk-with-key").checked;
+    if (withKey && !confirm(
+        "备份包里将包含你的 API 密钥。\n\n" +
+        "这个 zip 要是传到云盘、发给别人、或者存进 U 盘弄丢了，密钥就等于泄漏了。\n\n" +
+        "确定包含密钥吗？（不含也没关系，恢复后重填一次即可）")) return;
+    btn.disabled = true;
+    if (msg) msg.textContent = "打包中…";
+    try {
+      const r = await jpost("/backup/create", {
+        include_index: $("#bk-with-index").checked,
+        include_key: withKey,
+      });
+      if (!r.ok) { if (msg) msg.textContent = "❌ " + (r.error || "备份失败"); return; }
+      await pollBackup((m) => "✅ 已备份 → " + (m.path || "") + "（" + _bkSize(m.size || 0) + "）");
+      await renderBkList();
+    } catch (e) {
+      if (msg) msg.textContent = "❌ " + e;
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  async function doRestore(path) {
+    const msg = $("#bk-msg");
+    let info;
+    try { info = await jpost("/backup/inspect", { path }); } catch (e) { alert("读不了这个包：" + e); return; }
+    if (!info.ok) { alert(info.err || info.error || "这个备份包不可用"); return; }
+
+    const warns = (info.warnings || []).map(w => "· " + w).join("\n");
+    if (!confirm(
+        "要从这个备份恢复吗？\n\n" +
+        "备份时间：" + ((info.manifest || {}).created || "?") + "\n" +
+        (warns ? "\n注意：\n" + warns + "\n" : "") +
+        "\n你现在的数据不会被删掉——会先整体挪进一个 _restore_backup_<时间> 文件夹，" +
+        "万一恢复错了还能捞回来。\n\n恢复完需要重启应用。")) return;
+
+    if (msg) msg.textContent = "恢复中…";
+    try {
+      const r = await jpost("/backup/restore", { path });
+      if (!r.ok) { if (msg) msg.textContent = "❌ " + (r.error || "恢复失败"); return; }
+      const res = await pollBackup(() => "✅ 恢复完成");
+      if (res) alert("恢复完成。\n\n" + (res.msg || "") +
+                     "\n\n请关闭并重新打开 PaperPiggy —— 内存里还是旧的索引。");
+    } catch (e) {
+      if (msg) msg.textContent = "❌ " + e;
+    }
+  }
+
+  async function saveBkConf(patch) {
+    try {
+      const r = await jpost("/backup/config", patch);
+      if (!r.ok) { const m = $("#bk-msg"); if (m) m.textContent = "❌ " + (r.error || "保存失败"); return false; }
+      const dirEl = $("#bk-dir");
+      if (dirEl && r.effective_dir) dirEl.placeholder = "（默认：" + r.effective_dir + "）";
+      await renderBkList();
+      return true;
+    } catch (e) { return false; }
+  }
+
+  {
+    const bkc = $("#bk-create"); if (bkc) bkc.addEventListener("click", doBackup);
+    const bwi = $("#bk-with-index"); if (bwi) bwi.addEventListener("change", () => {
+      refreshBkSize(); saveBkConf({ include_index: bwi.checked });
+    });
+    const bka = $("#bk-auto"); if (bka) bka.addEventListener("change", () => saveBkConf({ auto: bka.checked }));
+    const bkd = $("#bk-days"); if (bkd) bkd.addEventListener("change", () => saveBkConf({ every_days: +bkd.value || 7 }));
+    const bkk = $("#bk-keep"); if (bkk) bkk.addEventListener("change", () => saveBkConf({ keep: +bkk.value || 3 }));
+    const bkdir = $("#bk-dir"); if (bkdir) bkdir.addEventListener("change", () => saveBkConf({ dir: bkdir.value.trim() }));
+    const bko = $("#bk-open"); if (bko) bko.addEventListener("click", async () => {
+      const r = await jpost("/backup/open_dir", {});
+      if (!r.ok) alert("打不开：" + (r.error || ""));
+    });
+    const bkp = $("#bk-pick"); if (bkp) bkp.addEventListener("click", async () => {
+      try {
+        const dir = await window.pywebview.api.pick_folder();
+        if (dir) { bkdir.value = dir; await saveBkConf({ dir }); }
+      } catch (e) {}
+    });
+  }
 
   // ── 对话页「模型设置」折叠区（原设置弹窗的 LLM 服务商块内联到此，onChange 即存）──
   // 冷启动即回填对话页模型设置（原逻辑只在打开设置弹窗时回填）

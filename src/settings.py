@@ -55,6 +55,17 @@ DEFAULT = {
         "embed_model": "BAAI/bge-m3",
         "rerank_model": "BAAI/bge-reranker-v2-m3",
     },
+    # 备份与恢复（backup.py）。把「丢了就再也没有的东西」打成 zip，放哪由用户定。
+    # dir 可以指到 OneDrive 里的某个文件夹 —— 同步一个**静态 zip** 是安全的，
+    # 而让云盘去实时同步 lancedb 那种持续读写的数据库，早晚会把索引搞坏（见 backup.py 文件头）。
+    "backup": {
+        "dir": "",                # 空 = data/backups；用户可改到任意目录（含云盘同步目录）
+        "auto": False,            # 自动备份（只打「手写资产」，不含索引 —— 否则每次几个 G）
+        "every_days": 7,          # 自动备份间隔（天）
+        "keep": 3,                # 只保留最近 N 份，免得把云盘撑爆
+        "include_index": False,   # 手动备份时是否连向量索引一起打包（几个 G，换机免重建）
+        "last_at": "",            # 上次成功备份的时间（YYYY-MM-DD HH:MM:SS）
+    },
     # 自动 SAC（M2）：深索时用 LLM 给每篇生成 ~150 字摘要当嵌入前缀，提升检索。
     # 默认用 SiliconFlow 免费的 Qwen2.5-7B-Instruct（纯指令模型、无思维链、出词快，最适合做短摘要）；
     # key 空或 enabled=False 则退化为纯文本嵌入。

@@ -226,6 +226,12 @@ def _auto_update_loop():
                 _wiki_lint_refresh()
             except Exception as e:
                 log_error("wiki lint refresh", repr(e))
+            # 自动备份：同样刻意放在「自动更新 enabled」判断之前 —— 备份有自己的开关
+            # （settings.backup.auto），不该被「自动更新知识库」这个无关的开关一起关掉。
+            try:
+                _auto_backup_tick()
+            except Exception as e:
+                log_error("auto backup", repr(e))
             if not conf.get("enabled", True):
                 continue
             # 按天+时刻调度：未到下次计划时刻就跳过（catch-up 靠持久化的 last_check 自然生效）。
@@ -3150,6 +3156,229 @@ def chat(q: ChatQ):
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(gen(), media_type="text/event-stream")
+
+# ── 备份与恢复 ────────────────────────────────────────────
+# 设计见 backup.py 文件头。这里只负责：后台线程 + 进度 + 「正在建索引时拒绝」。
+#
+# ⚠️ 本节所有错误一律 **HTTP 200 + {"ok": false, "error": ...}**，不用 4xx + msg。
+#    原因见 CLAUDE.md §6：前端 jpost() 在非 2xx 时只读 detail/error、**不读 msg**，
+#    真实原因会被吞成「/backup/create 400」这种没用的提示。
+BACKUP = {"running": False, "stage": "", "done": 0, "total": 0,
+          "result": None, "error": None}
+
+
+class BackupQ(BaseModel):
+    include_index: Optional[bool] = False
+    include_key: Optional[bool] = False
+
+
+class BackupPathQ(BaseModel):
+    path: str
+
+
+def _backup_busy_reason():
+    """能不能现在动数据？—— 建索引时打包会得到一个『看着正常、实则损坏』的副本。"""
+    if BACKUP["running"]:
+        return "已经有一个备份/恢复任务在跑了，等它结束。"
+    if BUILD["running"]:
+        return "正在建索引（或深索），此时打包会得到损坏的向量库。等它跑完再备份。"
+    return None
+
+
+def _auto_backup_tick():
+    """自动备份（由上面的定时循环每分钟叫一次；真正动手是每 N 天一次）。
+
+    刻意的两个决定：
+      · **只打「手写资产」，不含索引** —— 自动备份要是每次几个 G，用户的云盘和硬盘都会哭。
+        换机时想连索引一起带走，用手动备份勾「包含向量索引」。
+      · **永不含 API key** —— 自动备份的包会一声不响地躺进云盘。要含 key 只能手动勾选。
+    正在建索引就跳过，下一轮再来（打包一个写到一半的向量库 = 一个损坏的副本）。
+    """
+    import settings as S
+    conf = S.load().get("backup") or {}
+    if not conf.get("auto"):
+        return
+    if BUILD["running"] or BACKUP["running"]:
+        return
+
+    days = max(1, int(conf.get("every_days") or 7))
+    last = conf.get("last_at") or ""
+    if last:
+        try:
+            t = time.mktime(time.strptime(last, "%Y-%m-%d %H:%M:%S"))
+            if time.time() - t < days * 86400:
+                return
+        except Exception:
+            pass                      # 时间戳坏了 → 当作没备份过，宁可多备一次
+
+    import backup as BK
+    BACKUP.update({"running": True, "stage": "自动备份中", "done": 0, "total": 0,
+                   "result": None, "error": None})
+    try:
+        m = BK.create(include_index=False, include_key=False)
+        S.save({"backup": {"last_at": m["created"]}})
+        BACKUP["result"] = m
+        BACKUP["stage"] = "完成"
+        BUILD["log"].append(f"[auto] 已自动备份 → {m['path']}（{m['size'] / 1e6:.1f} MB）")
+    except Exception as e:
+        BACKUP["error"] = str(e)
+        BACKUP["stage"] = "失败"
+        log_error("auto_backup", repr(e))
+    finally:
+        BACKUP["running"] = False
+
+
+class BackupConfQ(BaseModel):
+    dir: Optional[str] = None
+    auto: Optional[bool] = None
+    every_days: Optional[int] = None
+    keep: Optional[int] = None
+    include_index: Optional[bool] = None
+
+
+@app.get("/backup/config")
+def backup_config_get():
+    import settings as S
+    import backup as BK
+    c = dict(S.DEFAULT["backup"])
+    c.update(S.load().get("backup") or {})
+    c["effective_dir"] = str(BK.backup_dir())    # dir 为空时的实际落点，前端拿来当 placeholder
+    return {"ok": True, **c}
+
+
+@app.post("/backup/config")
+def backup_config_set(q: BackupConfQ):
+    import settings as S
+    patch = {k: v for k, v in q.dict().items() if v is not None}
+    if "dir" in patch and patch["dir"]:
+        p = Path(patch["dir"])
+        try:
+            p.mkdir(parents=True, exist_ok=True)
+            t = p / ".write_test"
+            t.write_text("x", encoding="utf-8")
+            t.unlink()
+        except Exception as e:
+            return {"ok": False, "error": f"这个目录写不进去：{p}（{e}）"}
+    if patch:
+        S.save({"backup": patch})
+    return backup_config_get()
+
+
+@app.get("/backup/list")
+def backup_list():
+    import backup as BK
+    try:
+        return {"ok": True, "dir": str(BK.backup_dir()), "items": BK.list_backups()}
+    except Exception as e:
+        log_error("backup_list", repr(e))
+        return {"ok": False, "error": str(e), "items": []}
+
+
+@app.get("/backup/estimate")
+def backup_estimate(with_index: int = 0):
+    """让用户在点之前就知道「这一下要写 3.2 GB」，而不是点完等半天。"""
+    import backup as BK
+    try:
+        return {"ok": True, "bytes": BK.estimate(bool(with_index))}
+    except Exception as e:
+        return {"ok": False, "error": str(e), "bytes": 0}
+
+
+@app.post("/backup/create")
+def backup_create(q: BackupQ = None):
+    q = q or BackupQ()
+    busy = _backup_busy_reason()
+    if busy:
+        return {"ok": False, "error": busy}
+
+    import backup as BK
+    BACKUP.update({"running": True, "stage": "打包中", "done": 0, "total": 0,
+                   "result": None, "error": None})
+
+    def work():
+        try:
+            def prog(d, t):
+                BACKUP["done"], BACKUP["total"] = d, t
+            m = BK.create(include_index=bool(q.include_index),
+                          include_key=bool(q.include_key), on_progress=prog)
+            try:
+                import settings as S
+                S.save({"backup": {"last_at": m["created"]}})
+            except Exception:
+                pass
+            BACKUP["result"] = m
+            BACKUP["stage"] = "完成"
+        except Exception as e:
+            log_error("backup_create", repr(e))
+            BACKUP["error"] = str(e)
+            BACKUP["stage"] = "失败"
+        finally:
+            BACKUP["running"] = False
+
+    threading.Thread(target=work, daemon=True).start()
+    return {"ok": True, "started": True}
+
+
+@app.get("/backup/status")
+def backup_status():
+    return {"ok": True, **{k: v for k, v in BACKUP.items()}}
+
+
+@app.post("/backup/inspect")
+def backup_inspect(q: BackupPathQ):
+    import backup as BK
+    try:
+        return {"ok": True, **BK.inspect(q.path)}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@app.post("/backup/restore")
+def backup_restore(q: BackupPathQ):
+    busy = _backup_busy_reason()
+    if busy:
+        return {"ok": False, "error": busy}
+
+    import backup as BK
+    info = BK.inspect(q.path)
+    if not info.get("ok"):
+        return {"ok": False, "error": info.get("err") or "备份包不可用"}
+
+    BACKUP.update({"running": True, "stage": "恢复中", "done": 0, "total": 0,
+                   "result": None, "error": None})
+
+    def work():
+        try:
+            r = BK.restore(q.path)
+            if r.get("ok"):
+                BACKUP["result"] = r
+                BACKUP["stage"] = "完成（需重启）"
+            else:
+                BACKUP["error"] = r.get("err") or "恢复失败"
+                BACKUP["stage"] = "失败"
+        except Exception as e:
+            log_error("backup_restore", repr(e))
+            BACKUP["error"] = str(e)
+            BACKUP["stage"] = "失败"
+        finally:
+            BACKUP["running"] = False
+
+    threading.Thread(target=work, daemon=True).start()
+    return {"ok": True, "started": True}
+
+
+@app.post("/backup/open_dir")
+def backup_open_dir():
+    """在资源管理器里打开备份目录（用户要把 zip 拷走/确认云盘同步了没）。"""
+    import backup as BK
+    d = BK.backup_dir()
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+        os.startfile(str(d))
+        return {"ok": True, "dir": str(d)}
+    except Exception as e:
+        return {"ok": False, "error": str(e), "dir": str(d)}
+
 
 # ── 静态 UI ───────────────────────────────────────────────
 WEB = C.APP / "web"

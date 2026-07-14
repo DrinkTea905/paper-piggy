@@ -64,7 +64,15 @@
 | 期刊评级规则 | `journal_grading/` 配置 + `journal_grading/期刊引用权重分级方案.md`；跑 `journal_grading/selftest.py` | ✅ selftest |
 | 依赖 | `requirements.txt` **和** `requirements.lock` 同时改；分发包需要重建 `build/py312` | ❌ |
 | 版本号 | **只改 `config.APP_VERSION`**(`config.py:19`) | ✅ check_guides ⑤（断言全源码没有第二处版本字面量） |
+| **新增任何 `C.DATA / "xxx"` 落点** | **必须**在 `backup.py` 的四个清单里给它选一个座位：`CORE_IN_DATA`（备份）/ `INDEX_IN_DATA`（可选索引）/ `NEVER_IN_DATA`（永不）/ `SPECIAL_IN_DATA` | ✅ check_guides ⑥（未分类 → 直接中止打包） |
 | HTTP 接口 | `/docs` 自动生成。但如果 agent 该知道这个接口 → 回到 §0.1（可能要动 MCP 工具或指引） | — |
+
+> **为什么「新增数据落点」值得一条硬护栏**：备份清单漏了某个文件，**用户是不会知道的** ——
+> 备份看起来成功了，直到他恢复之后才发现东西没了。而漏掉的往往正是最贵的那些。
+> backup.py 的第一版清单就是凭印象列的，漏了 `grading_memo.json`（689 条 LLM 期刊分级，
+> 花过真钱）、`summaries/`（SAC 检索摘要，花过 API 钱）、`tier_overrides.json`（用户一条条
+> 手改的档位）—— 三样全是不可再生或再生要花钱的。是实机跑了一次备份、去数产物才发现的。
+> 所以现在改成机器强制：不分类，就打不了包。
 
 ---
 

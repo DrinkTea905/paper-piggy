@@ -189,6 +189,45 @@ def check_single_version():
         ok(name, "别处无版本字面量（config.APP_VERSION 未读到，另行确认）")
 
 
+_DATA_PATH = re.compile(r'(?:^|[^_A-Za-z])(?:C\.)?DATA\s*/\s*"([^"/]+)"')
+
+
+def check_backup_coverage():
+    """⑥ 每一个 data/ 落点都必须在 backup.py 里被分类（备份 / 索引 / 永不 / 特殊）。
+
+    为什么要有这条：备份清单一旦漏了某个文件，**用户是不会知道的** —— 备份看起来成功了，
+    直到他恢复之后才发现某样东西没了。而漏掉的往往正是最贵的：
+    第一版清单凭印象列，就漏了 grading_memo.json（689 条 LLM 期刊分级，花过真钱）、
+    summaries/（SAC 检索摘要，花过 API 钱）、tier_overrides.json（用户一条条手改的档位）。
+    所以：新增任何 `C.DATA / "xxx"`，都必须在 backup.py 的四个清单里选一个落座，否则构建失败。
+    """
+    name = "⑥ data/ 的每个落点都在 backup.py 里分了类（防备份静默漏数据）"
+    try:
+        import backup as BK
+    except Exception as e:
+        return skip(name, f"backup.py 导不进来：{e}")
+
+    known = set(BK.CORE_IN_DATA) | set(BK.INDEX_IN_DATA) | set(BK.NEVER_IN_DATA) | set(BK.SPECIAL_IN_DATA)
+    found = {}
+    for p in sorted(SRC.glob("*.py")):
+        if p.name in ("check_guides.py", "backup.py"):
+            continue
+        for i, line in enumerate(p.read_text(encoding="utf-8", errors="ignore").splitlines(), 1):
+            if line.lstrip().startswith("#"):
+                continue
+            for m in _DATA_PATH.findall(line):
+                found.setdefault(m, f"{p.name}:{i}")
+
+    missing = {k: v for k, v in found.items() if k not in known}
+    if missing:
+        return bad(name, "这些 data/ 落点没在 backup.py 里分类，备份会静默漏掉它们（"
+                         "去 backup.py 把它加进 CORE_IN_DATA / INDEX_IN_DATA / NEVER_IN_DATA "
+                         "之一）：" + "；".join(f"{k}（{v}）" for k, v in sorted(missing.items())))
+    ok(name, f"{len(found)} 个落点全部已分类"
+             f"（备份 {len(BK.CORE_IN_DATA)} / 索引 {len(BK.INDEX_IN_DATA)} / "
+             f"永不 {len(BK.NEVER_IN_DATA)} / 特殊 {len(BK.SPECIAL_IN_DATA)}）")
+
+
 def main():
     print("=== 指引 ↔ 代码 一致性校验（只读）===")
     doc = SRC / "MCP接入说明.md"
@@ -200,6 +239,7 @@ def main():
     check_workflows()
     check_wiki_schema()
     check_single_version()
+    check_backup_coverage()
     print("-" * 60)
     if FAILED:
         print(f"❌ {len(FAILED)} 项不一致——改了功能忘了同步指引。逐条修完再打包。")
