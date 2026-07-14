@@ -2024,16 +2024,23 @@
     if (!items.length) { box.hidden = true; box.innerHTML = ""; return; }
     const row = (it) => {
       // 受影响页 chips：点击直接打开该综述页复核；「忽略」= dismiss 后端记录，之后不再提示这篇
-      const chips = (it.pages || []).map((p) =>
-        `<button class="wl-chip wsg-pg" data-id="${esc(p.id)}" title="打开这页综述复核">${esc(p.title || p.id)}</button>`).join("");
+      // A3：new_page 类（无既有页命中、是新主题）没有 chips，改显「🆕 建议新建页」+ 提示，供人手动去综述库新建
+      let mid;
+      if (it.kind === "new_page") {
+        mid = `<span class="wsg-newpage" title="${esc(it.hint || "建议为它新建一页综述")}">🆕 新主题 · 建议新建综述页</span>`;
+      } else {
+        const chips = (it.pages || []).map((p) =>
+          `<button class="wl-chip wsg-pg" data-id="${esc(p.id)}" title="打开这页综述复核">${esc(p.title || p.id)}</button>`).join("");
+        mid = `<span class="wsg-pages">${chips}</span>`;
+      }
       return `<div class="wsg-row">
         <span class="wsg-doc" title="${esc(it.title || it.key)}">📄 ${esc(it.title || it.key)}</span>
-        <span class="wsg-pages">${chips}</span>
+        ${mid}
         <button class="ghost2b wsg-dismiss" data-key="${esc(it.key)}" title="不再为这篇提示">忽略</button>
       </div>`;
     };
     box.innerHTML =
-      `<div class="wsg-head" role="button" tabindex="0">📬 <b>${num(items.length)}</b> 篇新深索文献可能影响你的综述页` +
+      `<div class="wsg-head" role="button" tabindex="0">📬 <b>${num(items.length)}</b> 篇新深索文献待处理（更新旧综述 / 建新综述页）` +
         `<span class="wsg-caret">${WSUG.open ? "收起 ▴" : "展开看看 ▾"}</span></div>` +
       `<div class="wsg-body"${WSUG.open ? "" : " hidden"}>${items.map(row).join("")}</div>`;
     box.hidden = false;
@@ -2291,6 +2298,8 @@
     ["“把这个综述存进库”", "save_synthesis", "把 AI 综合出的结论写回成一页带引用的 wiki，下次能被检索命中"],
     ["“库里有没有现成的综述”", "list_wiki", "列已存的综合页，避免重复造轮子"],
     ["“打开那页综述给我看”", "get_wiki_page", "取某页综合的正文 + 来源页码引用"],
+    ["“记住我偏好脚注 / 这个项目定了 XX”", "append_project_memory", "把你的偏好、已定决策记进项目记忆，换任何助手接入都从这接着干"],
+    ["“看看有哪些综述该更新了”", "pending_wiki_updates", "拉新文献影响了哪些既有综述页，逐页判断标脏 / 重写"],
   ];
   const AG_PROMPTS = [
     "帮我查库里关于「认罪认罚从宽对司法信任的影响」的权威文献，按期刊层级排。",
@@ -2308,7 +2317,7 @@
   function renderAgentTools() {
     $("#ag-tools").innerHTML = AG_TOOLS.map(
       ([say, tool, desc]) => `<tr><td>${esc(say)}</td><td>${esc(desc)}</td></tr>`).join("");
-    // 工具数用后端真实值（当前 28 个），别用下面这张示例表的行数（只列了 6 个代表性的）
+    // 工具数用后端真实值（当前 32 个），别用下面这张示例表的行数（只列了几个代表性的）
     const n = (AG.cfg && AG.cfg.tool_count) || AG_TOOLS.length;
     const tc = $("#ag-tool-count"); if (tc) tc.textContent = `（${n} 个工具）`;
   }
@@ -2349,6 +2358,22 @@
     renderAgentPrompts();
     loadAgentDeep();        // 复用 /index/status
     loadAgentTasks();       // ⏰ 定时任务（读本地「资料库/定时任务」）
+    loadAgentOutputs();     // 📦 最近交付物主题（读本地「交付物/*」）
+  }
+  // C4：交付物卡「最近做了哪些主题」——读 /agent/outputs（扫「交付物/*」子文件夹）。端点缺失/空时不渲染。
+  async function loadAgentOutputs() {
+    const card = $("#ag-outputs-card"), box = $("#ag-outputs"); if (!box) return;
+    const hide = () => { if (card) card.hidden = true; box.innerHTML = ""; };
+    try {
+      const d = await jget("/agent/outputs");
+      const items = (d && d.outputs) || [];
+      if (!items.length) { hide(); return; }
+      if (card) card.hidden = false;
+      box.innerHTML = items.map((o) =>
+        `<div class="ag-output-item"><span class="ag-output-name">📁 ${esc(o.name)}</span>`
+        + (o.mtime ? `<span class="ag-output-mt">${esc(o.mtime)}</span>` : "")
+        + `<span class="ag-output-n">${o.n_files || 0} 个文件${o.has_readme ? " · 含说明" : ""}</span></div>`).join("");
+    } catch (e) { hide(); }
   }
   // ⏰ 定时任务：读后端 /agent/tasks（扫「资料库/定时任务/*/任务.md」）。端点缺失/空时优雅降级。
   async function loadAgentTasks() {
@@ -2363,10 +2388,17 @@
         return;
       }
       box.innerHTML = items.map((t) => {
-        const off = t.enabled === false ? " off" : "";
+        const isDraft = t.has_enabled === false;   // 没写「启用」字段=草稿，不显示成绿灯
+        const off = (t.enabled === false || isDraft) ? " off" : "";
+        const b = [];
+        if (t.freq) b.push(`<span class="ag-task-freq">${esc(t.freq)}</span>`);
+        if (isDraft) b.push(`<span class="ag-task-freq" style="color:#a16207;background:rgba(161,98,7,.14)">草稿·未确认启用</span>`);
+        else if (t.enabled === false) b.push(`<span class="ag-task-freq" style="color:#94a3b8;background:rgba(148,163,184,.12)">已暂停</span>`);
+        // C1：可观测——有「上次执行」就显示；启用但从无执行记录 → 中性提示，戳破「显示启用≠真在跑」
+        if (t.last_run) b.push(`<span class="ag-task-freq" style="color:#0f766e;background:rgba(15,118,110,.10)" title="AI 上次跑这个任务的时间">上次执行 ${esc(t.last_run)}</span>`);
+        else if (!isDraft && t.enabled !== false) b.push(`<span class="ag-task-freq" style="color:#b45309;background:rgba(180,83,9,.10)" title="任务显示启用，但还没有执行记录——确认你的 AI 助手真的在它自己的日程里排期了">尚无执行记录</span>`);
         return `<div class="ag-task-item${off}"><span class="ag-task-name">${esc(t.name || "未命名任务")}</span>`
-          + (t.freq ? `<span class="ag-task-freq">${esc(t.freq)}</span>` : "")
-          + (t.enabled === false ? `<span class="ag-task-freq" style="color:#94a3b8;background:rgba(148,163,184,.12)">已暂停</span>` : "")
+          + b.join("")
           + `<span class="ag-task-desc">${esc(t.desc || "")}</span></div>`;
       }).join("");
     } catch (e) {
@@ -2837,35 +2869,41 @@
       if (dd) dd.value = String(Math.min(30, Math.max(1, s.interval_days || 1)));
       if (tm) tm.value = s.at_time || "07:00";
       if (cu) cu.checked = s.catch_up_on_launch !== false;
-      // 删除同步：folder 模式已内建自动清理，只提示；zotero 模式露出手动「清理已删除」按钮
-      const note = $("#au-del-note"), pb = $("#au-purge");
+      // 删除同步：folder 模式给一个默认关的开关（防误删临时挪走的 PDF）；zotero 模式露出手动「清理已删除」按钮
+      const note = $("#au-del-note"), pb = $("#au-purge"), dsRow = $("#au-delsync-row"), ds = $("#au-delsync");
       if (s.source === "folder") {
-        if (note) note.textContent = "🗑 删除同步：文件夹里删掉的 PDF 会在下次更新时自动清出（已内建）。";
+        if (dsRow) dsRow.hidden = false;
+        if (ds) ds.checked = !!s.delete_sync;
+        if (note) note.textContent = s.delete_sync
+          ? "🗑 已开启同步删除：文件夹里删掉的 PDF 下次更新会从库中清出。"
+          : "🗑 未开启同步删除：文件夹里删掉的 PDF 仍留在库中（防误删）。要清出请勾选上面。";
         if (pb) pb.hidden = true;
       } else {
+        if (dsRow) dsRow.hidden = true;
         if (note) note.textContent = "🗑 删除同步：Zotero 里删掉的文献不会自动清出，可手动清理 →";
         if (pb) pb.hidden = false;
       }
     } catch (e) {}
   }
   async function saveAutoUpdate() {
-    const en = $("#au-enabled"), dd = $("#au-days"), tm = $("#au-time"), cu = $("#au-catchup"), msg = $("#au-msg");
+    const en = $("#au-enabled"), dd = $("#au-days"), tm = $("#au-time"), cu = $("#au-catchup"), ds = $("#au-delsync"), msg = $("#au-msg");
     let days = parseInt(dd && dd.value, 10); if (!(days >= 1 && days <= 30)) days = 1;
     if (dd) dd.value = String(days);
     const at = (tm && /^\d{1,2}:\d{2}$/.test(tm.value)) ? tm.value : "07:00";
     try {
-      await jpost("/setup/auto_update", { enabled: en.checked, interval_days: days, at_time: at, catch_up_on_launch: !!(cu && cu.checked) });
+      await jpost("/setup/auto_update", { enabled: en.checked, interval_days: days, at_time: at, catch_up_on_launch: !!(cu && cu.checked), delete_sync: !!(ds && ds.checked) });
       if (msg) msg.textContent = en.checked
         ? `已开启：${_auDaysLabel(days)} ${at} 检查一次新增文献并自动增量更新${(cu && cu.checked) ? "；错过会在开应用时补跑" : ""}。`
         : "已关闭：只能用顶栏「⟳ 手动更新知识库」手动更新。";
     } catch (e) { if (msg) msg.textContent = "保存失败：" + e.message; }
   }
   (function wireAutoUpdate() {
-    const en = $("#au-enabled"), dd = $("#au-days"), tm = $("#au-time"), cu = $("#au-catchup"), pb = $("#au-purge");
+    const en = $("#au-enabled"), dd = $("#au-days"), tm = $("#au-time"), cu = $("#au-catchup"), ds = $("#au-delsync"), pb = $("#au-purge");
     if (en) en.addEventListener("change", saveAutoUpdate);
     if (dd) dd.addEventListener("change", saveAutoUpdate);
     if (tm) tm.addEventListener("change", saveAutoUpdate);
     if (cu) cu.addEventListener("change", saveAutoUpdate);
+    if (ds) ds.addEventListener("change", async () => { await saveAutoUpdate(); loadAutoUpdate(); });   // 保存后刷新删除同步提示
     if (pb) pb.addEventListener("click", async () => {
       const note = $("#au-del-note"); const lbl = pb.textContent;
       pb.disabled = true; pb.textContent = "清理中…";

@@ -385,7 +385,8 @@ def search_full(query, topk, sort, keys=None):
             d["generated_at"] = wm.get("generated_at", "")
             d["generated_by"] = wm.get("generated_by", "")
             d["stale"] = bool(wm.get("stale"))
-            d["by_agent"] = bool(wm.get("by_agent"))     # 🤖 agent 写回、未核验（供前端标记/剔除）
+            d["by_agent"] = bool(wm.get("by_agent"))     # 🤖 agent 写回（供前端标记/剔除）
+            d["verified_at"] = wm.get("verified_at", "") or ""   # 人工核验章：供 agent 侧文本标"未核实"、供降权豁免
             d["wiki_sources"] = wm.get("sources", [])
         else:
             d["is_wiki"] = False
@@ -485,7 +486,13 @@ def _fit_row_to_schema(full, vec):
 def index_wiki_page(page_id, title, body, meta):
     """把一个 wiki 页嵌入并写进同一张 LanceDB 表（chunk_id="{id}::wiki"），
        并即时登记进内存（M["records"]/M["wiki"]），使**本进程内立刻可检索**。
-       仅 full 模式（有表 + 嵌入器）能入表；否则返回 False（页面已存盘，重建索引后可搜）。"""
+       仅 full 模式（有表 + 嵌入器）能入表；否则返回 False（页面已存盘，重建索引后可搜）。
+
+       已知限制（C5，minor·自愈）：这里只即时进【稠密向量】通道，不更新进程内 BM25 倒排
+       （M["bm25"]/M["bm25_ids"] 是建库期从表整体构建的，增量维护要重算 IDF/文档长度，
+       在最热的检索路径上动刀风险大）。因此新写回的 wiki 页在【下一次索引重建】前，纯词法/专名/
+       法条号查询可能召不回它（answer 页因标题≈原问、稠密通道天然高分不受影响；concept/entity 靠
+       生僻专名命中才暴露）。每天的自动更新会重建索引、把 wiki 行纳入 BM25——即自愈，无需手动干预。"""
     M.setdefault("wiki", {})[page_id] = meta   # 无论能否入表，先登记页元数据（供列表/标注/降权）
     if STATE.get("mode") != "full" or "tbl" not in M or "embed" not in M:
         return False
@@ -594,12 +601,22 @@ def _wiki_effective(score, obj):
         # BF5：乘法只在正分域是"降权"——reranker 分可为负（不相关时 -5 上下），
         # 负分 ×0.3 反而离 0 更近 = 反向提权（config.py:135-142 只量了正分尺度，漏了负分域）。
         # 负分改除以 factor：更负 = 更靠后，正负两域都是货真价实的重罚。
+        # stale 最重、独占一档。
         return score * C.WIKI_STALE_FACTOR if score > 0 else score / C.WIKI_STALE_FACTOR
+    # 可信度分层：answer 折减 与 未核验折减 可叠乘。
+    # - answer 页：标题≈原查询、reranker 分虚高 3 分+，乘 WIKI_ANSWER_FACTOR 压回真论文之下。
+    # - agent 写回且未经人工核验(by_agent 且 verified_at 空)：乘 WIKI_UNVERIFIED_FACTOR，
+    #   把"自己上次没核过的草稿"压到人工页/真论文之后；人工核验过的页(verified_at 有值)豁免此刀。
+    mult = 1.0
     if wm.get("kind") == "answer":
-        # BF5：answer 页标题≈原查询，reranker 分虚高 3 分+，减 0.05 压不住——改乘法折减
-        # （见 config.WIKI_ANSWER_FACTOR），负分域同上用除法。
-        return score * C.WIKI_ANSWER_FACTOR if score > 0 else score / C.WIKI_ANSWER_FACTOR
-    return score - C.WIKI_BASE_PENALTY
+        mult *= C.WIKI_ANSWER_FACTOR
+    if wm.get("by_agent") and not wm.get("verified_at"):
+        mult *= getattr(C, "WIKI_UNVERIFIED_FACTOR", 0.6)
+    if mult >= 1.0:
+        # 新鲜、非 answer、且人工写/已核验的页：只减一个小常数，同分让位于原始文献。
+        return score - C.WIKI_BASE_PENALTY
+    # 乘法折减；负分域同 stale 用除法，避免"负分×factor 反而提权"的老坑。
+    return score * mult if score > 0 else score / mult
 
 def _statute_eff(score, obj):
     """EN-L5：已废止法条的排序降权（已修订不降权、只出徽标）。
@@ -661,7 +678,10 @@ def search(query, topk, sort=None, min_weight=0.0, keys=None):
     except Exception:
         min_weight = 0.0
     # 有权重下限时多取些候选再过滤，尽量凑够 topk；无权重/待确认的条目保留、不误杀。
-    fetch = topk if min_weight <= 0 else min(topk * 5, 200)
+    # C6：基础档也多取一小截缓冲——被降权的 wiki 行（stale/未核验/answer）此前在 picked 阶段按【原始分】
+    #     占掉一个 topk 名额，_apply_sort 只把它排到末尾却踢不出去，等于挤掉一篇真论文。多取缓冲后，
+    #     _apply_sort 把降权行沉底、最后 out[:topk] 时它才真正让位给真论文。无降权行时结果不变。
+    fetch = (topk + 12) if min_weight <= 0 else min(topk * 5, 200)
     # F11：限定分类时候选易被 topk 截断后所剩无几 → 放大 fetch，尽量凑够 topk。
     if keys is not None:
         fetch = max(fetch, min(topk * 10, 300))

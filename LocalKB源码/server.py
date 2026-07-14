@@ -257,6 +257,7 @@ class AutoUpdateQ(BaseModel):
     interval_days: Optional[int] = None
     at_time: Optional[str] = None
     catch_up_on_launch: Optional[bool] = None
+    delete_sync: Optional[bool] = None       # C3：folder 模式是否同步删除（默认关）
     interval_min: Optional[int] = None       # 兼容旧前端字段（不再用于调度）
 
 def _auto_update_view():
@@ -268,6 +269,7 @@ def _auto_update_view():
             "interval_days": min(30, max(1, int(c.get("interval_days", D["interval_days"])))),
             "at_time": str(c.get("at_time", D["at_time"])),
             "catch_up_on_launch": bool(c.get("catch_up_on_launch", D["catch_up_on_launch"])),
+            "delete_sync": bool(c.get("delete_sync", D.get("delete_sync", False))),
             "interval_min": int(c.get("interval_min", D["interval_min"])),
             "source": S.source(),
             "last_build": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(AUTO["last_build"])) if AUTO.get("last_build") else ""}
@@ -286,6 +288,7 @@ def set_auto_update(q: AutoUpdateQ):
         h, m = _parse_hhmm(q.at_time)
         patch["at_time"] = f"{h:02d}:{m:02d}"
     if q.catch_up_on_launch is not None: patch["catch_up_on_launch"] = bool(q.catch_up_on_launch)
+    if q.delete_sync is not None: patch["delete_sync"] = bool(q.delete_sync)
     if q.interval_min is not None: patch["interval_min"] = max(5, int(q.interval_min))
     S.save({"auto_update": patch})
     return {"ok": True, **_auto_update_view()}
@@ -607,12 +610,9 @@ def agent_open_folder(q: AgentOpenQ):
     try:
         AW.ensure_scaffold()
         which = q.which if q.which in ("output", "rely", "skills") else "rely"
-        # 技能优先打开用户 .claude/skills 里已装的？不——固定打开「源」目录(app/skills/localkb-paper 的父级)，
-        # 让用户能看到/手动复制；rely/output 打开资料库/交付物。
-        if which == "skills":
-            d = str(C.APP / "skills")
-        else:
-            d = str(AW.resolve(which))
+        # 技能统一落点=「0_Agent资料库/技能」（含 agent 中立的 工作流.md）；不再打开 app/skills，
+        # 也不再往 .claude/skills 自动装——技能只此一处，任何助手读它即可。
+        d = str(AW.resolve(which))
         Path(d).mkdir(parents=True, exist_ok=True)
         if sys.platform == "win32":
             os.startfile(d)  # noqa
@@ -663,8 +663,14 @@ def agent_tasks():
                 continue
             name = meta.get("名称") or meta.get("name") or sub.name
             freq = meta.get("频率") or meta.get("freq") or meta.get("frequency") or ""
-            en = str(meta.get("启用", meta.get("enabled", "true"))).strip().lower()
-            enabled = en in ("true", "1", "yes", "on", "是", "启用", "")
+            # C1：enabled 缺省不再算「启用」——没写「启用」字段的是草稿，不该显示成绿灯正常运行。
+            has_en = ("启用" in meta) or ("enabled" in meta)
+            en = str(meta.get("启用", meta.get("enabled", ""))).strip().lower()
+            enabled = en in ("true", "1", "yes", "on", "是", "启用")
+            # C1：可观测字段——agent 每次跑完回写「上次执行」，前端据此对「启用但从未执行」的任务给出中性提示，
+            # 缓解「应用显示已启用 vs 实际是否在跑毫无关系」的误导（记忆里踩过的坑）。
+            last_run = meta.get("上次执行") or meta.get("last_run") or ""
+            scheduler = meta.get("调度器") or meta.get("scheduler") or ""
             desc = ""
             for ln in bodytext.splitlines():
                 ln = ln.strip()
@@ -673,11 +679,35 @@ def agent_tasks():
                 desc = (ln.replace("：", ":").split(":", 1)[-1].strip()
                         if ("搜什么" in ln or "内容" in ln) else ln)
                 break
-            out.append({"name": name, "freq": freq, "enabled": enabled,
+            out.append({"name": name, "freq": freq, "enabled": enabled, "has_enabled": has_en,
+                        "last_run": last_run, "scheduler": scheduler,
                         "desc": desc[:160], "dir": str(sub)})
     except Exception as e:
         return {"tasks": out, "error": str(e)}
     return {"tasks": out}
+
+@app.get("/agent/outputs")
+def agent_outputs(limit: int = 8):
+    """C4：列 0_Agent交付物/ 下的主题子文件夹（最近修改在前），供 Agent 页交付物卡展示「最近做了哪些主题」。
+       只列目录名 + mtime + 文件数 + 有无 README，不读内容。"""
+    import agent_ws as AW
+    out = []
+    try:
+        AW.ensure_scaffold()
+        odir = Path(AW.output_dir())
+        subs = [d for d in odir.iterdir() if d.is_dir()]
+        subs.sort(key=lambda d: d.stat().st_mtime, reverse=True)
+        for d in subs[:max(1, min(50, limit))]:
+            try:
+                mt = time.strftime("%Y-%m-%d", time.localtime(d.stat().st_mtime))
+            except Exception:
+                mt = ""
+            out.append({"name": d.name, "mtime": mt,
+                        "has_readme": (d / "README.md").exists(),
+                        "n_files": sum(1 for _ in d.glob("*.*")), "dir": str(d)})
+    except Exception as e:
+        return {"outputs": out, "error": str(e)}
+    return {"outputs": out}
 
 @app.post("/setup/pick_folder")
 def setup_pick_folder():
@@ -1270,18 +1300,28 @@ def _wiki_suggest_batch(keys):
     if not keys:
         return
     papers = _load_papers()
-    found = []
+    updates, newpages = [], []
+    ts = time.strftime("%Y-%m-%d %H:%M:%S")
     for k in keys:
         try:
             r = W.propose_updates(k)
+            title = (papers.get(k) or {}).get("title", "")
             pages = [{"id": a.get("id", ""), "title": a.get("title", "")}
                      for a in (r.get("affected") or []) if a.get("id")]
             if pages:
-                found.append({"key": k, "title": (papers.get(k) or {}).get("title", ""),
-                              "pages": pages,
-                              "created_at": time.strftime("%Y-%m-%d %H:%M:%S")})
+                updates.append({"key": k, "title": title, "pages": pages,
+                                "kind": "update", "created_at": ts})
+            else:
+                # A2/A3：没命中既有页 ≠ 没事做——这是「该为它新建 concept/entity 页」（wiki 空时=建首页）
+                # 的信号。propose_updates 已算出提示（note=冷启动 / hints=新主题），此前被 `if pages` 丢弃，
+                # 导致 wiki 只会就地修补、长不出新主题。这里保留成 new_page 建议，供 agent 决定要不要建页。
+                hint = (r.get("note") or (r.get("hints") or [""])[0]
+                        or "库里还没有讲这篇主题的综述页，考虑为它新建 concept / entity 页。")
+                newpages.append({"key": k, "title": title, "pages": [],
+                                 "kind": "new_page", "hint": hint, "created_at": ts})
         except Exception as e:
             log_error(f"wiki suggest {k}", repr(e))     # 单篇失败不毁整批
+    found = updates + newpages          # 「更新既有页」优先在前、「新建页」其次，同享 50 条上限不被挤掉
     if not found:
         return
     with _WIKI_SUGG_LOCK:

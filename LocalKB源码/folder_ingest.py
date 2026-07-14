@@ -198,6 +198,13 @@ def main():
     # 增量：删除的文件从 cache 剔除
     live = {FS.stable_key(folder, p) for p in pdfs}
     gone = [k for k in list(cache) if k not in live]
+    # C3/D4-4：默认**不**同步删除——移出受管文件夹的 PDF 可能只是临时挪走，静默清出索引风险大。
+    # 仅当用户在「设置→自动更新」里勾了「同步删除」才清；否则只记一笔、保留索引。
+    del_sync = bool(S.load().get("auto_update", {}).get("delete_sync", False))
+    if gone and not del_sync:
+        print(f"[folder] 检测到 {len(gone)} 篇已移出受管文件夹，「同步删除」未开启，暂不清理"
+              f"（如确要从库中移除，请在设置→自动更新里勾选「同步删除」）。", flush=True)
+        gone = []
     if gone:
         # BF10：光剔 meta_cache 不够——表行、进度 stem、抽取产物都残留着，
         # 已删除的文献会继续被检索命中；一并清（表删行含 meta+chunk，见 _purge_db_rows）。

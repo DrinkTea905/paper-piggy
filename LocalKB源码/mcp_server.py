@@ -26,6 +26,43 @@ def log(*a):
     print("[mcp-localkb]", *a, file=sys.stderr, flush=True)
 
 
+# ══ 待办可见性：把「已算好但没人处理的 wiki 待办」从软倡议变成随对话复现的硬提示 ══
+#   后端会把「新文献→受影响综述页」写进 wiki_suggestions.json、把体检问题写进 wiki_lint.json，
+#   但 agent 只在自愿调 pending_wiki_updates 时才看得到。这里直接读这两个本地文件（同机、零 HTTP、
+#   毫秒级、零 LLM），把待办计数挂到高频工具输出尾部，agent 每次干活都会被提醒去维护。
+def _wiki_todo_counts():
+    """返回 (待并入文献数, 体检问题数)。文件缺失/损坏一律记 0——提醒是增强，不值得为它报错。"""
+    n_sugg = n_lint = 0
+    try:
+        f = C.STATE / "wiki_suggestions.json"
+        if f.exists():
+            d = json.loads(f.read_text(encoding="utf-8"))
+            n_sugg = len(d.get("items", []) if isinstance(d, dict) else [])
+    except Exception:
+        pass
+    try:
+        f = C.STATE / "wiki_lint.json"
+        if f.exists():
+            d = json.loads(f.read_text(encoding="utf-8"))
+            n_lint = int(d.get("issues", 0) or 0) if isinstance(d, dict) else 0
+    except Exception:
+        pass
+    return n_sugg, n_lint
+
+
+def _wiki_todo_note(prefix="\n\n"):
+    """一行待办提醒；无待办返回空串（N=0 不打扰纯查询用户）。挂在 search/deep_index/status 尾部。"""
+    n_sugg, n_lint = _wiki_todo_counts()
+    if not (n_sugg or n_lint):
+        return ""
+    bits = []
+    if n_sugg:
+        bits.append(f"{n_sugg} 篇新文献待并入综合层（调 pending_wiki_updates 看受影响页）")
+    if n_lint:
+        bits.append(f"{n_lint} 项综合层体检问题（调 lint_wiki 看孤儿/过时/断链页）")
+    return f"{prefix}⚠ wiki 维护待办：" + "；".join(bits) + "。主动维护是高优先级，别等用户开口。"
+
+
 # ══ gist 第 3 层「schema」：让 LLM 成为纪律严明的 wiki 维护者，而非通用聊天机器人 ══
 #   此前 agent 连上只能从 localkb_status 拿到一个 WIKI.md **路径字符串**，永远读不到内容。
 #   MCP 的 initialize 支持 instructions 字段——把规约直接下发，是整个接入里投入产出比最高的一改。
@@ -69,6 +106,27 @@ def _wiki_schema_text():
     return ""
 
 
+def _memory_inline(mem_file, limit=4000):
+    """读项目记忆当前内容随 initialize 一并下发（像 WIKI.md schema 那样内联，而非只给路径）。
+       记忆是"换 agent 无缝衔接"的核心载体——只给路径，非文件读取型客户端会静默拿不到。
+       返回 (是否有实质内容, 供内联的正文块或空模板提示)。空模板（只剩注释/标题）判为无内容。"""
+    try:
+        from pathlib import Path as _P
+        if not (mem_file and _P(mem_file).exists()):
+            return False, ""
+        raw = _P(mem_file).read_text(encoding="utf-8").strip()
+    except Exception:
+        return False, ""
+    # 判是否仍是空模板：去掉 HTML 注释、引用行、标题行、空行后是否还剩实质文字
+    import re as _re
+    stripped = _re.sub(r"<!--.*?-->", "", raw, flags=_re.S)
+    substantive = [ln for ln in stripped.splitlines()
+                   if ln.strip() and not ln.lstrip().startswith(("#", ">"))]
+    has_content = bool(substantive)
+    body = raw if len(raw) <= limit else raw[:limit] + "\n…（已截断，完整见文件）"
+    return has_content, body
+
+
 def _workspace_text():
     """Agent 专属工作区说明——跨 agent 的共同底座：任何接上来的助手都读同一套本地文件夹，
        换 agent 也能无缝接上。放在 instructions 里下发（比 skill 通用，Codex/别家 agent 也吃得到）。"""
@@ -79,12 +137,26 @@ def _workspace_text():
     except Exception as e:
         log("workspace paths 失败：", e)
         return ""
+    mem_file = p.get("memory_file", "")
+    has_mem, mem_body = _memory_inline(mem_file)
+    if has_mem:
+        mem_block = ("· 项目记忆（下面直接内联当前内容，换任何 AI 助手都从这里接上；也可直接读/写该文件或用 "
+                     "append_project_memory 工具更新）：\n"
+                     f"  文件：{mem_file}\n"
+                     "  ┌─ 当前项目记忆 ─────────────\n"
+                     + "".join(f"  │ {ln}\n" for ln in mem_body.splitlines())
+                     + "  └────────────────────────────\n"
+                     "  维护它保持是「当前真相」；历史流水账写到同目录「变更日志.md」，别把记忆写成流水账。\n")
+    else:
+        mem_block = (f"· 项目记忆：{mem_file}\n"
+                     "  —— 现在还是空模板。开工时把「用户是谁/偏好/已定决策/当前在做」补进去（直接写该文件，"
+                     "或用 append_project_memory 工具）；历史流水账写同目录「变更日志.md」。这是换 agent 无缝衔接的关键。\n")
     return (
         "\n\n══ 你的专属工作区（都在用户本机、人类可读；换任何 AI 助手都读这套，务必先看）══\n"
-        f"· 项目记忆：{p.get('memory_file','')}\n"
-        "  —— 开工前先读它（用户是谁/偏好/已定决策/当前在做）。你**可以直接更新这份文件**保持它是「当前真相」；\n"
-        "     历史流水账写到同目录「变更日志.md」，别把项目记忆写成流水账。\n"
-        f"· 技能：{p.get('skills_dir','')}（工作流；Claude Code 会自动装到 .claude/skills）\n"
+        + mem_block
+        + f"· 技能/工作流：{p.get('skills_dir','')}（**一个工作流一个文件**：写论文与综述.md / 维护综述库.md……"
+        "动手写作或系统性维护 wiki 前，先读相关那份照着做。用户要你建一条新工作流时，**新建一个 .md 文件**写清"
+        "「何时用/分几步/注意事项」，别往已有文件里塞。）\n"
         f"· 参考格式：{p.get('formats_dir','')}（用户放的排版范本；改 docx 格式时保护 Zotero 引注域、不重建文档）\n"
         f"· 交付模板：{p.get('templates_dir','')}\n"
         f"· 定时任务定义：{p.get('tasks_dir','')}（每任务一个「任务.md」：搜什么/多久/成果放哪）\n"
@@ -92,6 +164,8 @@ def _workspace_text():
         "  —— 你替用户写的成品放这里，**每个主题一个子文件夹**，附一个 README（用途/引注规范/与其他材料的关系）。\n\n"
         "主动维护（优先级高，别等用户开口）：\n"
         "· 深索一批文献后 / 想维护 wiki 时，先调 pending_wiki_updates 拿受影响页清单，再逐页判断标脏或重写。\n"
+        "· 定期调 lint_wiki 给综合层做体检（孤儿页/过时页/断链/无来源页/该有独立页的概念），照清单修。\n"
+        "· 接入本库、或每次检索/深索后，工具输出尾部若出现「⚠ wiki 维护待办」，就顺手把它清掉——别累积。\n"
         "· 跑完定时任务后，依检索到的时效内容更新相关综合页——时效资料是 wiki 的活水。\n"
         "· 产出交付物前，和用户确认交付形态（篇幅/引注/要不要 .docx），可参照交付模板。\n"
     )
@@ -102,29 +176,6 @@ def instructions():
     body = _INSTRUCTIONS_HEAD + (s or "（WIKI.md 尚未生成；首次写回综合页时会自动创建。）")
     return body + _workspace_text()
 
-
-def _maybe_install_skill(client_name=""):
-    """Claude Code 接入时把技能包自动装进项目的 .claude/skills/（仅当尚未安装时，**绝不覆盖**用户改过的）。
-       其它 agent（Codex/Cursor…）不装——skill 是 Claude 专属格式，它们靠 initialize 下发的通用指令。
-       判据：clientInfo.name 含 claude，或当前工作目录已有 .claude/（强信号=Claude Code 项目）。
-       全程 try/except，绝不因此中断 MCP 握手。"""
-    try:
-        import shutil
-        cwd = Path.cwd()
-        is_claude = ("claude" in str(client_name).lower()) or (cwd / ".claude").exists()
-        if not is_claude:
-            return
-        src = C.APP / "skills" / "localkb-paper"
-        if not src.exists():
-            return
-        dest = cwd / ".claude" / "skills" / "localkb-paper"
-        if dest.exists():
-            return                          # 已装（可能被用户改过）——尊重之，不覆盖
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(src, dest)
-        log(f"已自动安装技能包 localkb-paper → {dest}")
-    except Exception as e:
-        log("技能自动安装跳过：", e)
 
 def send(msg):
     sys.stdout.write(json.dumps(msg, ensure_ascii=False) + "\n")
@@ -538,6 +589,21 @@ TOOLS = [
                        "propose_wiki_updates），再逐页 get_wiki_page 判断是否 mark_stale / update_wiki_page。无待办则返回空。",
         "inputSchema": {"type": "object", "properties": {}},
     },
+    # ── 跨 agent 无缝衔接：项目记忆读/写（不依赖 agent 恰好有本地文件读写习惯）──
+    {
+        "name": "read_project_memory",
+        "description": "读用户的**项目记忆**（当前真相：用户是谁/偏好/已定决策/当前在做）。这是换任何 AI 助手都共享的本地文件——"
+                       "开工前先读它接上之前的工作。initialize 已内联一份，但内容可能已被更新，动手前可再读一次拿最新。",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "append_project_memory",
+        "description": "把一条**已定决策/偏好/进度**追加进项目记忆（保持它是「当前真相」，供之后任何 AI 助手接上）。"
+                       "只写实质结论、保持简短；历史流水账不要写这里。默认追加到文件末尾；不覆盖已有内容。",
+        "inputSchema": {"type": "object", "properties": {
+            "text": {"type": "string", "description": "要记住的一条内容（决策/偏好/进度/关键事实）"}},
+            "required": ["text"]},
+    },
 ]
 
 # ══ MCP resources：把 schema / 索引 / 页面暴露成资源，agent 可直接读 ══
@@ -551,6 +617,9 @@ RESOURCES = [
     {"uri": "localkb://lint", "name": "综合层体检报告",
      "description": "当前的孤儿页 / 过时页 / 断链 / 无来源页 / 缺失概念页。",
      "mimeType": "application/json"},
+    {"uri": "localkb://memory", "name": "项目记忆 — 当前真相",
+     "description": "用户是谁/偏好/已定决策/当前在做。换任何 AI 助手都读这份接上之前的工作。",
+     "mimeType": "text/markdown"},
 ]
 
 # EN-M4：resource template 声明。read_resource 早就实现了 localkb://page/{id}，
@@ -643,12 +712,22 @@ def do_tool(name, args):
             return f"未检索到与「{args.get('query')}」相关的文献。"
         out = [f"检索「{args.get('query')}」（{r.get('mode')} 模式，{r.get('took_ms')}ms）命中 {len(res)} 条：\n"]
         for i, x in enumerate(res, 1):
-            tag = "📝综合" if x.get("is_wiki") else x.get("journal_tier")
+            if x.get("is_wiki"):
+                # 可信度分层：给 agent 一眼看清这行是权威综合、还是它自己上次没核过的草稿/已过时页。
+                tag = "📝综合"
+                if x.get("stale"):
+                    tag += "·⚠已过时"
+                elif x.get("by_agent") and not x.get("verified_at"):
+                    tag += "·🤖未核实"
+                elif x.get("verified_at"):
+                    tag += "·✓已核验"
+            else:
+                tag = x.get("journal_tier")
             st = x.get("statute_status") or ""           # 契约11：法条时效徽标（已修订/已废止）
             out.append(f"[{i}] ({tag}{'·' + st if st else ''}) {x.get('citation')}  «key:{x.get('key', '')}»")
             out.append(f"    {(x.get('text') or '').strip()[:220]}")
         # EN-M3：structuredContent——文本仍是主载体，结构化件供支持 MCP 2025-06 的客户端程序化取用
-        return "\n".join(out), {"query": args.get("query"), "mode": r.get("mode"),
+        return "\n".join(out) + _wiki_todo_note(), {"query": args.get("query"), "mode": r.get("mode"),
                                 "took_ms": r.get("took_ms"), "results": res}
     if name == "list_kb_categories":
         if not ensure_up():
@@ -744,7 +823,13 @@ def do_tool(name, args):
         except Exception:
             pass
         h["wiki_schema_md"] = str(C.WIKI_SCHEMA_MD)   # agent 去这里读综合层的写回规约（等价 CLAUDE.md）
-        return json.dumps(h, ensure_ascii=False)
+        # 待办可见性：新会话/换 agent 接入后调 status 就能看到有多少 wiki 维护待办堆着，
+        # 不必等它自己想起来去 pending_wiki_updates（把"口头优先级"变成"接入即可见的优先级"）。
+        n_sugg, n_lint = _wiki_todo_counts()
+        h["wiki_pending_updates"] = n_sugg
+        h["wiki_lint_issues"] = n_lint
+        note = _wiki_todo_note(prefix="")
+        return (json.dumps(h, ensure_ascii=False) + ("\n" + note if note else ""))
     if name == "deep_status":
         if not ensure_up():
             return "错误：知识库服务启动失败。"
@@ -780,7 +865,11 @@ def do_tool(name, args):
         ts = r.get("to_summarize") or []
         if r.get("finished") and not ts:
             tail = f"（本次已把 {r.get('wrote')} 篇摘要嵌入入库）" if r.get("wrote") else ""
-            return f"✅ 深索全部完成。已深索 {done}/{wp} 篇（有PDF），无更多待处理。{tail}"
+            # 深索完成正是维护 wiki 的时机：服务端已在后台按新文献算「受影响综述页」。
+            # 无条件提示先拉 pending_wiki_updates（异步建议可能刚落盘，计数或稍滞后）。
+            return (f"✅ 深索全部完成。已深索 {done}/{wp} 篇（有PDF），无更多待处理。{tail}\n\n"
+                    f"➡ 下一步（高优先级）：调 pending_wiki_updates 看这批新文献影响了哪些既有综述页，逐页判断标脏/重写；"
+                    f"再 lint_wiki 给综合层做一次体检。别让新文献与 wiki 脱节。" + _wiki_todo_note(prefix="\n"))
         out = []
         if r.get("wrote"):
             out.append(f"已把上一批 {r.get('wrote')} 篇摘要嵌入入库。")
@@ -792,7 +881,8 @@ def do_tool(name, args):
             out.append(f"    标题：{x.get('title')}")
             ex = (x.get("excerpt") or "").strip().replace("\n", " ")
             out.append(f"    正文节选：{ex[:1200]}" if ex else "    正文节选：（无可抽文本，可能是扫描件，可跳过此篇不写摘要）")
-        return "\n".join(out)
+        # A4：每深索一批，服务端就按新文献算出「受影响/该新建的综述页」——把累积待办也提示给 agent
+        return "\n".join(out) + _wiki_todo_note()
     if name == "localkb_build":
         if not ensure_up():
             return "服务启动失败"
@@ -1070,15 +1160,53 @@ def do_tool(name, args):
         items = (resp.json() or {}).get("items") or []
         if not items:
             return "当前没有待处理的 wiki 更新建议（最近没有新深索的文献，或都已处理）。"
-        out = [f"有 {len(items)} 篇新文献可能影响既有综合页，请逐一处理：\n"]
+        n_new = sum(1 for it in items if it.get("kind") == "new_page")
+        n_upd = len(items) - n_new
+        parts = []
+        if n_upd: parts.append(f"{n_upd} 篇影响既有综述页")
+        if n_new: parts.append(f"{n_new} 篇是新主题、建议新建页")
+        out = [f"有 {len(items)} 篇新文献待处理" + ("（" + "、".join(parts) + "）" if parts else "") + "，请逐一处理：\n"]
         for it in items[:30]:
             title = it.get("title") or it.get("key") or "?"
-            pages = it.get("pages") or []
-            plist = "、".join(f"[{p.get('id','')}] {p.get('title','')}" for p in pages) or "（无具体页，深索后自查）"
-            out.append(f"■ {title}（key={it.get('key','')}）\n   可能影响：{plist}")
-        out.append("\n处理：对每页 get_wiki_page 看结论是否仍成立；被推翻→mark_stale + update_wiki_page；仍成立→跳过。"
+            if it.get("kind") == "new_page":
+                out.append(f"■ {title}（key={it.get('key','')}）\n   🆕 {it.get('hint','') or '建议为它新建 concept/entity 页'}")
+            else:
+                pages = it.get("pages") or []
+                plist = "、".join(f"[{p.get('id','')}] {p.get('title','')}" for p in pages) or "（无具体页，深索后自查）"
+                out.append(f"■ {title}（key={it.get('key','')}）\n   可能影响：{plist}")
+        out.append("\n处理：影响既有页的 → get_wiki_page 看结论是否仍成立，被推翻→mark_stale + update_wiki_page、仍成立→跳过；"
+                   "新主题的 → read_source 读原文后 update_wiki_page 建 concept/entity 页、set_wiki_links 接进图。"
                    "处理完可用 /wiki/suggestions/dismiss（或在应用里）清掉该条。")
         return "\n".join(out)
+
+    # ── 项目记忆读/写（同机直接读写文件，无需 server 端点；换 agent 无缝衔接的核心载体）──
+    if name == "read_project_memory":
+        try:
+            import agent_ws as AW
+            AW.ensure_scaffold()
+            mf = Path(AW.paths_info().get("memory_file", ""))
+            if not mf.exists():
+                return "项目记忆文件尚未创建。"
+            body = mf.read_text(encoding="utf-8").strip()
+            return f"项目记忆（{mf}）：\n\n{body}" if body else f"项目记忆还是空的（{mf}）。开工时把用户是谁/偏好/已定决策补进去。"
+        except Exception as e:
+            return "读项目记忆失败：" + str(e)
+    if name == "append_project_memory":
+        txt = str(args.get("text", "")).strip()
+        if not txt:
+            return "需要 text（要记住的一条内容）。"
+        try:
+            import agent_ws as AW
+            AW.ensure_scaffold()
+            mf = Path(AW.paths_info().get("memory_file", ""))
+            old = mf.read_text(encoding="utf-8") if mf.exists() else ""
+            stamp = time.strftime("%Y-%m-%d")
+            new = old.rstrip() + f"\n\n<!-- {stamp} 由 AI 助手追加 -->\n{txt}\n"
+            mf.parent.mkdir(parents=True, exist_ok=True)
+            mf.write_text(new, encoding="utf-8")
+            return f"已追加进项目记忆（{mf}）。之后任何 AI 助手接入都会读到它。"
+        except Exception as e:
+            return "写项目记忆失败：" + str(e)
 
     # ── EN-M1：论文写作工作流工具 ──────────────────────────────
     if name == "format_citation":
@@ -1278,6 +1406,14 @@ def do_tool(name, args):
 def read_resource(uri):
     if uri == "localkb://schema":
         return _wiki_schema_text() or "（WIKI.md 尚未生成）", "text/markdown"
+    if uri == "localkb://memory":
+        try:
+            import agent_ws as AW
+            AW.ensure_scaffold()
+            mf = Path(AW.paths_info().get("memory_file", ""))
+            return (mf.read_text(encoding="utf-8") if mf.exists() else "（项目记忆尚未创建）"), "text/markdown"
+        except Exception as e:
+            return f"（读项目记忆失败：{e}）", "text/markdown"
     if not ensure_up():
         raise RuntimeError("知识库服务启动失败")
     if uri == "localkb://index":
@@ -1308,11 +1444,9 @@ def main():
             continue
         m, rid = req.get("method"), req.get("id")
         if m == "initialize":
-            # 技能自动装（仅 Claude Code；不覆盖用户改过的）——放在回 instructions 前，失败不影响握手
-            try:
-                _maybe_install_skill((req.get("params", {}).get("clientInfo", {}) or {}).get("name", ""))
-            except Exception:
-                pass
+            # 技能不再自动装进 <cwd>/.claude/skills（避免在用户目录里节外生枝多一个文件夹）。
+            # 统一以「0_Agent资料库/技能/工作流.md」为唯一落点：任何 AI 助手（含 Claude）读它即得完整流水线，
+            # initialize 的 instructions 已指向它。见 agent_ws.ensure_scaffold 写入的 工作流.md。
             send({"jsonrpc": "2.0", "id": rid, "result": {
                 "protocolVersion": PROTO,
                 "capabilities": {"tools": {}, "resources": {}, "prompts": {}},

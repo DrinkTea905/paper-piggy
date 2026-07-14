@@ -114,6 +114,7 @@
           <div class="ag-ch-c">
             <h3>第二步 · 深索（让回答精确到页码）</h3>
             <p class="ag-note"><b>深索</b>＝把 PDF 全文拆成可检索的小段。<b>只有深索过的文献</b>才能被精读、页级引用、跨篇综合；未深索的只有题录 + 摘要。在「📚 浏览」里挑文献深索，建议慢慢把常用的喂完——<b>可放后台跑，不影响使用</b>。</p>
+            <p class="ag-note">💡 <b>建议开着「深索摘要」</b>（⚙ 设置 → 深索摘要，默认已选「交给 Agent 生成」）：给每篇深索文献配一段 AI 检索摘要，<b>让检索更容易找准这篇</b>。用 Agent 跑深索时自动生成、省 API 额度、质量更好——保持开启即可。</p>
           </div>
         </section>
 
@@ -320,6 +321,12 @@
         <button class="ghost2 ag-openbtn" data-open="rely">📂 打开资料库文件夹</button>
       </section>
 
+      <!-- 📦 最近交付物主题（跨满一行，独立于上面两卡，使交付物/资料库两卡对齐；空则不显示） -->
+      <section class="ag-card ag-full ag-recent" id="ag-outputs-card" hidden>
+        <h3>📦 最近的交付物主题</h3>
+        <div class="ag-outputs" id="ag-outputs"></div>
+      </section>
+
       <!-- ⏰ 定时任务（跨满一行）——读本地「资料库/定时任务」展示；执行由用户的 AI 助手负责 -->
       <section class="ag-tasks-card ag-full">
         <div class="ag-tasks-h">⏰ 定时任务 <span class="ag-tasks-sub">让 AI 助手定期帮你搜集 / 综述（如少年司法周报）</span></div>
@@ -382,17 +389,17 @@
               <div class="ag-code"><code id="ag-claude"></code><button class="ag-copy" data-copy="ag-claude">复制</button></div>
               <label class="ag-scope"><input type="checkbox" id="ag-scope-user" /> 让所有项目都能用
                 <span class="ag-scope-tip" title="默认只在当前项目/目录里能用 PaperPiggy；勾选后在你电脑上的任何项目里都能用（相当于全局安装）。">（这是什么？）</span></label>
-              <p class="ag-skillnote">💡 <b>技能包会自动装好</b>：用 Claude Code 接入时，「查库 → 按页码核对引注 → 写规范综述」的技能会自动装进 <code>.claude/skills/</code>，无需手动复制。<a class="ag-link" id="ag-open-skills">打开技能文件夹</a></p>
+              <p class="ag-skillnote">💡 <b>写作/维护工作流已备好</b>：「查库 → 提纲 → 起草 → 按页码核验引注 → 沉淀」的完整流水线就放在「📚 专属资料库 › 技能 › <code>写论文与综述.md</code> / <code>维护综述库.md</code>」（一个工作流一个文件），接入后任何助手读它即可照着干。<b>这份工作流你可以和 AI 助手一起改</b>，调成你自己的写作/维护习惯（就是编辑那个 .md 文件）。<a class="ag-link" id="ag-open-skills">打开技能文件夹</a></p>
             </div>
             <div class="ag-pane" data-agpane="codex" hidden>
               <p class="ag-step">编辑 <code>~/.codex/config.toml</code>，粘贴：</p>
               <div class="ag-code"><code id="ag-codex"></code><button class="ag-copy" data-copy="ag-codex">复制</button></div>
-              <p class="ag-skillnote">💡 Codex 接入时会自动收到「怎么用这个库、要维护综述与记忆」的通用指令（技能包是 Claude Code 专属格式，其它助手无需安装）。</p>
+              <p class="ag-skillnote">💡 Codex 接入时会自动收到「怎么用这个库、要维护综述与记忆」的通用指令，并可读「📚 专属资料库 › 技能 › <code>写论文与综述.md</code> / <code>维护综述库.md</code>」（一个工作流一个文件）拿到完整的「检索→提纲→起草→核验→引注→沉淀」流水线——<b>任何助手都能用</b>，无需安装。</p>
             </div>
             <div class="ag-pane" data-agpane="json" hidden>
               <p class="ag-step">任何支持 MCP 的助手（Cursor / Cline / Windsurf / Gemini CLI …）：在项目根建 <code>.mcp.json</code>，粘贴：</p>
               <div class="ag-code"><code id="ag-json"></code><button class="ag-copy" data-copy="ag-json">复制</button></div>
-              <p class="ag-skillnote">💡 接入时会自动收到「怎么用这个库」的通用指令，无需手动装技能包。</p>
+              <p class="ag-skillnote">💡 接入时会自动收到「怎么用这个库」的通用指令；完整写作/维护流水线在「📚 专属资料库 › 技能 › <code>写论文与综述.md</code> / <code>维护综述库.md</code>」（一个工作流一个文件），<b>任何助手</b>读它即可照做，无需手动装技能包。</p>
             </div>
             <div class="ag-warn">⚠ <b>配好后新开一个会话才生效</b>。新会话输入 <code>/mcp</code> 应能看到 <code>localkb</code><span id="ag-tool-count"></span>。</div>
           </div>
@@ -419,7 +426,7 @@
               <div class="ag-trio-i"><b>📖 综述库（wiki）</b><span>可复用的综合页，带页码引用，越用越厚</span></div>
               <div class="ag-trio-i"><b>🧠 记忆</b><span>项目记忆：你的偏好、已定决策、当前进度</span></div>
             </div>
-            <p class="ag-note">前两个可从主页「📦 交付物 / 📚 专属资料库」一键打开查看；记忆是资料库里的 <code>记忆/项目记忆.md</code>。</p>
+            <p class="ag-note">前两个可从主页「📦 交付物 / 📚 专属资料库」一键打开查看；记忆是资料库里的 <code>记忆/项目记忆.md</code>。AI 接入时会<b>自动读到它的内容</b>、也能自己更新它，<b>换任何助手都从这份记忆接着干</b>。</p>
           </div>
         </section>
 
@@ -428,7 +435,7 @@
           <div class="ag-ch-n">5</div>
           <div class="ag-ch-c">
             <h3>综述库（wiki）：把问答沉淀成越用越厚的知识</h3>
-            <p class="ag-note">AI 每答一个问题、读完一篇文献，可把结论写成一页<b>带引用的综述</b>，下次直接命中、不重复劳动。它会<b>主动维护</b>：新文献可能推翻旧结论时会标记「过时」并写明理由。你放心——AI 写的页都标 <b>🤖 未核验</b>、<b>不覆盖</b>你亲自核验过的页、随时<b>可一键删</b>。在主菜单「📖 综述库」页可浏览、核验、删除。</p>
+            <p class="ag-note">AI 每答一个问题、读完一篇文献，可把结论写成一页<b>带引用的综述</b>，下次直接命中、不重复劳动。它会<b>主动维护</b>：新文献可能推翻旧结论时会标记「过时」并写明理由。你放心——AI 写的页都标 <b>🤖 未核验</b>、<b>不覆盖</b>你亲自核验过的页、随时<b>可一键删</b>。而且这些未核验页在检索里会被<b>降权</b>，不会盖过你的原始文献；你亲自<b>核验</b>过的页则恢复正常权重——AI 一眼就能分清哪些是它自己没核过的草稿、哪些是可信综合。在主菜单「📖 综述库」页可浏览、核验、删除。</p>
           </div>
         </section>
 
@@ -438,6 +445,7 @@
           <div class="ag-ch-c">
             <h3>深索：让回答精确到页码</h3>
             <p class="ag-note"><b>已深索</b>的文献 AI 能读到精确页码的正文；<b>未深索</b>的只有题录 + 摘要。想某方向问答更扎实，先去「📚 浏览」深索它（拆成可检索的小段，可后台慢慢跑，不影响使用）。</p>
+            <p class="ag-note">💡 <b>建议开着「深索摘要」</b>（⚙ 设置 → 深索摘要，默认「交给 Agent 生成」）：让 AI 给每篇深索文献写一段检索摘要，<b>检索更容易命中这篇</b>。用 Agent 跑深索时顺带生成、省额度、质量更好——保持开启即可。</p>
             <div id="ag-deep" class="ag-deep">读取深索进度…</div>
           </div>
         </section>
@@ -532,26 +540,14 @@
       <h3>设置</h3>
       <p class="hint">改动即时生效、无需「保存」。切换检索引擎（本地↔API）会让旧向量不兼容，改动前会二次确认。</p>
 
-      <div class="set-section">
-        <h4>⚖️ 期刊分级学科（整库锁定一个学科）</h4>
-        <p class="hint">决定用哪套学术标准，给检索结果里的期刊打「来源门槛」（0–1 分，越高越权威）。整库统一用一个学科。改了下次检索即生效，不用重建。</p>
-        <label>学科
-          <select id="disc-select"></select>
-        </label>
-        <div class="set-errbtns">
-          <span id="disc-msg" class="hint"></span>
-        </div>
-        <p class="hint">「法学（开发者增强）」是开发者的私人法学期刊分级（含台湾刊 / 顶尖外文法评等），欢迎试用。想调具体分数或顶刊名单属于高级微调，告诉开发者即可。</p>
-      </div>
-
       <!-- UX9：锚点 id 供「去配 Key」类入口 scrollIntoView 直达 -->
       <div class="set-section" id="sec-engine">
-        <h4>🔎 检索引擎（嵌入 / 重排）</h4>
-        <p class="hint">检索用的向量引擎。填一个 SiliconFlow 免费 Key，检索、对话、深索摘要、文件夹抽题录都共用它——<b>一次配好、全局通用</b>。⚠️ 已建过库后更换引擎（本地↔API 或换模型），旧向量不兼容，点「应用检索引擎」会自动重建。</p>
+        <h4>🔎 检索引擎</h4>
+        <p class="hint">检索用的向量引擎。填一个 SiliconFlow 免费 Key，检索 / 对话 / 深索摘要 / 抽题录全局共用。⚠️ 建过库后换引擎（本地↔API 或换模型）旧向量不兼容，点「应用检索引擎」会自动重建。</p>
         <label class="eng-mode"><input type="radio" name="eng-backend" value="local" /> 🔒 本地模型（离线，需 ~1.2GB 模型）</label>
         <label class="eng-mode"><input type="radio" name="eng-backend" value="api" /> ☁️ API（SiliconFlow 等 OpenAI 兼容，免费免下载）</label>
         <div id="eng-api">
-          <p class="hint">👉 还没有 Key？去 <a href="https://account.siliconflow.cn/zh/login" target="_blank" rel="noopener">SiliconFlow（硅基流动）</a> 登录即领免费额度。填这一个 Key 即可全局复用。</p>
+          <p class="hint">👉 没有 Key？去 <a href="https://account.siliconflow.cn/zh/login" target="_blank" rel="noopener">SiliconFlow（硅基流动）</a> 登录领免费额度，填这一个即可全局复用。</p>
           <label>Base URL <input id="eng-base" placeholder="https://api.siliconflow.cn/v1" /></label>
           <label>API Key <input id="eng-key" type="password" placeholder="填过就不用再填，留空即可" /></label>
           <details>
@@ -565,6 +561,19 @@
             <span id="eng-msg" class="hint"></span>
           </div>
         </div>
+        <p class="hint">💬 对话用的 LLM 在「💬 对话」页的「⚙ 模型设置」里设置；填了上面的 SiliconFlow Key 后对话页会自动带出。</p>
+      </div>
+
+      <div class="set-section">
+        <h4>⚖️ 期刊分级学科</h4>
+        <p class="hint">决定用哪套学术标准给检索结果的期刊打「来源门槛」（0–1 分，越高越权威）。整库统一一个学科，改了下次检索即生效、不用重建。</p>
+        <label>学科
+          <select id="disc-select"></select>
+        </label>
+        <div class="set-errbtns">
+          <span id="disc-msg" class="hint"></span>
+        </div>
+        <p class="hint">「法学（开发者增强）」是私人法学分级（含台湾刊 / 顶尖外文法评）。想调分数或顶刊名单，告诉开发者即可。</p>
       </div>
 
       <div class="set-section">
@@ -602,31 +611,25 @@
           <label class="au-int">每 <input type="number" id="au-days" min="1" max="30" step="1" value="1" /> 天</label>
           <label class="au-int">，<input type="time" id="au-time" value="07:00" /> 自动检查更新</label>
         </div>
-        <label class="sac-toggle" style="margin-top:8px">
+        <label class="sac-toggle">
           <input type="checkbox" id="au-catchup" />
           <span>开应用时若错过了计划更新（关机期间到点了），启动后补跑一次</span>
         </label>
-        <p class="hint" id="au-msg">默认每天早 7:00 增量更新（时段长、避开用库时间、降低与检索撞车）。关掉就只能用顶栏「⟳ 手动更新知识库」。</p>
+        <p class="hint" id="au-msg">默认每天早 7:00 增量更新；关掉就只能用顶栏「⟳ 手动更新知识库」。</p>
+        <label class="sac-toggle" id="au-delsync-row" hidden>
+          <input type="checkbox" id="au-delsync" />
+          <span>🗑 同步删除（文件夹模式）：把<b>移出</b>受管文件夹的 PDF 下次更新时从库中移除。<b>默认关</b>，防误删临时挪走的文件。</span>
+        </label>
         <div class="au-del">
           <span class="hint" id="au-del-note"></span>
           <button id="au-purge" class="ghost2" type="button" hidden>🧹 清理已删除文献</button>
         </div>
-        <label class="sac-toggle" style="margin-top:12px">
+        <label class="sac-toggle">
           <input type="checkbox" id="set-onlypdf" />
           <span>只导入有 PDF 的文献（Zotero 里没有 PDF 的纯题录不进库）</span>
         </label>
         <p class="hint" id="onlypdf-msg">改这项后，点顶栏「手动更新知识库」重建题录索引即生效。</p>
       </div>
-
-      <div class="set-section">
-        <h4>🧭 使用帮助</h4>
-        <p class="hint">想重看安装引导（选引擎、连接文库、建索引的分步向导）？随时可以重走一遍。</p>
-        <div class="set-errbtns">
-          <button id="set-rewizard" class="ghost">重新查看引导</button>
-        </div>
-      </div>
-
-      <p class="hint">💬 对话用的 LLM 服务商在「💬 对话」页的「⚙ 模型设置」里（改动即时保存）。填了上面检索引擎的 SiliconFlow Key 后，对话页会自动带出、可直接用。</p>
 
       <div class="set-section">
         <h4>🎨 外观（主题 / 字号）</h4>
@@ -649,11 +652,12 @@
       </div>
 
       <div class="set-section">
-        <h4>🐛 错误日志</h4>
-        <p class="hint">遇到问题时，点下面按钮把报错拉出来发给开发者。</p>
+        <h4>🛠 帮助与维护</h4>
         <div class="set-errbtns">
-          <button id="err-view" class="ghost">查看 / 导出错误日志</button>
+          <button id="set-rewizard" class="ghost">🧭 重看安装引导</button>
+          <button id="err-view" class="ghost">🐛 查看 / 导出错误日志</button>
         </div>
+        <p class="hint">「重看引导」= 重走选引擎 / 连文库 / 建索引的分步向导；遇到问题点「错误日志」把报错拉出来发给开发者。</p>
         <div id="err-panel" hidden>
           <textarea id="err-text" class="err-text" readonly placeholder="（点上方按钮加载）"></textarea>
           <div class="set-errbtns">

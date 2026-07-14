@@ -37,6 +37,9 @@ DEFAULT = {
         "at_time": "07:00",
         # 开应用时若上次计划更新已被错过（关机期间到点），补跑一次。
         "catch_up_on_launch": True,
+        # C3/D4-4：同步删除（默认关）。开=移出受管文件夹的 PDF 下次更新时从库中移除；
+        # 关=只增不删（防误删临时挪走的文件）。仅 folder 模式的增量构建读它；zotero 走手动「清理已删除」按钮。
+        "delete_sync": False,
     },
     # 文件夹模式的题录抽取 LLM（key 空时复用 api/sac 的 key，见 folder_meta._conf）
     "folder_meta": {
