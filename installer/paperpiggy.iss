@@ -60,8 +60,9 @@ LicenseFile=..\LICENSE
 OutputDir=..\dist-installer
 ; 不叫 setup.exe（见 §安装包命名）
 OutputBaseFilename=PaperPiggy-{#AppVersion}-win64
-SetupIconFile=..\LocalKB源码\web\PaperPiggy.ico
-UninstallDisplayIcon={app}\app\web\PaperPiggy.ico
+; .ico 由 build_installer.py 的 ensure_icon() 从 web/PaperPiggy.png 现封（仓库里只有 .png）
+SetupIconFile=PaperPiggy.ico
+UninstallDisplayIcon={app}\PaperPiggy.ico
 UninstallDisplayName={#AppName} {#AppVersion}
 
 Compression=lzma2/max
@@ -86,14 +87,17 @@ Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: 
 Source: "{#BundleDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; \
     Excludes: "portable.txt,*.pdb,__pycache__,data\*,logs\*"
 
+; ── 应用图标（快捷方式 + 卸载项都指向它）──
+Source: "PaperPiggy.ico"; DestDir: "{app}"; Flags: ignoreversion
+
 ; ── WebView2 Evergreen Bootstrapper（约 2MB，仅在系统缺 WebView2 时运行）──
 Source: "MicrosoftEdgeWebview2Setup.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall; \
     Check: not IsWebView2Installed
 
 [Icons]
-Name: "{group}\{#AppName}";        Filename: "{app}\{#AppExeName}"; IconFilename: "{app}\app\web\PaperPiggy.ico"
+Name: "{group}\{#AppName}";        Filename: "{app}\{#AppExeName}"; IconFilename: "{app}\PaperPiggy.ico"
 Name: "{group}\卸载 {#AppName}";   Filename: "{uninstallexe}"
-Name: "{autodesktop}\{#AppName}";  Filename: "{app}\{#AppExeName}"; IconFilename: "{app}\app\web\PaperPiggy.ico"; Tasks: desktopicon
+Name: "{autodesktop}\{#AppName}";  Filename: "{app}\{#AppExeName}"; IconFilename: "{app}\PaperPiggy.ico"; Tasks: desktopicon
 
 [Run]
 ; 缺 WebView2 时静默安装（/silent /install）。装不上也不阻断安装流程——
@@ -114,9 +118,12 @@ Type: filesandordirs; Name: "{app}\python\Lib\site-packages\__pycache__"
 ;    卸载不删数据，重装即可复用。
 
 [Code]
-{ 检测 WebView2 Evergreen Runtime 是否已安装。
-  微软官方推荐的检测法：查 EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5} 下的 pv 值。
-  三个位置都要查：HKLM 的 64/32 位视图 + HKCU（per-user 安装）。 }
+// 检测 WebView2 Evergreen Runtime 是否已安装。
+// 微软官方推荐的检测法：查 EdgeUpdate\Clients\<那个固定 GUID> 下的 pv 值。
+// 三个位置都要查：HKLM 的 64/32 位视图 + HKCU（per-user 安装）。
+//
+// ⚠️ 这里必须用 // 行注释，不能用 Pascal 的 { } 块注释 ——
+//    GUID 里的 '}' 会提前把块注释关掉，报 "Syntax error"（踩过）。
 function IsWebView2Installed: Boolean;
 var
   pv: String;
@@ -143,7 +150,7 @@ begin
         Result := True;
 end;
 
-{ 升级安装时，先确认应用没在跑（否则替换 app\ 会失败） }
+// 升级安装时的预留钩子（如需检测应用是否在跑，在这里加）
 function InitializeSetup: Boolean;
 begin
   Result := True;

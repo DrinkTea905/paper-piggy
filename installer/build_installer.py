@@ -32,6 +32,8 @@ OUT = ROOT / "dist-installer"
 sys.path.insert(0, str(SRC))
 
 ISCC_CANDIDATES = [
+    # winget 装的是 per-user，落在 %LOCALAPPDATA%\Programs（不是 Program Files）
+    os.path.join(os.environ.get("LOCALAPPDATA", ""), r"Programs\Inno Setup 6\ISCC.exe"),
     r"C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
     r"C:\Program Files\Inno Setup 6\ISCC.exe",
 ]
@@ -82,8 +84,63 @@ def _sha256(path, chunk=1 << 20):
     return h.hexdigest()
 
 
+WEBVIEW2_URL = "https://go.microsoft.com/fwlink/p/?LinkId=2124703"   # Evergreen Bootstrapper（微软官方短链）
+
+
+def ensure_webview2():
+    r"""确保 installer\MicrosoftEdgeWebview2Setup.exe 存在（约 1.6MB）。
+
+    不提交进 git —— 它是微软的可再分发二进制，让构建时现下更干净（也保证拿到最新版）。
+    """
+    dst = HERE / "MicrosoftEdgeWebview2Setup.exe"
+    if dst.exists() and dst.stat().st_size > 100_000:
+        print(f"[installer] WebView2 bootstrapper 已就位（{dst.stat().st_size/1e6:.1f} MB）")
+        return dst
+
+    print("[installer] 下载 WebView2 Evergreen Bootstrapper…")
+    from urllib.request import urlopen, Request
+    try:
+        with urlopen(Request(WEBVIEW2_URL, headers={"User-Agent": "PaperPiggy-build"}), timeout=60) as r:
+            data = r.read()
+    except Exception as e:
+        raise SystemExit(
+            f"[installer] ✗ 下载 WebView2 bootstrapper 失败：{e}\n"
+            f"    手动下载 {WEBVIEW2_URL}\n"
+            f"    另存为 {dst}")
+    if len(data) < 100_000:
+        raise SystemExit(f"[installer] ✗ 下到的文件只有 {len(data)} 字节，不像 bootstrapper，已中止")
+    dst.write_bytes(data)
+    print(f"[installer] ✓ WebView2 bootstrapper → {dst}（{len(data)/1e6:.1f} MB）")
+    return dst
+
+
+def ensure_icon():
+    r"""生成 installer\PaperPiggy.ico 供 Inno 用。
+
+    仓库里只有 web\PaperPiggy.png —— .ico 一直是 launcher 运行时现封的（PNG-in-ICO），
+    没有静态 .ico 文件。这里用同一套纯 stdlib 逻辑在构建期封一份出来。
+    """
+    ico = HERE / "PaperPiggy.ico"
+    if ico.exists() and ico.stat().st_size > 0:
+        return ico
+    png = SRC / "web" / "PaperPiggy.png"
+    if not png.exists():
+        raise SystemExit(f"[installer] ✗ 找不到 {png}（应用图标的真源）")
+
+    import struct
+    data = png.read_bytes()
+    # ICONDIR: reserved=0, type=1(icon), count=1
+    hdr = struct.pack("<HHH", 0, 1, 1)
+    # ICONDIRENTRY: w=0/h=0 表示 256px；PNG 数据直接内嵌（PNG-in-ICO，Vista+ 支持）
+    entry = struct.pack("<BBBBHHII", 0, 0, 0, 0, 1, 32, len(data), 6 + 16)
+    ico.write_bytes(hdr + entry + data)
+    print(f"[installer] 图标已生成：{ico}（从 web/PaperPiggy.png 封成 PNG-in-ICO）")
+    return ico
+
+
 def build_setup(ver):
     """Inno Setup 安装器。"""
+    ensure_icon()
     iscc = next((p for p in ISCC_CANDIDATES if os.path.exists(p)), None)
     if not iscc:
         print("[installer] ⚠ 没找到 ISCC.exe，跳过安装器。")
@@ -95,13 +152,7 @@ def build_setup(ver):
     if pt.exists():
         print(f"[installer] ⚠ bundle 里有 portable.txt —— .iss 会排除它，但便携 zip 需要它，保留原文件")
 
-    webview2 = HERE / "MicrosoftEdgeWebview2Setup.exe"
-    if not webview2.exists():
-        raise SystemExit(
-            f"[installer] ✗ 缺 {webview2}\n"
-            f"    下载 Evergreen Bootstrapper（约 2MB）：\n"
-            f"    https://go.microsoft.com/fwlink/p/?LinkId=2124703\n"
-            f"    另存为 installer\\MicrosoftEdgeWebview2Setup.exe")
+    ensure_webview2()
 
     OUT.mkdir(exist_ok=True)
     cmd = [iscc, f"/DAppVersion={ver}", str(HERE / "paperpiggy.iss")]

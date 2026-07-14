@@ -22,8 +22,16 @@ LocalKB源码/0_Agent资料库/
 # build/assets  MinGit 等随包分发的第三方二进制（约 90MB）
 build/
 dist/
+dist-installer/
 .venv/
 venv/
+
+# ── 出包时现下/现生成的东西（不提交，build_installer.py 会自动准备）──
+# 注意：gitignore 不支持行内注释，注释必须单独成行，否则 `#` 后的内容会被当成路径的一部分。
+# MicrosoftEdgeWebview2Setup.exe = 微软可再分发二进制，构建时现下
+# PaperPiggy.ico = 由 web/PaperPiggy.png 现封
+installer/MicrosoftEdgeWebview2Setup.exe
+installer/PaperPiggy.ico
 
 # ── 模型（约 1.2GB，走 GitHub Release 分发，见 models_manifest.json）──
 models/
