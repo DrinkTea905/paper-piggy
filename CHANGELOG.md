@@ -8,9 +8,9 @@
 
 ---
 
-## [未发布]
+## [1.0.0] — 2026-07-14
 
-进入 Windows 打包发布阶段。
+首个公开版本。[下载](https://github.com/DrinkTea905/paper-piggy/releases/tag/v1.0.0)
 
 ### 新增
 - 项目指引本地化：`CLAUDE.md`（AI agent 总纲）、`docs/ARCHITECTURE.md`、`docs/MAINTENANCE.md`
@@ -37,6 +37,12 @@
 
 ### 移除
 - 分发包目录 `LocalKB/`（2.1G 测试数据与构建产物）。构建改为从源码 + `build/` 资产生成。
+
+### 打包
+- Inno Setup 安装器（177 MB）+ 便携 zip（282 MB）+ updater 用的增量包
+- 模型（约 900 MB）走 GitHub Release 按需下载，支持断点续传与 sha256 校验；API 模式无需下载
+- 缺 WebView2 时安装器静默安装 Evergreen Runtime
+- 自动更新：只替换 `app/`，不碰 Python 运行时与用户数据；用 sha256 清单识别用户改过的文件，不静默覆盖
 
 ---
 
