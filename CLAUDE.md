@@ -59,7 +59,7 @@
 ## 2. 目录地图
 
 ```
-D:\Onedrive\AI\知识库应用\        ← 仓库根（就是 git 根）
+<仓库根>\                          ← git 根（本机：D:\Onedrive\AI\知识库应用）
 ├─ CLAUDE.md                      ← 你正在读的
 ├─ README.md                      开源门面
 ├─ LICENSE                        Apache-2.0
@@ -71,7 +71,6 @@ D:\Onedrive\AI\知识库应用\        ← 仓库根（就是 git 根）
 │   ├─ *.py                       约 40 个模块
 │   ├─ web\                       前端（index.html + app.js，无构建步骤）
 │   ├─ journal_grading\           期刊分级引擎 + catalogs/*.json（引擎必需，进 git）
-│   ├─ skills\                    （待删，见 §7 待办）
 │   ├─ requirements.txt           声明依赖
 │   ├─ requirements.lock          ★ 唯一被实机验证过的依赖组合（pip freeze 产物）
 │   ├─ data\                      运行时数据（.gitignore；含真实文献元数据 + API key）
@@ -116,21 +115,22 @@ D:\Onedrive\AI\知识库应用\        ← 仓库根（就是 git 根）
 **① 改之前：git**（代替过去的手工备份目录）
 
 ```powershell
-cd D:\Onedrive\AI\知识库应用
 git switch -c fix/xxx      # 或在 main 上小步 commit
 ```
 
 **② 只改 `LocalKB源码\`。源码即运行目标，没有副本需要同步。**
 
-**③ 源码态直接跑起来验证**
+**③ 源码态直接跑起来验证**（在仓库根执行）
 
 ```powershell
-# 后端 only（浏览器开 http://127.0.0.1:8770）
+# 模型母本目录（见 §2「外部硬依赖」；换机器就改这一行）
 $env:LOCALKB_MODELS = 'D:\00Zotero知识库\rag\data\models'
-& D:\Onedrive\AI\知识库应用\build\py312\python.exe D:\Onedrive\AI\知识库应用\LocalKB源码\server.py
+
+# 后端 only（浏览器开 http://127.0.0.1:8770）
+& .\build\py312\python.exe .\LocalKB源码\server.py
 
 # 完整原生窗口
-& D:\Onedrive\AI\知识库应用\build\py312\python.exe D:\Onedrive\AI\知识库应用\LocalKB源码\launcher.py
+& .\build\py312\python.exe .\LocalKB源码\launcher.py
 ```
 
 也可以用 `.claude\launch.json` 里配好的 `localkb-server` / `localkb-app`。
@@ -162,8 +162,12 @@ $env:LOCALKB_MODELS = 'D:\00Zotero知识库\rag\data\models'
 2. **agent 指引**（给应用内/外部 AI 看）：`agent_ws.py` 的 `_WF_*` 工作流模板、`_README_*`；`mcp_server.py` 的工具描述；`wiki_store.py` 的 `WIKI_MD_SEED`
 3. **开发者文档**（给你和下一个 agent 看）：`MCP接入说明.md`、`docs/`、本文件
 
-**已经发生过的漂移**（引以为戒）：`MCP接入说明.md` 写「共 28 个工具」，而 `mcp_server.TOOLS` 实际有 **32** 个。
-`gen_mcp_doc.py --check` 本来能自动检出这种过期，但**全项目没有任何地方调用它**。
+**已经发生过的漂移**（引以为戒）：`MCP接入说明.md` 曾写「共 28 个工具」，而 `mcp_server.TOOLS` 实际有 **32** 个；
+Resources 表还整条漏掉了 `localkb://memory`。`gen_mcp_doc.py --check` 本来能检出前者，但当时**没有任何地方调用它**。
+
+**现在有护栏了**：`check_guides.py` 会断言这些一致性，且**已接进 `build_bundle.py` —— 校验不过直接中止打包**。
+但它只覆盖机器可判定的部分（工具表 / Resources / Prompts / 工作流数量 / wiki schema / 版本字面量），
+中文散文体的指引正文仍然靠人。改功能时请走 [docs/MAINTENANCE.md](docs/MAINTENANCE.md) 的 checklist。
 
 ---
 
@@ -190,7 +194,8 @@ $env:LOCALKB_MODELS = 'D:\00Zotero知识库\rag\data\models'
 - **`STATE["mode"]` 是在 `_load_wiki_index()` 之后才设的**，所以依赖 `STATE["mode"]` 的函数在 `_load_wiki_index` 内部会静默失效。改用 `"tbl" in M` 来判断。**日志打印「成功」不等于真的成功。**
 - **wiki 的 stale 降权曾经是纸糊的**：reranker 分数尺度是 0~10+，而当时的 penalty 只有 0.05/0.5，等于没有。加惩罚项之前，先量一下真实分数的尺度。
 - **OneDrive 目录下曾有过 Write 静默失败**（视为已解决）。写完关键文件后核对一下内容，别盲信写入成功。
-- **`_write_if_absent` 只在文件不存在时写**（`agent_ws.py:341`）：这意味着你改了工作流模板的文本，**所有已经跑过一次的机器（包括开发机自己）永远收不到新版**。见 MAINTENANCE 的「模板升级器」。
+- **出厂模板曾经推不动**：旧的 `_write_if_absent` 只在文件不存在时写 —— 改了工作流模板的文本，**所有已经跑过一次的机器（包括开发机自己）永远收不到新版**。已用 hash 比对的升级器替换（`agent_ws.py` 的 `_FACTORY_HASHES` / `_ensure_template`）：出厂原样→静默升级，用户改过→保留原文件并写一份 `.new.md`。
+  ⚠️ **改完任何模板文本，必须跑 `python LocalKB源码gent_ws.py --print-hashes` 把新 hash 追加进 `_FACTORY_HASHES`（旧的一个都别删）**，否则下下版会把这一版的出厂文件误判成「用户改过」，用户机器上凭空多出一堆 `.new.md`。
 
 ---
 
