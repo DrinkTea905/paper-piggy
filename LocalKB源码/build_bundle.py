@@ -96,7 +96,7 @@ def copy_app():
     for pc in APP_OUT.rglob("__pycache__"):
         shutil.rmtree(pc, onerror=_rm_ro)
     write_version_json()    # 必须在 pycache 清理之后：清单要对得上最终落盘的文件
-    print(f"[bundle] app/ 就绪：{len(list(APP_OUT.glob('*.py')))} 个 .py + web/ + docs/ + journal_grading/")
+    print(f"[bundle] app/ 就绪：{len(list(APP_OUT.glob('*.py')))} 个 .py + web/ + journal_grading/")
 
 
 def write_version_json():

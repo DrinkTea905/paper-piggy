@@ -162,7 +162,11 @@ def check_wiki_schema():
 # ── ⑤ 版本号只能有一处字面量：config.APP_VERSION ──────────────────────────────────────
 #    收敛的写法（只匹配「名字里带 version 的东西 = 'X.Y.Z'」），宁可漏报也不误报。
 _VER = re.compile(r"""(?i)\b([A-Za-z_][\w.]*version\w*)\s*[:=]\s*["'](v?\d+\.\d+(?:\.\d+)?)["']""")
-_SKIP_DIRS = {"__pycache__", "data", "logs", "0_Agent交付物", "0_Agent资料库", "node_modules", ".git"}
+#    ⚠️ dist/ 必须排除：构建产物里有整个 CPython 标准库（argparse.py 的 __version__=1.1 之类），
+#       不排除的话会形成死锁 —— 构建产生 dist/ → 这项检查变红 → build_bundle 的 verify_guides()
+#       中止下一次打包。build/（py312 运行时）同理。
+_SKIP_DIRS = {"__pycache__", "data", "logs", "0_Agent交付物", "0_Agent资料库",
+              "node_modules", ".git", "dist", "build", ".venv", "site-packages", "_archive"}
 
 
 def check_single_version():
