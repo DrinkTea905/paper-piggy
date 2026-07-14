@@ -199,8 +199,11 @@ $env:LOCALKB_MODELS = 'D:\00Zotero知识库\rag\data\models'
 - **⏰ 权重校准（重要，新对话请主动提醒用户）**：综合排序里顶刊只多 0.375 分，形同虚设。需要用户攒够 20+ 条真实查询做金标集之后再校准。**不要凭感觉调这个权重。**
 - **SAC 补生成（backfill）从未真跑过**：会消耗 API 额度且会改真实库，跑之前必须先问用户。
 - **`import_only_pdf` 仍然会挡住没有 PDF 的法源条目**（法源常常只有网页/文本，没有 PDF）。
-- **`skills/localkb-paper/` 待删**：它和 `agent_ws._WF_PAPER` 是同一条工作流的两份事实源，且已过期。`MCP接入说明.md:81-92` 还在教人手动安装它，而 Agent 页 UI 明写「无需手动装技能包」——两边打架。用户已拍板删除。
-- **打包 A~E 五步**：见 [docs/RELEASE.md](docs/RELEASE.md)。
+- **打包发布**：见 [docs/RELEASE.md](docs/RELEASE.md)。代码侧已就绪；**卡在需要用户本人做的两件事**：
+  ① 建 GitHub 仓库 `DrinkTea905/paper-piggy`（公开）② 把模型传到 Release `models-v1` tag。
+  在模型资产上传之前，`models_manifest.json` 里的 URL 全是 404，「首启下模型」实机测试必然失败。
+- **国内镜像位是空的**（`models_manifest.json` 的 `mirror_base`）。GitHub 排第一、单次超时 60s，
+  意味着国内用户首启要先干等一分钟才 fallback。上线镜像（如 Cloudflare R2）后记得调整顺序。
 
 ---
 

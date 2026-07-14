@@ -2,8 +2,9 @@
 """
 本地知识库应用 —— 独立配置（中央路径/参数）。
 
-⚠️ 独立性保证（与 D:\\00Zotero知识库\\rag 的关系）：
-  - 本项目所有【写入】都落在 D:\\LocalKB\\data 与 D:\\LocalKB\\logs，绝不写入知识库目录。
+⚠️ 独立性保证（与开发机上那个旧 rag 知识库目录的关系；路径由 LOCALKB_MODELS 指定，代码里不写死）：
+  - 本项目所有【写入】都落在 DATA / LOGS 之下（见下方 DATA 解析：分发版=%LOCALAPPDATA%\\LocalKB\\data，
+    源码态=源码目录 data/，可被 LOCALKB_DATA / LOCALKB_HOME 覆盖），**绝不写入模型或知识库目录**。
   - 模型【只读复用】知识库已下载好的 ONNX/hub（省去重新下 12GB），可用环境变量改指别处。
   - 数据源直接读 Zotero 的 zotero.sqlite（不依赖 Better BibTeX 导出）。
   - daemon 端口用 8770（知识库 daemon 是 8765），两者可同时运行、互不干扰。
@@ -11,6 +12,12 @@
 """
 import os
 from pathlib import Path
+
+# ---- 应用版本（唯一事实源）----
+# 全项目**只有这一处**版本字面量：发版改版本号只改这里，其余地方一律 `C.APP_VERSION` 引用
+# （踩过的坑：版本号散落在 mcp_server 的 serverInfo、打包脚本、页脚里，改一处漏三处，
+#  用户报 bug 时报的版本对不上代码）。1.0.0 = 首个公开发布版（Apache-2.0 开源）。
+APP_VERSION = "1.0.0"
 
 APP = Path(__file__).parent                 # D:\LocalKB（源码/程序目录；分发版=bundle/app）
 RAG = APP                                    # 兼容：引擎脚本都在项目根

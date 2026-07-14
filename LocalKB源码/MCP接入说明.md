@@ -68,6 +68,7 @@
 | `localkb://schema` | `WIKI.md` 全文——综合层的结构约定与写回纪律 |
 | `localkb://index` | 所有 wiki 页的清单 |
 | `localkb://lint` | 当前的体检报告（孤儿页/过时页/断链/缺失概念页） |
+| `localkb://memory` | 项目记忆（当前真相：用户是谁 / 偏好 / 已定决策 / 当前在做）——换任何 AI 助手都先读这份接上之前的工作 |
 | `localkb://page/<id>` | 某一页的 markdown 正文 |
 
 ## Prompts（斜杠命令，把 gist 三大操作变成一句话）
@@ -82,15 +83,23 @@
 > 补充：`localkb://page/{id}` 现以 **resource template** 声明（MCP `resources/templates/list`），
 > 支持该方法的客户端可以直接发现并按 id 读任意综合页，不必先调 list_wiki。
 
-## Skill 包：localkb-paper（法学论文写作工作流）
+## 工作流 / 技能：**无需手动安装**
 
-`skills/localkb-paper/SKILL.md` 是一个 Claude Code 技能：把「意图澄清 → 迭代检索 → grounded 提纲（经你确认）→
-分节起草 → verify_claim 逐条核验 → format_citation 排脚注 → 沉淀回 wiki → 披露提醒」整条论文写作流水线编排好，
-每个论断强制绑定库内来源 key + 页码。
+应用会自己把工作流写到「**0_Agent资料库 › 技能**」文件夹里（Agent 页点「打开技能文件夹」即到），
+**一个工作流一个 .md、人类可读**，目前出厂三条：
 
-**安装**：把 `skills/localkb-paper` 整个文件夹复制到你项目的 `.claude/skills/` 下（没有就新建），
-新开 Claude Code 会话即可触发（说「基于我的文献库写一篇……」或输入 `/localkb-paper`）。
-它依赖 localkb MCP server——请先按下文完成 MCP 接入。
+| 文件 | 做什么 |
+|---|---|
+| `写论文与综述.md` | 意图澄清 → 迭代检索 → grounded 提纲（经你确认）→ 分节起草 → `verify_claim` 逐条核验 → `format_citation` 排脚注 → 沉淀回 wiki → 披露提醒。每个论断强制绑定库内来源 key + 页码 |
+| `维护综述库.md` | 体检并修复 wiki：孤儿页补互链、过时页重写、断链清理 |
+| `跨学科发散与补文献.md` | 打开理论视野、推荐库外该补的外文文献 |
+
+MCP 一接上，agent 在 `initialize` 时就会收到这个技能目录的路径，自己去读——**你不用复制任何文件夹，
+也不用往 `.claude/skills/` 里装东西**。（早期版本发过一个 `skills/localkb-paper` 技能包，已废弃：
+它和应用内置的工作流是同一条流水线的两份事实源，只会打架。）
+
+想改成自己的习惯，或新增一条属于你的工作流？直接编辑 / 新建那个 `.md` 就行——让 AI 助手帮你改也可以。
+这些工作流都依赖 localkb MCP server，请先按下文完成 MCP 接入。
 
 ---
 

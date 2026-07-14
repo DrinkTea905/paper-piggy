@@ -38,12 +38,14 @@ def _load_manifest():
 
 def _urls_for(e):
     """从 manifest 条目取候选下载直链列表：优先 urls/mirrors 数组，回退单个 url。
-    多镜像：GitHub Release 国内易失败，可在清单里给多个镜像地址，按序尝试。"""
+    多镜像：GitHub Release 国内易失败，可在清单里给多个镜像地址，按序尝试。
+    含 "<" 的一律丢弃（pack_models 的占位符如 <用户名>）——否则会拿它去发一次注定 404 的请求，
+    还把真实原因（清单没填直链）伪装成一个莫名其妙的网络错误。丢干净后调用方才好报「没有可用地址」。"""
     us = e.get("urls") or e.get("mirrors")
-    if isinstance(us, list) and us:
-        return [u for u in us if u]
-    u = e.get("url")
-    return [u] if u else []
+    if not (isinstance(us, list) and us):
+        u = e.get("url")
+        us = [u] if u else []
+    return [u for u in us if u and "<" not in u]
 
 
 def _free_bytes(path):

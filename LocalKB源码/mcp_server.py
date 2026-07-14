@@ -1450,7 +1450,8 @@ def main():
             send({"jsonrpc": "2.0", "id": rid, "result": {
                 "protocolVersion": PROTO,
                 "capabilities": {"tools": {}, "resources": {}, "prompts": {}},
-                "serverInfo": {"name": "localkb", "version": "1.2.0"},
+                # 版本号不再硬编码：唯一事实源是 config.APP_VERSION（发版只改那一处）
+                "serverInfo": {"name": "localkb", "version": C.APP_VERSION},
                 "instructions": instructions()}})
         elif m == "tools/list":
             send({"jsonrpc": "2.0", "id": rid, "result": {"tools": TOOLS}})

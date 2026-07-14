@@ -3,7 +3,8 @@
 面向接手本项目的 AI 开发 agent。所有事实都带 `文件:行号` 证据（行号基于 2026-07-14 的源码）。
 不确定的地方标了「待核」，请自行验证后再依赖。
 
-**唯一可改的目录是 `LocalKB源码\`。** 分发包 `app\` 是同步产物（见 `sync_app.ps1`），直接改它会被下次同步覆盖。
+**唯一可改的目录是 `LocalKB源码\`。** 分发包里的 `app\` 是构建产物（`build_bundle.py --sync-only` 刷新），直接改它会被下次构建覆盖。
+（历史：曾有个 `sync_app.ps1` 把源码同步进桌面上的 `LocalKB\app\`。那个常驻分发目录已删除，脚本随之删除——现在只有 `build_bundle.py` 一条生成路径。）
 
 ---
 
@@ -298,16 +299,18 @@ server 侧 `GET /agent/tasks`（`server.py:649`）解析 `任务.md` 的 frontma
   外加 1 个 **RESOURCE_TEMPLATE** `localkb://page/{id}`（`:628`）。
 - **3 个 PROMPTS**（`mcp_server.py:635`）= gist 三环的斜杠命令：`ingest-source` / `lint-wiki` / `query-and-file`。
 - `initialize` 时下发 `instructions()`（`:174`）= 固定头 + **WIKI.md 全文** + 工作区说明（`_workspace_text`，`:130`，含项目记忆内联）。
-- server 版本号 `1.2.0`（`mcp_server.py:1453`），协议版本 `2024-11-05`（`:23`）。
+- server 版本号取 `config.APP_VERSION`（**全项目唯一版本字面量**，`config.py:19`；`mcp_server.py:1454` 只是引用它），协议版本 `2024-11-05`（`:23`）。
 - 前端 Agent 页的接入命令由 `GET /agent/mcp-config`（`server.py:396`）动态吐出（`claude mcp add localkb -- <python> <mcp_server.py>` / mcp.json / codex.toml），**工具数是运行时 `len(MCP.TOOLS)` 读出来的，不写死**（`server.py:416-420`）。
 - 文档 `MCP接入说明.md` 的工具表由 `gen_mcp_doc.py` 从 `TOOLS` 生成——**改了 TOOLS 要跑一次**（`gen_mcp_doc.py --check` 可在提交前校验）。
 
 > 注意：`localkb.py:7-8` 的 docstring 还写着「28 个工具」，已过期（实为 32）。
 
-### 6.3 `skills/localkb-paper/SKILL.md`
+### 6.3 技能包 `skills/localkb-paper/`（**已删除**）
 
-随源码分发的 Claude Code 技能包（`server.py:423` 把它的路径吐给前端）。
-注意 `mcp_server.py:1447-1449`：技能**不再**自动装进 `<cwd>/.claude/skills`，统一以「0_Agent资料库/技能/」为唯一落点。
+早期随源码分发一个 Claude Code 技能包，要用户自己复制到 `.claude/skills/`。已于 2026-07-14 删除：
+它与 `agent_ws.py` 的内置工作流（`_WF_PAPER` 等，应用自动写进「0_Agent资料库/技能/」）是**同一条流水线的两份事实源**，只会打架。
+现状：技能**不**自动装进 `<cwd>/.claude/skills`（`mcp_server.py:1447-1449`），「0_Agent资料库/技能/」是唯一落点；
+`GET /agent/mcp-config` 的 `skill_src_dir` 字段同批删除，前端只用 `/agent/open_folder?which=skills`。
 
 ---
 
@@ -436,12 +439,14 @@ server 侧 `GET /agent/tasks`（`server.py:649`）解析 `任务.md` 的 frontma
 | `pack_models.py` | 打包「瘦模型」资产（`.tar.gz` + `models_manifest.json`，含 sha256），供首启下载 |
 | `fetch_mingit.py` | 下载 MinGit 塞进 `<bundle>/git/`，让分发版用户也有真 git（无它则退回快照） |
 | `gen_mcp_doc.py` | 从 `mcp_server.TOOLS` 生成 `MCP接入说明.md` 的工具表；`--check` 可校验过期（改 TOOLS 后必跑） |
+| `check_guides.py` | 指引 ↔ 代码一致性校验（工具表/Resources/Prompts/工作流数/schema 版本/版本字面量）。`build_bundle.py` 开头会跑它，红了就中止打包 |
 | `setup_reranker_onnx.py` | 开发机一次性：导出 reranker → ONNX → INT8 量化 + 验证排序一致性 |
-| `import_fulltext.py` | 一次性迁移：把旧 rag 知识库的全文块导进 LocalKB（复用向量，省数小时） |
-| `fix_schema.py` | 一次性迁移：LanceDB `page` 列 Null type → Int64 |
+| `import_fulltext.py` | 一次性迁移：把旧 rag 知识库的全文块导进 LocalKB（复用向量，省数小时）。旧库路径由 `--rag-lancedb` / `LOCALKB_RAG_LANCEDB` 显式指定 |
 | `journal_grading/migrate_legacy.py` / `selftest.py` | 分级引擎的迁移与自检脚本 |
-| `sync_app.ps1` | **改完源码把代码同步进已构建 bundle 的 `app/`**（不碰 python/ 与 models/）。ASCII-only，Windows PS 5.1 会误解析无 BOM 的 UTF-8 .ps1 |
 | `启动.bat` | 源码态/分发态的双击入口（找 pythonw → 跑 launcher / run_localkb） |
+
+> 已删除（2026-07-14，开源前清理）：`fix_schema.py`（一次性 LanceDB schema 迁移，无人 import）、
+> `sync_app.ps1`（同步进常驻分发目录 `app/`——那个目录已不存在）、`skills/`（见 §6.3）。
 
 ### 依赖
 
@@ -452,7 +457,7 @@ server 侧 `GET /agent/tasks`（`server.py:649`）解析 `任务.md` 的 frontma
 
 ## 11. 接手前必读的几条铁律
 
-1. **只改 `LocalKB源码\`**，改完用 `sync_app.ps1` 同步到 bundle 的 `app\`。直接改 `app\` 会被覆盖。
+1. **只改 `LocalKB源码\`**，改完用 `python build_bundle.py --sync-only` 刷新 bundle 的 `app\`。直接改 `app\` 会被覆盖。
 2. **源码态要用本地模型必须显式设 `LOCALKB_MODELS`**（§2.2），否则 MODELS 指向不存在的 `LocalKB源码\models`。
 3. **建索引与查询必须用同一个 backend**（local ONNX-INT8 vs API 全精度，向量不一致会掉点）——`settings.py:5-6` 把它列为铁律，backend 写进 `index_manifest.json`。
 4. **改 `WIKI_MD_SEED` 要同步追加旧版 sha1 到 `_FACTORY_HASHES`**（§5.2），否则老用户的 WIKI.md 自动升级会静默断掉。

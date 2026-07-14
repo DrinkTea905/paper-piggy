@@ -37,15 +37,15 @@
 
 | 你改了 | 必须同步 | 校验 |
 |---|---|---|
-| `_WF_PAPER`(:197) / `_WF_WIKI`(:228) / `_WF_DIVERGENCE`(:253) —— 三个内置工作流 | ① **先给升级路径**（见 §2，否则老用户永远收不到新版）② `index.html` 第 3 章的工作流卡 ③ `_SKILLS_README`(:178) 里列出的工作流清单 | ✅ check_guides ③④ |
-| `_README_RELY`(:58) / `_README_OUTPUT`(:81) | 同样需要升级路径；`#ag-guide` 对应章节 | ✅ check_guides ④ |
+| `_WF_PAPER`(:197) / `_WF_WIKI`(:228) / `_WF_DIVERGENCE`(:253) —— 三个内置工作流 | ① 改完模板必须跑 `python agent_ws.py --print-hashes`，把新 hash 追加进 `_FACTORY_HASHES`（升级器已建成，见 §2.1）② `index.html` 第 3 章的工作流卡 ③ `_SKILLS_README`(:178) 里列出的工作流清单 | ✅ check_guides ③ |
+| `_README_RELY`(:58) / `_README_OUTPUT`(:81) | 同样要追加 hash（否则老用户凭空多出 `.new.md`）；`#ag-guide` 对应章节 | ❌ 人肉（check_guides ③ 只覆盖三条工作流文件，不查这两份散文体 README） |
 | 新增一条工作流 | `index.html` 里「三条开箱即用的工作流」的**硬编码列表**会静默变错 —— 这是**正确性问题**，不是文案洁癖 | ✅ check_guides ③ |
 
 ### 1.3 wiki 综合层（`wiki_store.py`）
 
 | 你改了 | 必须同步 | 校验 |
 |---|---|---|
-| `WIKI_MD_SEED`(:33) —— wiki 页面规约种子 | ① **必须 bump `SCHEMA_VERSION`**(:31，现在是 `"v2"`) ② 把旧版的 normalized-sha1 加进 `_FACTORY_HASHES`(:172) ③ `MCP接入说明.md` 的「信任模型」段 | ✅ check_guides ⑥ |
+| `WIKI_MD_SEED`(:33) —— wiki 页面规约种子 | ① **必须 bump `SCHEMA_VERSION`**(:31，现在是 `"v2"`) ② 把旧版的 normalized-sha1 加进 `_FACTORY_HASHES`(:172) ③ `MCP接入说明.md` 的「信任模型」段 | ✅ check_guides ④（只断言 seed 里的 `schema vN` == `SCHEMA_VERSION`；②③ 仍靠人） |
 
 > ⚠️ **忘了 bump `SCHEMA_VERSION` 会静默让老库永远收到过期规约。** 这是本项目最阴的一个坑：
 > 不报错、不告警，只是所有老用户的 wiki 规约永远停在旧版。
@@ -63,28 +63,32 @@
 |---|---|---|
 | 期刊评级规则 | `journal_grading/` 配置 + `journal_grading/期刊引用权重分级方案.md`；跑 `journal_grading/selftest.py` | ✅ selftest |
 | 依赖 | `requirements.txt` **和** `requirements.lock` 同时改；分发包需要重建 `build/py312` | ❌ |
-| 版本号 | **只改 `config.APP_VERSION`** | ✅ check_guides ⑦（断言全源码没有第二处版本字面量） |
+| 版本号 | **只改 `config.APP_VERSION`**(`config.py:19`) | ✅ check_guides ⑤（断言全源码没有第二处版本字面量） |
 | HTTP 接口 | `/docs` 自动生成。但如果 agent 该知道这个接口 → 回到 §0.1（可能要动 MCP 工具或指引） | — |
 
 ---
 
 ## 2. 必须补的机制
 
-### 2.1 模板升级器（❗ 现在是断的）
+### 2.1 模板升级器（✅ 2026-07-14 已建成）
 
-**现状**：`agent_ws._write_if_absent()`（:341）**只在文件不存在时才写**。
-后果：你改了 `_WF_PAPER` 的文本，**所有已经跑过一次的机器（包括开发机自己）永远收不到新版**。
-这是「功能变更 → 指引同步」这条链上唯一还断着的一环。
+**曾经的病**：`agent_ws._write_if_absent()` **只在文件不存在时才写**。
+后果：你改了 `_WF_PAPER` 的文本，**所有已经跑过一次的机器（包括开发机自己）永远收不到新版**——
+「功能变更 → 指引同步」这条链上最后一环是断的。
 
-**解法（范式已经在项目里了，照抄即可）**：
-`agent_ws.py:351` 附近对旧版「工作流.md」用过这套办法，`wiki_store._FACTORY_HASHES`(:172) 也是同一套、已验证：
+**现在的实现**（`agent_ws.py:343-440`，`_FACTORY_HASHES` + `_template_specs()` + `_ensure_template()`）：
+给每份出厂模板记一份「历史出厂版的 normalized-sha1（去掉所有空白后算）」清单，`ensure_scaffold()` 逐份比对磁盘文件：
 
-> 给每个出厂模板记一份「历史出厂版的 normalized-sha1（去掉所有空白后算）」清单。
-> `ensure_scaffold()` 时比对当前文件：
-> - 与某个历史出厂版**一字不差** → 说明用户没改过 → **静默升级到新版**
-> - 内容对不上任何出厂版 → 说明用户改过 → **保留用户的文件**，在旁边写一份 `.new.md`，并提示合并
+- 文件不存在 → `created`
+- 与**当前**模板一字不差 → `current`（一个字节都不写）
+- 命中**历史**出厂版 → 用户没动过 → `upgraded`（静默换成新版）
+- 谁都不像 → 用户改过 → `forked`：**保留用户的文件**，旁边写一份 `<名>.new.md` 供合并
+- 「项目记忆.md / 变更日志.md」这类**用户数据种子**被写过 → `kept`（不塞 .new.md）
 
-把它从一次性迁移代码泛化成通用升级器，替换掉无脑的 `_write_if_absent`。
+> ⚠️ **维护 SOP（改模板必做）**：改完任何模板文本后跑
+> `build\py312\python.exe LocalKB源码\agent_ws.py --print-hashes`，
+> 把标「★ 新版：请追加」的 hash 追加进 `_FACTORY_HASHES`（**旧 hash 一个都别删**）。
+> 忘了追加 → 这一版的出厂原样文件在下下版会被误判成「用户改过」→ 用户机器上凭空多出一堆 `.new.md`。
 
 ### 2.2 把 UI 里写死的清单改成动态（低成本，先做这三条）
 
@@ -102,21 +106,25 @@ const n = (AG.cfg && AG.cfg.tool_count) || AG_TOOLS.length;   // 后端真值优
 
 > ⛔ **不要**把 `#home-guide` 八章 / `#ag-guide` 十章的中文正文（约 230 行）也做成代码生成 —— 收益低于成本。那部分用 §3 的 checklist 管。
 
-### 2.3 `check_guides.py`（只读校验器，约 80 行）
+### 2.3 `check_guides.py`（✅ 2026-07-14 已建成，只读校验器）
 
-放在 `LocalKB源码/`，加进 `build_bundle.py` 的 DEV_ONLY 名单。把机器能判定的部分全部断言掉：
+在 `LocalKB源码/check_guides.py`，已进 `build_bundle.py` 的 DEV_ONLY 名单（不进分发包）。
+**`build_bundle.py` 开头会跑它（`verify_guides()`），退出码非 0 直接中止打包**（`--skip-checks` 可临时跳过，正式发版不许跳）。
 
-1. 调 `gen_mcp_doc.py --check`
-2. `len(RESOURCES)` == `MCP接入说明.md` 里 Resources 表的行数，且每个 uri 都出现在表里；PROMPTS 同理
-3. `agent_ws` 的 `_WF_*` 数量 == `index.html` 第 3 章的工作流卡数 == `_SKILLS_README` 列出的工作流文件数
-4. `ensure_scaffold()` 写的每个文件名都在 `_SKILLS_README` / `_README_RELY` 里被提到（反向亦然）
-5. `WIKI_MD_SEED` 里写的 `schema vN` == `SCHEMA_VERSION`
-6. 全源码只有一处版本字面量（`config.APP_VERSION`）
+现在断言这 5 条（编号即输出里的 ①~⑤）：
 
-**→ 把 `check_guides.py` 和 `gen_mcp_doc.py --check` 塞进 `build_bundle.py` 的开头，校验不过就中止打包。**
+1. ① 调 `gen_mcp_doc.main(--check)`（工具表 ↔ `mcp_server.TOOLS`）
+2. ② `RESOURCES` + `RESOURCE_TEMPLATES` ↔ `MCP接入说明.md` 的 Resources 表（双向集合比对）；`PROMPTS` ↔ Prompts 表
+3. ③ `_WF_*` 数 == `ensure_scaffold` 落盘数 == `_SKILLS_README` 列出数 == `index.html` 第 3 章卡片数 == 正文里的中文数字，且逐个文件名比对
+4. ④ `WIKI_MD_SEED` 里写的 `schema vN` == `SCHEMA_VERSION`
+5. ⑤ 全源码（.py/.js/.html）只有一处版本字面量（`config.APP_VERSION`）
+
+**仍未机器化（靠人）**：`ensure_scaffold()` 写的其余文件名（项目记忆.md / 变更日志.md / 交付说明书模板.md……）
+是否都在 `_README_RELY` / `_README_OUTPUT` 里被提到——那两份是散文体，正则误报率高，硬凑不如不做。
+要补的话，先把 README 里的文件名用反引号写死，再机器比对。
 
 理由很硬：`index.html:86` 和 `:349` 各有一条注释写着「⚠ 维护铁律：功能更新时这份指引也要同步更新」——
-**项目自己都承认是靠人肉纪律，而事实证明它失败了**（工具表漂了 4 个）。
+**项目自己都承认是靠人肉纪律，而事实证明它失败了**（工具表漂了 4 个，`localkb://memory` 漏了一整条 Resource）。
 打包是发布的必经关口，卡在那里代价最小。
 
 ---

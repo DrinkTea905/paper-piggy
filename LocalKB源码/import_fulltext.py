@@ -6,15 +6,18 @@
 - meta 行不删（检索端 retriever 已做"同篇有 chunk 就优先 chunk"的去重）。
 - 完成后重建 bm25。
 ⚠️ 建议先停 LocalKB 服务再跑（避免并发写表）。约 10-20 分钟（19 万块）。
-用法: python import_fulltext.py [--limit N]
+用法: python import_fulltext.py --rag-lancedb <旧rag的lancedb目录> [--limit N]
 """
-import sys, json, re, time, argparse
+import os, sys, json, re, time, argparse
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import config as C
 import lancedb
 
-RAG_LANCEDB = Path(r"D:\00Zotero知识库\rag\data\lancedb")
+# 旧 rag 库的 lancedb 目录：必须显式给（--rag-lancedb 或环境变量 LOCALKB_RAG_LANCEDB）。
+# 这里以前写死过开发机的个人路径，开源前清掉——每台机器路径都不一样，写死只会让别人跑出
+# 「未找到 rag 全文库」然后一脸茫然。没给就直接报错退出，不猜。
+ENV_RAG_LANCEDB = "LOCALKB_RAG_LANCEDB"
 RAG_TABLE = "chunks"
 COLS = ("chunk_id", "key", "page", "heading", "text", "parent_text", "title",
         "author", "year", "journal", "doi", "langid", "vector", "journal_tier",
@@ -37,19 +40,28 @@ def load_maps():
     return by_doi, by_title, meta
 
 def main():
-    ap = argparse.ArgumentParser(); ap.add_argument("--limit", type=int, default=0)
+    ap = argparse.ArgumentParser(description="把旧 rag 库的全文块（含向量）导入 LocalKB")
+    ap.add_argument("--rag-lancedb", default=os.environ.get(ENV_RAG_LANCEDB, ""),
+                    help=f"旧 rag 库的 lancedb 目录（内含 {RAG_TABLE} 表）；也可用环境变量 {ENV_RAG_LANCEDB}")
+    ap.add_argument("--limit", type=int, default=0)
     args = ap.parse_args()
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
         pass
+    if not args.rag_lancedb:
+        ap.error(f"必须指定旧 rag 库的 lancedb 目录：--rag-lancedb <路径>（或设环境变量 {ENV_RAG_LANCEDB}）")
+    rag_lancedb = Path(args.rag_lancedb).expanduser()
+    if not rag_lancedb.is_dir():
+        ap.error(f"目录不存在：{rag_lancedb}")
+
     t0 = time.time()
     by_doi, by_title, meta = load_maps()
     print(f"[import] LocalKB 题录 {len(meta)}（可映射 doi {len(by_doi)}）", flush=True)
 
-    rdb = lancedb.connect(str(RAG_LANCEDB))
+    rdb = lancedb.connect(str(rag_lancedb))
     if RAG_TABLE not in rdb.table_names():
-        print("[import] 未找到 rag 全文库"); return
+        print(f"[import] 未找到 rag 全文库（{rag_lancedb} 内没有表 {RAG_TABLE}）"); return
     rtbl = rdb.open_table(RAG_TABLE)
     n_rows = rtbl.count_rows()
     print(f"[import] rag 全文块 {n_rows}，开始映射导入 ...", flush=True)

@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "repo": "DrinkTea905/paper-piggy",
+  "tag": "models-v1",
+  "mirror_base": "",
+  "gzip_level": 6,
+  "note": "models[].sha256/bytes 描述的是 .tar.gz 归档本身；把归档传到 https://github.com/DrinkTea905/paper-piggy/releases/tag/models-v1 即可。urls 按序尝试，可追加国内镜像（见 mirror_base）。",
+  "models": [
+    {
+      "name": "bge-m3-onnx",
+      "filename": "bge-m3-onnx.tar.gz",
+      "bytes": 472911532,
+      "sha256": "43914d97dadb20fd3547b851e079e269d4aeb117199468a3326f5f262130cc47",
+      "urls": [
+        "https://github.com/DrinkTea905/paper-piggy/releases/download/models-v1/bge-m3-onnx.tar.gz"
+      ]
+    },
+    {
+      "name": "bge-reranker-v2-m3-onnx",
+      "filename": "bge-reranker-v2-m3-onnx.tar.gz",
+      "bytes": 473942219,
+      "sha256": "f7dfc4d672aafee26ded6b92e15521873d56ddb954a11b780ae27346705495db",
+      "urls": [
+        "https://github.com/DrinkTea905/paper-piggy/releases/download/models-v1/bge-reranker-v2-m3-onnx.tar.gz"
+      ]
+    }
+  ]
+}

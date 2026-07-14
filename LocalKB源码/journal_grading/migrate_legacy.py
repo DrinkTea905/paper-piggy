@@ -15,7 +15,9 @@
 旧档只有刊名+档次、无 ISSN，故并入条目 issn 留空，靠归一刊名匹配（可后续补 ISSN）。
 合并策略：保留各目录种子文件已有条目（及其 ISSN），把旧档条目 upsert 进去（旧档为准定 level）。
 """
+import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -28,8 +30,23 @@ try:
 except Exception:
     pass
 
+
+def _data_dir():
+    """LocalKB 的数据目录。优先问 config（它认 LOCALKB_DATA 环境变量、分发版会改写路径），
+    config 导不进来时（比如把本脚本单独拷出去跑）退回同一个环境变量、再退回源码根 data/。"""
+    try:
+        sys.path.insert(0, str(PKG.parent))
+        import config as C
+        return Path(C.DATA)
+    except Exception:
+        return Path(os.environ.get("LOCALKB_DATA", str(PKG.parent / "data")))
+
+
+# 旧档候选位置，按序取第一个存在的；也可以用 --legacy <路径> 直接指定。
+# 这里以前写死过开发机的绝对路径，开源前清掉——换台机器就是死路径，
+# 只会让人白等一句「未找到旧档」。现在第一顺位跟着 config.DATA 走。
 LEGACY_CANDIDATES = [
-    Path(r"D:\LocalKB\data\journal_tiers.json"),          # 用户实际在用
+    _data_dir() / "journal_tiers.json",                   # 用户实际在用的数据目录
     PKG.parent / "journal_tiers.json",                    # 源码根种子
     PKG.parent / "app" / "journal_tiers.json",
 ]
@@ -67,14 +84,16 @@ NEW_META = {
 }
 
 
-def load_legacy():
-    for p in LEGACY_CANDIDATES:
+def load_legacy(explicit=None):
+    cands = [Path(explicit).expanduser()] if explicit else LEGACY_CANDIDATES
+    for p in cands:
         if p.exists():
             raw = json.loads(p.read_text(encoding="utf-8"))
             js = raw.get("journals", raw) if isinstance(raw, dict) else {}
             items = {k: v for k, v in js.items() if isinstance(k, str) and not k.startswith("_")}
             return p, items
-    raise SystemExit("未找到旧档 journal_tiers.json（尝试了 D:\\LocalKB\\data 与源码目录）。")
+    tried = "\n  ".join(str(p) for p in cands)
+    raise SystemExit("未找到旧档 journal_tiers.json，可用 --legacy <路径> 指定。已尝试：\n  " + tried)
 
 
 def load_existing(cat):
@@ -92,7 +111,12 @@ def load_existing(cat):
 
 
 def main():
-    src, legacy = load_legacy()
+    ap = argparse.ArgumentParser(description="把旧档 journal_tiers.json 并入 journal_grading 目录数据")
+    ap.add_argument("--legacy", default=os.environ.get("LOCALKB_LEGACY_TIERS", ""),
+                    help="旧档 journal_tiers.json 路径；不给则按候选位置自动找（data/ → 源码根 → app/）")
+    args = ap.parse_args()
+
+    src, legacy = load_legacy(args.legacy or None)
     print(f"[migrate] 旧档：{src}  条数={len(legacy)}", flush=True)
 
     # 预载所有目标目录现有内容（保留种子条目/ISSN）

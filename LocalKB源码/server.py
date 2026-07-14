@@ -418,9 +418,8 @@ def agent_mcp_config():
         tool_count = len(MCP.TOOLS)
     except Exception:
         tool_count = 0
-    # Agent 专属文件夹路径（Agent 页展示「打开交付物/资料库」+ 技能包落点）
+    # Agent 专属文件夹路径（Agent 页展示「打开交付物/资料库/技能」用）
     ag = {}
-    skill_src = str(C.APP / "skills" / "localkb-paper")
     try:
         import agent_ws as AW
         AW.ensure_scaffold()
@@ -435,11 +434,12 @@ def agent_mcp_config():
         "claude_cmd_user": add_core.replace("claude mcp add localkb ",
                                             "claude mcp add localkb --scope user "),
         "mcp_json": mcp_json, "codex_toml": codex_toml,
-        # 0_Agent交付物 / 0_Agent资料库 落点 + 技能包源目录（前端「打开文件夹」用）
+        # 0_Agent交付物 / 0_Agent资料库 落点（前端「打开文件夹」用）
+        # 注：曾有个 skill_src_dir 字段指向 app/skills/localkb-paper，是历史遗留——
+        # 技能/工作流现在由 agent_ws 统一写到「0_Agent资料库/技能」，不再有独立技能包，前端也从不读它。
         "agent_output_dir": ag.get("output_dir", ""),
         "agent_rely_dir": ag.get("rely_dir", ""),
         "agent_memory_file": ag.get("memory_file", ""),
-        "skill_src_dir": skill_src,
     }
 
 @app.get("/setup/detect")
