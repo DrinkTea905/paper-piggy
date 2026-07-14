@@ -28,6 +28,10 @@ BUILD = {"running": False, "stage": None, "log": [], "started": None, "rc": None
 # B1：build 守卫锁——把「判 running + 置 True」做成原子并在调用线程内同步置位，
 # 杜绝多路触发并发起两个 build_all 子进程写坏同一 LanceDB/bm25/papers.jsonl。
 _BUILD_LOCK = threading.Lock()
+# 补生成摘要（SAC backfill）后台任务状态：给「已深索但缺检索摘要」的篇补摘要 + 重嵌入。
+# running 期间禁止重复触发；phase=生成中/重嵌入中；前端经 /index/status 的 sac_backfill 读它。
+BACKFILL = {"running": False, "phase": "", "done": 0, "total": 0, "fail": 0, "msg": "", "at": 0.0}
+_BACKFILL_LOCK = threading.Lock()
 
 @app.middleware("http")
 async def _no_cache(request, call_next):
@@ -938,7 +942,10 @@ def index_status():
     manifest = json.loads(C.INDEX_MANIFEST.read_text(encoding="utf-8")) if C.INDEX_MANIFEST.exists() else {}
     # BF33：去重计数——标记文件出现重复行时 len(split()) 虚高，与 /health 的 _deep_keys()（set）口径不一
     ek = C.STATE / "embedded_keys.txt"
-    deep = len(set(ek.read_text(encoding="utf-8").split())) if ek.exists() else 0
+    deep_set = set(ek.read_text(encoding="utf-8").split()) if ek.exists() else set()
+    deep = len(deep_set)
+    # 深索摘要（SAC）覆盖：已深索里多少篇有检索摘要（同 safe_name(stem) 口径）
+    sac_done = len(deep_set & _summary_keys())
     # 去重计数（与 deep/_deep_keys() 同口径）：标记文件出现重复行时 len(split()) 会虚高，
     # 前端据 meta_done<papers 判断语义层是否待完成，虚高到 ≥papers 会误隐藏「正在提升检索质量」提示。
     meta_done = len(set(C.META_EMBEDDED.read_text(encoding="utf-8").split())) if C.META_EMBEDDED.exists() else 0
@@ -952,6 +959,9 @@ def index_status():
         "light_done": manifest.get("light_done", False), "source": manifest.get("source"),
         "papers": manifest.get("papers", 0), "with_pdf": manifest.get("with_pdf", 0),
         "meta_done": meta_done, "deep_done": deep, "deep_no_text": deep_no_text,
+        # 深索摘要（SAC）：sac_done=已深索且有摘要的篇数；sac_generator=生成方(off/agent/server)；
+        # sac_backfill=补生成摘要后台任务的实时进度（前端据此显示进度/禁用重复触发）。
+        "sac_done": sac_done, "sac_generator": _sac_generator(), "sac_backfill": dict(BACKFILL),
         "building": BUILD["running"], "stage": BUILD["stage"], "log": BUILD["log"][-40:],
         "queue_pending": q_pending, "queue_in_flight": q_inflight,
         # BF14：cancelled=本次构建是否被 /build/cancel 取消；rc=上次构建子进程退出码（未结束为 null）。
@@ -969,7 +979,9 @@ def stats_ep():
     ek = C.STATE / "embedded_keys.txt"
     if ek.exists() and isinstance(s.get("coverage"), dict):
         # BF33：去重计数——重复行会让「已深索 N 篇」虚高甚至超过总篇数
-        s["coverage"]["deep_indexed"] = len(_deep_keys())
+        dk = _deep_keys()
+        s["coverage"]["deep_indexed"] = len(dk)
+        s["coverage"]["sac_indexed"] = len(dk & _summary_keys())   # 已深索里有检索摘要的篇数
     # 最近入库补 has_pdf/deep（供前端三态深索按钮，F45/副本#13）
     try:
         pap = _load_papers(); deepk = _deep_keys()
@@ -1039,6 +1051,23 @@ def _deep_no_text_keys():
        这些篇不算已深索、也无法深索——前端据此标「🚫 扫描件·需OCR」而非「未深索」。"""
     nt = C.STATE / "deep_no_text.txt"
     return set(nt.read_text(encoding="utf-8").split()) if nt.exists() else set()
+
+def _summary_keys():
+    """已生成检索摘要（SAC）的 safe_name(stem) 集合，与 embedded_keys.txt 同口径。
+       用来统计「已深索里多少篇有检索摘要」= deep ∩ summary。"""
+    try:
+        import sac as _SAC
+        return _SAC.summary_keys()
+    except Exception:
+        return set()
+
+def _sac_generator():
+    """当前深索摘要生成方（off / agent / server），供前端措辞与补生成入口判断。"""
+    try:
+        import settings as S
+        return S.sac_conf().get("generator")
+    except Exception:
+        return None
 
 def _is_siliconflow_base(base):
     """BF8 加固：判断 base_url 是否**真的**指向 SiliconFlow（按 host 精确匹配，而非子串包含）。
@@ -1339,7 +1368,9 @@ def deep_queue_status():
     """K1：深索队列/详情/ETA。items=当前在深索或在队首的若干篇 key+标题；
        eta_seconds 按近批速率外推（取不到给 null）。"""
     papers = _load_papers()
-    deep_done = len(_deep_keys())
+    deep_set = _deep_keys()
+    deep_done = len(deep_set)
+    sac_done = len(deep_set & _summary_keys())   # 已深索里有检索摘要的篇数
     manifest = json.loads(C.INDEX_MANIFEST.read_text(encoding="utf-8")) if C.INDEX_MANIFEST.exists() else {}
     with _Q_LOCK:
         pending = len(QUEUE["pending"]); in_flight = len(QUEUE["in_flight"])
@@ -1351,6 +1382,7 @@ def deep_queue_status():
     eta_seconds = int(remaining * spp) if (spp and remaining) else None
     return {"pending": pending, "in_flight": in_flight, "paused": paused,
             "deep_done": deep_done, "with_pdf": manifest.get("with_pdf", 0),
+            "sac_done": sac_done, "sac_backfill": dict(BACKFILL),   # 深索摘要覆盖 + 补生成进度
             "deep_no_text": len(_deep_no_text_keys()),   # 扫描件/无正文篇数——供前端「重试扫描件」入口
             "eta_seconds": eta_seconds, "items": items,
             # 兼容旧前端字段
@@ -2256,6 +2288,7 @@ def papers(collection: Optional[str] = None, topic: Optional[int] = None,
     # 没有 ingested_at 的老条目（空串）在 since 模式下会被滤掉——它们本来就不是"新入库"。
     papers = _load_papers(); cats = _load_cats(); deepk = _deep_keys()
     notextk = _deep_no_text_keys()   # C1/A2：扫描件集合
+    sumk = _summary_keys()           # 有检索摘要（SAC）的 safe_name(stem) 集合
     if category:
         # 统一走 _resolve_category_keys（与 /search 同一条路）：kbc_/topic:/zotero: 都能过滤；
         # 旧写法只认 kbc_ 前缀，topic:/zotero: 会静默落到全库，list_sources 聚焦失效。
@@ -2299,6 +2332,7 @@ def papers(collection: Optional[str] = None, topic: Optional[int] = None,
             "itemtype": p.get("itemtype", ""),
             "statute_status": p.get("statute_status", ""),         # EN-L5：法条时效徽标（浏览卡 statuteBadge 读它）
             "score": _rec_score(p, g), "deep": _isdeep,
+            "has_summary": T.safe_name(p["key"]) in sumk,          # 该篇是否已有 AI 检索摘要（SAC）
         })
     if sort == "recommend":
         out.sort(key=lambda x: -x["score"])
@@ -2883,6 +2917,140 @@ def index_deep_agent(q: DeepAgentQ):
             _drain_deep_queue()          # 与 _run_build/light 收尾对齐：补跑构建期被防抖丢弃的深索入队
         except Exception as e:
             log_error("deep_agent drain", repr(e))
+
+# ── 补生成检索摘要（SAC backfill）────────────────────────────
+# 给「已深索但没有检索摘要」的篇：读切块生成 ~150 字摘要 → 写 summaries.json →
+# 撤销其深索标记 → 跑 deep_embed 重嵌入（带摘要前缀）。摘要只有重嵌入后才对检索生效，
+# 所以这一步必然要重嵌入；切块/提取产物保留不删，embed_index add 前按 key 删旧行、无重复。
+def _backfill_gap_stems(only=None):
+    """可补生成的候选 stem：已深索、无摘要、且非扫描件。
+       only 给定（stem 集合）时只取其中的，用于「为某一篇/某几篇生成」。"""
+    deep = _deep_keys(); sumk = _summary_keys(); notext = _deep_no_text_keys()
+    gap = [s for s in deep if s not in sumk and s not in notext]
+    if only is not None:
+        only = set(only)
+        gap = [s for s in gap if s in only]
+    return gap
+
+def _chunk_title_body(stem, n_body=6):
+    """读该 stem 的切块文件，取 title + 前 n_body 块正文供生成摘要。无块→(None, None)。"""
+    f = C.CHUNKS / f"{stem}.json"
+    if not f.exists():
+        return None, None
+    try:
+        cs = json.loads(f.read_text(encoding="utf-8"))
+    except Exception:
+        return None, None
+    if not cs:
+        return None, None
+    title = cs[0].get("title", "") or stem
+    body = "\n".join(c.get("text", "") for c in cs[:n_body])
+    return title, body
+
+def _unmark_deep(stems):
+    """从 embedded_keys.txt 撤销这些 stem 的「已深索」标记（保序重写，保留其它行）。
+       调用时已持 BUILD 锁（无 build/embed 子进程在写此文件），单进程内安全。"""
+    stems = set(s for s in stems if s)
+    if not stems:
+        return
+    ek = C.STATE / "embedded_keys.txt"
+    with _BACKFILL_LOCK:
+        try:
+            if not ek.exists():
+                return
+            lines = ek.read_text(encoding="utf-8").splitlines()
+            kept = [l for l in lines if l.strip() and l.strip() not in stems]
+            ek.write_text("".join(l + "\n" for l in kept), encoding="utf-8")
+        except Exception as e:
+            log_error("unmark_deep", repr(e))
+
+def _sac_backfill_worker(gap):
+    import sac as SAC
+    try:
+        def _items():
+            for stem in gap:
+                title, body = _chunk_title_body(stem)
+                if title is None:      # 无切块（扫描件/产物缺失）→ 无法补，跳过
+                    continue
+                yield (stem, title, "", body)
+        def _prog(n, fail):
+            with _BACKFILL_LOCK:
+                BACKFILL["done"] = n; BACKFILL["fail"] = fail
+        n, fail = SAC.gen_missing(_items(), log=lambda m: BUILD["log"].append(m), on_progress=_prog)
+        with _BACKFILL_LOCK:
+            BACKFILL["done"] = n; BACKFILL["fail"] = fail
+        if n <= 0:
+            with _BACKFILL_LOCK:
+                BACKFILL["phase"] = ""
+                BACKFILL["msg"] = f"未生成摘要（失败 {fail}，请检查 API key / 额度 / 网络）。"
+            return
+        # 只对本轮真正拿到摘要的篇撤标 + 重嵌入
+        newly = [s for s in gap if s in SAC.summary_keys()]
+        _unmark_deep(newly)
+        with _BACKFILL_LOCK:
+            BACKFILL["phase"] = "重嵌入中"; BACKFILL["at"] = time.time()
+        rc = _run_stage_blocking("deep_embed")
+        try:
+            R.STATE["ready"] = False; R.load_all()
+        except Exception as e:
+            log_error("sac_backfill reload", repr(e))
+        with _BACKFILL_LOCK:
+            BACKFILL["phase"] = ""
+            BACKFILL["msg"] = (f"已为 {n} 篇补上检索摘要并重嵌入 ✓" if rc == 0
+                               else f"已生成 {n} 篇摘要，但重嵌入失败(rc={rc})，可稍后重试补生成。")
+    except Exception as e:
+        log_error("sac_backfill worker", repr(e), traceback.format_exc())
+        with _BACKFILL_LOCK:
+            BACKFILL["phase"] = ""; BACKFILL["msg"] = "补生成异常：" + str(e)
+    finally:
+        with _BACKFILL_LOCK:
+            BACKFILL["running"] = False; BACKFILL["at"] = time.time()
+        with _BUILD_LOCK:
+            BUILD["running"] = False; BUILD["stage"] = ""
+        try:
+            _drain_deep_queue()      # 收尾补跑构建期被防抖丢弃的深索入队
+        except Exception as e:
+            log_error("sac_backfill drain", repr(e))
+
+class SacBackfillQ(BaseModel):
+    keys: Optional[List[str]] = None   # 原始 key 列表；给定则只为这几篇生成（单篇/指定范围），空=全部缺摘要的篇
+
+@app.post("/index/sac_backfill")
+def index_sac_backfill(q: SacBackfillQ = None):
+    """生成检索摘要（知识库建设第②步）：为「已深索但缺摘要」的篇生成摘要并重嵌入。
+       后台跑，进度见 /index/status.sac_backfill。keys 给定则只为这几篇生成（浏览页单篇⚪点生成）。
+       无论当前 generator=off/agent/server，用户点这里都强制用可用 API key 生成一次。"""
+    import sac as SAC
+    if not SAC.key_available():
+        return {"ok": False, "need_key": True,
+                "msg": "生成检索摘要需要 API key：请到 设置 → 检索引擎 填一个 SiliconFlow 免费 Key（或在 检索摘要 → 高级 单独填），再来生成。"}
+    only = None
+    if q and q.keys:
+        only = {T.safe_name(k) for k in q.keys if k}
+    gap = _backfill_gap_stems(only=only)
+    if not gap:
+        return {"ok": True, "started": False, "total": 0,
+                "msg": ("这篇已有检索摘要，无需再生成。" if only else "所有已深索文献都已有检索摘要，无需生成。")}
+    with _BUILD_LOCK:
+        if BUILD["running"]:
+            return {"ok": False, "busy": True, "msg": "已有任务在跑（深索/更新/补生成），请稍后再试。"}
+        BUILD["running"] = True; BUILD["stage"] = "sac_backfill"
+        BUILD["started"] = time.time(); BUILD["rc"] = None; BUILD["cancelled"] = False
+    with _BACKFILL_LOCK:
+        BACKFILL.update({"running": True, "phase": "生成摘要中", "done": 0,
+                         "total": len(gap), "fail": 0, "msg": "", "at": time.time()})
+    threading.Thread(target=_sac_backfill_worker, args=(gap,), daemon=True).start()
+    return {"ok": True, "started": True, "total": len(gap)}
+
+@app.get("/summary")
+def get_summary(key: str):
+    """只读查看某篇的检索摘要（~150 字，AI 生成、给语义检索用的嵌入前缀，不是原文摘要）。
+       返回 has_summary / summary / deep（该篇是否已深索——未深索无法生成摘要）。"""
+    stem = T.safe_name(key)
+    import sac as SAC
+    txt = SAC.get(stem)
+    return {"key": key, "deep": stem in _deep_keys(),
+            "has_summary": bool(txt), "summary": txt}
 
 # ── 检索 ──────────────────────────────────────────────────
 class SearchQ(BaseModel):

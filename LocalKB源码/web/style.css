@@ -113,6 +113,25 @@ button:disabled { opacity: .6; cursor: default; }
 .tag.abstract.deep-one.deep-pending { background: #fef3c7; color: #b45309; cursor: default; }
 .tag.nopdf { background: #f1f5f9; color: #94a3b8; }
 .tag.wiki { background: #ede9fe; color: #6d28d9; }
+/* 检索摘要（SAC）徽标——已深索文献：有摘要🧬(可点查看) / 无摘要⚪(可点生成)，与「已深索」绿区分 */
+.tag.sac { margin-left: 4px; cursor: pointer; user-select: none; }
+.tag.sac.has { background: #e0f2fe; color: #0369a1; }
+.tag.sac.has:hover, .tag.sac.has:focus-visible { background: #bae6fd; outline: none; }
+.tag.sac.none { background: #f1f5f9; color: #94a3b8; }
+.tag.sac.none:hover, .tag.sac.none:focus-visible { background: #e0f2fe; color: #0369a1; outline: none; }
+
+/* 深索摘要（SAC）在「深索进度」处的并显：补生成按钮 / 进行中 / 缺口提示 */
+.sac-bf-btn { display: inline-block; margin-left: 6px; padding: 1px 8px; border-radius: 8px; background: #e0f2fe; color: #0369a1; font-weight: 600; font-size: 12px; cursor: pointer; white-space: nowrap; user-select: none; }
+.sac-bf-btn:hover, .sac-bf-btn:focus-visible { background: #bae6fd; outline: none; }
+.sac-bf-run { color: #0369a1; font-weight: 600; margin-left: 4px; white-space: nowrap; }
+.sac-gap { color: var(--muted); font-size: 12px; }
+/* 深色黑框（dash-hero）里的并显：让链接/提示在深底上可读 */
+.dh-deep-txt .sac-bf-btn { background: rgba(224,242,254,.18); color: #bae6fd; }
+.dh-deep-txt .sac-bf-btn:hover, .dh-deep-txt .sac-bf-btn:focus-visible { background: rgba(224,242,254,.32); }
+.dh-deep-txt .sac-gap, .dh-deep-txt .sac-bf-run { color: #cbd5e1; }
+/* 检索摘要只读查看弹窗 */
+.summary-note { font-size: 12px; color: var(--muted); margin: 0 0 10px; line-height: 1.5; }
+.summary-body { white-space: pre-wrap; word-break: break-word; line-height: 1.7; font-size: 14px; color: var(--fg); background: #f8fafc; border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; max-height: 50vh; overflow-y: auto; }
 .tag.wiki.agent { background: #fef3c7; color: #b45309; }   /* 🤖 agent 写回·未核验 */
 .ghost.danger, .card .ghost2.wiki-discard { color: #b91c1c; margin-left: 8px; }
 .ghost.danger:hover, .card .ghost2.wiki-discard:hover { border-color: #b91c1c; color: #b91c1c; }
@@ -364,7 +383,7 @@ button:disabled { opacity: .6; cursor: default; }
 .deep-invite { background: linear-gradient(135deg, #eff6ff, #eef2ff); border: 1px solid #dbeafe; border-radius: 14px; padding: 16px 18px; margin-bottom: 14px; display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
 .deep-invite .di-ic { font-size: 26px; }
 .deep-invite .di-txt { flex: 1; min-width: 200px; }
-.deep-invite .di-txt b { display: block; }
+.deep-invite .di-txt > b { display: block; }   /* 只让标题(直接子 b)独占一行；描述里 <b>数字</b> 保持行内，不再被拆成竖排 */
 .deep-invite .di-txt span { color: var(--muted); font-size: 12.5px; }
 .deep-invite .di-btns { display: flex; gap: 8px; }
 .deep-invite button { padding: 8px 16px; border-radius: 9px; font-weight: 600; cursor: pointer; font-size: 13px; }
@@ -820,6 +839,8 @@ button:disabled { opacity: .6; cursor: default; }
 .dash-hero .dh-title { font-size: 17px; font-weight: 700; }
 .dash-hero .dh-sub { font-size: 12.5px; color: #d8bfce; margin-top: 4px; }
 .dash-hero .dh-deep { flex: 1 1 340px; display: flex; flex-direction: column; justify-content: center; border-left: 1px solid rgba(255,255,255,.14); padding-left: 22px; }
+/* 知识库建设两步（① 深索 / ② 检索摘要）：每步一块，② 与 ① 间加细分隔线 */
+.dash-hero .dh-step + .dh-step { margin-top: 12px; padding-top: 11px; border-top: 1px solid rgba(255,255,255,.10); }
 .dash-hero .dh-deep-h { display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 6px; }
 .dash-hero .dh-bar .track { height: 12px; background: rgba(255,255,255,.16); }
 .dash-hero .dh-deep-txt { font-size: 12.5px; color: #e7d3de; margin-top: 8px; line-height: 1.7; }

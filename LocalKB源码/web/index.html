@@ -112,9 +112,9 @@
         <section class="ag-ch">
           <div class="ag-ch-n">3</div>
           <div class="ag-ch-c">
-            <h3>第二步 · 深索（让回答精确到页码）</h3>
-            <p class="ag-note"><b>深索</b>＝把 PDF 全文拆成可检索的小段。<b>只有深索过的文献</b>才能被精读、页级引用、跨篇综合；未深索的只有题录 + 摘要。在「📚 浏览」里挑文献深索，建议慢慢把常用的喂完——<b>可放后台跑，不影响使用</b>。</p>
-            <p class="ag-note">💡 <b>建议开着「深索摘要」</b>（⚙ 设置 → 深索摘要，默认已选「交给 Agent 生成」）：给每篇深索文献配一段 AI 检索摘要，<b>让检索更容易找准这篇</b>。用 Agent 跑深索时自动生成、省 API 额度、质量更好——保持开启即可。</p>
+            <h3>第二步 · 让文献可深读（① 深索 → ② 检索摘要）</h3>
+            <p class="ag-note"><b>① 深索</b>＝把 PDF 全文拆成可检索的小段。<b>只有深索过的文献</b>才能被精读、页级引用、跨篇综合；未深索的只有题录 + 摘要。在「📚 浏览」里挑文献深索，建议慢慢把常用的喂完——<b>可放后台跑，不影响使用</b>。</p>
+            <p class="ag-note"><b>② 检索摘要</b>（深索之后的一步）——再给每篇深索文献配一段 ~150 字 AI 摘要（⚙ 设置 → 检索摘要），<b>让检索更容易找准这篇</b>。可让 Agent 跑深索时顺带生成（省 API 额度），或在「📚 浏览」对单篇点「⚪ 无摘要」现生成、或在库总览点「🧬 生成检索摘要」批量补。</p>
           </div>
         </section>
 
@@ -445,7 +445,7 @@
           <div class="ag-ch-c">
             <h3>深索：让回答精确到页码</h3>
             <p class="ag-note"><b>已深索</b>的文献 AI 能读到精确页码的正文；<b>未深索</b>的只有题录 + 摘要。想某方向问答更扎实，先去「📚 浏览」深索它（拆成可检索的小段，可后台慢慢跑，不影响使用）。</p>
-            <p class="ag-note">💡 <b>建议开着「深索摘要」</b>（⚙ 设置 → 深索摘要，默认「交给 Agent 生成」）：让 AI 给每篇深索文献写一段检索摘要，<b>检索更容易命中这篇</b>。用 Agent 跑深索时顺带生成、省额度、质量更好——保持开启即可。</p>
+            <p class="ag-note">💡 <b>第②步：检索摘要</b>——深索完，让 AI 给每篇写一段检索摘要（⚙ 设置 → 检索摘要），<b>检索更容易命中这篇</b>。可让 Agent 跑深索时顺带生成、或在「📚 浏览」对单篇点「⚪ 无摘要」、或在库总览「🧬 生成检索摘要」批量补。</p>
             <div id="ag-deep" class="ag-deep">读取深索进度…</div>
           </div>
         </section>
@@ -578,8 +578,8 @@
 
       <div class="set-section">
         <!-- UX11：去掉「检索前缀/召回」黑话，说人话 -->
-        <h4>🧬 深索摘要（先为每篇生成 AI 摘要，让检索更容易找准这篇）</h4>
-        <p class="hint">给每篇深索文献生成 ~150 字摘要当检索前缀，更易被搜到。选择<b>由谁来生成</b>（一点即存）：</p>
+        <h4>🧬 检索摘要（知识库建设第②步·让检索更容易找准每篇）</h4>
+        <p class="hint">深索（第①步）把 PDF 拆成小段可检索；<b>检索摘要（第②步）</b>再给每篇深索文献配一段 ~150 字 AI 摘要当检索前缀，更易被搜到。这里选<b>由谁来生成</b>（一点即存）；也可在「📚 浏览」里对单篇点「⚪ 无摘要」现生成：</p>
         <div class="sac-gen">
           <label class="sac-gen-opt"><input type="radio" name="sac-gen" value="agent" />
             <span><b>交给 Agent 生成</b>（推荐）<br><small>在对话里让 Claude Code / Codex 跑深索时，它边深索边自己写摘要——省 API 额度、质量更好。注意：摘要只在用 Agent 跑深索时生成；在应用内直接点「深索」不会补摘要。</small></span></label>
@@ -726,6 +726,18 @@
       <div class="modal-actions">
         <button id="confirm-cancel" class="ghost">取消</button>
         <button id="confirm-ok">确定</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 检索摘要只读查看弹窗（点卡上「🧬 有摘要」打开）——展示这篇的 AI 检索摘要文本 -->
+  <div id="summary-modal" class="modal" hidden>
+    <div class="modal-box summary-box">
+      <h3 id="summary-title">检索摘要</h3>
+      <p class="summary-note">🧬 这是 AI 为「让语义检索更容易命中这篇」生成的 ~150 字<b>检索摘要</b>（用作嵌入前缀），不是原文摘要。</p>
+      <div id="summary-body" class="summary-body"></div>
+      <div class="modal-actions">
+        <button id="summary-close">关闭</button>
       </div>
     </div>
   </div>

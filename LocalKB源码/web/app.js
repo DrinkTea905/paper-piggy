@@ -160,6 +160,7 @@
   // ── 顶栏状态 pill（读 /health：mode=null|light|full）+ 常驻进度条（读 /index/status）──
   let lastIdxStatus = null;
   let wasDeepBusy = false;
+  let wasBackfilling = false;   // 追踪「生成检索摘要」后台任务，结束时刷新列表/徽标
   async function poll() {
     const s = $("#status");
     let h = null, st = null;
@@ -181,7 +182,7 @@
       const deep = st ? (st.deep_done || 0) : 0;
       if (withPdf > 0) {
         s.textContent = `已深索 ${num(deep)}/${num(withPdf)} 篇`;
-        s.title = `共 ${num(papers)} 篇文献；${num(withPdf)} 篇有 PDF 可深索，已深索 ${num(deep)} 篇（可精读、页级引用）`;
+        s.title = `共 ${num(papers)} 篇文献；${num(withPdf)} 篇有 PDF 可深索，已深索 ${num(deep)} 篇（可精读、页级引用）` + sacText(st);
       } else {
         s.textContent = `已索引 ${num(papers)} 篇`;
         s.title = `${num(papers)} 篇题录即时可搜（暂无 PDF 可深索）`;
@@ -204,9 +205,111 @@
         else flashToast("✓ 深索完成，相关文献已可精读到页码。");
       }
       wasDeepBusy = deepBusyNow;
-    } else { hideProgress(); wasDeepBusy = false; }   // BF14：status 拉不到时清标记，恢复后不凭旧标记补发迟到 toast
+      // 「生成检索摘要」（第②步）后台任务结束→刷新库总览与浏览列表，让 sac 数字/徽标更新
+      const bfNow = !!(st.sac_backfill && st.sac_backfill.running);
+      if (wasBackfilling && !bfNow) {
+        if (dashLoaded) loadDashboard("silent");
+        if (browseLoaded && !$("#panel-browse").hidden) { loadPapers(); loadKbCats(); }
+        const bmsg = st.sac_backfill && st.sac_backfill.msg;
+        if (bmsg) flashToast(bmsg);
+      }
+      wasBackfilling = bfNow;
+    } else { hideProgress(); wasDeepBusy = false; wasBackfilling = false; }   // BF14：status 拉不到时清标记，恢复后不凭旧标记补发迟到 toast
   }
   poll(); setInterval(poll, 4000);
+
+  // ── 深索摘要（SAC）覆盖：在每个「深索进度」旁并显「其中 M 篇有检索摘要」+ 补生成入口 ──
+  // st 需含 deep_done / sac_done / sac_backfill（/index/status 与 /index/queue 都有）。
+  // 摘要只对已深索的篇有意义：deep=0 时不显示；补生成中显示进度；有缺口给「🧬 补生成摘要」按钮。
+  function sacFrag(st) {
+    if (!st) return "";
+    const deep = st.deep_done || 0, sac = st.sac_done || 0;
+    if (deep <= 0) return "";
+    const bf = st.sac_backfill || {};
+    const gap = Math.max(0, deep - sac);
+    let s = ` · <b>② 检索摘要</b>：已配 <b>${num(sac)}</b>/${num(deep)} 篇`;
+    if (bf.running) {
+      s += ` <span class="sac-bf-run">🧬 ${esc(bf.phase || "生成中")} ${num(bf.done || 0)}/${num(bf.total || 0)}…</span>`;
+    } else if (gap > 0) {
+      s += ` <span class="sac-gap">（还有 ${num(gap)} 篇没配，检索更难命中）</span>`
+        + ` <a class="sac-bf-btn" data-act="sac-backfill" role="button" tabindex="0" title="第②步：给已深索但缺摘要的篇生成 ~150 字 AI 检索摘要并重嵌入，让检索更容易找准它们。需 API key，只重嵌入这些篇，可后台跑。">🧬 生成检索摘要</a>`;
+    } else {
+      s += ` ✓`;
+    }
+    return s;
+  }
+  // 纯文本版（供顶栏 tooltip 等不能放 HTML 的地方）
+  function sacText(st) {
+    if (!st) return "";
+    const deep = st.deep_done || 0, sac = st.sac_done || 0;
+    if (deep <= 0) return "";
+    const gap = Math.max(0, deep - sac);
+    return `；② 检索摘要已配 ${num(sac)}/${num(deep)} 篇` + (gap > 0 ? `，${num(gap)} 篇还没配` : "");
+  }
+  let _sacBfBusy = false;
+  async function startSacBackfill() {
+    if (_sacBfBusy) return;
+    const ok = await uiConfirm(
+      "将为「已深索但还没有检索摘要」的文献生成 AI 检索摘要，并重新嵌入这些篇（摘要只有重嵌入后才对检索生效）。用你配的 API key 生成（SiliconFlow 免费额度即可）；只重嵌入这些篇，其它文献不受影响；可放后台跑，不影响继续使用。",
+      { title: "补生成检索摘要？", okText: "开始补生成" });
+    if (!ok) return;
+    _sacBfBusy = true;
+    try {
+      const r = await jpost("/index/sac_backfill", {});
+      if (r && r.ok === false) {
+        flashToast(r.msg || (r.need_key ? "需要先配 API key。" : r.busy ? "已有任务在跑，稍后再试。" : "无法开始补生成。"));
+      } else if (r && r.started === false) {
+        flashToast(r.msg || "无需补生成。");
+      } else {
+        flashToast(`已开始为 ${num((r && r.total) || 0)} 篇生成检索摘要（第②步），进度见「检索摘要」。`);
+        poll();
+      }
+    } catch (e) { flashToast("启动生成失败：" + (e.message || e)); }
+    finally { _sacBfBusy = false; }
+  }
+  // 事件委托：任意「🧬 生成检索摘要」入口（多处渲染，用委托免去逐处重复绑定）
+  document.addEventListener("click", (e) => {
+    const b = e.target.closest && e.target.closest('[data-act="sac-backfill"]');
+    if (b) { e.preventDefault(); startSacBackfill(); }
+  });
+
+  // 只读查看某篇的检索摘要（点卡上「🧬 有摘要」）
+  async function openSummaryView(key, title) {
+    const m = $("#summary-modal"); if (!m) return;
+    $("#summary-title").textContent = title || "检索摘要";
+    $("#summary-body").textContent = "读取中…";
+    m.hidden = false;
+    try {
+      const r = await jget("/summary?key=" + encodeURIComponent(key));
+      $("#summary-body").textContent = (r && r.has_summary) ? r.summary : "（这篇还没有检索摘要——可在卡上点「⚪ 无摘要」为它生成）";
+    } catch (e) { $("#summary-body").textContent = "读取失败：" + (e.message || e); }
+  }
+  { // 摘要弹窗关闭：按钮 / 点遮罩 / Esc
+    const m = $("#summary-modal");
+    const close = () => { if (m) m.hidden = true; };
+    const cb = $("#summary-close"); if (cb) cb.addEventListener("click", close);
+    if (m) m.addEventListener("mousedown", (e) => { if (e.target === m) close(); });
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape" && m && !m.hidden) close(); });
+  }
+  // 为某一篇生成检索摘要（点卡上「⚪ 无摘要」）——第②步的单篇版
+  async function genSummaryOne(key, badge) {
+    const ok = await uiConfirm(
+      "为这篇生成 AI 检索摘要（知识库建设第②步）：用你的 API key 生成 ~150 字摘要并重嵌入这一篇，让语义检索更容易命中它。可放后台跑。",
+      { title: "为这篇生成检索摘要？", okText: "生成" });
+    if (!ok) return;
+    const restore = () => { if (badge) { badge.textContent = "⚪ 无摘要"; badge.style.pointerEvents = ""; } };
+    if (badge) { badge.textContent = "⏳ 生成中…"; badge.style.pointerEvents = "none"; }
+    try {
+      const r = await jpost("/index/sac_backfill", { keys: [key] });
+      if (r && r.ok === false) {
+        flashToast(r.msg || (r.need_key ? "需要先配 API key。" : "已有任务在跑，稍后再试。")); restore();
+      } else if (r && r.started === false) {
+        flashToast(r.msg || "这篇已有摘要。"); restore();
+      } else {
+        flashToast("已开始为这篇生成检索摘要，完成后自动刷新。"); poll();
+      }
+    } catch (e) { flashToast("启动失败：" + (e.message || e)); restore(); }
+  }
 
   // ── S 档语义 / F 档深索 进度条 ──
   function hideProgress() { $("#idx-progress").hidden = true; }
@@ -302,7 +405,7 @@
         if (nt > 0) stat += ` · <a href="#" id="dp-retry-nt" title="清除这些篇的『无正文』标记与旧产物，可重新深索（PDF 现在可读则会成功）">🔁 重试 ${num(nt)} 篇扫描件/失败篇</a>`;
         listEmpty = "暂无正在深索的文献"; eta = "";
       }
-      $("#dp-stat").innerHTML = stat;
+      $("#dp-stat").innerHTML = stat + sacFrag(q);
       const rnt = $("#dp-retry-nt");
       if (rnt) rnt.addEventListener("click", async (ev) => {
         ev.preventDefault();
@@ -596,7 +699,7 @@
   function depthTag(r) {
     if (r.is_wiki) return "";                       // wiki 行用专属徽标（wikiBadge），不显示深度标
     if (r.no_text) return `<span class="tag nopdf" title="扫描件/无可抽文本，需先 OCR 才能深索">🚫 扫描件·需OCR</span>`;  // C1
-    if (r.depth === "full") return `<span class="tag full">📄 已深索</span>`;
+    if (r.depth === "full") return `<span class="tag full">📄 已深索</span>` + (r.has_summary ? `<span class="tag sac" title="已生成 AI 检索摘要，检索更容易命中这篇">🧬 有摘要</span>` : "");
     // F12：有 PDF 的未深索命中→可点击深索；无 PDF 的纯题录不给深索入口（避免点了无效）
     if (r.has_pdf) return `<span class="tag abstract deep-one" data-key="${esc(r.key || "")}" role="button" tabindex="0" title="点此深索该篇：全文拆成可检索的小段后可精读到页码"><span class="lbl-idle">📋 未深索</span><span class="lbl-hover">⚡ 深索该篇</span></span>`;
     return `<span class="tag nopdf" title="无 PDF，只有题录（题名·作者·年份·期刊）">🚫 无全文 / 仅题录</span>`;
@@ -1165,9 +1268,9 @@
     const remain = Math.max(0, withPdf - deep);
     const clickable = remain > 0;
     const bar = `<span class="track"><span class="fill" style="width:${barPct}%;background:#16a085"></span></span>`;
-    const txt = remain > 0
+    const txt = (remain > 0
       ? `已深索 <b>${num(deep)}</b> / 有PDF ${num(withPdf)} 篇，还有 ${num(remain)} 篇可深索`
-      : `已深索 <b>${num(deep)}</b> / 有PDF ${num(withPdf)} 篇，已全部深索完成 ✓`;
+      : `已深索 <b>${num(deep)}</b> / 有PDF ${num(withPdf)} 篇，已全部深索完成 ✓`) + sacFrag(st);
     // 查看「已深索了哪些」（跳到浏览的「已深索」筛选）。整卡可点→浏览挑未深索去深索。
     const seeLink = deep > 0 ? `<span class="deep-prog-see" id="deep-prog-see">查看已深索 ${num(deep)} 篇 →</span>` : "";
     return `<div class="dcard span2 deep-prog${clickable ? " clickable" : ""}"${clickable ? ' id="deep-prog-card"' : ""}>
@@ -1194,22 +1297,42 @@
     const rawPct = withPdf ? (deep / withPdf) * 100 : 0;
     const barPct = deep > 0 ? Math.max(3, Math.round(rawPct)) : 0;
     const pctLabel = withPdf === 0 ? "—" : (deep > 0 && rawPct < 1 ? "<1%" : Math.round(rawPct) + "%");
-    // 概览条（深色）：一句话 + 数字 + 全文深索进度（副本#11 深索进度并入顶部黑框）
+    // 第②步 检索摘要 的进度（分母＝已深索数，摘要只对已深索的篇有意义）
+    const sac = st.sac_done || 0;
+    const sacRawPct = deep > 0 ? (sac / deep) * 100 : 0;
+    const sacBarPct = sac > 0 ? Math.max(3, Math.round(sacRawPct)) : 0;
+    const sacPctLabel = deep === 0 ? "—" : (sac > 0 && sacRawPct < 1 ? "<1%" : Math.round(sacRawPct) + "%");
+    const sacGap = Math.max(0, deep - sac);
+    const bf = st.sac_backfill || {};
+    // 概览条（深色）：一句话 + 数字 + 知识库建设两步（① 深索 / ② 检索摘要），各一条独立进度条
     const header = `<div class="dash-hero">
       <div class="dh-left">
         <div class="dh-title">${esc(health.one_liner || "知识库总览")}</div>
         <div class="dh-sub">题录 ${num(cov.meta_indexed)} 篇 · 有 PDF ${num(cov.with_pdf)} 篇 · 已深索 ${num(cov.deep_indexed)} 篇</div>
       </div>
       <div class="dh-deep">
-        <div class="dh-deep-h"><b>深索进度</b><span>${pctLabel}</span></div>
-        <div class="hbar dh-bar"><span class="track"><span class="fill" style="width:${barPct}%;background:#7ee0b8"></span></span></div>
-        <div class="dh-deep-txt">${withPdf === 0 ? "暂无可深索文献。" : (remain > 0
-            ? `只有深索过的文献才能被精读、页级引用、跨篇综合。已深索 <b>${num(deep)}</b>/${num(withPdf)} 篇，还有 ${num(remain)} 篇。`
-            : `已全部深索完成 ✓`)}
-          ${deep > 0 ? `<a class="dh-link" id="dash-see-deep">查看已深索 ${num(deep)} 篇 →</a>` : ""}
-          ${remain > 0 ? `<a class="dh-link" id="dash-go-deep">深索全部未深索文献 →</a>` : ""}
-          ${withPdf > 0 ? `<a class="dh-link dash-deep-detail" id="dash-deep-detail">深索详情 / 暂停 →</a>` : ""}</div>
-        ${remain > 0 ? `<div class="dh-deep-note">深索＝把 PDF 全文拆成可检索的小段，之后 AI 才能读到页码、跨篇综合。可放后台慢慢跑，不影响使用。</div>` : ""}
+        <div class="dh-step">
+          <div class="dh-deep-h"><b>① 深索</b><span>${pctLabel}</span></div>
+          <div class="hbar dh-bar"><span class="track"><span class="fill" style="width:${barPct}%;background:#7ee0b8"></span></span></div>
+          <div class="dh-deep-txt">${withPdf === 0 ? "暂无可深索文献。" : (remain > 0
+              ? `把 PDF 全文拆成可检索的小段，回答才能精确到页码。已深索 <b>${num(deep)}</b>/${num(withPdf)} 篇，还有 ${num(remain)} 篇。`
+              : `已全部深索完成 ✓`)}
+            ${deep > 0 ? `<a class="dh-link" id="dash-see-deep">查看已深索 ${num(deep)} 篇 →</a>` : ""}
+            ${remain > 0 ? `<a class="dh-link" id="dash-go-deep">深索全部未深索文献 →</a>` : ""}
+            ${withPdf > 0 ? `<a class="dh-link dash-deep-detail" id="dash-deep-detail">深索详情 / 暂停 →</a>` : ""}</div>
+        </div>
+        <div class="dh-step">
+          <div class="dh-deep-h"><b>② 检索摘要</b><span>${sacPctLabel}</span></div>
+          <div class="hbar dh-bar"><span class="track"><span class="fill" style="width:${sacBarPct}%;background:#7ec8e0"></span></span></div>
+          <div class="dh-deep-txt">${deep === 0
+              ? "先完成 ① 深索，才能给文献配检索摘要。"
+              : (bf.running
+                  ? `<span class="sac-bf-run">🧬 ${esc(bf.phase || "生成中")} ${num(bf.done || 0)}/${num(bf.total || 0)}…</span>`
+                  : (sacGap > 0
+                      ? `给每篇深索文献配一段 ~150 字 AI 摘要，让检索更易命中。已配 <b>${num(sac)}</b>/${num(deep)} 篇，还有 ${num(sacGap)} 篇没配。 <a class="sac-bf-btn" data-act="sac-backfill" role="button" tabindex="0" title="为已深索但缺摘要的篇生成 AI 检索摘要并重嵌入，需 API key，只重嵌入这些篇，可后台跑。">🧬 生成检索摘要</a>`
+                      : `已全部配好检索摘要 ✓`))}</div>
+        </div>
+        ${(remain > 0 || sacGap > 0) ? `<div class="dh-deep-note">① 深索＝把 PDF 拆成可检索小段（能精读、引页码、跨篇综合）；② 检索摘要＝再给每篇配段 AI 摘要当检索前缀（更易被命中）。都可放后台慢慢跑，不影响使用。</div>` : ""}
       </div></div>`;
     // EN-F1：综述库体检角标——/stats 带 wiki_lint（后端读 data/state/wiki_lint.json；没有该键=没体检过，不显示）。
     // gist 点名 drift（综述与库脱节）是头号失败模式——有待理顺项时在首页给一条显眼入口，点击直达体检面板
@@ -2331,7 +2454,7 @@
       const pct = withPdf ? Math.round((deep / withPdf) * 100) : 0;
       $("#ag-deep").innerHTML = withPdf
         ? `已深索 <b>${num(deep)}</b> / 有 PDF ${num(withPdf)} 篇（${pct}%）。` +
-          (deep < withPdf ? ` <a class="ag-link" id="ag-godeep">去「浏览」深索更多 →</a>` : ` 已全部深索完成 ✓`)
+          (deep < withPdf ? ` <a class="ag-link" id="ag-godeep">去「浏览」深索更多 →</a>` : ` 已全部深索完成 ✓`) + sacFrag(st)
         : `暂无可深索文献（库里没有带 PDF 的文献，或尚未建库）。`;
       const g = $("#ag-godeep");
       if (g) g.addEventListener("click", () => switchTab("browse"));
@@ -2460,9 +2583,16 @@
     if (s == null || s < 12) return "";
     return `<span class="brec" title="按期刊层级/年份/有无全文综合推荐，值得优先深读">建议深读</span>`;
   }
+  // 已深索的卡：有摘要→🧬(点开只读查看)；无摘要→⚪(点→为这篇生成第②步)。未深索不谈摘要。
+  function sacBadge(p) {
+    if (!p.deep) return "";
+    return p.has_summary
+      ? `<span class="tag sac has" role="button" tabindex="0" title="点开查看这篇的 AI 检索摘要">🧬 有摘要</span>`
+      : `<span class="tag sac none" role="button" tabindex="0" title="点此为这篇生成 AI 检索摘要（知识库建设第②步；让检索更容易命中，需 API key，会重嵌入这一篇，可后台跑）">⚪ 无摘要</span>`;
+  }
   function deepBadge(p) {
     if (p.no_text) return `<span class="tag nopdf" title="扫描件/无可抽文本，需先 OCR 才能深索">🚫 扫描件·需OCR</span>`;  // C1/A2
-    if (p.deep) return `<span class="tag full">📄 已深索</span>`;
+    if (p.deep) return `<span class="tag full">📄 已深索</span>` + sacBadge(p);
     // F11：有 PDF 的未深索徽标可点击深索（hover 变「深索该篇」）
     if (p.has_pdf) return `<span class="tag abstract deep-one" data-key="${esc(p.key)}" role="button" tabindex="0" title="点此深索该篇（后台排队，不影响你继续操作）"><span class="lbl-idle">📋 未深索</span><span class="lbl-hover">⚡ 深索该篇</span></span>`;
     return `<span class="tag nopdf" title="无 PDF，只有题录（题名·作者·年份·期刊）">🚫 无全文 / 仅题录</span>`;  // T5：与「未深索」区分
@@ -2497,6 +2627,19 @@
       const fire = (e) => { e.stopPropagation(); deepOneFromBadge(p.key, bdb); };
       bdb.addEventListener("click", fire);
       bdb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fire(e); } });
+    }
+    // 检索摘要徽标：🧬有摘要→点开只读查看；⚪无摘要→点→为这篇生成（第②步）
+    const sacHas = div.querySelector(".tag.sac.has");
+    if (sacHas) {
+      const fire = (e) => { e.stopPropagation(); openSummaryView(p.key, p.title || ""); };
+      sacHas.addEventListener("click", fire);
+      sacHas.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fire(e); } });
+    }
+    const sacNone = div.querySelector(".tag.sac.none");
+    if (sacNone) {
+      const fire = (e) => { e.stopPropagation(); genSummaryOne(p.key, sacNone); };
+      sacNone.addEventListener("click", fire);
+      sacNone.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fire(e); } });
     }
     div.querySelector(".bcard-title").addEventListener("click", () => findSimilar(p.key, p.title || ""));
     // UX4：「📄 打开」——系统阅读器打开原文（stopPropagation 防触发标题/右键行为）
@@ -3961,9 +4104,9 @@
     if (st.mode !== "full") return;                       // 语义层未就绪不弹
     const withPdf = st.with_pdf || 0, deep = st.deep_done || 0;
     if (!(withPdf > 0 && deep < withPdf)) return;          // 已全部深索完，无需弹
-    renderDeepInvite(deep, withPdf, st.building && st.stage === "deep");
+    renderDeepInvite(deep, withPdf, st.building && st.stage === "deep", st);
   }
-  function renderDeepInvite(deep, withPdf, alreadyBusy) {
+  function renderDeepInvite(deep, withPdf, alreadyBusy, st) {
     if ($("#deep-invite")) return;
     const card = document.createElement("div");
     card.id = "deep-invite";
@@ -3971,7 +4114,7 @@
     card.innerHTML =
       `<div class="di-ic">📄</div>
       <div class="di-txt"><b>深索让回答精确到页码</b>
-        <span>已深索 <b>${num(deep)}</b>/<b>${num(withPdf)}</b> 篇有 PDF 的文献。把剩余文献的全文拆成可检索的小段，可后台进行。</span></div>
+        <span>已深索 <b>${num(deep)}</b>/<b>${num(withPdf)}</b> 篇有 PDF 的文献。把剩余文献的全文拆成可检索的小段，可后台进行。${sacFrag(st)}</span></div>
       <div class="di-btns"><button class="go">深索全库</button><button class="later">以后再说</button></div>`;
     $("#results").parentNode.insertBefore(card, $("#results"));
     card.querySelector(".later").addEventListener("click", () => {

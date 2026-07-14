@@ -88,6 +88,57 @@ def write_summaries(items):
     return n
 
 
+def summary_keys():
+    """已生成检索摘要的 stem 集合（键同 embedded_keys.txt 的 safe_name(stem)）。
+       供 server 统计「已深索里多少篇有摘要」= deep ∩ summary。"""
+    return set(_load().keys())
+
+
+def get(stem):
+    """按 safe_name(stem) 取该篇检索摘要文本；无则空串。供「点开查看摘要」只读展示。"""
+    return _load().get(stem, "") or ""
+
+
+def key_available():
+    """补生成是否有可用的 API key（本段 key，或复用检索引擎/API 后端的 key）。"""
+    return bool(_conf().get("key"))
+
+
+def gen_missing(items, log=print, on_progress=None):
+    """补生成：给 items 里「缺摘要」的篇用 LLM 生成并写回，**不受 generator 门控**
+       （用户显式点「补生成摘要」时无论 off/agent/server 都要生成）。
+       items: 可迭代 (stem, title, abstract, body)。返回 (成功数, 失败数)。
+       无 key 时直接返回 (0, 0)（调用方应先用 key_available() 拦截并提示）。"""
+    conf = _conf()
+    if not conf.get("key"):
+        return 0, 0
+    sums = _load()
+    n, fail, run_fail = 0, 0, 0
+    for stem, title, abstract, body in items:
+        if sums.get(stem, "").strip():
+            continue
+        try:
+            s = summarize_one(title, abstract, body, conf)
+            if s:
+                sums[stem] = s
+                n += 1
+                run_fail = 0
+                if n % 3 == 0:
+                    _save(sums)
+                if on_progress:
+                    on_progress(n, fail)
+        except Exception as e:
+            fail += 1; run_fail += 1
+            log(f"[sac] {stem} 生成失败：{e}")
+            if run_fail >= 5:
+                log("[sac] 连续失败过多，停止本轮补生成（检查 key/网络/额度）")
+                break
+    _save(sums)
+    if n:
+        log(f"[sac] 补生成完成，新增 {n} 篇摘要（失败 {fail}）")
+    return n, fail
+
+
 def ensure_for(items, log=print):
     """items: 可迭代 (stem, title, abstract, body)。给缺摘要者生成，写回 summaries.json。返回新增数。
     未启用（generator!=server）或无 key 时直接返回 0（静默）。"""
