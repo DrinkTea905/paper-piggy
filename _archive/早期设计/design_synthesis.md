@@ -1,0 +1,261 @@
+# LocalKB 实现设计 · 综合层（Synthesis / Wiki 层）与答案沉淀
+
+> **本文件是什么**：面向"给 LocalKB 补上一层持久综合能力"的实现设计文档。目标是让**一个全新的对话**（无本次上下文）读完本文即可动手实现，且每个 Phase 都能独立交付、独立验收。
+> **怎么用**：在新对话里说「读 `LocalKB\app\docs\实现设计_综合层与答案沉淀.md`，从 Phase 0 开始实现」。
+> **依据**：对 `LocalKB\app\*.py` 全量代码核对（file:line 均在正文标注）+ 三份参考的理念对比调研（Karpathy「LLM Wiki pattern」gist / alfadur7 llm-wiki-newsroom / gowtham0992 link）+ 2026 领域现状（RAG↔GraphRAG↔agentic memory）+ 双向对抗评审（"证伪 wiki 范式" vs "论证契合"）。
+> **配套**：本文是《实现设计_三档渐进索引与首启向导.md》的续篇——那份把库建起来、能检索；本份把"检索到的理解"沉淀下来、能累积。
+> **日期**：2026-07-07
+
+---
+
+## 0. 一句话与核心决策
+
+**检索是地基，综合是缺失的那层楼。加一层，别拆地基。**
+
+LocalKB 现状是一套工程扎实、且符合 2026 主流的混合检索**底物**（bge-m3 稠密 + BM25 词法 + RRF + reranker + 期刊分层 + 页级引用）。它唯一系统性缺失的，是把 LLM 的理解**持久化成可累积的制品**——今天每个 `/chat` 答案流给浏览器后即弃，下次问同样的问题从零重推。这正是 Karpathy 那篇 gist 的核心对立：**re-derive per query（每次重推）vs. compile once & keep current（编译一次、持续维护）**。
+
+**核心决策（务必遵守）：**
+
+1. **不转向 wiki、不重写引擎。** 在既有 RAG 之上**加一层 `data/wiki/`**（markdown 页面 + 进同一张 LanceDB 表的 `row_type="wiki"` 行）。检索栈、reranker、期刊权重、`_page_cite`、`row_type` 表结构、KMeans 主题、Zotero 收藏夹树、LLM 客户端、MCP——**约 90% 是底物复用**，真正新增的只有一件：**把综合持久化成互链的、带引用的页面**。
+2. **一切按需 + 缓存，绝不 eager 全库预综合。** 全库预综合是参考项目 newsroom 的 token 成本埋葬点（忠实实现一遍 2000 篇初建 ≈ 2–3.5 亿 token）。本设计的护栏是：**只在用户已经问了、模型已经答了之后多写一份盘**；概念页/主题页**只在首次被请求时**生成一次并缓存。
+3. **provenance 永远居中，综合层绝不横插在"学者与页码引用之间"。** 对法学语料，页级可追溯引用是最强资产。综合页是**附加物**（一个可回溯、可重生、带"生成于 DATE / 基于 N 篇"戳的快照），**不是**替代 re-derive-on-demand 的默认答案路径。
+4. **明确拒绝一批"参考项目里对个人用户过度工程"的东西**（§8）：全库预综合、self-evolving guidelines、5 角色编辑部、把 LLM 判定的"矛盾"当断言落盘。
+
+**唯一最高杠杆的一步（Phase 0）：把 chat 答案从"流给浏览器就丢弃"改成"存成带引用的 wiki 页面，并进 LanceDB（`row_type="wiki"`）可被检索"。** 这一步本身就把范式从"重推"挪到"累积"，近零成本、完全按需、可逆、与 KB 独立。
+
+---
+
+## 1. 范式诊断（现状快照，均已核对源码）
+
+### 1.1 检索管线 = 纯逐查询 RAG，无任何持久综合制品
+`retriever.py`：
+- `load_all()`（`retriever.py:34`）按磁盘产物分档就绪：只有 `bm25_meta` → **light 词法模式**（`search_light`，`:206`，0 模型、秒级）；有 LanceDB 表 → **full 模式**（载入 bge-m3 + reranker + 全表进内存 `M["records"]`，`:58-60`）。
+- full 管线 `search_full`（`:155`）：`dense_search`（`:94`, DENSE_TOPK=50）+ `bm25_search`（`:99`, BM25_TOPK=50）→ `rrf`（`:106`, RRF_K=60）→ 候选 `max(50, topk*8)` → reranker `M["rerank"].scores`（`:162`）→ 同 key 去重（chunk 行优先 meta 行，`:170`）+ `MAX_PER_KEY=2` → `_apply_sort`（`:246`, relevance/tier/blend）。
+- **每一阶段逐查询重算，全程不写盘。** `search()`（`:256`）返回内存 list。无历史缓存、无存储答案、无累积理解。教科书级"重推"。
+
+### 1.2 对话 = 100% 一次性，写不出任何持久物
+- `/chat`（`server.py:489`）：`R.search` 取片段 → 塞进 `SYS_TMPL`（`server.py:484`）→ `L.chat_stream`（`llm.py:43`）SSE 流给浏览器。**答案流完即弃**：无文件写、无 DB 行、无 append；`history` 由客户端传入（`ChatQ.history`，`server.py:476`），服务端不存。
+- **确认：每个答案都是一次性的；下次同样的问题从零重跑全流程。** 这正是综合层要填的洞。
+
+### 1.3 全系统唯一的持久 AI 制品：SAC——但它是检索前缀，不是综合
+- `sac.py`：给每篇缺摘要的文献生成 ~150 字中文摘要（`summarize_one`→`L.chat_once`，`sac.py:37/43`），存 `data/summaries/summaries.json`（`SUM_FILE`，`sac.py:16`），幂等（`ensure_for`，`:62`），每篇 1 次调用。
+- **消费方式**：摘要仅在 embed 时拼进向量（`embed_index.py:125`），用户看不到、无交叉引用、按篇不按主题。**它是检索质量增强器，不是知识制品。**
+- 但它的**写回模式**（LLM → 幂等 JSON → key 复用 → 原子写 `_save`，`sac.py:30`）**就是本设计要泛化的模板**。
+
+### 1.4 三个"原型版本"证明契合是结构性的
+| Karpathy 制品 | LocalKB 现有原型 | 差的那一步 |
+|---|---|---|
+| 概念页 / 主题页 | **AI topics**（`build_ai_topics.py`）：稳定 id、自动名、成员 key 集、聚类质心，存 `data/categories/ai_topics.json` | 差 **LLM 综合成 prose 并落盘**（命名从 jieba 关键词升级到 LLM 是显而易见的小第一步） |
+| 源反思 / 摘要页 | **SAC 摘要**（`sac.py`）：已是"写回"雏形 | 差**从"检索前缀"泛化成"用户可读、带交叉链接的页面"** |
+| 综合页 | **chat 答案**（`server.py:489`）：已是逐查询综合 | 差**加一个 save 动作**（把 SSE 流同时写一份盘） |
+| 信息架构 / index.md | **Zotero 收藏夹树**（`build_categories.py`）：人工策展、全量映射，存 `data/categories/zotero_collections.json` | 几乎不差；直接当 wiki 顶层导航 |
+
+**读法：三个最核心的 wiki 制品在 LocalKB 里各有一个跑着的原型，每个都只差"持久化 LLM 综合"这同一步。缺口是单一、集中的，因此改造低风险。**
+
+---
+
+## 2. 目标：在 RAG 之上加"综合层"（互补，非取代）
+
+不要理解成"RAG 死了、换 wiki"。2026 共识是 **RAG 从'系统'降格为'底物'**，上面叠综合（wiki）/结构（GraphRAG/claim graph）/记忆（Mem0/Letta）。硬证据：newsroom 自己在 wiki **底下**跑本地语义搜索（QMD 外挂二进制）；`link` 把综合 wiki 与记忆层并排、以 **source-backed provenance** 作核心差异化——而 LocalKB 的页级引用天然就是这个卖点，检索栈还比它俩更内聚。
+
+**三层映射（Karpathy 三层 → LocalKB）：**
+- **第 1 层 不可变原始源** = Zotero 文献 + `data/extracted` 提取文本（已有，只读）。
+- **第 2 层 LLM 独占的 wiki** = **新增 `data/wiki/`**（本设计主体）。
+- **第 3 层 schema 规约** = **新增 `data/wiki/WIKI.md`**（页面约定、引用格式、写回纪律；让 agent 当"守纪律的维护者"而非通用 chatbot；人与 agent 共同演进）。
+
+---
+
+## 3. 数据模型：`row_type="wiki"` + `data/wiki/` 布局
+
+### 3.1 磁盘布局（与 `categories/`、`summaries/` 并列，独立可删）
+```
+data/wiki/
+  WIKI.md                      # 第3层 schema：页面约定/引用格式/写回纪律
+  index.json                   # wiki 页面清单（id→元数据），仿 ai_topics.json 的 sidecar 模式
+  answers/<hash>.md            # Phase 0：沉淀的问答综合（问题+带引用答案+来源keys）
+  concepts/<slug>.md           # Phase 1：概念页（按需生成+缓存）
+  topics/<id>.md               # Phase 1：主题页（对应 ai_topics 的簇）
+  contradictions/<slug>.md     # Phase 2：矛盾页（按需生成）
+  contradictions/_pairs.json   # Phase 2：候选矛盾对（原始，只读提示用，不落断言）
+  trails/<slug>.md             # Phase 3：关联阅读路径（人/agent 编排已有页面）
+```
+- 存储与服务完全复用现有 sidecar-JSON + `/…` 路由模式；受 `config.py:18-21` 的独立性保证覆盖（**只写 `DATA`，随便删不影响 KB / Zotero**）。
+
+### 3.2 页面格式（YAML frontmatter + markdown，Obsidian 兼容）
+```markdown
+---
+id: answer-3f2a9c            # 或 concept-认罪认罚从宽 / topic-7 / contra-上诉权克减
+kind: answer|concept|topic|contradiction|trail
+title: 认罪认罚从宽对量刑均衡的影响
+sources: [bibkey1, bibkey2, ...]   # 综合所依据的论文 key（provenance 命脉）
+generated_at: 2026-07-07T10:30:00
+generated_by: deepseek-chat        # 记录生成模型（可信度审计）
+stale: false                        # 覆盖的论文有新增/更新时置 true（Phase 3 lint）
+links: [concept-速裁程序, contra-上诉权克减]   # 交叉链接到其他 wiki 页
+---
+
+（LLM 综合的 prose；每个论断后带 [n] 引用，脚注区列出 sources 的 _page_cite 字符串）
+```
+
+### 3.3 `index.json`（sidecar 清单）
+```jsonc
+{ "pages": [ {"id","kind","title","sources":[...],"generated_at","stale","links":[...]} ... ],
+  "by_source": { "bibkey": ["answer-3f2a9c", "concept-..."] },   // 反查：某论文被哪些 wiki 页引用（供 stale 标记）
+  "updated_at": "..." }
+```
+
+### 3.4 进 LanceDB 统一表（让 wiki 页可被检索）
+- **`config.py:38` 把 `ROW_TYPES = ("meta", "chunk")` 改为 `("meta", "chunk", "wiki")`。** 零 schema 破坏——现有表已按 `row_type` 区分 meta/chunk 行（`search_full:170`、`index_semantic.py:28`），加第三种同构。
+- 每个 wiki 页作为**一行**入表：`chunk_id = "{id}::wiki"`，`key = id`，`row_type="wiki"`，`vector` = bge-m3 嵌入页标题+正文（复用 `embedder.py`），`title/text` 填页面内容，`text` 供 rerank/展示。paper 专属字段（author/year/journal/official_pages）留空。
+- **检索时自然与论文并列召回**：`search_full` 的 dense+bm25+rrf+rerank 无需改；wiki 行的 `key` 唯一，不与 meta/chunk 的同 key 去重（`:170`）冲突。
+- **light（L-only）模式无表**：wiki 页仍可通过 `/wiki/*` 路由浏览、并入 `bm25_meta` 做词法兜底（可选）；"检索时命中缓存综合"这一核心收益只在 full 模式生效——这与"深索才有页码级 grounding"的既有分档哲学一致。
+
+---
+
+## 4. 四种 wiki 制品的领域映射（法学/社科语料）
+
+抽象范式必须在**你的**语料上产出别处拿不到的价值。示例：
+
+### 4.1 概念页 Concept —— 例 `认罪认罚从宽`
+- **定义与法条锚点**：规范来源（刑诉法第 15 条等），带页级引用到具体论文对法条的阐释。
+- **学理谱系**：哪些论文论证为"控辩协商"、哪些为"实体从宽"、哪些为"程序简化"——每立场链回论文 + 页码 + **期刊层级**（复用 `journal_weight`，C 刊/权威排前）。
+- **争点地图**：链接相邻概念页（`速裁程序`、`量刑建议精准化`、`被追诉人反悔权`）。
+- **RAG 给不了的**：纯 RAG 每次重拼 5 篇碎片、拼法随措辞抖动；概念页把这份整合**编译一次**，学理主线（"协商性 vs. 职权性"）已画好。
+
+### 4.2 矛盾页 Contradiction —— 例 `认罪认罚二审全面审查 vs. 上诉不加刑的张力`
+- 借 newsroom 的**诚实版**（砍到 solo 可承受，只保留原始 claim + 每争点一页）：**对立立场 / 代表性证据（按 evidence_strength 选 top）/ 张力来源（规范解释分歧还是价值取向分歧）/ 解释方向（由你——人——裁断或标"悬置"）**。
+- **领域价值极高**：法学知识增量本质是争点推进；入库时自动 flag"新论文与既有 X 论文在争点 Y 对立"直接对应学术前沿（PaperQA2/ContraCrow 的矛盾评分），补上纯 RAG 最大的洞。
+- **⚠ 红线**：矛盾是**只读提示**，硬标"AI 假设、未核实、请查原文"；**绝不落成 wiki 断言**（§8 详述为何对法学尤其危险）。
+
+### 4.3 关联路径 Trail —— Memex 的活化
+一串带注释的页面跳转，例：`认罪认罚从宽`(概念) → `值班律师有效帮助`(概念,注"程序保障第一道闸") → `上诉权克减争议`(矛盾页) → `速裁程序实证研究`(主题页,注"实证数据显示的实际运作")。存 `data/wiki/trails/<slug>.md`。对写文献综述的人这就是"reading path"（学术 deep research 真正服务的 orientation）。**零新数据——纯编排已有页面。**
+
+### 4.4 综合页 Synthesis —— 一个研究问题的文献综述
+把"一次性 chat 答案"升级成持久制品的直接落点（= Phase 0）。同一个 `search()` + rerank 召回论据（**零改动**）→ LLM 综合成带引用 prose → 存 `data/wiki/answers/<hash>.md` + 进表。下次相近问题先命中这页，**探索开始 compound**。
+
+---
+
+## 5. 检索端与引用改动（很小）
+
+1. **`_page_cite`（`retriever.py:144`）加 `row_type=="wiki"` 分支**：wiki 行不是论文，引用改为 `本地综合《{title}》· 基于 {len(sources)} 篇 · 生成于 {generated_at:date}`；论文行逻辑不变。
+2. **`search_full` 输出（`:187`）**：wiki 行 `depth="synthesis"`、加 `is_wiki=true`，供前端渲染徽章「📝 已存综合」（区别于论文的「仅摘要 / 📄 全文可精读」）。
+3. **wiki 页详情要能展开其 sources 的原始引用**：读 frontmatter `sources`，对每个 key 查 `M["papers"]`/`papers.jsonl` 用 `_page_cite` 生成论文级引用列表——**综合页的每个来源仍一跳可回溯到论文页码**。
+4. **前端**：结果卡认 `is_wiki` 徽章；wiki 页可点开看 prose + 来源列表 + 交叉链接；「重新生成」按钮（重跑综合、覆盖、更新 `generated_at`）。
+
+---
+
+## 6. 新增端点 + MCP 写工具
+
+### 6.1 HTTP 端点（都加在 `server.py`，紧挨现有 `/categories`(`:355`)、`/topics`(`:359`)）
+| 端点 | 作用 | 备注 |
+|---|---|---|
+| `POST /wiki/answer` | Phase 0：把一次问答存成 answer 页 + 入表 | body `{query, answer, sources:[keys]}`；opt-in（前端"保存此答案"按钮触发） |
+| `GET /wiki/list` | 列 wiki 页（读 index.json） | 仿 `/topics` |
+| `GET /wiki/page/{id}` | 取单页（markdown + 来源引用 + 链接） | |
+| `POST /wiki/concept` | Phase 1：按需生成概念页（命中缓存直接返回） | body `{slug or topic_id}`；内部走 `R.search`→`L.chat_once`→存盘+入表 |
+| `POST /wiki/regenerate/{id}` | 重生某页（覆盖、更新戳） | |
+| `GET /wiki/stale` | Phase 3：列被新论文影响、需重生的页 | 读 index.json 的 stale |
+
+### 6.2 MCP 写工具（`mcp_server.py`，紧挨 `TOOLS`(`:54`)）
+- 现有 3 工具（`search_localkb`/`localkb_status`/`localkb_build`）是 agent 的**读**路径。补一个**写**路径即成"读—综合—写回"闭环：
+- **新增 `save_synthesis`**：`{title, content, sources:[keys]}` → 代理 `POST /wiki/answer`。这让 Claude Code / Codex 在用 `search_localkb` 检索后，能把综合结论**回填**知识库（这正是 link/newsroom 的 agent 驱动模式，且 `search_localkb` 原样复用作读的一半）。
+- （可选）`get_wiki_page` / `list_wiki` 读工具。
+
+---
+
+## 7. 复用 vs 新建清单
+
+**直接复用（不要重建）：**
+| 组件 | 文件:行 | 在综合层的角色 |
+|---|---|---|
+| bge-m3 + LanceDB 统一表 | `embedder.py`；`retriever.py:58-60`；`config.py:38` | wiki 页进同表（`row_type="wiki"`）即可检索 |
+| reranker + RRF | `retriever.py:106,162` | 与 chat 同质量挑给页面做论据的 chunk |
+| 期刊分层/连续权重 | `journal_tiers.py`；`retriever.py:126`；`config.py:94` | 综合按证据权威度加权（法学杀手锏） |
+| 页级引用 `_page_cite` | `retriever.py:144` | 每个综合论断带可回溯页级引用 |
+| KMeans 主题 | `build_ai_topics.py` | 主题页骨架+成员集现成 |
+| Zotero 收藏夹树 | `build_categories.py` | wiki 顶层导航/IA |
+| SAC 写回模式 | `sac.py:30,62` | 泛化成"LLM→幂等 JSON→原子写"的模板 |
+| LLM 客户端 | `llm.py:32(chat_once),43(chat_stream)` | 生成页面 prose |
+| MCP 读工具 | `mcp_server.py:54` | 读—综合—写回的读半 |
+| 增量 state | `data/state/*` | 复制成"哪些页 stale/需重生" |
+| sidecar + 路由模式 | `server.py`；`config.py:18` | `data/wiki/` 存储与 `/wiki/*` 服务模板 |
+
+**必须新建（真正的缺口，很窄）：**
+1. **持久化综合 + 写回**：LLM 产出保存成页面（prose + 引用），可重生、可版本化。
+2. **实体/概念作为一等节点 + 交叉链接**：聚类给的是主题**集合**，不是链接**图**；`links` 字段 + 概念页把它补成图。
+3. **一个写路径**：`POST /wiki/*` + MCP `save_synthesis`。下游（embed/index/retrieve/cite）全已建好。
+
+---
+
+## 8. 明确不做（拒绝清单——防止实现时 gold-plating）
+
+参考项目里对**个人法学用户**是过度工程或负债的部分，**本设计明确不实现**：
+
+1. **不做全库 eager 预综合 / 入库即全量重建。** token 成本埋葬点（2–3.5 亿 token/初建），且"compounding"维护成本随库超线性增长。**一切按需 + 缓存。**
+2. **不做 self-evolving guidelines（自进化写作规则 / 盲 A-B / 升级门）。** 深读判定其统计在 solo 规模是"theater"（n=1 样本、同模型自评），作者自己都没确认收益。
+3. **不做 5 角色编辑部。** 对 solo 塌缩成"生成→批评→lint"，四个角色是同一模型戴不同帽子，仪式买不到东西。
+4. **不把 LLM 判定的"矛盾"当断言落成持久 wiki 内容。** 法学两篇结论相反常因**不同教义框架/管辖假设/期间法律修订**，非谁错；正则+廉价 LLM 的矛盾检测会在**用户最懂的领域**造假矛盾，第一眼崩信任。矛盾**只能是标注"未核实"的只读提示**。
+5. **综合层绝不横插在"学者与页码引用之间"当默认答案路径。** 保持 re-derive-on-demand 为默认；wiki 是**附加缓存**，不是**取代性中间层**（否则用 provenance 保证换来漂移风险）。
+6. **不追求 Leiden/知识图可视化等重结构**（Phase 3 之后按需，非本设计目标）；`links` 字段的轻量互链已足够。
+
+---
+
+## 9. Token / 成本护栏
+
+- **Phase 0（沉淀答案）**：答案**已经**由 `/chat` 生成（0 边际 LLM），只多一次嵌入（本地 ONNX 近免费，或 1 次 embedding API 调用）。**近零成本。**
+- **Phase 1（概念/主题页）**：**仅在首次被请求时** 1 次检索 + 1 次 LLM 综合（几 k token out），随后缓存命中 0 成本；新论文入库把相关页标 stale，用户可选重生。**成本严格按需、可预期。**
+- **对比被拒的 eager 全库**：2–3.5 亿 token。护栏铁律：**never eager；每一次 LLM 综合都对应一次用户显式请求。**
+- **模型档位诚实性**：LocalKB 面向本地 bge-m3 + 用户廉价 key（DeepSeek/SiliconFlow）。综合质量随模型档位变化——因此**综合页永远带 `generated_by` 戳 + 来源引用**，让用户能审计、能一跳回原文；系统不假装综合层"可信到无需核对原文"。
+
+---
+
+## 10. 分阶段路线图（每阶段独立交付 + 验收）
+
+### Phase 0 — 让答案活下来（半天，零新概念，最高杠杆）
+- `server.py` 加 `POST /wiki/answer`：把 `{query, answer, sources}` 写 `data/wiki/answers/<hash>.md` + 更新 `index.json` +（full 模式）嵌入进表（`row_type="wiki"`）。
+- 前端 `/chat` 面板加「💾 保存此答案」按钮（opt-in，答完出现）。
+- `retriever._page_cite` 加 wiki 分支；`search_full` 输出加 `is_wiki`。
+- `mcp_server.py` 加 `save_synthesis` 工具。
+- 写 `data/wiki/WIKI.md`（schema v0：页面约定、引用格式、写回纪律）。
+- **验收**：问一个问题→保存→再问相近问题，检索结果里出现「📝 已存综合」页，点开是带来源引用的 prose；删 `data/wiki/` 不影响 KB。
+
+### Phase 1 — 按需概念页/主题页 + 缓存（最高杠杆的枝干）
+- `POST /wiki/concept`：命中缓存返回；否则 `R.search`(概念名/topic 质心)→`L.chat_once` 综合→存盘+入表。
+- 复用 `build_ai_topics.py` 的簇（`{id,name,keys,centroid}`）作主题页骨架；概念名可先用 topic name，后续 LLM 升级命名。
+- 「浏览」tab 的 topic/collection 卡加「生成综述」入口（lazy）。
+- **验收**：打开某 AI topic→点生成→得到带引用综述页并缓存；二次打开 0 等待；新增论文后该页标 stale。
+
+### Phase 2 — 入库时矛盾候选（只读提示，诚实版）
+- deep-index 一篇时，对其核心 claim 跑相似检索，与既有高权威论文 claim 语义对立者（reranker 分 + 关键词规则）追加进 `data/wiki/contradictions/_pairs.json`。
+- 相关概念页顶部挂「⚠ 存在争议（AI 提示·未核实）」链接；矛盾页**按需**从 pairs 生成。
+- **验收**：入库一篇与既有论文观点对立的文献→概念页出现"存在争议"提示，点开是双方立场+各自页级引用，全程标"未核实"。
+
+### Phase 3 — trail 与 lint（可选，可长期搁置）
+- trail：人/agent 编排已有页面，存 `trails/<slug>.md`，近零成本。
+- lint：周期性（非实时）健康检查——孤儿页、stale claim、缺失交叉引用；复用增量 state 模式。**明确不含 self-evolution。**
+- **验收**：新论文入库后 `GET /wiki/stale` 列出受影响页；能一键批量重生。
+
+---
+
+## 11. 关键文件与改动索引（改哪里一览）
+| 文件 | 改动 |
+|---|---|
+| `config.py` | `ROW_TYPES`(`:38`) 加 `"wiki"`；加 `WIKI_DIR = DATA/"wiki"` 及进 `:56-58` 的 mkdir 循环 |
+| `retriever.py` | `_page_cite`(`:144`) 加 wiki 分支；`search_full`(`:187`) 输出加 `is_wiki`；（可选）wiki 页 sources 的论文级引用展开 |
+| `server.py` | 新增 `/wiki/answer`、`/wiki/list`、`/wiki/page/{id}`、`/wiki/concept`、`/wiki/regenerate/{id}`、`/wiki/stale`（紧挨 `:355` 的 `/categories`）；`/chat`(`:489`) 可选把 SSE 同时留存草稿 |
+| `mcp_server.py` | `TOOLS`(`:54`) 加 `save_synthesis`（+可选读工具）；`do_tool`(`:85`) 加分支 |
+| `wiki_store.py`（新） | wiki 页 CRUD + index.json 维护 + 嵌入入表；复用 `sac.py:30` 的原子写、`embedder.py` |
+| `web/index.html`+`app.js` | 「💾 保存此答案」按钮；wiki 徽章；wiki 浏览/详情；「生成综述」入口；「重新生成」 |
+| `data/wiki/WIKI.md`（新） | 第 3 层 schema，人与 agent 共同演进 |
+
+---
+
+## 12. 待用户决定的开放问题
+1. **概念/主题页命名**：先用 KMeans 的关键词名（免费）还是首发就上 LLM 命名（每簇 1 次调用，约 24 次）？（建议：先关键词名，Phase 1 综述生成时顺带 LLM 出更好标题。）
+2. **矛盾候选是否进 Phase 2**：法学矛盾检测是本设计风险最高处；可先只做 Phase 0+1，观察沉淀页价值后再决定是否上矛盾提示。
+3. **wiki 页是否纳入 `/chat` 的检索上下文**：命中缓存综合页能省重推、但也可能让旧综合影响新答案——建议纳入但标注"（来自既有综合，可能已过时）"，并受 stale 影响降权。
+4. **交付**：本文 Markdown（供新对话直接实现）；.docx 阅读版另出（用户长期偏好）。
+
+---
+
+*（本设计基于 2026-07-07 对 `LocalKB\app` 源码的核对 + 三份参考项目的理念对比调研 + 双向对抗评审；核心结论"检索是地基、综合是缺失的那层楼；最高杠杆=沉淀答案；拒绝全库预综合/自进化/编辑部/矛盾断言"。）*

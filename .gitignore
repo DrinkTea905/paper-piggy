@@ -1,0 +1,59 @@
+# ─────────────────────────────────────────────────────────────
+# LocalKB / 论文猪  ——  .gitignore
+#
+# ⚠️ 这个文件是「开源前的隐私闸门」，改它之前先读 docs/MAINTENANCE.md。
+#    被忽略的目录里有：用户真实文献元数据、本机绝对路径、API 密钥。
+#    历史教训：项目曾长期没有 .gitignore，一次 `git add .` 就会把上面这些全推上去。
+# ─────────────────────────────────────────────────────────────
+
+# ── 运行时数据（含真实文献元数据 + 本机路径 + API 密钥，绝不能进仓库）──
+# data/settings.json 会在跑一次应用后写入真实 API key
+# data/meta/papers.jsonl 含真实 Zotero 条目与 D:\ 本机 PDF 路径
+# data/wiki/.git 是嵌套仓库，不忽略会变成无效 gitlink
+LocalKB源码/data/
+LocalKB源码/logs/
+
+# ── Agent 工作区（运行时由 agent_ws.ensure_scaffold() 从代码里的模板常量生成）──
+LocalKB源码/0_Agent交付物/
+LocalKB源码/0_Agent资料库/
+
+# ── 构建资产（大二进制，不进仓库；重建方法见 docs/RELEASE.md）──
+# build/py312   嵌入式 Python 运行时 + 全部依赖（约 800MB）
+# build/assets  MinGit 等随包分发的第三方二进制（约 90MB）
+build/
+dist/
+.venv/
+venv/
+
+# ── 模型（约 1.2GB，走 GitHub Release 分发，见 models_manifest.json）──
+models/
+*.onnx
+*.onnx_data
+*.part
+
+# ── Python ──
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# ── 杂项 ──
+*.log
+.DS_Store
+Thumbs.db
+desktop.ini
+~$*
+
+# ─────────────────────────────────────────────────────────────
+# 显式保留（这些看着像数据，但引擎必需，务必进仓库 —— 别手滑加进上面的忽略名单）：
+#   LocalKB源码/journal_grading/catalogs/*.json   期刊目录（sjr/pku/cssci/if_cnki），
+#                                                  缺了会静默回退到旧的离散档，评级变差
+#   LocalKB源码/journal_tiers.json                 期刊分级表
+#   LocalKB源码/web/PaperPiggy.png                 应用图标真源（.ico 由 launcher 运行时生成）
+#   _archive/数据快照/grading_memo.*.json          期刊分级的 LLM 结果缓存（689 条，花过 API 钱）
+#
+# 反过来，下面这些看着像资产、其实是运行时生成的，不用留：
+#   data/jieba_legal_dict.txt   建库时由 index_light.py 重新生成
+#   data/PaperPiggy.ico         launcher.py 启动时从 web/PaperPiggy.png 生成
+#   0_Agent资料库/**            agent_ws.ensure_scaffold() 从代码里的模板常量生成
+# ─────────────────────────────────────────────────────────────

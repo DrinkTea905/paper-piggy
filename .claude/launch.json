@@ -1,0 +1,35 @@
+{
+  "_说明": [
+    "解释器 = build/py312/python.exe（嵌入式运行时，同时是打包素材；不在 git 里，重建法见 docs/RELEASE.md）",
+    "模型 = D:\\00Zotero知识库\\rag\\data\\models（唯一母本，勿删）。config.py 已不再兜底任何开发机路径，",
+    "       所以必须显式给 LOCALKB_MODELS，否则本地嵌入/重排会找不到模型。",
+    "数据 = LocalKB源码\\data（源码态自动落这里，含现成的开发索引）"
+  ],
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "localkb-app",
+      "runtimeExecutable": "D:\\Onedrive\\AI\\知识库应用\\build\\py312\\python.exe",
+      "runtimeArgs": [
+        "-X", "utf8", "-c",
+        "import os,sys,runpy; os.environ['LOCALKB_MODELS']=r'D:\\00Zotero知识库\\rag\\data\\models'; sys.path.insert(0,r'D:\\Onedrive\\AI\\知识库应用\\LocalKB源码'); runpy.run_path(r'D:\\Onedrive\\AI\\知识库应用\\LocalKB源码\\launcher.py', run_name='__main__')"
+      ],
+      "port": 8770
+    },
+    {
+      "name": "localkb-server",
+      "runtimeExecutable": "D:\\Onedrive\\AI\\知识库应用\\build\\py312\\python.exe",
+      "runtimeArgs": [
+        "-X", "utf8", "-c",
+        "import os,sys,runpy; os.environ['LOCALKB_MODELS']=r'D:\\00Zotero知识库\\rag\\data\\models'; sys.path.insert(0,r'D:\\Onedrive\\AI\\知识库应用\\LocalKB源码'); runpy.run_path(r'D:\\Onedrive\\AI\\知识库应用\\LocalKB源码\\server.py', run_name='__main__')"
+      ],
+      "port": 8770
+    },
+    {
+      "name": "diagram-preview",
+      "runtimeExecutable": "D:\\Onedrive\\AI\\知识库应用\\build\\py312\\python.exe",
+      "runtimeArgs": ["-m", "http.server", "8765", "--directory", "D:\\Onedrive\\AI\\知识库应用\\LocalKB源码\\web"],
+      "port": 8765
+    }
+  ]
+}

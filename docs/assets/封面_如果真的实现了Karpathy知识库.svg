@@ -1,0 +1,13 @@
+<svg width="720" height="960" viewBox="0 0 720 960" role="img" xmlns="http://www.w3.org/2000/svg">
+<title>小红书封面 3:4：如果真的实现了 Karpathy 知识库？</title>
+<desc>暖米色海报，右上角珊瑚色圆、左下角蓝色圆，中央粗体标题"如果真的实现了 Karpathy 知识库？"。</desc>
+<rect x="0" y="0" width="720" height="960" fill="#F3EEE3"/>
+<circle cx="692" cy="92" r="188" fill="#FF6F61"/>
+<circle cx="36" cy="900" r="170" fill="#2F6BFF"/>
+<circle cx="124" cy="205" r="12" fill="#2F6BFF"/>
+<circle cx="626" cy="792" r="30" fill="none" stroke="#FF6F61" stroke-width="6"/>
+<text x="360" y="398" text-anchor="middle" fill="#22201C" font-family="sans-serif" font-size="50" font-weight="500">如果真的实现了</text>
+<text x="360" y="524" text-anchor="middle" fill="#2F6BFF" font-family="sans-serif" font-size="100" font-weight="700">Karpathy</text>
+<path d="M158 546 q50 -16 100 0 t100 0 t100 0 t86 0" fill="none" stroke="#FF6F61" stroke-width="6" stroke-linecap="round"/>
+<text x="360" y="650" text-anchor="middle" font-family="sans-serif" font-size="92" font-weight="700"><tspan fill="#22201C">知识库</tspan><tspan fill="#FF6F61">？</tspan></text>
+</svg>
