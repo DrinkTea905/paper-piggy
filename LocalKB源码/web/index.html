@@ -389,17 +389,17 @@
               <div class="ag-code"><code id="ag-claude"></code><button class="ag-copy" data-copy="ag-claude">复制</button></div>
               <label class="ag-scope"><input type="checkbox" id="ag-scope-user" /> 让所有项目都能用
                 <span class="ag-scope-tip" title="默认只在当前项目/目录里能用 PaperPiggy；勾选后在你电脑上的任何项目里都能用（相当于全局安装）。">（这是什么？）</span></label>
-              <p class="ag-skillnote">💡 <b>写作/维护工作流已备好</b>：「查库 → 提纲 → 起草 → 按页码核验引注 → 沉淀」的完整流水线就放在「📚 专属资料库 › 技能 › <code>写论文与综述.md</code> / <code>维护综述库.md</code>」（一个工作流一个文件），接入后任何助手读它即可照着干。<b>这份工作流你可以和 AI 助手一起改</b>，调成你自己的写作/维护习惯（就是编辑那个 .md 文件）。<a class="ag-link" id="ag-open-skills">打开技能文件夹</a></p>
+              <p class="ag-skillnote">💡 接入时会自动收到「怎么用这个库」的通用指令，<b>无需手动装技能包</b>。接好后怎么用、有哪些内置工作流，见下方「怎么用」。</p>
             </div>
             <div class="ag-pane" data-agpane="codex" hidden>
               <p class="ag-step">编辑 <code>~/.codex/config.toml</code>，粘贴：</p>
               <div class="ag-code"><code id="ag-codex"></code><button class="ag-copy" data-copy="ag-codex">复制</button></div>
-              <p class="ag-skillnote">💡 Codex 接入时会自动收到「怎么用这个库、要维护综述与记忆」的通用指令，并可读「📚 专属资料库 › 技能 › <code>写论文与综述.md</code> / <code>维护综述库.md</code>」（一个工作流一个文件）拿到完整的「检索→提纲→起草→核验→引注→沉淀」流水线——<b>任何助手都能用</b>，无需安装。</p>
+              <p class="ag-skillnote">💡 Codex 接入时会自动收到「怎么用这个库、要维护综述与记忆」的通用指令，<b>无需安装</b>。接好后怎么用、有哪些内置工作流，见下方「怎么用」。</p>
             </div>
             <div class="ag-pane" data-agpane="json" hidden>
               <p class="ag-step">任何支持 MCP 的助手（Cursor / Cline / Windsurf / Gemini CLI …）：在项目根建 <code>.mcp.json</code>，粘贴：</p>
               <div class="ag-code"><code id="ag-json"></code><button class="ag-copy" data-copy="ag-json">复制</button></div>
-              <p class="ag-skillnote">💡 接入时会自动收到「怎么用这个库」的通用指令；完整写作/维护流水线在「📚 专属资料库 › 技能 › <code>写论文与综述.md</code> / <code>维护综述库.md</code>」（一个工作流一个文件），<b>任何助手</b>读它即可照做，无需手动装技能包。</p>
+              <p class="ag-skillnote">💡 接入时会自动收到「怎么用这个库」的通用指令，<b>任何助手</b>读它即可、无需手动装技能包。接好后怎么用、有哪些内置工作流，见下方「怎么用」。</p>
             </div>
             <div class="ag-warn">⚠ <b>配好后新开一个会话才生效</b>。新会话输入 <code>/mcp</code> 应能看到 <code>localkb</code><span id="ag-tool-count"></span>。</div>
           </div>
@@ -410,9 +410,15 @@
           <div class="ag-ch-n">3</div>
           <div class="ag-ch-c">
             <h3>接好后怎么用（直接说大白话）</h3>
-            <p class="ag-note">不用记命令，用大白话说，它自己查库、读页码、写回综合。比如：</p>
+            <p class="ag-note">不用记命令、也不用先学工具——<b>用大白话说你要干什么</b>，它自己查库、读印刷页码、写回综合。已经给你备好<b>三条开箱即用的工作流</b>，说一句就照着干：</p>
+            <div class="ag-trio">
+              <div class="ag-trio-i"><b>✍️ 写论文与综述</b><span>端到端帮你写：查库 → 提纲 → 起草 → 按页码核验引注 → 沉淀。说「基于我的库写一篇关于…的综述」。</span></div>
+              <div class="ag-trio-i"><b>🔭 跨学科发散与补文献</b><span>写作前打开理论视野：把窄题接到邻近学科、政治学 / 心理学等，理出该补的（尤其外文）文献。说「帮我把…这个题发散一下、看该补哪些文献」。</span></div>
+              <div class="ag-trio-i"><b>📖 维护综述库</b><span>把读过的文献沉淀成带页码引用、可复用的综述页，越用越厚。说「把我最近读的文献更新进综述库」。</span></div>
+            </div>
+            <p class="ag-note">这三条就是「📚 专属资料库 › 技能」里的 .md 文件——<b>一个工作流一个文件、人类可读</b>。你随时能和 AI 助手一起<b>把它们改成自己的习惯，或新建一条属于你的工作流</b>（编辑 / 新增那个 .md 就行）。<a class="ag-link" id="ag-open-skills">打开技能文件夹</a></p>
+            <p class="ag-note">当然，直接说需求也行，比如：</p>
             <ul class="ag-prompts" id="ag-prompts"></ul>
-            <p class="ag-note ag-flow-hint">💡 说「<b>帮我做一份带页码引用的资料汇编</b>」，它会检索 → 分节综述（引注到印刷页）→ 诚实标缺口，综述存进「📖 综述库」、成品落「📦 交付物」，随时复用。</p>
           </div>
         </section>
 
