@@ -1,0 +1,150 @@
+# 维护手册 —— 「改了 X → 必须同步 Y」
+
+> **改 UI / MCP 工具 / Agent 模板 / wiki 规约之前，先读这一份。**
+> 这个应用有三套面向不同读者的指引，它们**不会自动跟着代码走**。历史上已经漂过一次
+> （`MCP接入说明.md` 写「28 个工具」，代码里实际 32 个），所以别指望「我记得改」。
+
+---
+
+## 0. 为什么会漂
+
+应用里的「指引」分三类，读者完全不同：
+
+| 类别 | 给谁看 | 物理位置 |
+|---|---|---|
+| **新手指引** | 人类用户 | `web/index.html` 的静态 HTML + `web/app.js` 的渲染函数 |
+| **agent 指引** | AI（应用内 Agent、外部 Claude Code） | `agent_ws.py` 的模板常量、`mcp_server.py` 的工具描述与 instructions、`wiki_store.py` 的 WIKI_MD_SEED |
+| **开发者文档** | 你、下一个 agent | `MCP接入说明.md`、`docs/`、`CLAUDE.md` |
+
+改一个功能，可能三类都要动。下面是映射表。
+
+---
+
+## 1. 映射表
+
+图例：✅ = 有机器校验（`check_guides.py` 或 `--check` 能自动检出）；❌ = 只能靠人。
+
+### 1.1 MCP 层
+
+| 你改了 | 必须同步 | 校验 |
+|---|---|---|
+| `mcp_server.TOOLS`（:224）增删工具或改 description | 跑 `python gen_mcp_doc.py` 重新生成 `MCP接入说明.md` 的工具表 | ✅ `gen_mcp_doc.py --check`（过期时退出码 1） |
+| `mcp_server.RESOURCES`（:610） | **手改** `MCP接入说明.md` 的 Resources 表 —— ⚠️ `gen_mcp_doc.py` **不管这张表**，`localkb://memory` 就是这么漏掉的 | ✅ check_guides ② |
+| `mcp_server.PROMPTS`（:635） | 同上，手改 Prompts 表 | ✅ check_guides ② |
+| `mcp_server._INSTRUCTIONS_HEAD`（:69）/ `_workspace_text()`（:130） | `index.html` `#ag-guide` 的「成果去哪」「权限与安全」两章；`agent_ws._README_RELY`（:58）、`_rules_summary_text()`（:315） | ❌ 人肉 |
+
+### 1.2 Agent 工作区（`agent_ws.py`）
+
+| 你改了 | 必须同步 | 校验 |
+|---|---|---|
+| `_WF_PAPER`(:197) / `_WF_WIKI`(:228) / `_WF_DIVERGENCE`(:253) —— 三个内置工作流 | ① **先给升级路径**（见 §2，否则老用户永远收不到新版）② `index.html` 第 3 章的工作流卡 ③ `_SKILLS_README`(:178) 里列出的工作流清单 | ✅ check_guides ③④ |
+| `_README_RELY`(:58) / `_README_OUTPUT`(:81) | 同样需要升级路径；`#ag-guide` 对应章节 | ✅ check_guides ④ |
+| 新增一条工作流 | `index.html` 里「三条开箱即用的工作流」的**硬编码列表**会静默变错 —— 这是**正确性问题**，不是文案洁癖 | ✅ check_guides ③ |
+
+### 1.3 wiki 综合层（`wiki_store.py`）
+
+| 你改了 | 必须同步 | 校验 |
+|---|---|---|
+| `WIKI_MD_SEED`(:33) —— wiki 页面规约种子 | ① **必须 bump `SCHEMA_VERSION`**(:31，现在是 `"v2"`) ② 把旧版的 normalized-sha1 加进 `_FACTORY_HASHES`(:172) ③ `MCP接入说明.md` 的「信任模型」段 | ✅ check_guides ⑥ |
+
+> ⚠️ **忘了 bump `SCHEMA_VERSION` 会静默让老库永远收到过期规约。** 这是本项目最阴的一个坑：
+> 不报错、不告警，只是所有老用户的 wiki 规约永远停在旧版。
+
+### 1.4 前端指引（`web/`）
+
+| 你改了 | 必须同步 | 校验 |
+|---|---|---|
+| 新增/改动 UI 功能（页签、按钮、流程） | `index.html` `#home-guide`(:87) 八章 + `#ag-guide`(:350) 十章 + `app.js` `agentGuideCard()`(:1207) 四步图 | ❌ 人肉（用 §3 的 checklist） |
+| 首启向导流程 | `index.html` `.wizard-steps`(:786) + `app.js` `renderStep1`(:3494) ~ `renderStep5`(:4025) + `LocalKB源码/README.md` 的「第一次使用」段 | ❌ 人肉 |
+
+### 1.5 其它
+
+| 你改了 | 必须同步 | 校验 |
+|---|---|---|
+| 期刊评级规则 | `journal_grading/` 配置 + `journal_grading/期刊引用权重分级方案.md`；跑 `journal_grading/selftest.py` | ✅ selftest |
+| 依赖 | `requirements.txt` **和** `requirements.lock` 同时改；分发包需要重建 `build/py312` | ❌ |
+| 版本号 | **只改 `config.APP_VERSION`** | ✅ check_guides ⑦（断言全源码没有第二处版本字面量） |
+| HTTP 接口 | `/docs` 自动生成。但如果 agent 该知道这个接口 → 回到 §0.1（可能要动 MCP 工具或指引） | — |
+
+---
+
+## 2. 必须补的机制
+
+### 2.1 模板升级器（❗ 现在是断的）
+
+**现状**：`agent_ws._write_if_absent()`（:341）**只在文件不存在时才写**。
+后果：你改了 `_WF_PAPER` 的文本，**所有已经跑过一次的机器（包括开发机自己）永远收不到新版**。
+这是「功能变更 → 指引同步」这条链上唯一还断着的一环。
+
+**解法（范式已经在项目里了，照抄即可）**：
+`agent_ws.py:351` 附近对旧版「工作流.md」用过这套办法，`wiki_store._FACTORY_HASHES`(:172) 也是同一套、已验证：
+
+> 给每个出厂模板记一份「历史出厂版的 normalized-sha1（去掉所有空白后算）」清单。
+> `ensure_scaffold()` 时比对当前文件：
+> - 与某个历史出厂版**一字不差** → 说明用户没改过 → **静默升级到新版**
+> - 内容对不上任何出厂版 → 说明用户改过 → **保留用户的文件**，在旁边写一份 `.new.md`，并提示合并
+
+把它从一次性迁移代码泛化成通用升级器，替换掉无脑的 `_write_if_absent`。
+
+### 2.2 把 UI 里写死的清单改成动态（低成本，先做这三条）
+
+项目里**已经在用**这个模式了 —— `app.js:2444` 的工具数取的是后端下发的真实值：
+
+```js
+const n = (AG.cfg && AG.cfg.tool_count) || AG_TOOLS.length;   // 后端真值优先
+```
+
+后端 `server.py:418` 就是 `tool_count = len(MCP.TOOLS)`。照此办理：
+
+- `AG_TOOLS`（`app.js:2417`，8 条硬编码）、`AG_PROMPTS`（:2427，4 条）→ 改由后端 `/agent/config` 下发。渲染只是一行 `.map()`，成本近乎零。
+- `index.html` 里硬写的「三条开箱即用的工作流」+ 逐条列名 → 改成读 `0_Agent资料库/技能/` 的实际文件列表。**加第 4 条技能时这三处会静默变错。**
+- `app.js` 的事件接线全按 id/class 挂（`wireHomeGuide()`:1248、`wireAgentPage()`:2533），所以模板生成器只要原样输出 id/class，`app.js` 一行都不用改。
+
+> ⛔ **不要**把 `#home-guide` 八章 / `#ag-guide` 十章的中文正文（约 230 行）也做成代码生成 —— 收益低于成本。那部分用 §3 的 checklist 管。
+
+### 2.3 `check_guides.py`（只读校验器，约 80 行）
+
+放在 `LocalKB源码/`，加进 `build_bundle.py` 的 DEV_ONLY 名单。把机器能判定的部分全部断言掉：
+
+1. 调 `gen_mcp_doc.py --check`
+2. `len(RESOURCES)` == `MCP接入说明.md` 里 Resources 表的行数，且每个 uri 都出现在表里；PROMPTS 同理
+3. `agent_ws` 的 `_WF_*` 数量 == `index.html` 第 3 章的工作流卡数 == `_SKILLS_README` 列出的工作流文件数
+4. `ensure_scaffold()` 写的每个文件名都在 `_SKILLS_README` / `_README_RELY` 里被提到（反向亦然）
+5. `WIKI_MD_SEED` 里写的 `schema vN` == `SCHEMA_VERSION`
+6. 全源码只有一处版本字面量（`config.APP_VERSION`）
+
+**→ 把 `check_guides.py` 和 `gen_mcp_doc.py --check` 塞进 `build_bundle.py` 的开头，校验不过就中止打包。**
+
+理由很硬：`index.html:86` 和 `:349` 各有一条注释写着「⚠ 维护铁律：功能更新时这份指引也要同步更新」——
+**项目自己都承认是靠人肉纪律，而事实证明它失败了**（工具表漂了 4 个）。
+打包是发布的必经关口，卡在那里代价最小。
+
+---
+
+## 3. 新增功能时的人肉 checklist
+
+代码写完之后，逐条过：
+
+- [ ] 这个功能，**用户**需要知道吗？→ 改 `#home-guide`(:87) / `#ag-guide`(:350) / 向导
+- [ ] 这个功能，**AI agent** 需要知道吗？→ 改 `mcp_server` 工具或 `agent_ws` 工作流模板
+- [ ] 我改了 agent 模板吗？→ **老用户能收到新版吗？**（§2.1）
+- [ ] 我改了 wiki 规约吗？→ **bump SCHEMA_VERSION 了吗？**（§1.3）
+- [ ] 我改了 MCP 工具吗？→ 跑 `gen_mcp_doc.py` 了吗？
+- [ ] UI 里有没有**硬编码的数量/清单**会因为这次改动而变错？（§2.2）
+- [ ] `CHANGELOG.md` 加一行了吗？
+
+---
+
+## 4. 隐私闸门（`.gitignore`）
+
+改 `.gitignore` 之前必读。**被忽略的目录里有真实用户数据：**
+
+- `LocalKB源码/data/settings.json` —— 跑过一次应用后会写入**真实 API key**
+- `LocalKB源码/data/meta/papers.jsonl` —— 2110 条真实 Zotero 元数据，其中 1443 条含 `D:\` 本机绝对路径
+- `LocalKB源码/data/wiki/.git` —— 嵌套仓库，不忽略会变成无效 gitlink
+
+**发任何公开版本之前**，跑一遍：
+
+```bash
+git ls-files | grep -iE "settings\.json|papers\.jsonl|\.key|secret"   # 必须为空
+```

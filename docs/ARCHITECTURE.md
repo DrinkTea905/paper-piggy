@@ -1,0 +1,473 @@
+# LocalKB / PaperPiggy 架构
+
+面向接手本项目的 AI 开发 agent。所有事实都带 `文件:行号` 证据（行号基于 2026-07-14 的源码）。
+不确定的地方标了「待核」，请自行验证后再依赖。
+
+**唯一可改的目录是 `LocalKB源码\`。** 分发包 `app\` 是同步产物（见 `sync_app.ps1`），直接改它会被下次同步覆盖。
+
+---
+
+## 0. 一句话定位
+
+Python + FastAPI 后端 + pywebview 原生窗口 + 原生 JS 前端（无构建步骤）的本地文献 RAG 桌面应用，
+面向法学/社科研究者：Zotero/文件夹 → 三档渐进索引 → 混合检索 → 之上叠一层持久 wiki（综合层）+ MCP Agent 工作流。
+
+---
+
+## 1. 进程模型
+
+三个可执行入口，**互不为父子的常规关系**，但都会按需拉起同一个 `server.py`：
+
+| 进程 | 文件 | 角色 |
+|---|---|---|
+| **server** | `server.py` | FastAPI + uvicorn，监听 `127.0.0.1:8770`。检索/索引/wiki/agent 全部业务逻辑。**唯一持有索引与模型的进程** |
+| **launcher** | `launcher.py` | pywebview 原生窗口（标题 `PaperPiggy`）。子进程方式起 server，再开窗口指向 `http://127.0.0.1:8770` |
+| **MCP server** | `mcp_server.py` | stdio JSON-RPC 2.0，由 Claude Code / Codex **独立拉起**。它自己也会在需要时 Popen 一个 server.py |
+
+### 端口
+
+`config.py:160-164`：`DAEMON_HOST=127.0.0.1`、`DAEMON_PORT=8770`、`DAEMON_URL` 由二者拼出。
+8770 是刻意避开另一套知识库 daemon 的 8765（`config.py:9`）。
+
+### 谁拉起谁
+
+- `启动.bat` → `pythonw.exe` → `launcher.py`（分发版是 `run_localkb.py` → `launcher.main()`，见 `build_bundle.py:192-224`）。
+- `launcher.main()`（`launcher.py:216`）：
+  1. `server_running()` 探活（`launcher.py:60`，走 `/health` 且校验响应确实来自 LocalKB，`launcher.py:42-57`）；
+  2. 若端口被**非** LocalKB 程序占用 → 弹 MessageBox 报错退出（`launcher.py:222-227`）；
+  3. 否则 `subprocess.Popen([sys.executable, APP/server.py])`，`CREATE_NO_WINDOW`，stdout/stderr 重定向到 `LOGS/server.log`（`launcher.py:228-232`，日志轮转见 `:79-103`）；
+  4. 轮询最多 60 次 × 1s 等 `/health`（`launcher.py:234-242`）；
+  5. `webview.create_window("PaperPiggy", DAEMON_URL, …, js_api=_JsApi())` + `webview.start()` 阻塞（`launcher.py:267-271`）。
+- `mcp_server.ensure_up()`（`mcp_server.py:204-222`）：`/health` 有应答就放行；否则 `Popen(server.py)` 并最多等 120s。
+  注意注释里的教训：判活用「服务是否应答」而不是「索引 ready」，否则空库会重复起进程（`mcp_server.py:205-208`）。
+- `localkb.py`（CLI）也有同款 `ensure_up`（`localkb.py:33`）。
+
+### 关窗时怎么退
+
+`launcher.py:271-276`：`webview.start()` 返回（= 窗口关闭）后，如果 server 是**本次 launcher 起的**（`proc` 非 None）就 `proc.terminate()`。
+即「关窗 = 退出应用」。两个例外：
+
+- 若 launcher 启动时 server 已在跑（比如是 MCP 先拉起的），`proc is None`，关窗**不会**杀 server —— server 继续常驻。
+- pywebview 打不开（缺 WebView2 运行时）→ 回退系统浏览器，**刻意不 terminate**，server 常驻供浏览器访问（`launcher.py:282-297`）。
+
+`server.py` 自身没有 idle 自杀逻辑；`config.py:163` 的 `IDLE_TIMEOUT=1800` 目前看不到消费方（待核：疑似遗留常量）。
+
+### 前端 → 原生桥
+
+`_JsApi.pick_folder`（`launcher.py:196-213`）暴露成 `window.pywebview.api.pick_folder()`。
+**必须住在 launcher 进程**：server 是独立子进程，其 `webview.windows` 恒空，在 server 里调 `create_file_dialog` 永远失败（历史死按钮的根因，注释在 `launcher.py:197-199`）。
+
+---
+
+## 2. 数据落点三分支（最容易踩的坑）
+
+全部逻辑在 `config.py` 顶部，**在任何模块 `import config` 时立刻执行**。
+
+### 2.1 `_bootstrap_bundle_env()`（`config.py:24-51`）
+
+它的存在理由：MCP / CLI 由 Claude Code 直接拉起时不经过 `run_localkb.py`，进程 env 里没有 `LOCALKB_DATA`，
+数据会错落到 `app/data`（只读、且自动更新替换 `app/` 时被清掉），造成「MCP 看到空库 + 假 server 占住 8770」的数据脑裂（`config.py:18-23`）。
+
+```
+APP = Path(__file__).parent          # config.py:15  源码目录 或 bundle/app
+root = APP.parent                    # config.py:27  分发版=bundle/ ；开发机=项目根
+
+is_bundle =  (root/"run_localkb.py").exists()
+          or (root/"python"/"python.exe").exists()
+          or (root/"portable.txt").exists()          # config.py:28-30
+```
+
+| 分支 | 判定 | DATA |
+|---|---|---|
+| **① 源码态（开发）** | `is_bundle` 为假 → 直接 return（`config.py:31-32`） | `LocalKB源码\data`（`config.py:56` 的默认值 `APP/data`） |
+| **② 分发包 + `portable.txt`** | `config.py:33-34` | `<bundle>\data`（包内） |
+| **③ 分发包 无 `portable.txt`** | `config.py:35-37` | `%LOCALAPPDATA%\LocalKB\data`（可被 `LOCALKB_HOME` 覆盖） |
+
+②③ 都会 `os.environ.setdefault("LOCALKB_DATA", …)`（`config.py:43`），且**已有 `LOCALKB_DATA` 时直接 return，尊重外部设定**（`config.py:25-26`）。
+`run_localkb.py`（由 `build_bundle.py:192-224` 生成）在分发包里做同样的事，两处逻辑是刻意的复刻。
+
+DATA 之下的一切派生路径见 `config.py:56-98`：`extracted/ chunks/ lancedb/ bm25/ bm25_meta/ meta/ state/ logs/ wiki/ categories/ pagemap/ summaries/ folder/` 等。
+**日志也跟随 DATA**（`config.py:64`，`LOGS = DATA/"logs"`）——放 `app/logs` 会在自动更新替换 `app/` 时丢失，且装到 Program Files 会因不可写而启动即崩。
+
+### 2.2 MODELS 解析链（`config.py:103-122`）
+
+`_resolve_models()` 顺序：
+
+1. 环境变量 `LOCALKB_MODELS`（`config.py:104-106`）；
+2. `APP/models`——存在 `bge-m3-onnx` 才算（`config.py:107-109`）；
+3. `APP.parent/models`——分发版模型在 bundle 根（`config.py:110-112`）；
+4. 环境变量 `LOCALKB_DEV_MODELS`（`config.py:115-119`）；
+5. 都没有 → 返回 `APP/models`（可能根本不存在，待首启下载）（`config.py:120`）。
+
+**关键：没有硬编码的开发机兜底路径了**（`config.py:113-114` 明写「不再裸写某台开发机的绝对路径」）。
+实测源码树下既无 `LocalKB源码\models` 也无 `知识库应用\models`，所以**源码态跑本地模型必须显式设 `LOCALKB_MODELS`（或 `LOCALKB_DEV_MODELS`）**，否则 MODELS 指向一个不存在的目录，本地 ONNX 嵌入/重排会加载失败。
+（绕开办法：设置里把 backend 切成 `api`，走 SiliconFlow 的 bge-m3 / reranker，不用本地模型。）
+
+`config.py:125-130` 只 mkdir 自有目录，**绝不 mkdir MODELS**。
+`config.py:133-136` 把 `HF_HOME` 指向 MODELS 并强制 `HF_HUB_OFFLINE=1`。
+
+`build_bundle.py:214-218` 与 `config.py:46-49` 的模型选择规则一致：包内有 `models/bge-m3-onnx/model_quantized.onnx` 就用包内，否则用 `HOME/models`。
+
+---
+
+## 3. 三档渐进索引
+
+编排入口 `build_all.py`（`--stage light|semantic|deep|all|folder|deep_prepare|deep_embed`，`build_all.py:20-51`）。
+每档都断点续跑，反复跑 = 增量。
+
+| 档 | 脚本 | 做什么 | 产出 | 代价 |
+|---|---|---|---|---|
+| **L 即时档** | `index_light.py` | 直读 `zotero.sqlite`（或 folder 的 `meta_cache`）→ 题录 → jieba 分词 → bm25 | `data/meta/papers.jsonl`（`index_light.py:202`）、`data/bm25_meta/` + `bm25_meta_ids.json`（`:210-211`）、`stats_cache.json`（`:216`）、`index_manifest.json`（`:229`）、`jieba_legal_dict.txt`（`:100`） | **秒级，0 嵌入 0 token**（`index_light.py:3`） |
+| **S 语义档** | `index_semantic.py` | 对 `papers.jsonl` 中未嵌入的篇做 bge-m3 嵌入 → LanceDB 表 `row_type="meta"` 行 → 重建主 bm25 | LanceDB `chunks` 表的 meta 行（`index_semantic.py:28-45`）、`data/bm25/`（`:126-127`）、进度 `state/meta_embedded.txt` | **约 1-2 分钟**（`index_semantic.py:3`） |
+| **F 深索档** | `extract.py` → `chunk.py` → `embed_index.py` → `page_map.py` | 抽 PDF 逐页文本 → 父子块切分 → 嵌入入表（`row_type="chunk"`）+ 重建 bm25 → 印刷页码映射 | `data/extracted/*.json`、`data/chunks/*.json`、LanceDB chunk 行、`data/pagemap/*.json`、进度 `state/embedded_keys.txt`、扫描件名单 `state/deep_no_text.txt` | **数小时**；开了 SAC 还有每篇 1 次 LLM 调用 |
+
+`build_all.py:39` 定义 `DEEP = [EXTRACT, CHUNK, EMBED, PAGEMAP]`；
+`:43-44` 把深索拆成 `deep_prepare`（extract+chunk）与 `deep_embed`（embed+page_map），
+好让「Agent 写摘要」插在两者之间（见 §8）。
+`:52` 的 `SOFT = {"收藏夹树","AI 主题","印刷页码映射"}` 是非致命步骤，失败只跳过。
+
+### 触发与队列（server 侧）
+
+- `POST /index/light`（`server.py:2478`）—— **同步**在 server 进程内 `importlib.reload(index_light)` 后跑，跑完 `R.load_all()`。
+- `POST /index/semantic`（`server.py:2787`）、`POST /build`（`server.py:2601`，增量 all/folder）—— 走 `_run_build()`（`server.py:2522`）起 `build_all.py` 子进程。
+- `POST /index/deep`（`server.py:2794`）：
+  - `scope="keys:k1,k2"` → 进**持久队列** `enqueue_deep`（`server.py:1222`），批大小 `_DEEP_BATCH=50`、防抖 4s、失败重试 3 次（`server.py:1191-1193`），队列落盘 `state/deep_queue.json`，崩溃后 `_q_boot()` 回灌续跑（`server.py:1205`）。
+  - `scope="all"` → 整库深索，忙时返回 `{ok:false,busy:true}`。
+- 并发保护：`_BUILD_LOCK`（`server.py:30`）把「判 running + 置 True」做成原子，杜绝两个 build 子进程同时写坏 LanceDB。
+- 取消：`POST /build/cancel`（`server.py:2623`）→ `_kill_tree`（`server.py:2609`）用 `taskkill /T /F` 杀整棵进程树（只 terminate 会留下继续烧 API 额度的孤儿 worker）。
+
+### 自动更新
+
+`_auto_update_loop`（`server.py:202`，startup 起的 daemon 线程，`server.py:364`）：
+按 `settings.auto_update`（默认每天 07:00，`settings.py:30-43`）比对 `_source_signature()`（`server.py:148`，Zotero 走 sqlite+**-wal** 的 mtime，folder 走 PDF 数量+最新 mtime）。
+**只跑轻量层+语义，深索永远手动**（`server.py:237`）。
+
+---
+
+## 4. 检索管线（`retriever.py`）
+
+`retriever` 被 `server.py:12` **in-process import**，全局状态在 `STATE`/`M`（`retriever.py:29-30`）。
+
+### 4.1 加载与两种模式（`load_all`，`retriever.py:36`）
+
+- 无表且无 L 档 → `mode=None`，未建库（`:58-61`）。
+- 只有 `bm25_meta` → `mode="light"`，**0 模型加载、秒级就绪**（`:63-68`）。
+- 有 LanceDB 表 → `mode="full"`：加载 embedder + reranker + 全表进内存 `M["records"]` + bm25（`:70-101`）。
+
+`load_all` 顺带热重载 jieba 法律词典（按 mtime，`:41-49`）和 `journal_tiers`（`:50-53`），并载入 wiki index（`_load_wiki_index`，`:126`）。
+
+### 4.2 full 模式管线（`search_full`，`retriever.py:309`）
+
+| 步骤 | 函数 | 行号 |
+|---|---|---|
+| ① dense 召回（LanceDB cosine，topk=50，白名单时 150） | `dense_search` | `retriever.py:158`（配置 `config.py:150-154`） |
+| ② bm25 召回（jieba 分词 + **查询侧同义词扩展**） | `bm25_search` → `_expand_tokens` | `retriever.py:198` / `:167` |
+| ③ RRF 融合（k=60） | `rrf` | `retriever.py:205`（`config.py:155`） |
+| ④ 过滤白名单 + 截池（无 keys 时池 ≤64，有 keys 时 ≤128） | 内联 | `retriever.py:318-325` |
+| ⑤ reranker 精排（cross-encoder） | `M["rerank"].scores(...)` | `retriever.py:328` |
+| ⑥ 同 key 去重（chunk 顶替 meta，`MAX_PER_KEY=2`） | 内联 | `retriever.py:330-354` |
+| ⑦ 权重加成 + 排序 | `_weight_res` → `_apply_sort` | `retriever.py:227` / `:651` |
+| ⑧ 组装输出（含 citation、statute_status、wiki 标记） | 内联 | `retriever.py:357-395` |
+
+light 模式走 `search_light`（`retriever.py:547`）：只有 bm25_meta + `_apply_sort`，无 dense/rerank。
+统一入口是 `search()`（`retriever.py:673`），负责 `min_weight` 过滤与「多取缓冲再截 topk」（`:684-687`，防被降权的 wiki 行白占名额）。
+
+### 4.3 权重加成怎么算（`_weight_res`，`retriever.py:227`）
+
+优先级：**手动改档 > 法源/报告规则 > 期刊分级引擎**。
+
+1. `source_rules.resolve(key, itemtype, title)`（`source_rules.py:149`）——命中即返回；
+2. `journal_grading.resolve_journal_weight({journal, issn}, discipline)`（`journal_grading/resolver.py:80`），带进程级 memo（`retriever.py:239-252`）；
+3. 都算不出 → `None` → `_apply_sort` 回退旧的离散 `TIER_BONUS`（`config.py:169-177`）。
+
+排序（`_apply_sort`，`retriever.py:651`）三种：`relevance` / `tier` / `blend`（默认 blend，`config.py:168`）。
+`blend` 的加成 = `journal_weight × WEIGHT_BONUS_SCALE(0.5)`（`retriever.py:640-649`，`config.py:182`）。
+
+排序分还会被两个**降权**改写（`_effective`，`retriever.py:636`）：
+- `_wiki_effective`（`:584`）——综合页降权，见 §5.3；
+- `_statute_eff`（`:621`）——已废止法条 ×0.5（`config.py:192`）。
+
+两者都遵守同一条血泪教训：**reranker 分可为负，负分乘 factor 反而是提权**，所以正分乘、负分除（`retriever.py:601-605`、`:632-633`）。
+
+---
+
+## 5. 综合层 wiki（`wiki_store.py` / `wiki_vcs.py`）
+
+定位：文献库之上的**附加缓存**，只写 `DATA/wiki/`，删掉不影响文献库/Zotero（`wiki_store.py:9`）。
+`index.json` 是元数据的权威事实源；`.md` 是给人/Obsidian 读的渲染件，且 frontmatter 自足到能重建 index（`_rebuild_index_from_disk`，`wiki_store.py:221`）。
+
+### 5.1 页种（`KIND_DIRS`，`wiki_store.py:119-128`）
+
+| kind | 目录（`config.py:88-95`） | 含义 |
+|---|---|---|
+| `answer` | `wiki/answers/` | 一次 /chat 问答沉淀下来的综述 |
+| `concept` | `wiki/concepts/` | 概念页（按需生成 + 缓存） |
+| `topic` | `wiki/topics/` | 主题页（对应 AI 主题聚类的一簇） |
+| `digest` | `wiki/digests/` | 资料汇编（带印刷页引注） |
+| `outline` | `wiki/outlines/` | 选题框架 / 三级大纲 |
+| `entity` | `wiki/entities/` | 实体页：作者/机构/案件/制度 |
+| `overview` | `wiki/overviews/` | 总论页：随全库演进的 thesis |
+
+**新增页种时只改 `KIND_DIRS`**，所有遍历都用 `KINDS`（`wiki_store.py:118` 明写这条纪律）。
+
+### 5.2 SCHEMA_VERSION 与 `_FACTORY_HASHES`
+
+- `SCHEMA_VERSION = "v2"`（`wiki_store.py:31`）。`WIKI.md`（= `WIKI_SCHEMA_MD`，`config.py:97`）会被 MCP `initialize` **整篇下发给 agent**（`mcp_server.py:90-107`、`:174-177`），所以它过期 = agent 照旧规约干活。
+- `ensure_scaffold()`（`wiki_store.py:131`，server startup 调用于 `server.py:349`）：目录 mkdir + 若 `WIKI.md` 版本旧则升级。
+- **`_FACTORY_HASHES`（`wiki_store.py:172-175`）= 各历史出厂 `WIKI.md` 的「去掉所有空白后」sha1 集合**。
+  `_looks_untouched()`（`:182`）只有当现有 WIKI.md 与某个出厂版**一字不差**时才返回 True，此时才自动升级并把旧版留档为 `WIKI.v{n}.md`（`:149-162`）；
+  一旦用户手改过（哪怕只在末尾追加一行），就**保留用户版本**，只打印提示（`:163-165`）。
+  注释 `:170-171` 解释了为什么不能用「含有某几个特征串」来判断。
+  **改动 `WIKI_MD_SEED` 时必须把旧 seed 的 normalized-sha1 追加进 `_FACTORY_HASHES`**，否则老用户的自动升级会断掉。
+  同款机制在 agent 层也有一份：`agent_ws._LEGACY_WF_HASHES`（`agent_ws.py:353`）。
+
+### 5.3 stale 标记与排序
+
+- `set_stale(page_id, stale, reason)`（`wiki_store.py:791`）、`set_verified`（`:829`，人工核验章）。
+- 检索期降权（`retriever._wiki_effective`，`:584`）：
+  - stale → `× WIKI_STALE_FACTOR = 0.3`（`config.py:201`）；
+  - `kind=="answer"` → `× WIKI_ANSWER_FACTOR = 0.45`（`config.py:205`）——answer 页标题≈用户原问题，reranker 拿 query 对 query 打分天然虚高（实测 7.99 vs 真论文 4.34），不压就是「幻觉复利引擎」；
+  - `by_agent` 且 `verified_at` 为空 → 再 `× WIKI_UNVERIFIED_FACTOR = 0.6`（`config.py:210`），可与 answer 折减叠乘（0.45×0.6=0.27）；
+  - 其余新鲜页 → 只减 `WIKI_BASE_PENALTY = 0.05`（`config.py:196`）。
+- 降权在 **relevance / tier / blend 三种排序下都生效**（`retriever.py:651-670` 的注释：否则 agent 传 `sort=relevance` 就能绕开）。
+- `WikiWriteDenied`（`wiki_store.py:21`）：agent 不得覆盖人工核验过的页；人可以覆盖 agent 的页，反之不行。
+
+### 5.4 三环扳机（Query / Ingest / Lint）
+
+| 环 | 触发点 | 代码 |
+|---|---|---|
+| **Query** | 人点「保存此答案」或 agent 调 `save_synthesis` → `POST /wiki/answer` → `W.save_answer` → 存盘 + 嵌入进表（`retriever.index_wiki_page`） | `server.py:1667-1670`、`wiki_store.py:584`、`retriever.py:486` |
+| **Ingest** | 一批深索**成功后**自动算「这批新文献影响了哪些综述页」，结果落 `state/wiki_suggestions.json`（只建议不动手） | 队列批次：`server.py:1284-1288`（`_on_deep_done`）；整库深索：`server.py:2575-2580`（前后 `_deep_keys()` 差集）；Agent 深索：`server.py:2868`。算法 `_wiki_suggest_batch`（`server.py:1320`）→ `W.propose_updates`（`wiki_store.py:1026`） |
+| **Lint** | 自动更新循环每轮顺带跑（TTL 24h），结果落 `state/wiki_lint.json` | `_wiki_lint_refresh`（`server.py:181`），调用点 `server.py:226`（**刻意放在 `enabled` 判断之前**——体检零成本，不该被自动更新开关关掉）。算法 `W.lint()`（`wiki_store.py:1095`） |
+
+两个待办文件会被 MCP 挂到高频工具输出的尾部，逼 agent 看见（`mcp_server.py:33-64`）。
+
+### 5.5 `wiki_vcs.py` 与 MinGit
+
+- `_find_git()`（`wiki_vcs.py:49-76`）优先级：**包内 MinGit（`<bundle>/git/{cmd,bin,mingw64/bin}/git.exe`）> 环境变量 `LOCALKB_GIT` > 系统 PATH**。
+- 有 git → 真 git 仓库（可 diff/log/回滚）；**没有 git → 自动退回 `.history/<page_id>/<时间戳>.md` 快照**，每页保留 `KEEP_SNAPSHOTS=20` 份（`wiki_vcs.py:22`、`:144-192`，目录 `config.py:98`）。
+- 两种后端同一套接口：`snapshot / history / restore / read_at / commit`（`wiki_vcs.py:208/242/335/232`），上层不必关心。`backend()`（`:133`）返回 `"git"` 或 `"snapshot"`。
+- 提交身份写死为 PaperPiggy 且关掉 gpgsign（`wiki_vcs.py:28-29`）——分发版机器多半没配 `user.email`，不这么做 `git commit` 直接失败。
+- **只版本化 `.md`**，`index.json` 不入库（可由 frontmatter 重建，`wiki_vcs.py:14-15`、`:104`）。
+- MinGit 由 `fetch_mingit.py` 在构建期下载塞进包；没有它也不会坏。
+
+---
+
+## 6. Agent 层
+
+### 6.1 `agent_ws.py`——两个人类可读的文件夹
+
+`ensure_scaffold()`（`agent_ws.py:382`，server startup 调用于 `server.py:358-360`）幂等创建，**绝不覆盖已有文件**（`_write_if_absent`，`:341`）：
+
+```
+0_Agent交付物/          # AGENT_OUTPUT_NAME，config.py:83
+  README.md
+  定时任务/
+0_Agent资料库/          # AGENT_RELY_NAME，config.py:84
+  README.md
+  AI写综述遵守的规约.md      # 由 _rules_summary_text() 生成，agent_ws.py:315
+  记忆/  项目记忆.md（当前真相）、变更日志.md（只增不改）
+  技能/  说明.md、写论文与综述.md、维护综述库.md、跨学科发散与补文献.md
+  参考格式/ 说明.md
+  交付模板/ 交付说明书模板.md
+  定时任务/ 说明.md
+```
+
+**落点（`base_dir()`，`agent_ws.py:18-41`）**：默认 `C.DATA.parent`（源码态 = `LocalKB源码\`，分发态 = `%LOCALAPPDATA%\LocalKB\`）。
+若 folder 模式的受管文件夹里已有非空的 `0_Agent资料库`，就跟着它走（避免老用户记忆孤儿化）。
+历史坑：落点曾随 folder/zotero 模式漂移，表现为「记忆凭空清零」。
+
+**内置工作流常量**：`_WF_PAPER`（`agent_ws.py:197`，写论文/综述）、`_WF_WIKI`（`:228`，维护综述库）、`_WF_DIVERGENCE`（`:253`，跨学科发散与补文献）。
+一个工作流一个 `.md`，agent 中立（Claude Code / Codex 都是读文件夹）。
+旧版单文件 `技能/工作流.md` 由 `_migrate_legacy_workflow()`（`:359`）拆分迁移。
+
+**定时任务**：应用**不执行**任务（`_TASKS_README`，`agent_ws.py:152` 明说「本应用不执行任务」）——只登记/展示，定时触发由 agent 自己的调度器（如 Claude Code 的 scheduled-tasks）负责。
+server 侧 `GET /agent/tasks`（`server.py:649`）解析 `任务.md` 的 frontmatter，`GET /agent/outputs`（`server.py:693`）列最近交付物。
+
+### 6.2 `mcp_server.py`——给外部 AI 编码助手用
+
+零第三方依赖（纯 stdlib + requests，不装 `mcp` 包，`mcp_server.py:4`）。stdio + newline-delimited JSON-RPC 2.0。
+
+- **32 个 TOOLS**（`mcp_server.py:224`，实测 `len(TOOLS)==32`）。分派在 `do_tool()`（`:700`），绝大多数是对 server HTTP 端点的薄封装：
+  检索类 `search_localkb / list_kb_categories / similar_sources / whats_new / list_sources / get_source_meta / read_source`；
+  索引类 `localkb_status / deep_status / deep_index / localkb_build / add_source`；
+  wiki 类 `save_synthesis / list_wiki / get_wiki_page / update_wiki_page / mark_stale / set_wiki_links / get_backlinks / lint_wiki / propose_wiki_updates / pending_wiki_updates`；
+  研究类 `build_digest / research_outline / suggest_new_sources / export_disclosure / resolve_page / format_citation / locate_quote / verify_claim`；
+  记忆类 `read_project_memory / append_project_memory`。
+- **4 个 RESOURCES**（`mcp_server.py:610`）：`localkb://schema`（WIKI.md 全文）、`localkb://index`、`localkb://lint`、`localkb://memory`。
+  外加 1 个 **RESOURCE_TEMPLATE** `localkb://page/{id}`（`:628`）。
+- **3 个 PROMPTS**（`mcp_server.py:635`）= gist 三环的斜杠命令：`ingest-source` / `lint-wiki` / `query-and-file`。
+- `initialize` 时下发 `instructions()`（`:174`）= 固定头 + **WIKI.md 全文** + 工作区说明（`_workspace_text`，`:130`，含项目记忆内联）。
+- server 版本号 `1.2.0`（`mcp_server.py:1453`），协议版本 `2024-11-05`（`:23`）。
+- 前端 Agent 页的接入命令由 `GET /agent/mcp-config`（`server.py:396`）动态吐出（`claude mcp add localkb -- <python> <mcp_server.py>` / mcp.json / codex.toml），**工具数是运行时 `len(MCP.TOOLS)` 读出来的，不写死**（`server.py:416-420`）。
+- 文档 `MCP接入说明.md` 的工具表由 `gen_mcp_doc.py` 从 `TOOLS` 生成——**改了 TOOLS 要跑一次**（`gen_mcp_doc.py --check` 可在提交前校验）。
+
+> 注意：`localkb.py:7-8` 的 docstring 还写着「28 个工具」，已过期（实为 32）。
+
+### 6.3 `skills/localkb-paper/SKILL.md`
+
+随源码分发的 Claude Code 技能包（`server.py:423` 把它的路径吐给前端）。
+注意 `mcp_server.py:1447-1449`：技能**不再**自动装进 `<cwd>/.claude/skills`，统一以「0_Agent资料库/技能/」为唯一落点。
+
+---
+
+## 7. 期刊分级引擎
+
+三层，优先级从高到低：
+
+1. **`source_rules.py`** —— 文献性质定档 + 单篇手动改档。
+   - `resolve(key, itemtype, title)`（`:149`）：**手动改档（`data/tier_overrides.json`，由 `POST /paper/tier` 写，按 mtime 热重载）> 条目类型 > 标题规则**。
+   - 法源（statute/case/standard）→ `T1b` 权重 0.92；报告（report）→ `T2` 权重 0.85（`ITEMTYPE_TIER`，`:22`；`TIER_W`，`:18`）。
+   - 标题规则 v3（`RE_LAW`/`RE_REPORT`/`RE_EXCLUDE`，`:37-53`）**只对 `TITLE_SCOPE` 里的非学术条目类型生效**（`:25`）——论文标题里出现法名绝不能被误升。报告词先于法源词判定（`classify_title`，`:124-136`）。
+   - 存在理由：期刊分级引擎只认刊名，法规/白皮书没有刊名会被压成"待确认"(0.175)，比普刊还低（`source_rules.py:4`）。
+2. **`journal_grading/`**（包）—— 按学科的连续权重引擎。
+   - `resolver.resolve_journal_weight(item, discipline)`（`resolver.py:80`）：期刊识别 → 取所有命中目录的级别信号 → priority-max 定主档位 → 查档位分 → 乘中/外系数 → clamp[0,1]。
+   - `catalogs/*.json`（15 个目录）：`sjr / pku / cssci / clsci / ami / fms / if_cnki / ssci / ssci_law_authority / ahci / abs / ft50 / erih / law_review_top / newspaper`。
+   - 配置 `config/grading_config.json`（档位表、优先级、学科定义、可见目录）；加载层 `loader.py`（`by_issn` / `by_name` 索引）；识别层 `identify.py`；归一化 `normalize.py`；自检 `selftest.py`。
+   - 未识别 → `tier="待确认"`、`needs_review=True`，**不静默按普通档发**（`resolver.py:14`）。
+   - 学科从 `settings.journal_discipline` 实时读（默认 `"law"`，可选 `"law_personal"`），**改设置即时生效、不用重建索引**（`retriever.py:217-223`、`settings.py:25-27`）。
+3. **`journal_tiers.py`** —— 旧的离散档（CLSCI/CSSCI/普刊/…），数据在 `journal_tiers.json`。作为兜底：引擎算不出时 `_apply_sort` 用 `config.TIER_BONUS`（`config.py:169-177`）。索引期写进表的 `journal_tier` 列也是这套。
+
+**`grading_svc.py`** 是给 UI/统计用的服务层：`grade()`/`grade_paper()`（`:110`/`:140`）带落盘 memo（`data/grading_memo.json`）、`weight_dist()`（`:163`）算全库分布（`data/grading_dist.json`），`warm_async()`（`:226`）在 server 启动后台预热（首次冷算 20+s，`server.py:372-377`）。
+`TIER_CN`（`grading_svc.py:30`）把 `T1..T5` 映射成中文档名（权威/准权威/核心/次核心/一般/普通），`retriever._TIER_CN`（`:256`）是同一份表的副本。
+
+---
+
+## 8. SAC（深索摘要，`sac.py`）
+
+**是什么**：用 LLM 给每篇文献生成 ~150 字中文摘要，作为**嵌入前缀**提升检索召回（`sac.py:3-7`）。
+存 `data/summaries/summaries.json`，键是 `safe_name(stem)`。
+
+**跟 `embed_index` 的关系**（这是它唯一的消费点）：
+
+- `embed_index.load_summaries()`（`embed_index.py:22`）读 `summaries.json`；
+- 若 `sac.enabled()` 为真，**先给本轮待嵌入且缺摘要的篇生成摘要**（`embed_index.py:104-124` → `sac.ensure_for`，`sac.py:142`）；
+- 嵌入时拼前缀：`embed_texts = [f"{summ}\n\n{c['text']}" for c in chunks]`（`embed_index.py:145-150`）。
+  **摘要只进「嵌入文本」，存表的 `text` 仍是原文**（展示/重排/BM25 用的都是原文）。
+
+**三种 generator**（`settings.sac_conf()`，`settings.py:177-185`，字段 `generator ∈ server|agent|off`，老配置按 `enabled` 迁移）：
+
+- `server` —— 服务端用 API key 自动生成（`sac.enabled()` 仅在此档为真，`sac.py:63-68`）；
+- `agent` —— **服务端不生成**，摘要由 Agent 经 `POST /index/deep_agent`（`server.py:2896`）写进 `summaries.json`（`sac.write_summaries`，`sac.py:71`）。流程：`deep_prepare`（切块）→ 返回正文节选给 Agent → Agent 写摘要 → `deep_embed`（带摘要嵌入）。**这一档下应用内点普通深索是不产摘要的**；
+- `off` —— 不生成，退化为纯文本嵌入。
+
+**补生成**：`POST /index/sac_backfill`（`server.py:3018`）给「已深索但缺摘要」的篇补摘要并**重新嵌入**（`_sac_backfill_worker`，`server.py:2967`，会先 `_unmark_deep` 再重跑）。
+`sac.gen_missing()`（`sac.py:107`）**不受 generator 门控**——用户显式点补生成时无论哪一档都生成。
+
+---
+
+## 9. 前端（`web/`）
+
+`web/index.html`（52KB）+ `web/app.js`（265KB，单文件 IIFE，原生 JS 零依赖）+ `web/style.css`。**无构建步骤**，`server.py:3162` 直接 `app.mount("/static", StaticFiles(web/))`。
+
+六个顶层 tab（`web/index.html:13-20`，对应 `<main id="panel-*">`）：
+
+| tab | panel | app.js 分区 | 说明 |
+|---|---|---|---|
+| 📊 库总览 | `panel-dashboard`（`:80`） | `app.js:1022` | 仪表盘，全部手绘 SVG/CSS |
+| 📚 浏览 | `panel-browse`（`:170`） | `app.js:1401` | 左树（收藏夹/AI 主题）+ 右列表 + 选择性深索 |
+| 🤖 Agent | `panel-agent`（`:296`） | `app.js:2414` | MCP 接入引导（本机真实命令 + 工具表 + 交付物/资料库入口 + 定时任务） |
+| 📖 综述库 | `panel-wiki`（`:241`） | `app.js:1715`（综合层生成）/ `app.js:2049`（综合页书架） | wiki 页列表、新建综述、打开/重生/删除 |
+| 🔍 检索 | `panel-search`（`:52`） | `app.js:608` | 检索 + 结果卡 |
+| 💬 对话 | `panel-chat`（`:505`） | `app.js:2845` | SSE 流式 RAG 对话 |
+
+其余分区：设置弹窗（`app.js:2977`，`#settings-modal` @ `index.html:544`）、手动更新（`app.js:3429`）、**首启向导**（`app.js:3479`，`#wizard` @ `index.html:777`）、文件夹模式拖入/选择 PDF 入库（`app.js:4162`）。
+另有常驻索引进度条 `#idx-progress` 与深索详情面板 `#deep-panel`（`index.html:27-49`）。
+
+---
+
+## 10. 关键模块速查表
+
+### 运行时必需（server / MCP / 检索链路）
+
+| 文件 | 一行说明 |
+|---|---|
+| `config.py` | 中央路径与参数。**所有路径改动只改这里**；import 即执行分发包环境引导 |
+| `server.py` | FastAPI 全部业务端点（160KB，96 个路由）+ 构建编排 + 深索队列 + 自动更新循环 |
+| `launcher.py` | pywebview 原生窗口 + server 子进程生命周期 + 原生目录选择器桥 |
+| `mcp_server.py` | stdio MCP server：32 TOOLS / 4 RESOURCES / 1 template / 3 PROMPTS |
+| `localkb.py` | CLI（`--status` / `--build` / 查询三件事）；完整能力走 MCP |
+| `retriever.py` | 检索核心：dense+bm25 → RRF → rerank → 权重/降权排序。被 server in-process import |
+| `embedder.py` | bge-m3 dense 嵌入器（本地 ONNX-INT8） |
+| `siliconflow_embedder.py` | OpenAI 兼容 `/embeddings` 的 drop-in 嵌入器（API 模式） |
+| `reranker.py` | bge-reranker-v2-m3 重排（**只走 ONNX-INT8，不 import torch**） |
+| `settings.py` | `data/settings.json` 读写；backend(local/api)、source(zotero/folder)、sac、auto_update、discipline 的单一事实源 |
+| `llm.py` | OpenAI 兼容 chat（流式），内置服务商预设 |
+| `textutil.py` | jieba 分词（建库与查询必须同一套）+ clean/safe_name/de_emoji |
+| `legal_lexicon.py` | 法学同义词/核心术语出厂词表（纯数据，零依赖、不 import config） |
+| `dbutil.py` | LanceDB 谓词工具：由 `safe_name(stem)` 反查真实原始 key（否则删除失效/重复入库） |
+| `journal_tiers.py` | 旧离散期刊档（CLSCI/CSSCI/…），兜底用 |
+| `journal_grading/` | 期刊权重引擎（loader/identify/normalize/resolver + `catalogs/*.json` + `config/grading_config.json`） |
+| `grading_svc.py` | 分级服务层：memo 缓存、全库权重分布、启动预热 |
+| `source_rules.py` | 法源/报告规则定档 + 手动改档（优先级高于期刊分级） |
+| `wiki_store.py` | 综合层存储：页种、frontmatter、index.json、stale/verified、lint、propose_updates、synthesize |
+| `wiki_vcs.py` | wiki 版本历史：有 git 用 git（含包内 MinGit），无 git 退回 `.history` 快照 |
+| `agent_ws.py` | 0_Agent交付物 / 0_Agent资料库 脚手架、内置工作流、项目记忆、定时任务约定 |
+| `sac.py` | 深索摘要（嵌入前缀）生成/合并/补生成 |
+| `research_assistant.py` | 研究助手编排：digest（带页级引注的资料汇编）/ scope（选题+大纲）/ suggest_sources |
+| `verify_claim.py` | 论断核验器，三态（supported / not_in_lib / mismatch）。**库内无 ≠ 论断为假** |
+| `textloc.py` | 引文定位：一段引文 → 哪篇、PDF 第几页、印刷页第几页 |
+| `cite_format.py` | 引注格式引擎（《法学引注手册》子集）——**规则做格式，绝不交 LLM** |
+| `page_map.py` | PDF 顺序页 → 期刊印刷页码映射 sidecar（引注的地基） |
+| `zotero_source.py` | 直读 `zotero.sqlite`（Zotero 开着时读只读副本） |
+| `folder_source.py` | 文件夹模式数据源：扫 PDF + 读 meta_cache（不调 LLM）。**排除 `0_Agent*` 前缀目录** |
+| `folder_meta.py` | 文件夹模式：LLM 从 PDF 首 1-2 页抽题录（严格 JSON + 兜底） |
+| `folder_ingest.py` | 文件夹模式 build 步骤：并发抽题录写 meta_cache（必须先于 index_light） |
+| `models_bootstrap.py` | 首启从云端下载两个 INT8 ONNX 模型（~1.2GB），校验 sha256 + 解压 |
+
+### 建库管线（子进程，由 `build_all.py` 编排）
+
+| 文件 | 一行说明 |
+|---|---|
+| `build_all.py` | 建库编排器：`--stage light/semantic/deep/all/folder/deep_prepare/deep_embed` |
+| `index_light.py` | L 档：题录 → papers.jsonl + bm25_meta + stats_cache + manifest（秒级，0 嵌入） |
+| `index_semantic.py` | S 档：题录嵌入 → LanceDB meta 行 + 重建主 bm25（1-2 分钟） |
+| `extract.py` | F 档 ①：有 PDF 的篇 → 逐页文本 `data/extracted/`（ThreadPool，断点续跑） |
+| `chunk.py` | F 档 ②：逐页文本 → 父子块 `data/chunks/`（child ~500字 / parent = 整页） |
+| `embed_index.py` | F 档 ③：块嵌入（可拼 SAC 前缀）→ LanceDB chunk 行 + 重建 bm25 |
+| `build_categories.py` | 读 zotero.sqlite 收藏夹树 → `data/categories/zotero_collections.json`（零嵌入，秒级） |
+| `build_ai_topics.py` | 全库向量 KMeans 聚类 + jieba 高频词命名 → `data/categories/ai_topics.json`（零 LLM） |
+
+### 开发 / 构建专用（**不进运行时**）
+
+| 文件 | 一行说明 |
+|---|---|
+| `build_bundle.py` | 组装可分发 bundle（`dist/LocalKB/`：python/ app/ models/ data/ + run_localkb.py/启动.bat/LocalKB.vbs）。`--sync-only` 只刷 app/ |
+| `pack_models.py` | 打包「瘦模型」资产（`.tar.gz` + `models_manifest.json`，含 sha256），供首启下载 |
+| `fetch_mingit.py` | 下载 MinGit 塞进 `<bundle>/git/`，让分发版用户也有真 git（无它则退回快照） |
+| `gen_mcp_doc.py` | 从 `mcp_server.TOOLS` 生成 `MCP接入说明.md` 的工具表；`--check` 可校验过期（改 TOOLS 后必跑） |
+| `setup_reranker_onnx.py` | 开发机一次性：导出 reranker → ONNX → INT8 量化 + 验证排序一致性 |
+| `import_fulltext.py` | 一次性迁移：把旧 rag 知识库的全文块导进 LocalKB（复用向量，省数小时） |
+| `fix_schema.py` | 一次性迁移：LanceDB `page` 列 Null type → Int64 |
+| `journal_grading/migrate_legacy.py` / `selftest.py` | 分级引擎的迁移与自检脚本 |
+| `sync_app.ps1` | **改完源码把代码同步进已构建 bundle 的 `app/`**（不碰 python/ 与 models/）。ASCII-only，Windows PS 5.1 会误解析无 BOM 的 UTF-8 .ps1 |
+| `启动.bat` | 源码态/分发态的双击入口（找 pythonw → 跑 launcher / run_localkb） |
+
+### 依赖
+
+`requirements.txt`：fastapi / uvicorn / lancedb>=0.33 / onnxruntime(<2) / transformers(仅 tokenizer) / tokenizers / bm25s / jieba / scikit-learn / pymupdf4llm / python-docx / requests / pywebview / pythonnet。
+**无 torch**（reranker 只走 onnxruntime，打包省 526MB）。`requirements.lock` 是冻结版。
+
+---
+
+## 11. 接手前必读的几条铁律
+
+1. **只改 `LocalKB源码\`**，改完用 `sync_app.ps1` 同步到 bundle 的 `app\`。直接改 `app\` 会被覆盖。
+2. **源码态要用本地模型必须显式设 `LOCALKB_MODELS`**（§2.2），否则 MODELS 指向不存在的 `LocalKB源码\models`。
+3. **建索引与查询必须用同一个 backend**（local ONNX-INT8 vs API 全精度，向量不一致会掉点）——`settings.py:5-6` 把它列为铁律，backend 写进 `index_manifest.json`。
+4. **改 `WIKI_MD_SEED` 要同步追加旧版 sha1 到 `_FACTORY_HASHES`**（§5.2），否则老用户的 WIKI.md 自动升级会静默断掉。
+5. **改 `mcp_server.TOOLS` 要跑 `python gen_mcp_doc.py`**，否则 `MCP接入说明.md` 的工具表过期。
+6. **给排序加惩罚项前先量真实分数尺度**：reranker 分是 0~10+ 且**可为负**。减法常数（0.05/0.5）在这个尺度下形同虚设；乘法在负分域会反向提权。正确写法看 `retriever._wiki_effective`（`:601-619`）。
+7. **wiki 是附加缓存，不是事实源**：`.md` 的 frontmatter 才是权威（能重建 index.json），删 `data/wiki/` 不影响文献库。
+8. **agent 写回的页默认不可信**：`by_agent=True` 且未 `verified_at` 的页在检索里被叠乘降权到 0.27。别为了「让 agent 写的页排前面」把这个拆了——那是幻觉复利。
+
+---
+
+## 附：待核清单
+
+- `config.py:163` 的 `IDLE_TIMEOUT = 1800` 未找到消费方，疑似遗留常量（未全库确认）。
+- `web/app.js` 265KB 只按分区注释归类，未逐函数核对；表中的分区行号是分区标题所在行。
+- `journal_grading/config/grading_config.json` 的档位表/优先级/学科定义未逐字读，只读了 `loader.py`/`resolver.py` 的消费方式。
+- `research_assistant.py` / `verify_claim.py` / `textloc.py` / `page_map.py` 只读了模块 docstring 与 server 侧端点签名，内部算法未逐行核对。
+- `server.py` 的 96 个路由只清点了签名与关键几处实现，未全部读完。
+- `localkb.py:7-8` docstring 写「28 个工具」，与实测 `len(TOOLS)==32` 不符——是文档过期而非代码问题（可顺手修）。

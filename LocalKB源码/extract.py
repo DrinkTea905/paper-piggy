@@ -24,34 +24,37 @@ except Exception:
 META_FIELDS = ("title", "author", "year", "journal", "doi", "langid",
                "official_pages", "itemtype", "journal_tier", "has_pdf")
 
-# PDF 逐页取文本：优先 pymupdf4llm（markdown 结构更规整），但新版 pymupdf4llm 会在
-# import 时无条件 `import onnxruntime`（其 OCR 模块），而打包版 onnxruntime 若缺 VC++
-# 运行库/DLL 初始化失败，会让整个 import 抛错——从而**每篇 PDF 提取都失败、深索静默产出
-# 空正文**。因此这里探测一次：能用就用 markdown，不能用（或运行期异常）就回退到纯 pymupdf
-# (fitz) 逐页文本。数字版 PDF（法学期刊）用 fitz 足够，且完全不依赖 onnxruntime / 联网。
-try:
-    import pymupdf4llm as _p4l          # 触发其（可能失败的）onnxruntime import
-except Exception as _e:
-    _p4l = None
-    print(f"[extract] pymupdf4llm 不可用（{type(_e).__name__}），改用 pymupdf 纯文本提取。", flush=True)
-import pymupdf as _fitz                 # 始终可用；不依赖 onnxruntime
+# PDF 逐页取文本：用 pypdfium2（Google PDFium 的绑定，BSD-3/Apache-2.0）。
+#
+# 【为什么不是 PyMuPDF/pymupdf4llm】——2026-07 换掉，三个理由，缺一不可：
+#   ① 许可证：pymupdf4llm 强制依赖 pymupdf_layout（Polyform Noncommercial，禁止商业使用、
+#      非 OSI 开源），PyMuPDF 本身是 AGPL。随开源包分发它们与本项目的 Apache-2.0 冲突。
+#   ② 质量：实测 6 篇真实法学 PDF，pymupdf4llm 的 markdown 转换会把**中文标点错序**
+#      （句号/引号跑到句首），而三者提取的中文字符数完全相同——markdown 那点结构收益
+#      根本不抵这个损失。pypdfium2 的断行最少、标点最准。
+#   ③ 速度与稳定性：pymupdf4llm 单篇 9s 量级（pypdfium2 0.1~0.4s），且它 import 时会无条件
+#      `import onnxruntime`（其 OCR 模块）——打包版若缺 VC++ 运行库，会让整个 import 抛错，
+#      表现为**每篇 PDF 提取都失败、深索静默产出空正文**。换掉后这条隐患一并消失。
+#
+# 与之前一样：不做 OCR，扫描版 PDF 取不到文本（返回空页，由上层跳过）。不联网。
+import pypdfium2 as _pdfium
 
 def _extract_pages(pdf):
-    """返回 [{'page': i, 'text': ...}]（只保留有文本的页）。pymupdf4llm 优先，异常回退 fitz。"""
-    if _p4l is not None:
-        try:
-            md = _p4l.to_markdown(pdf, page_chunks=True, show_progress=False)
-            pages = [{"page": i + 1, "text": (pg.get("text") or "").strip()}
-                     for i, pg in enumerate(md) if (pg.get("text") or "").strip()]
-            if pages:
-                return pages
-            # markdown 解析出 0 页文本时也回退 fitz 再试一次（更稳）
-        except Exception:
-            pass
-    doc = _fitz.open(pdf)
+    """返回 [{'page': i, 'text': ...}]（只保留有文本的页）。"""
+    doc = _pdfium.PdfDocument(pdf)
     try:
-        return [{"page": i + 1, "text": t}
-                for i, t in enumerate((pg.get_text() or "").strip() for pg in doc) if t]
+        pages = []
+        for i in range(len(doc)):
+            page = doc[i]
+            tp = page.get_textpage()
+            try:
+                t = (tp.get_text_range() or "").strip()
+            finally:
+                tp.close()
+                page.close()
+            if t:
+                pages.append({"page": i + 1, "text": t})
+        return pages
     finally:
         doc.close()
 
