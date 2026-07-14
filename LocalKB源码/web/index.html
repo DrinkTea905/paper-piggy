@@ -81,6 +81,88 @@
     <div id="dash" class="dash">
       <div class="dash-loading">加载库统计中…</div>
     </div>
+
+    <!-- ══ 库总览·新手指引 全屏浮层（点首页「📖 新手指引」打开，✕/Esc 关）══ -->
+    <!-- ⚠ 维护铁律：功能更新时这份新手指引也要同步更新（记忆 localkb-agent-7point-redesign 已记）。 -->
+    <div class="ag-guide" id="home-guide" hidden>
+      <div class="ag-guide-head">
+        <div class="ag-guide-title">📖 新手指引 · 把 PaperPiggy 养成你的专属知识库</div>
+        <button class="ag-guide-close" id="home-guide-close" type="button">✕ 关闭</button>
+      </div>
+      <div class="ag-guide-body">
+        <div class="hg-visual" id="hg-visual"></div>
+
+        <section class="ag-ch">
+          <div class="ag-ch-n">1</div>
+          <div class="ag-ch-c">
+            <h3>PaperPiggy 是什么</h3>
+            <p>它是你的<b>本地文献知识库</b>：把论文 PDF 喂进来，它替你<b>精读、秒级检索、按页码引用、写综述</b>。<b>文献始终留在你电脑上</b>，不上传任何服务器。</p>
+            <p class="ag-note">三种用法，由轻到重：① 在应用里直接<b>检索</b>；② 用内置<b>对话</b>问（填一个大模型 Key）；③ 接进 <b>🤖 AI 助手</b>（Claude Code 等），让它替你系统性地查库、写作、养库。</p>
+          </div>
+        </section>
+
+        <section class="ag-ch">
+          <div class="ag-ch-n">2</div>
+          <div class="ag-ch-c">
+            <h3>第一步 · 把文献喂进来</h3>
+            <p class="ag-note">两种来源，二选一（首次会有向导带你走）：<br>· <b>Zotero</b>：直接读你的 Zotero 库，新增文献后自动增量入库。<br>· <b>文件夹</b>：把 PDF 放进一个文件夹（或直接拖进窗口），AI 自动抽题录入库。<br>入库后<b>题录秒建</b>，马上能按标题 / 作者 / 摘要搜到。</p>
+          </div>
+        </section>
+
+        <section class="ag-ch">
+          <div class="ag-ch-n">3</div>
+          <div class="ag-ch-c">
+            <h3>第二步 · 深索（让回答精确到页码）</h3>
+            <p class="ag-note"><b>深索</b>＝把 PDF 全文拆成可检索的小段。<b>只有深索过的文献</b>才能被精读、页级引用、跨篇综合；未深索的只有题录 + 摘要。在「📚 浏览」里挑文献深索，建议慢慢把常用的喂完——<b>可放后台跑，不影响使用</b>。</p>
+          </div>
+        </section>
+
+        <section class="ag-ch">
+          <div class="ag-ch-n">4</div>
+          <div class="ag-ch-c">
+            <h3>第三步 · 检索与提问</h3>
+            <p class="ag-note">· <b>「🔍 检索」</b>：抛一个研究问题，全库秒找相关文献与原文段落，按<b>期刊权威度</b>排序、精确到<b>印刷页码</b>。<br>· <b>「💬 对话」</b>：不想自己翻，就用大白话问，它读你的库回答、每句可回溯到来源页（需在对话页填一个大模型 API Key，硅基流动等有免费额度）。</p>
+          </div>
+        </section>
+
+        <section class="ag-ch">
+          <div class="ag-ch-n">5</div>
+          <div class="ag-ch-c">
+            <h3>第四步 · 养库（越用越厚）</h3>
+            <p class="ag-note">好答案不该说完就忘。它能把结论沉淀成<b>「📖 综述库」</b>——带页码引用、可复用、下次直接命中；还能记住你的偏好与进度（<b>记忆</b>），甚至定期帮你搜集动态（<b>定时任务</b>）。喂得越勤，小猪越懂你。</p>
+          </div>
+        </section>
+
+        <section class="ag-ch">
+          <div class="ag-ch-n">6</div>
+          <div class="ag-ch-c">
+            <h3>内置「对话」 vs 「🤖 Agent」，怎么选？</h3>
+            <div class="ag-trio">
+              <div class="ag-trio-i"><b>💬 内置对话</b><span>随手问答、带页码；一次看少量来源；答案默认不自动沉淀。轻量、开箱即用。</span></div>
+              <div class="ag-trio-i"><b>🤖 接 AI 助手</b><span>跨会话累积、系统化综述、写回交付物 / 综述 / 记忆、定时任务。更强，适合做研究、写论文。</span></div>
+            </div>
+            <p class="ag-note">两条路都可用，按需选。想深入用 Agent，去「🤖 Agent」页点开那里的完整教程。<button class="ag-link ag-linkbtn" id="hg-to-agent" type="button">→ 去看 Agent 教程</button></p>
+          </div>
+        </section>
+
+        <section class="ag-ch">
+          <div class="ag-ch-n">7</div>
+          <div class="ag-ch-c">
+            <h3>自动更新与隐私</h3>
+            <p class="ag-note">· <b>自动更新</b>：在「⚙ 设置 → 自动更新知识库」可设按天定时增量入库（默认每天 7:00）；也能随时点顶栏「⟳ 手动更新知识库」。<br>· <b>隐私</b>：<b>全程本地</b>，文献不出你的电脑；大模型 Key 只存本机浏览器与本地服务内存，不上传第三方（除你自己选的模型服务商）。</p>
+          </div>
+        </section>
+
+        <section class="ag-ch">
+          <div class="ag-ch-n">8</div>
+          <div class="ag-ch-c">
+            <h3>小贴士</h3>
+            <p class="ag-note">· 顶栏这几个页签<b>可以拖动调整顺序</b>，把最常用的放前面。<br>· 想重看这份指引：随时点首页「📖 新手指引」；想重走安装向导：「⚙ 设置」里有入口。<br>· 深索是慢功夫——先深索你最关心方向的文献，问答立刻更扎实。</p>
+          </div>
+        </section>
+
+      </div>
+    </div>
   </main>
 
   <!-- 浏览面板：左树 + 右列表 -->
@@ -212,82 +294,196 @@
   <!-- Agent 页面板（MCP 接入引导：真实命令 + 工具表 + prompt 示例） -->
   <main id="panel-agent" class="panel" data-panel="agent" hidden>
     <div class="agent-page">
-      <!-- 紧凑标题栏（跨满一行） -->
+      <!-- 极简标题栏（跨满一行） -->
       <section class="ag-hero">
         <div class="ag-hero-ic">🤖</div>
         <div class="ag-hero-txt">
-          <h2>把文库接进 Claude Code / Codex</h2>
-          <p>让 AI 直接查你的库、读页码、写回综合——文献始终留在本机。</p>
+          <h2>AI 助手驱动你的知识库</h2>
+          <p>成品、专属资料库、定时任务都在你本机、人类可读；换任何 AI 助手都能接着用。</p>
         </div>
         <div class="ag-run" id="ag-run"><span class="ag-dot"></span><span id="ag-run-txt">检查服务状态…</span></div>
       </section>
 
-      <!-- 左列：① 一键接入（含先决条件一行提示） -->
-      <section class="ag-card">
-        <h3>① 一键接入（本机路径已填好）</h3>
-        <p class="ag-prereq">需先装好 <b>Claude Code</b>（<a href="https://docs.claude.com/en/docs/claude-code/overview" target="_blank" rel="noopener">装法</a>）或 <b>Codex</b>（<a href="https://github.com/openai/codex" target="_blank" rel="noopener">装法</a>）。装没装？终端里输 <code>claude</code> 或 <code>codex</code>，能进对话就是装好了。</p>
-        <div class="ag-tabs">
-          <button class="ag-t active" data-agtab="claude">Claude Code</button>
-          <button class="ag-t" data-agtab="codex">Codex</button>
-          <button class="ag-t" data-agtab="json">通用 mcp.json</button>
-        </div>
-        <div class="ag-pane" data-agpane="claude">
-          <p class="ag-step">在任意 Claude Code 会话里粘贴运行：</p>
-          <div class="ag-code"><code id="ag-claude"></code><button class="ag-copy" data-copy="ag-claude">复制</button></div>
-          <label class="ag-scope"><input type="checkbox" id="ag-scope-user" /> 让所有项目都能用
-            <span class="ag-scope-tip" title="默认只在当前项目/目录里能用 PaperPiggy；勾选后在你电脑上的任何项目里都能用（相当于全局安装）。">（这是什么？）</span></label>
-        </div>
-        <div class="ag-pane" data-agpane="codex" hidden>
-          <p class="ag-step">编辑 <code>~/.codex/config.toml</code>，粘贴：</p>
-          <div class="ag-code"><code id="ag-codex"></code><button class="ag-copy" data-copy="ag-codex">复制</button></div>
-        </div>
-        <div class="ag-pane" data-agpane="json" hidden>
-          <p class="ag-step">项目根目录建 <code>.mcp.json</code>，粘贴：</p>
-          <div class="ag-code"><code id="ag-json"></code><button class="ag-copy" data-copy="ag-json">复制</button></div>
-        </div>
-        <div class="ag-warn">⚠ <b>配好后新开一个会话才生效</b>。新会话输入 <code>/mcp</code> 应能看到 <code>localkb</code><span id="ag-tool-count"></span>。</div>
+      <!-- 📦 交付物 -->
+      <section class="ag-card ag-folder">
+        <h3>📦 你的交付物</h3>
+        <p class="ag-note">AI 助手替你写的成品（论文、资料汇编、周报）都放这，<b>每个主题一个文件夹</b>。产出前，和你的助手<b>商量清楚交付形态</b>（篇幅 / 引注 / 要不要 .docx）。</p>
+        <div class="ag-folder-path" id="ag-output-path"></div>
+        <button class="ghost2 ag-openbtn" data-open="output">📂 打开交付物文件夹</button>
       </section>
 
-      <!-- 右列：② 接好后说什么 -->
-      <section class="ag-card">
-        <h3>② 接好后，直接说大白话</h3>
-        <p class="ag-note">不用记命令，用大白话说，它自己查库、读页码、写回综合。比如：</p>
-        <ul class="ag-prompts" id="ag-prompts"></ul>
-        <p class="ag-note ag-flow-hint">💡 更进一步：说「<b>帮我做一份带页码引用的资料汇编</b>」，它会检索 → 分节综述（引注到期刊印刷页）→ 诚实标缺口，产出自动存进「📖 综述库」随时复用。</p>
+      <!-- 📚 专属资料库 -->
+      <section class="ag-card ag-folder">
+        <h3>📚 专属资料库</h3>
+        <p class="ag-note">AI 助手专属：放<b>记忆、技能、参考格式、交付模板、定时任务</b>。换了 AI 助手也会自动读取这里、无缝接上；AI 会自己维护、保持人类可读。</p>
+        <div class="ag-folder-path" id="ag-rely-path"></div>
+        <button class="ghost2 ag-openbtn" data-open="rely">📂 打开资料库文件夹</button>
       </section>
 
-      <!-- EN-F6：更多接入方式——OpenAPI 文档（自写脚本/非 MCP 框架）+ Claude Code 技能包 -->
-      <section class="ag-card">
-        <h3>③ 更多接入方式</h3>
-        <p class="ag-note"><b>🌐 自己写脚本？</b>本地服务自带一份「接口说明书」（OpenAPI 文档）：浏览器打开
-          <a href="http://127.0.0.1:8770/docs" target="_blank" rel="noopener">http://127.0.0.1:8770/docs</a>，
-          能看到全部接口、参数和试调按钮——不用 MCP 也能把库接进任何脚本或框架。</p>
-        <p class="ag-note"><b>📦 Claude Code 技能包（localkb-paper）：</b>装上它，Claude Code 不用你现场教，就知道怎么查库、按页码核对引注、写规范综述。
-          装法很简单：把下面这个文件夹<b>整个复制</b>到你项目的 <code>.claude/skills/</code> 目录下，新开一个会话就生效。</p>
-        <div class="ag-code"><code id="ag-skill-path">LocalKB\app\skills\localkb-paper</code><button class="ag-copy" data-copy="ag-skill-path">📋 复制路径</button></div>
+      <!-- ⏰ 定时任务（跨满一行）——读本地「资料库/定时任务」展示；执行由用户的 AI 助手负责 -->
+      <section class="ag-tasks-card ag-full">
+        <div class="ag-tasks-h">⏰ 定时任务 <span class="ag-tasks-sub">让 AI 助手定期帮你搜集 / 综述（如少年司法周报）</span></div>
+        <div id="ag-tasks" class="ag-tasks-list">读取定时任务…</div>
+        <p class="ag-note ag-tasks-note">任务定义存在「资料库 › 定时任务」（换 AI 助手也能读、照着重建）；成果落「交付物 › 定时任务」；每跑完一次，AI 会依时效内容更新综述库。<br><small>说明：定时触发由你的 AI 助手在它自己的日程里执行——本应用不联网、不含大模型，只负责登记、展示与把成果入库。</small></p>
       </section>
 
-      <!-- 底部折叠：深索 / 权限 / 完整能力表（默认收起，一屏能装下上面的核心） -->
-      <details class="ag-more ag-full">
-        <summary class="ag-more-sum">▸ 更多：深索是什么 · 它怎么动你的库 · 完整能力表</summary>
-        <div class="ag-more-body">
-          <div class="ag-more-col">
-            <h4>📖 关于「深索」</h4>
-            <p class="ag-note"><b>已深索</b>的文献 AI 能读到精确页码的正文；<b>未深索</b>的只有题录+摘要。想某方向问答更扎实，先去「📚 浏览」深索它。</p>
+      <!-- 🧭 教程入口（点开＝全屏完整教程；接入 / 用法 / 能力 / 安全都在里面）——保持主页清爽 -->
+      <button class="ag-guide-open ag-full" id="ag-guide-open" type="button">
+        <span class="ag-guide-ic">🧭</span>
+        <span class="ag-guide-txt">
+          <b>这套「AI 助手驱动知识库」是怎么帮你的？</b>
+          <small>第一次用、或想搞懂它到底能干啥 → 点开看完整教程：怎么接入、怎么用、成果去哪、能力清单、安全边界</small>
+        </span>
+        <span class="ag-guide-cta">点开教程 →</span>
+      </button>
+    </div>
+
+    <!-- ══ 全屏教程浮层（默认隐藏，点 🧭 打开）——层层递进，覆盖 agent 功能方方面面 ══ -->
+    <!-- ⚠ 维护铁律：agent 功能每次更新，这份教程必须同步更新（记忆 localkb-agent-7point-redesign 已记）。 -->
+    <div class="ag-guide" id="ag-guide" hidden>
+      <div class="ag-guide-head">
+        <div class="ag-guide-title">🧭 这套「AI 助手驱动知识库」怎么帮你 · 完整教程</div>
+        <button class="ag-guide-close" id="ag-guide-close" type="button">✕ 关闭</button>
+      </div>
+      <div class="ag-guide-body">
+
+        <!-- 第 1 章：它是什么 -->
+        <section class="ag-ch">
+          <div class="ag-ch-n">1</div>
+          <div class="ag-ch-c">
+            <h3>它是什么（一分钟看懂）</h3>
+            <p>一句话：<b>你的文献始终留在本机</b>；把库接进一个 AI 助手（Claude Code 等），它就能替你<b>查库、读到印刷页码、写回成果</b>；成果也全部落在你本机、人类可读，<b>换任何 AI 助手都能接着用</b>。</p>
+            <div class="ag-philo-flow">
+              <span class="ag-philo-step"><b>文献留本机</b><small>PDF / Zotero 只读，AI 不改</small></span>
+              <span class="ag-philo-arr">→</span>
+              <span class="ag-philo-step"><b>AI 查库读页码</b><small>混合检索，精确到印刷页</small></span>
+              <span class="ag-philo-arr">→</span>
+              <span class="ag-philo-step"><b>写回三处</b><small>📦 交付物 · 📖 综述 · 🧠 记忆</small></span>
+              <span class="ag-philo-arr">→</span>
+              <span class="ag-philo-step"><b>换任何助手都能接着用</b><small>全存本地、人类可读</small></span>
+            </div>
+            <p class="ag-note">它能帮你：查权威文献、写<b>带页码引注</b>的文献综述 / 资料汇编 / 论文初稿、按你的范本<b>排版格式</b>、<b>定期搜集</b>某领域新动态、把结论沉淀成<b>越用越厚的综述库</b>、跨会话记住你的偏好与项目进度。</p>
+          </div>
+        </section>
+
+        <!-- 第 2 章：接入 -->
+        <section class="ag-ch">
+          <div class="ag-ch-n">2</div>
+          <div class="ag-ch-c">
+            <h3>先接上你的 AI 助手（一键接入，本机路径已填好）</h3>
+            <p class="ag-prereq">你在用哪个 AI 助手就接哪个（<b>支持 MCP 即可</b>）。没用过命令行 AI 助手？<b>推荐 Claude Code</b> 最省心（<a href="https://docs.claude.com/en/docs/claude-code/overview" target="_blank" rel="noopener">装法</a>），Codex 也行（<a href="https://github.com/openai/codex" target="_blank" rel="noopener">装法</a>）。装没装？终端里输 <code>claude</code> 或 <code>codex</code>，能进对话就是装好了。</p>
+            <div class="ag-tabs">
+              <button class="ag-t active" data-agtab="claude">推荐 Claude Code</button>
+              <button class="ag-t" data-agtab="codex">Codex</button>
+              <button class="ag-t" data-agtab="json">其它 AI 助手</button>
+            </div>
+            <div class="ag-pane" data-agpane="claude">
+              <p class="ag-step">在任意 Claude Code 会话里粘贴运行：</p>
+              <div class="ag-code"><code id="ag-claude"></code><button class="ag-copy" data-copy="ag-claude">复制</button></div>
+              <label class="ag-scope"><input type="checkbox" id="ag-scope-user" /> 让所有项目都能用
+                <span class="ag-scope-tip" title="默认只在当前项目/目录里能用 PaperPiggy；勾选后在你电脑上的任何项目里都能用（相当于全局安装）。">（这是什么？）</span></label>
+              <p class="ag-skillnote">💡 <b>技能包会自动装好</b>：用 Claude Code 接入时，「查库 → 按页码核对引注 → 写规范综述」的技能会自动装进 <code>.claude/skills/</code>，无需手动复制。<a class="ag-link" id="ag-open-skills">打开技能文件夹</a></p>
+            </div>
+            <div class="ag-pane" data-agpane="codex" hidden>
+              <p class="ag-step">编辑 <code>~/.codex/config.toml</code>，粘贴：</p>
+              <div class="ag-code"><code id="ag-codex"></code><button class="ag-copy" data-copy="ag-codex">复制</button></div>
+              <p class="ag-skillnote">💡 Codex 接入时会自动收到「怎么用这个库、要维护综述与记忆」的通用指令（技能包是 Claude Code 专属格式，其它助手无需安装）。</p>
+            </div>
+            <div class="ag-pane" data-agpane="json" hidden>
+              <p class="ag-step">任何支持 MCP 的助手（Cursor / Cline / Windsurf / Gemini CLI …）：在项目根建 <code>.mcp.json</code>，粘贴：</p>
+              <div class="ag-code"><code id="ag-json"></code><button class="ag-copy" data-copy="ag-json">复制</button></div>
+              <p class="ag-skillnote">💡 接入时会自动收到「怎么用这个库」的通用指令，无需手动装技能包。</p>
+            </div>
+            <div class="ag-warn">⚠ <b>配好后新开一个会话才生效</b>。新会话输入 <code>/mcp</code> 应能看到 <code>localkb</code><span id="ag-tool-count"></span>。</div>
+          </div>
+        </section>
+
+        <!-- 第 3 章：怎么用 -->
+        <section class="ag-ch">
+          <div class="ag-ch-n">3</div>
+          <div class="ag-ch-c">
+            <h3>接好后怎么用（直接说大白话）</h3>
+            <p class="ag-note">不用记命令，用大白话说，它自己查库、读页码、写回综合。比如：</p>
+            <ul class="ag-prompts" id="ag-prompts"></ul>
+            <p class="ag-note ag-flow-hint">💡 说「<b>帮我做一份带页码引用的资料汇编</b>」，它会检索 → 分节综述（引注到印刷页）→ 诚实标缺口，综述存进「📖 综述库」、成品落「📦 交付物」，随时复用。</p>
+          </div>
+        </section>
+
+        <!-- 第 4 章：成果去哪 -->
+        <section class="ag-ch">
+          <div class="ag-ch-n">4</div>
+          <div class="ag-ch-c">
+            <h3>它把成果放哪（三个去处，都在本机、人类可读）</h3>
+            <div class="ag-trio">
+              <div class="ag-trio-i"><b>📦 交付物</b><span>论文 / 资料汇编 / 周报等成品，每主题一个文件夹</span></div>
+              <div class="ag-trio-i"><b>📖 综述库（wiki）</b><span>可复用的综合页，带页码引用，越用越厚</span></div>
+              <div class="ag-trio-i"><b>🧠 记忆</b><span>项目记忆：你的偏好、已定决策、当前进度</span></div>
+            </div>
+            <p class="ag-note">前两个可从主页「📦 交付物 / 📚 专属资料库」一键打开查看；记忆是资料库里的 <code>记忆/项目记忆.md</code>。</p>
+          </div>
+        </section>
+
+        <!-- 第 5 章：综述库 -->
+        <section class="ag-ch">
+          <div class="ag-ch-n">5</div>
+          <div class="ag-ch-c">
+            <h3>综述库（wiki）：把问答沉淀成越用越厚的知识</h3>
+            <p class="ag-note">AI 每答一个问题、读完一篇文献，可把结论写成一页<b>带引用的综述</b>，下次直接命中、不重复劳动。它会<b>主动维护</b>：新文献可能推翻旧结论时会标记「过时」并写明理由。你放心——AI 写的页都标 <b>🤖 未核验</b>、<b>不覆盖</b>你亲自核验过的页、随时<b>可一键删</b>。在主菜单「📖 综述库」页可浏览、核验、删除。</p>
+          </div>
+        </section>
+
+        <!-- 第 6 章：深索 -->
+        <section class="ag-ch">
+          <div class="ag-ch-n">6</div>
+          <div class="ag-ch-c">
+            <h3>深索：让回答精确到页码</h3>
+            <p class="ag-note"><b>已深索</b>的文献 AI 能读到精确页码的正文；<b>未深索</b>的只有题录 + 摘要。想某方向问答更扎实，先去「📚 浏览」深索它（拆成可检索的小段，可后台慢慢跑，不影响使用）。</p>
             <div id="ag-deep" class="ag-deep">读取深索进度…</div>
           </div>
-          <div class="ag-more-col">
-            <h4>🔒 它怎么动你的库</h4>
-            <p class="ag-note">默认<b>只读检索 + 另存综合</b>，不改你的原始文献；写回的综述标 🤖 未核验、不覆盖你的内容、可一键删。写回规约文件：</p>
-            <div class="ag-code"><code id="ag-schema"></code><button class="ag-copy" data-copy="ag-schema">复制路径</button></div>
+        </section>
+
+        <!-- 第 7 章：定时任务 -->
+        <section class="ag-ch">
+          <div class="ag-ch-n">7</div>
+          <div class="ag-ch-c">
+            <h3>定时任务：定期帮你盯动态</h3>
+            <p class="ag-note">让 AI 定期搜集某领域新动态（如每周少年司法周报）。对你的助手说「<b>帮我建一个每周一早上的 XX 周报定时任务</b>」即可：<b>任务定义</b>会写进「资料库 › 定时任务」（换助手也能读、照着重建），<b>成果</b>落「交付物 › 定时任务」，每跑完一次 AI 会依时效内容更新综述库。<br><b>本应用不联网、不含大模型</b>，定时触发由你的助手在它自己的日程里执行，应用只登记 / 展示 / 入库。</p>
           </div>
-          <div class="ag-more-col ag-more-tools">
-            <h4>🛠 它能调用的能力（举例）</h4>
+        </section>
+
+        <!-- 第 8 章：权限与安全 -->
+        <section class="ag-ch">
+          <div class="ag-ch-n">8</div>
+          <div class="ag-ch-c">
+            <h3>它会怎么动你的库（权限与安全）</h3>
+            <p class="ag-note">默认<b>只读检索 + 另存综合</b>，<b>绝不改动</b>你的原始文献 / 索引 / Zotero；写回的综述标 🤖 未核验、不覆盖你的内容、可一键删；<b>全程本地</b>，文献不出你的电脑。下面是 AI 必须遵守的写回规约文件（可打开查看它被约束成什么样）：</p>
+            <div class="ag-code"><code id="ag-schema"></code><button class="ag-copy" data-copy="ag-schema">复制路径</button></div>
+            <p class="ag-note">💡 想更快看懂？「📚 专属资料库」里有一份通俗摘要 <code>AI写综述遵守的规约.md</code>（五条核心 + 指向上面这份完整规约）。</p>
+          </div>
+        </section>
+
+        <!-- 第 9 章：能力清单 -->
+        <section class="ag-ch">
+          <div class="ag-ch-n">9</div>
+          <div class="ag-ch-c">
+            <h3>它能调用的能力（举例，说大白话即可触发）</h3>
             <table class="ag-tools"><thead><tr><th>你可以说</th><th>做什么</th></tr></thead>
             <tbody id="ag-tools"></tbody></table>
           </div>
-        </div>
-      </details>
+        </section>
+
+        <!-- 第 10 章：直接调接口 -->
+        <section class="ag-ch">
+          <div class="ag-ch-n">10</div>
+          <div class="ag-ch-c">
+            <h3>进阶：不用 MCP 也能接（直接调接口）</h3>
+            <p class="ag-note">本地服务自带一份「接口说明书」（OpenAPI）：浏览器打开
+              <a href="http://127.0.0.1:8770/docs" target="_blank" rel="noopener">http://127.0.0.1:8770/docs</a>，
+              全部接口、参数、试调按钮都在——不支持 MCP 的框架 / 脚本也能把库接进去。</p>
+          </div>
+        </section>
+
+      </div>
     </div>
   </main>
 
@@ -400,12 +596,21 @@
         <h4>🔄 自动更新知识库</h4>
         <label class="sac-toggle">
           <input type="checkbox" id="au-enabled" />
-          <span>在 Zotero 新增文献 / 文件夹新放 PDF 后，后台自动增量更新（只补题录并提升检索质量，深索仍手动）</span>
+          <span>在 Zotero 新增文献 / 文件夹新放 PDF 后，后台定时增量更新（只补题录并提升检索质量，深索仍手动）</span>
         </label>
-        <label class="au-int">检查间隔
-          <select id="au-interval"><option value="15" selected>每 15 分钟</option><option value="30">每 30 分钟</option><option value="60">每 1 小时</option><option value="180">每 3 小时</option></select>
+        <div class="au-sched">
+          <label class="au-int">每 <input type="number" id="au-days" min="1" max="30" step="1" value="1" /> 天</label>
+          <label class="au-int">，<input type="time" id="au-time" value="07:00" /> 自动检查更新</label>
+        </div>
+        <label class="sac-toggle" style="margin-top:8px">
+          <input type="checkbox" id="au-catchup" />
+          <span>开应用时若错过了计划更新（关机期间到点了），启动后补跑一次</span>
         </label>
-        <p class="hint" id="au-msg">关掉的话，就只能用顶栏「⟳ 手动更新知识库」手动更新。</p>
+        <p class="hint" id="au-msg">默认每天早 7:00 增量更新（时段长、避开用库时间、降低与检索撞车）。关掉就只能用顶栏「⟳ 手动更新知识库」。</p>
+        <div class="au-del">
+          <span class="hint" id="au-del-note"></span>
+          <button id="au-purge" class="ghost2" type="button" hidden>🧹 清理已删除文献</button>
+        </div>
         <label class="sac-toggle" style="margin-top:12px">
           <input type="checkbox" id="set-onlypdf" />
           <span>只导入有 PDF 的文献（Zotero 里没有 PDF 的纯题录不进库）</span>

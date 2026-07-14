@@ -189,6 +189,13 @@ button:disabled { opacity: .6; cursor: default; }
 /* 深索摘要（SAC）小节 */
 .sac-toggle { display: flex; align-items: center; gap: 8px; margin: 8px 0 4px; font-size: 13px; color: var(--fg); cursor: pointer; }
 .sac-toggle input { width: 16px; height: 16px; margin: 0; flex: 0 0 auto; cursor: pointer; }
+/* 自动更新：按天+时刻调度行 */
+.au-sched { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 8px 0 2px; font-size: 13px; color: var(--fg); }
+.au-int { display: inline-flex; align-items: center; gap: 6px; }
+.au-int input[type="number"] { width: 56px; padding: 4px 6px; border: 1px solid var(--line); border-radius: 6px; font-size: 13px; text-align: center; }
+.au-int input[type="time"] { padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; font-size: 13px; }
+.au-del { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 8px; }
+.au-del .hint { margin: 0; }
 .sac-status { margin-top: 8px; }
 .sac-status.ok { color: var(--ok-fg); font-weight: 600; }
 .sac-status.warn { color: #b45309; }
@@ -622,6 +629,107 @@ button:disabled { opacity: .6; cursor: default; }
 .ag-deep { font-size: 13px; color: var(--fg); }
 .ag-link { color: var(--accent); cursor: pointer; font-weight: 600; }
 .ag-link:hover { text-decoration: underline; }
+/* 技能自动装小提示 */
+.ag-skillnote { font-size: 12px; color: var(--muted); line-height: 1.6; margin: 8px 0 0;
+  background: rgba(34,197,94,.07); border-radius: 8px; padding: 8px 10px; }
+.ag-skillnote b { color: var(--fg); }
+.ag-skillnote code { background: #f1f5f9; padding: 1px 5px; border-radius: 4px; font-size: 11.5px; }
+:root[data-theme="dark"] .ag-skillnote code { background: #1e293b; }
+/* 🧭 理念通俗说明：横向四步流程（跨满） */
+.ag-philo { background: linear-gradient(180deg, rgba(99,102,241,.07), rgba(99,102,241,.02));
+  border: 1px solid var(--line); border-radius: 14px; padding: 13px 18px; }
+.ag-philo-h { font-size: 14px; font-weight: 700; color: var(--fg); margin-bottom: 10px; }
+.ag-philo-flow { display: flex; align-items: stretch; gap: 8px; flex-wrap: wrap; }
+.ag-philo-step { flex: 1 1 0; min-width: 130px; display: flex; flex-direction: column; gap: 3px;
+  background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 9px 12px; }
+.ag-philo-step b { font-size: 12.5px; color: var(--fg); }
+.ag-philo-step small { font-size: 11px; color: var(--muted); line-height: 1.4; }
+.ag-philo-arr { display: flex; align-items: center; color: var(--accent); font-weight: 700; font-size: 15px; }
+@media (max-width: 720px) { .ag-philo-arr { display: none; } .ag-philo-step { min-width: 100%; } }
+/* 📦📚 文件夹卡：路径 + 打开按钮 */
+.ag-folder-path { font-family: ui-monospace, Consolas, monospace; font-size: 11.5px; color: var(--muted);
+  background: rgba(148,163,184,.08); border-radius: 7px; padding: 7px 10px; margin: 4px 0 10px;
+  word-break: break-all; white-space: pre-wrap; }
+:root[data-theme="dark"] .ag-folder-path { background: rgba(148,163,184,.12); }
+.ag-openbtn { font-size: 13px; }
+/* ⏰ 定时任务卡（跨满） */
+.ag-tasks-card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 14px 18px; }
+.ag-tasks-h { font-size: 15px; font-weight: 700; color: var(--fg); margin-bottom: 10px; }
+.ag-tasks-sub { font-size: 12px; font-weight: 400; color: var(--muted); margin-left: 6px; }
+.ag-tasks-list { display: flex; flex-direction: column; gap: 8px; }
+.ag-task-item { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  background: rgba(148,163,184,.06); border: 1px solid var(--line); border-radius: 10px; padding: 9px 12px; }
+.ag-task-item .ag-task-name { font-weight: 600; color: var(--fg); font-size: 13px; }
+.ag-task-item .ag-task-freq { font-size: 12px; color: var(--accent); background: rgba(99,102,241,.10);
+  border-radius: 6px; padding: 2px 8px; }
+.ag-task-item .ag-task-desc { font-size: 12px; color: var(--muted); flex: 1 1 200px; min-width: 0; }
+.ag-task-item.off { opacity: .55; }
+.ag-tasks-empty { font-size: 12.5px; color: var(--muted); line-height: 1.7;
+  background: rgba(148,163,184,.06); border-radius: 10px; padding: 11px 13px; }
+.ag-tasks-empty code { background: #f1f5f9; padding: 1px 5px; border-radius: 4px; font-size: 11.5px; }
+:root[data-theme="dark"] .ag-tasks-empty code, :root[data-theme="dark"] .ag-tasks-card code { background: #1e293b; }
+.ag-tasks-note { margin-top: 10px; }
+.ag-tasks-note small { color: var(--muted); }
+/* 折叠里「直接调接口」小节 */
+.ag-more-script { border-top: 1px solid var(--line); padding: 12px 16px 14px; }
+.ag-more-script h4 { margin: 0 0 6px; font-size: 13px; }
+
+/* 🧭 教程入口卡（主页第 4 项，点开＝全屏教程） */
+.ag-guide-open { display: flex; align-items: center; gap: 14px; width: 100%; text-align: left; cursor: pointer;
+  background: linear-gradient(100deg, rgba(37,99,235,.10), rgba(232,84,138,.08)); border: 1px solid var(--line);
+  border-radius: 14px; padding: 15px 20px; color: var(--fg); transition: border-color .15s, transform .05s; }
+.ag-guide-open:hover { border-color: var(--accent); }
+.ag-guide-open:active { transform: translateY(1px); }
+.ag-guide-ic { font-size: 26px; flex: 0 0 auto; }
+.ag-guide-txt { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.ag-guide-txt b { font-size: 14.5px; }
+.ag-guide-txt small { font-size: 12px; color: var(--muted); line-height: 1.5; }
+.ag-guide-cta { flex: 0 0 auto; font-size: 13px; font-weight: 600; color: var(--accent); white-space: nowrap; }
+@media (max-width: 640px) { .ag-guide-cta { display: none; } }
+
+/* 全屏教程浮层 */
+.ag-guide { position: fixed; inset: 0; z-index: 1000; background: var(--bg); display: flex; flex-direction: column; }
+.ag-guide[hidden] { display: none; }
+.ag-guide-head { flex: 0 0 auto; display: flex; align-items: center; gap: 12px; padding: 14px 22px;
+  background: var(--topbar); color: #f1e9ef; }
+.ag-guide-title { font-size: 15px; font-weight: 700; flex: 1; min-width: 0; }
+.ag-guide-close { flex: 0 0 auto; background: rgba(255,255,255,.14); border: 1px solid rgba(255,255,255,.24);
+  color: #fff; border-radius: 8px; padding: 6px 14px; cursor: pointer; font-size: 13px; }
+.ag-guide-close:hover { background: rgba(255,255,255,.28); }
+.ag-guide-body { flex: 1; overflow-y: auto; padding: 24px 22px 48px; }
+.ag-guide-body > .ag-ch { max-width: 860px; margin: 0 auto 18px; }
+/* 章节：编号徽标 + 内容卡 */
+.ag-ch { display: flex; gap: 14px; align-items: flex-start; }
+.ag-ch-n { flex: 0 0 auto; width: 30px; height: 30px; border-radius: 50%; background: var(--accent); color: #fff;
+  display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 14px; margin-top: 2px; }
+.ag-ch-c { flex: 1; min-width: 0; background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 15px 20px; }
+.ag-ch-c h3 { margin: 0 0 10px; font-size: 15.5px; }
+.ag-ch-c > p:last-child { margin-bottom: 0; }
+.ag-ch-c .ag-prereq { margin-top: 0; }
+/* 三个去处 */
+.ag-trio { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 4px 0 10px; }
+.ag-trio-i { background: rgba(148,163,184,.08); border: 1px solid var(--line); border-radius: 10px; padding: 11px 13px;
+  display: flex; flex-direction: column; gap: 4px; }
+.ag-trio-i b { font-size: 13.5px; color: var(--fg); }
+.ag-trio-i span { font-size: 12px; color: var(--muted); line-height: 1.5; }
+:root[data-theme="dark"] .ag-trio-i { background: rgba(148,163,184,.12); }
+@media (max-width: 700px) { .ag-trio { grid-template-columns: 1fr; } }
+
+/* 顶栏页签拖动排序 */
+.tabs .tab { user-select: none; }
+.tabs .tab.dragging { opacity: .4; }
+/* 库总览·新手指引：入口按钮 + 浮层里的四步图容器 */
+.dash-teach-open { display: flex; align-items: center; gap: 12px; width: 100%; text-align: left; cursor: pointer;
+  background: linear-gradient(100deg, rgba(37,99,235,.09), rgba(232,84,138,.07)); border: 1px solid var(--line);
+  border-radius: 14px; padding: 13px 18px; color: var(--fg); margin-top: 14px; transition: border-color .15s; }
+.dash-teach-open:hover { border-color: var(--accent); }
+.dash-teach-open .dto-ic { font-size: 22px; flex: 0 0 auto; }
+.dash-teach-open .dto-tx { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.dash-teach-open .dto-tx b { font-size: 14px; }
+.dash-teach-open .dto-tx small { font-size: 11.5px; color: var(--muted); }
+.dash-teach-open .dto-cta { flex: 0 0 auto; font-size: 13px; font-weight: 600; color: var(--accent); white-space: nowrap; }
+.ag-guide-body > .hg-visual { max-width: 900px; margin: 0 auto 20px; }
+.ag-linkbtn { background: none; border: none; padding: 0; font: inherit; }
 
 /* 对话页：劝退卡 + 模型设置折叠区 */
 .chat-hint .ch-h { font-size: 15px; font-weight: 700; margin-bottom: 6px; }

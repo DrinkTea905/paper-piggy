@@ -69,9 +69,62 @@ def _wiki_schema_text():
     return ""
 
 
+def _workspace_text():
+    """Agent 专属工作区说明——跨 agent 的共同底座：任何接上来的助手都读同一套本地文件夹，
+       换 agent 也能无缝接上。放在 instructions 里下发（比 skill 通用，Codex/别家 agent 也吃得到）。"""
+    try:
+        import agent_ws as AW
+        AW.ensure_scaffold()
+        p = AW.paths_info()
+    except Exception as e:
+        log("workspace paths 失败：", e)
+        return ""
+    return (
+        "\n\n══ 你的专属工作区（都在用户本机、人类可读；换任何 AI 助手都读这套，务必先看）══\n"
+        f"· 项目记忆：{p.get('memory_file','')}\n"
+        "  —— 开工前先读它（用户是谁/偏好/已定决策/当前在做）。你**可以直接更新这份文件**保持它是「当前真相」；\n"
+        "     历史流水账写到同目录「变更日志.md」，别把项目记忆写成流水账。\n"
+        f"· 技能：{p.get('skills_dir','')}（工作流；Claude Code 会自动装到 .claude/skills）\n"
+        f"· 参考格式：{p.get('formats_dir','')}（用户放的排版范本；改 docx 格式时保护 Zotero 引注域、不重建文档）\n"
+        f"· 交付模板：{p.get('templates_dir','')}\n"
+        f"· 定时任务定义：{p.get('tasks_dir','')}（每任务一个「任务.md」：搜什么/多久/成果放哪）\n"
+        f"· 交付物落点：{p.get('output_dir','')}\n"
+        "  —— 你替用户写的成品放这里，**每个主题一个子文件夹**，附一个 README（用途/引注规范/与其他材料的关系）。\n\n"
+        "主动维护（优先级高，别等用户开口）：\n"
+        "· 深索一批文献后 / 想维护 wiki 时，先调 pending_wiki_updates 拿受影响页清单，再逐页判断标脏或重写。\n"
+        "· 跑完定时任务后，依检索到的时效内容更新相关综合页——时效资料是 wiki 的活水。\n"
+        "· 产出交付物前，和用户确认交付形态（篇幅/引注/要不要 .docx），可参照交付模板。\n"
+    )
+
+
 def instructions():
     s = _wiki_schema_text()
-    return _INSTRUCTIONS_HEAD + (s or "（WIKI.md 尚未生成；首次写回综合页时会自动创建。）")
+    body = _INSTRUCTIONS_HEAD + (s or "（WIKI.md 尚未生成；首次写回综合页时会自动创建。）")
+    return body + _workspace_text()
+
+
+def _maybe_install_skill(client_name=""):
+    """Claude Code 接入时把技能包自动装进项目的 .claude/skills/（仅当尚未安装时，**绝不覆盖**用户改过的）。
+       其它 agent（Codex/Cursor…）不装——skill 是 Claude 专属格式，它们靠 initialize 下发的通用指令。
+       判据：clientInfo.name 含 claude，或当前工作目录已有 .claude/（强信号=Claude Code 项目）。
+       全程 try/except，绝不因此中断 MCP 握手。"""
+    try:
+        import shutil
+        cwd = Path.cwd()
+        is_claude = ("claude" in str(client_name).lower()) or (cwd / ".claude").exists()
+        if not is_claude:
+            return
+        src = C.APP / "skills" / "localkb-paper"
+        if not src.exists():
+            return
+        dest = cwd / ".claude" / "skills" / "localkb-paper"
+        if dest.exists():
+            return                          # 已装（可能被用户改过）——尊重之，不覆盖
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(src, dest)
+        log(f"已自动安装技能包 localkb-paper → {dest}")
+    except Exception as e:
+        log("技能自动安装跳过：", e)
 
 def send(msg):
     sys.stdout.write(json.dumps(msg, ensure_ascii=False) + "\n")
@@ -477,6 +530,13 @@ TOOLS = [
             "path": {"type": "string", "description": "PDF 的本机绝对路径"},
             "note": {"type": "string", "description": "备注（可选，随题录保存）"}},
             "required": ["path"]},
+    },
+    {
+        "name": "pending_wiki_updates",
+        "description": "拉取服务器已算好的「待处理综合页更新」清单——最近深索/新增的文献可能影响哪些既有 wiki 页。"
+                       "深索一批文献后、或想主动维护 wiki 时**先调它**，直接拿到受影响页清单（无需自己对每篇跑 "
+                       "propose_wiki_updates），再逐页 get_wiki_page 判断是否 mark_stale / update_wiki_page。无待办则返回空。",
+        "inputSchema": {"type": "object", "properties": {}},
     },
 ]
 
@@ -1001,6 +1061,25 @@ def do_tool(name, args):
                 out.append(f"\n提示：{h}")
         return "\n".join(out)
 
+    if name == "pending_wiki_updates":
+        if not ensure_up():
+            return "错误：知识库服务启动失败。"
+        resp = requests.get(URL + "/wiki/suggestions", timeout=30)
+        if resp.status_code != 200:
+            return "读取待办失败：" + _err_of(resp)
+        items = (resp.json() or {}).get("items") or []
+        if not items:
+            return "当前没有待处理的 wiki 更新建议（最近没有新深索的文献，或都已处理）。"
+        out = [f"有 {len(items)} 篇新文献可能影响既有综合页，请逐一处理：\n"]
+        for it in items[:30]:
+            title = it.get("title") or it.get("key") or "?"
+            pages = it.get("pages") or []
+            plist = "、".join(f"[{p.get('id','')}] {p.get('title','')}" for p in pages) or "（无具体页，深索后自查）"
+            out.append(f"■ {title}（key={it.get('key','')}）\n   可能影响：{plist}")
+        out.append("\n处理：对每页 get_wiki_page 看结论是否仍成立；被推翻→mark_stale + update_wiki_page；仍成立→跳过。"
+                   "处理完可用 /wiki/suggestions/dismiss（或在应用里）清掉该条。")
+        return "\n".join(out)
+
     # ── EN-M1：论文写作工作流工具 ──────────────────────────────
     if name == "format_citation":
         if not ensure_up():
@@ -1229,6 +1308,11 @@ def main():
             continue
         m, rid = req.get("method"), req.get("id")
         if m == "initialize":
+            # 技能自动装（仅 Claude Code；不覆盖用户改过的）——放在回 instructions 前，失败不影响握手
+            try:
+                _maybe_install_skill((req.get("params", {}).get("clientInfo", {}) or {}).get("name", ""))
+            except Exception:
+                pass
             send({"jsonrpc": "2.0", "id": rid, "result": {
                 "protocolVersion": PROTO,
                 "capabilities": {"tools": {}, "resources": {}, "prompts": {}},

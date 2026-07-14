@@ -11,9 +11,22 @@ import config as C
 
 
 def scan(folder):
-    """递归找 PDF，返回绝对路径列表（排序稳定）。"""
+    """递归找 PDF，返回绝对路径列表（排序稳定）。
+       排除 0_Agent* 目录（agent 交付物/资料库）——那里放成品、格式范本，不该污染文献检索库。"""
     try:
-        return sorted(str(p) for p in Path(folder).rglob("*.pdf") if p.is_file())
+        base = Path(folder)
+        out = []
+        for p in base.rglob("*.pdf"):
+            if not p.is_file():
+                continue
+            try:
+                parts = p.relative_to(base).parts
+            except Exception:
+                parts = p.parts
+            if any(str(seg).startswith("0_Agent") for seg in parts):
+                continue                       # 跳过 0_Agent交付物 / 0_Agent资料库 下的任何 PDF
+            out.append(str(p))
+        return sorted(out)
     except Exception:
         return []
 

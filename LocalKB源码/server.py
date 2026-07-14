@@ -92,8 +92,55 @@ def clear_errors():
         pass
     return {"ok": True}
 
-# ── 自动更新：源变化(Zotero 新条目/文件夹新 PDF)时后台定时增量更新 ──
-AUTO = {"sig": None, "last": 0}
+# ── 自动更新：源变化(Zotero 新条目/文件夹新 PDF)时后台【按天+指定时刻】增量更新 ──
+AUTO = {"sig": None, "last": 0, "last_check": 0.0, "last_build": 0.0, "last_result": ""}
+_AUTO_STATE_FILE = C.STATE / "auto_update_state.json"
+
+def _auto_days(conf):
+    """按天间隔，clamp 到 1..30。"""
+    try:
+        return min(30, max(1, int(conf.get("interval_days", 1))))
+    except Exception:
+        return 1
+
+def _parse_hhmm(s):
+    try:
+        h, m = str(s).split(":")
+        h = min(23, max(0, int(h))); m = min(59, max(0, int(m)))
+        return h, m
+    except Exception:
+        return 7, 0
+
+def _auto_next_after(last_ts, interval_days, at_time):
+    """下次应跑的 epoch 秒：从 last_ts 那天起隔 interval_days 天、当天 at_time 时刻；
+       从没跑过(last_ts<=0)则取今天 at_time。"""
+    import datetime as _dt
+    h, m = _parse_hhmm(at_time)
+    try:
+        if last_ts and last_ts > 0:
+            base = _dt.datetime.fromtimestamp(last_ts).date() + _dt.timedelta(days=max(1, int(interval_days)))
+        else:
+            base = _dt.date.today()
+        return _dt.datetime.combine(base, _dt.time(h, m)).timestamp()
+    except Exception:
+        return 0.0
+
+def _auto_state_load():
+    try:
+        if _AUTO_STATE_FILE.exists():
+            d = json.loads(_AUTO_STATE_FILE.read_text(encoding="utf-8"))
+            return float(d.get("last_check", 0) or 0), float(d.get("last_build", 0) or 0)
+    except Exception:
+        pass
+    return 0.0, 0.0
+
+def _auto_state_save():
+    try:
+        _atomic_json_write(_AUTO_STATE_FILE, {
+            "last_check": AUTO.get("last_check", 0), "last_build": AUTO.get("last_build", 0),
+            "saved_at": time.strftime("%Y-%m-%d %H:%M:%S")})
+    except Exception as e:
+        log_error("auto state save", repr(e))
 def _source_signature():
     """返回当前数据源的"内容指纹"，变化即代表有新增/改动。"""
     try:
@@ -152,11 +199,22 @@ def _auto_update_loop():
     import settings as S
     time.sleep(20)                         # 等首次加载完
     AUTO["sig"] = _source_signature()      # 建基线：启动时不误触发
+    lc, lb = _auto_state_load()            # 跨重启：上次检查/构建时间（catch-up 命脉）
+    AUTO["last_check"] = lc; AUTO["last_build"] = lb
+    # 关了「补跑」而当前已到点(关机期间错过)：把 last_check 提到现在，跳过错过的档、等下一个 at_time。
+    try:
+        conf0 = S.load().get("auto_update", {}) or {}
+        if not conf0.get("catch_up_on_launch", True):
+            if time.time() >= _auto_next_after(AUTO["last_check"], _auto_days(conf0),
+                                               conf0.get("at_time", "07:00")):
+                AUTO["last_check"] = time.time(); _auto_state_save()
+    except Exception as e:
+        log_error("auto catch-up init", repr(e))
     while True:
         try:
             conf = S.load().get("auto_update", {}) or {}
-            # BF24：兜底值统一取 settings.DEFAULT（此前 30/15/60 三处各说各话，改设置后行为不可预期）
-            interval = max(5, int(conf.get("interval_min", S.DEFAULT["auto_update"]["interval_min"]))) * 60
+            days = _auto_days(conf)
+            at = conf.get("at_time", S.DEFAULT["auto_update"]["at_time"])
             time.sleep(60)
             # EN-W1：每轮顺带保鲜 wiki 体检（刻意放在 enabled 判断之前——体检零成本，
             # 不该随「自动更新」开关一起被关掉）；异常只记日志，绝不阻断自动更新主流程。
@@ -166,9 +224,10 @@ def _auto_update_loop():
                 log_error("wiki lint refresh", repr(e))
             if not conf.get("enabled", True):
                 continue
-            if time.time() - AUTO["last"] < interval:
+            # 按天+时刻调度：未到下次计划时刻就跳过（catch-up 靠持久化的 last_check 自然生效）。
+            if time.time() < _auto_next_after(AUTO["last_check"], days, at):
                 continue
-            AUTO["last"] = time.time()
+            AUTO["last_check"] = time.time(); _auto_state_save()
             sig = _source_signature()
             if sig and sig != AUTO["sig"] and not BUILD["running"]:
                 stage = "folder" if S.source() == "folder" else "all"   # 只轻量层+语义，深索永远手动
@@ -178,6 +237,7 @@ def _auto_update_loop():
                     # 另存 AUTO["last_result"] 供 /index/status 直接返回，前端可展示上次自动更新结果。
                     if rc == 0:
                         AUTO["sig"] = _sig
+                        AUTO["last_build"] = time.time(); _auto_state_save()
                         AUTO["last_result"] = "检测到新增文献，已自动增量更新。"
                         BUILD["log"].append("[auto] 检测到新增文献，已自动增量更新。")
                     else:
@@ -194,27 +254,84 @@ def _auto_update_loop():
 
 class AutoUpdateQ(BaseModel):
     enabled: Optional[bool] = None
-    interval_min: Optional[int] = None
+    interval_days: Optional[int] = None
+    at_time: Optional[str] = None
+    catch_up_on_launch: Optional[bool] = None
+    interval_min: Optional[int] = None       # 兼容旧前端字段（不再用于调度）
+
+def _auto_update_view():
+    """自动更新配置的对外视图（兜底统一走 settings.DEFAULT）。"""
+    import settings as S
+    c = S.load().get("auto_update", {}) or {}
+    D = S.DEFAULT["auto_update"]
+    return {"enabled": bool(c.get("enabled", True)),
+            "interval_days": min(30, max(1, int(c.get("interval_days", D["interval_days"])))),
+            "at_time": str(c.get("at_time", D["at_time"])),
+            "catch_up_on_launch": bool(c.get("catch_up_on_launch", D["catch_up_on_launch"])),
+            "interval_min": int(c.get("interval_min", D["interval_min"])),
+            "source": S.source(),
+            "last_build": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(AUTO["last_build"])) if AUTO.get("last_build") else ""}
 
 @app.get("/setup/auto_update")
 def get_auto_update():
-    import settings as S
-    c = S.load().get("auto_update", {}) or {}
-    # BF24：兜底统一走 settings.DEFAULT（60 分钟）
-    return {"enabled": bool(c.get("enabled", True)),
-            "interval_min": int(c.get("interval_min", S.DEFAULT["auto_update"]["interval_min"]))}
+    return _auto_update_view()
 
 @app.post("/setup/auto_update")
 def set_auto_update(q: AutoUpdateQ):
     import settings as S
     patch = {}
     if q.enabled is not None: patch["enabled"] = bool(q.enabled)
+    if q.interval_days is not None: patch["interval_days"] = min(30, max(1, int(q.interval_days)))
+    if q.at_time is not None:
+        h, m = _parse_hhmm(q.at_time)
+        patch["at_time"] = f"{h:02d}:{m:02d}"
+    if q.catch_up_on_launch is not None: patch["catch_up_on_launch"] = bool(q.catch_up_on_launch)
     if q.interval_min is not None: patch["interval_min"] = max(5, int(q.interval_min))
     S.save({"auto_update": patch})
-    c = S.load().get("auto_update", {})
-    # BF24：兜底统一走 settings.DEFAULT（60 分钟）
-    return {"ok": True, "enabled": bool(c.get("enabled", True)),
-            "interval_min": int(c.get("interval_min", S.DEFAULT["auto_update"]["interval_min"]))}
+    return {"ok": True, **_auto_update_view()}
+
+@app.post("/setup/purge_deleted")
+def purge_deleted():
+    """删除同步：把「源里已删、库里还留着」的文献清出索引。
+       folder 模式——删除同步在 stage=folder 增量构建里已内建，这里直接触发一次增量。
+       zotero 模式——算差集手动清理（带安全阈值：读不到活库/一次要删过半则中止，防误抹整库）。"""
+    import settings as S
+    src = S.source()
+    if src == "folder":
+        ok = _run_build("folder")
+        return {"ok": ok, "mode": "folder",
+                "msg": "已触发文件夹增量更新——删除的 PDF 会在本次更新中自动清出。" if ok else "有任务在跑，稍后再试。"}
+    # zotero 模式
+    try:
+        import zotero_source as Z
+        live = {p.get("key") for p in Z.load_papers() if p.get("key")}
+    except Exception as e:
+        return JSONResponse({"ok": False, "msg": f"读取 Zotero 失败，已中止：{e}"}, status_code=400)
+    if not live:
+        return JSONResponse({"ok": False, "msg": "未从 Zotero 读到任何文献，已中止（避免误删整库）。"}, status_code=400)
+    indexed = set(_load_papers().keys())
+    gone = [k for k in indexed if k not in live]
+    if not gone:
+        return {"ok": True, "mode": "zotero", "removed": 0, "msg": "没有需要清理的已删除文献。"}
+    if len(gone) > max(20, len(indexed) // 2):
+        return JSONResponse({"ok": False, "removed": 0,
+            "msg": f"检测到 {len(gone)} 篇需清理（超过库的一半），已中止以防误删。请确认 Zotero 库完整后重试。"},
+            status_code=400)
+    if BUILD["running"]:
+        return JSONResponse({"ok": False, "msg": "有构建任务在跑，稍后再清理。"}, status_code=400)
+    try:
+        import folder_ingest as FI
+        FI._purge_db_rows(gone)
+        FI._purge_key_artifacts(gone)
+    except Exception as e:
+        log_error("purge_deleted zotero", repr(e), traceback.format_exc())
+        return JSONResponse({"ok": False, "msg": f"清理失败：{e}"}, status_code=400)
+    try:
+        R.STATE["ready"] = False; R.load_all()
+    except Exception as e:
+        log_error("purge_deleted reload", repr(e))
+    return {"ok": True, "mode": "zotero", "removed": len(gone),
+            "msg": f"已清理 {len(gone)} 篇 Zotero 中已删除的文献。建议随后点一次「手动更新知识库」刷新题录层。"}
 
 # ── 启动加载 ──────────────────────────────────────────────
 @app.on_event("startup")
@@ -230,6 +347,12 @@ def _startup():
         _dedup_deep_marks()
     except Exception as e:
         log_error("startup dedup deep marks", repr(e))
+    try:
+        # Agent 专属文件夹（0_Agent交付物 / 0_Agent资料库）幂等脚手架，人类可读、换 agent 可续。
+        import agent_ws as AW
+        AW.ensure_scaffold()
+    except Exception as e:
+        log_error("startup agent workspace scaffold", repr(e))
     threading.Thread(target=_safe_load, daemon=True).start()
     threading.Thread(target=_auto_update_loop, daemon=True).start()
 
@@ -288,6 +411,15 @@ def agent_mcp_config():
         tool_count = len(MCP.TOOLS)
     except Exception:
         tool_count = 0
+    # Agent 专属文件夹路径（Agent 页展示「打开交付物/资料库」+ 技能包落点）
+    ag = {}
+    skill_src = str(C.APP / "skills" / "localkb-paper")
+    try:
+        import agent_ws as AW
+        AW.ensure_scaffold()
+        ag = AW.paths_info()
+    except Exception as e:
+        log_error("agent mcp-config paths", repr(e))
     return {
         "python": py, "mcp_server": mcp,
         "daemon_url": C.DAEMON_URL, "server_running": True,
@@ -296,6 +428,11 @@ def agent_mcp_config():
         "claude_cmd_user": add_core.replace("claude mcp add localkb ",
                                             "claude mcp add localkb --scope user "),
         "mcp_json": mcp_json, "codex_toml": codex_toml,
+        # 0_Agent交付物 / 0_Agent资料库 落点 + 技能包源目录（前端「打开文件夹」用）
+        "agent_output_dir": ag.get("output_dir", ""),
+        "agent_rely_dir": ag.get("rely_dir", ""),
+        "agent_memory_file": ag.get("memory_file", ""),
+        "skill_src_dir": skill_src,
     }
 
 @app.get("/setup/detect")
@@ -409,6 +546,12 @@ def setup_folder(q: FolderQ):
     n = len(FS.scan(str(p)))
     S.save({"source": "folder", "folder_dir": str(p.resolve())})
     try:
+        # 选定受管文件夹后，在其内建 Agent 专属文件夹脚手架（0_Agent* 已排除出文献扫描）。
+        import agent_ws as AW
+        AW.ensure_scaffold()
+    except Exception as e:
+        log_error("setup/folder agent scaffold", repr(e))
+    try:
         import folder_meta as FM
         mr = FM.available()
     except Exception:
@@ -452,6 +595,89 @@ def setup_open_folder():
         return {"ok": True, "dir": d}
     except Exception as e:
         return JSONResponse({"ok": False, "msg": str(e), "dir": d}, status_code=400)
+
+class AgentOpenQ(BaseModel):
+    which: str = "rely"                          # output | rely | skills
+
+@app.post("/agent/open_folder")
+def agent_open_folder(q: AgentOpenQ):
+    """在系统文件管理器里打开 Agent 专属文件夹（交付物 / 资料库 / 技能）。which 由前端固定传，
+       不接受任意路径——避免把打开任意目录的能力暴露给前端。"""
+    import agent_ws as AW
+    try:
+        AW.ensure_scaffold()
+        which = q.which if q.which in ("output", "rely", "skills") else "rely"
+        # 技能优先打开用户 .claude/skills 里已装的？不——固定打开「源」目录(app/skills/localkb-paper 的父级)，
+        # 让用户能看到/手动复制；rely/output 打开资料库/交付物。
+        if which == "skills":
+            d = str(C.APP / "skills")
+        else:
+            d = str(AW.resolve(which))
+        Path(d).mkdir(parents=True, exist_ok=True)
+        if sys.platform == "win32":
+            os.startfile(d)  # noqa
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", d])
+        else:
+            subprocess.Popen(["xdg-open", d])
+        return {"ok": True, "dir": d}
+    except Exception as e:
+        return JSONResponse({"ok": False, "msg": str(e)}, status_code=400)
+
+def _parse_frontmatter(txt):
+    """极简 YAML front-matter 解析：首个 --- 到下一个 --- 之间的 key: value（中英文冒号皆可）。
+       返回 (meta_dict, body)。值里含冒号(如时间 08:30)不受影响（只按首个冒号切）。"""
+    meta = {}
+    body = txt
+    t = txt.lstrip("﻿").lstrip()
+    if t.startswith("---"):
+        rest = t[3:]
+        idx = rest.find("\n---")
+        if idx != -1:
+            fm = rest[:idx]; body = rest[idx + 4:]
+            for line in fm.splitlines():
+                s = line.replace("：", ":")
+                if ":" in s:
+                    k, v = s.split(":", 1)
+                    meta[k.strip()] = v.strip()
+    return meta, body
+
+@app.get("/agent/tasks")
+def agent_tasks():
+    """扫「资料库/定时任务/*/任务.md」，解析 front-matter 展示定时任务列表。
+       本端只登记/展示——定时执行由用户的 AI 助手在它自己的日程里负责（应用不联网、无大模型）。"""
+    import agent_ws as AW
+    out = []
+    try:
+        AW.ensure_scaffold()
+        tdir = Path(AW.tasks_dir())
+        for sub in sorted(tdir.iterdir()):
+            if not sub.is_dir():
+                continue
+            f = sub / "任务.md"
+            if not f.exists():
+                continue
+            try:
+                meta, bodytext = _parse_frontmatter(f.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            name = meta.get("名称") or meta.get("name") or sub.name
+            freq = meta.get("频率") or meta.get("freq") or meta.get("frequency") or ""
+            en = str(meta.get("启用", meta.get("enabled", "true"))).strip().lower()
+            enabled = en in ("true", "1", "yes", "on", "是", "启用", "")
+            desc = ""
+            for ln in bodytext.splitlines():
+                ln = ln.strip()
+                if not ln:
+                    continue
+                desc = (ln.replace("：", ":").split(":", 1)[-1].strip()
+                        if ("搜什么" in ln or "内容" in ln) else ln)
+                break
+            out.append({"name": name, "freq": freq, "enabled": enabled,
+                        "desc": desc[:160], "dir": str(sub)})
+    except Exception as e:
+        return {"tasks": out, "error": str(e)}
+    return {"tasks": out}
 
 @app.post("/setup/pick_folder")
 def setup_pick_folder():

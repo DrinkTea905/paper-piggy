@@ -77,6 +77,12 @@ PAPERS_JSONL   = META_DIR / "papers.jsonl"
 META_EMBEDDED  = STATE / "meta_embedded.txt"   # S档已嵌入 meta 的 stem
 ROW_TYPES = ("meta", "chunk", "wiki")   # +wiki：综合层页面进同表；wiki 行 chunk_id 以 "::wiki" 结尾
 
+# ---- Agent 专属文件夹名（0_ 前缀排最前、人类可读；落点解析见 agent_ws.py）----
+# 交付物=agent 成品；资料库=agent 干活要用的东西(记忆/技能/参考格式/交付模板/定时任务)。
+# folder 模式建在受管文件夹内(folder_source.scan 已排除 0_Agent* 不入库)；zotero 模式落 DATA 同级。
+AGENT_OUTPUT_NAME = "0_Agent交付物"
+AGENT_RELY_NAME   = "0_Agent资料库"
+
 # ---- 综合层 / wiki（答案沉淀 + 按需综述；只写 DATA/wiki，随便删不影响文献库/Zotero）----
 WIKI_DIR          = DATA / "wiki"            # 综合页 markdown + index.json（sidecar，仿 categories/）
 WIKI_ANSWERS_DIR  = WIKI_DIR / "answers"     # Phase 0：沉淀的问答综合 <id>.md

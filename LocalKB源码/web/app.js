@@ -380,6 +380,45 @@
   // 加载失败则保持 false，切走再切回会自动重试（旧版加载前就置 true，失败后只能刷新整页）。
   let dashLoaded = false, browseLoaded = false, wikiLoaded = false, agentLoaded = false;
   $$(".tab").forEach((t) => t.addEventListener("click", () => switchTab(t.dataset.tab)));
+  // 顶栏页签可拖动排序（用户自定义顺序，存 localStorage，跨会话保留）
+  (function wireTabReorder() {
+    const nav = document.querySelector("nav.tabs"); if (!nav) return;
+    const KEY = "localkb.taborder";
+    const tabsOf = () => Array.from(nav.querySelectorAll(".tab"));
+    // 恢复已保存的顺序（未在名单里的新页签保持在末尾、原相对顺序）
+    try {
+      const saved = JSON.parse(localStorage.getItem(KEY) || "null");
+      if (Array.isArray(saved) && saved.length) {
+        const by = {}; tabsOf().forEach((t) => (by[t.dataset.tab] = t));
+        saved.forEach((id) => { if (by[id]) { nav.appendChild(by[id]); delete by[id]; } });
+      }
+    } catch (e) {}
+    const save = () => { try { localStorage.setItem(KEY, JSON.stringify(tabsOf().map((t) => t.dataset.tab))); } catch (e) {} };
+    tabsOf().forEach((t) => t.setAttribute("draggable", "true"));
+    let drag = null;
+    nav.addEventListener("dragstart", (e) => {
+      const t = e.target.closest(".tab"); if (!t) return;
+      drag = t; t.classList.add("dragging");
+      e.dataTransfer.effectAllowed = "move";
+      try { e.dataTransfer.setData("text/plain", t.dataset.tab); } catch (_) {}
+    });
+    nav.addEventListener("dragover", (e) => {
+      if (!drag) return; e.preventDefault(); e.dataTransfer.dropEffect = "move";
+      const after = (() => {                       // 找光标右侧最近的页签，插到它前面
+        let best = { off: -Infinity, el: null };
+        tabsOf().filter((t) => t !== drag).forEach((el) => {
+          const box = el.getBoundingClientRect();
+          const off = e.clientX - box.left - box.width / 2;
+          if (off < 0 && off > best.off) best = { off, el };
+        });
+        return best.el;
+      })();
+      if (after == null) nav.appendChild(drag);
+      else if (after !== drag) nav.insertBefore(drag, after);
+    });
+    nav.addEventListener("drop", (e) => e.preventDefault());
+    nav.addEventListener("dragend", () => { if (drag) { drag.classList.remove("dragging"); drag = null; save(); } });
+  })();
   // 通用 tab 切换（顶栏 tab 与代码内跳转共用）
   function switchTab(tab) {
     $$(".tab").forEach((x) => x.classList.toggle("active", x.dataset.tab === tab));
@@ -1090,6 +1129,25 @@
     </div>`;
   }
 
+  // 库总览·新手指引 全屏浮层：点开＝四步图（agentGuideCard）+ 详细图文章节（#home-guide 静态在 index.html）
+  function openHomeGuide() {
+    const g = $("#home-guide"); if (!g) return;
+    const vis = $("#hg-visual");
+    if (vis && !vis.dataset.filled) {           // 首次打开时填四步可视化并接线其 CTA
+      vis.innerHTML = agentGuideCard();
+      vis.dataset.filled = "1";
+      const go = $("#dg-go"); if (go) go.addEventListener("click", () => { closeHomeGuide(); switchTab("agent"); });
+    }
+    g.hidden = false;
+    const body = g.querySelector(".ag-guide-body"); if (body) body.scrollTop = 0;
+  }
+  function closeHomeGuide() { const g = $("#home-guide"); if (g) g.hidden = true; }
+  (function wireHomeGuide() {
+    const c = $("#home-guide-close"); if (c) c.addEventListener("click", closeHomeGuide);
+    const t2a = $("#hg-to-agent"); if (t2a) t2a.addEventListener("click", () => { closeHomeGuide(); switchTab("agent"); });
+    document.addEventListener("keydown", (e) => { const g = $("#home-guide"); if (e.key === "Escape" && g && !g.hidden) closeHomeGuide(); });
+  })();
+
   // 全文深索进度卡（读 /index/status；点击跳到浏览 tab 的「仅题录」筛选）
   function deepProgressCard(st) {
     if (!st) return "";
@@ -1161,9 +1219,10 @@
       : "";
     $("#dash").innerHTML = header + lintLine
       + `<div class="dash-grid dash-2col">${overviewCard(d)}${recentCard(d.recent)}</div>`
-      // 四步新手引导默认折叠成一行——老用户不用每次看，首页一屏能装下概览+最近入库
-      + `<details class="dash-teach"><summary class="dash-teach-sum">📖 新手引导：四步把小猪养成你的专属知识库</summary>${agentGuideCard()}</details>`;
+      // 新手指引改为「点开＝全屏图文教程」，首页保持清爽（详细内容在 #home-guide 浮层）
+      + `<button class="dash-teach-open" id="dash-teach-open" type="button"><span class="dto-ic">📖</span><span class="dto-tx"><b>新手指引</b><small>四步把小猪养成你的专属知识库 · 图文详解</small></span><span class="dto-cta">点开 →</span></button>`;
     // 事件
+    const dto = $("#dash-teach-open"); if (dto) dto.addEventListener("click", openHomeGuide);
     const seeD = $("#dash-see-deep"); if (seeD) seeD.addEventListener("click", () => _goDeepBrowse("yes"));
     const goD = $("#dash-go-deep"); if (goD) goD.addEventListener("click", async () => {
       goD.textContent = "正在开始全量深索…";
@@ -2249,7 +2308,7 @@
   function renderAgentTools() {
     $("#ag-tools").innerHTML = AG_TOOLS.map(
       ([say, tool, desc]) => `<tr><td>${esc(say)}</td><td>${esc(desc)}</td></tr>`).join("");
-    // 工具数用后端真实值（当前 21 个），别用下面这张示例表的行数（只列了 6 个代表性的）
+    // 工具数用后端真实值（当前 28 个），别用下面这张示例表的行数（只列了 6 个代表性的）
     const n = (AG.cfg && AG.cfg.tool_count) || AG_TOOLS.length;
     const tc = $("#ag-tool-count"); if (tc) tc.textContent = `（${n} 个工具）`;
   }
@@ -2279,17 +2338,9 @@
         ? "本地库服务在线（不代表 MCP 已接好）· 127.0.0.1:8770" : "本地库服务未就绪";
       renderAgentCmds();
       $("#ag-schema").textContent = d.wiki_schema_md || "";
-      // EN-F6：技能包本机绝对路径——由 mcp_server 路径（app/mcp_server.py）推导 app/skills/localkb-paper；
-      // 拿不到时保留 HTML 里写好的相对路径兜底文案
-      const sp = $("#ag-skill-path");
-      if (sp && d.mcp_server) {
-        const ms = String(d.mcp_server);
-        const cut = Math.max(ms.lastIndexOf("\\"), ms.lastIndexOf("/"));
-        if (cut > 0) {
-          const sep = ms.includes("\\") ? "\\" : "/";
-          sp.textContent = ms.slice(0, cut) + sep + "skills" + sep + "localkb-paper";
-        }
-      }
+      // Agent 专属文件夹路径（📦 交付物 / 📚 资料库）——后端算好本机绝对路径直接展示
+      const op = $("#ag-output-path"); if (op) op.textContent = d.agent_output_dir || "（首次接入后生成）";
+      const rp = $("#ag-rely-path"); if (rp) rp.textContent = d.agent_rely_dir || "（首次接入后生成）";
       agentLoaded = true;   // 成功才置位
     } catch (e) {
       $("#ag-run-txt").textContent = "读取接入信息失败：" + e.message;
@@ -2297,6 +2348,32 @@
     renderAgentTools();     // 静态表，无需等网络
     renderAgentPrompts();
     loadAgentDeep();        // 复用 /index/status
+    loadAgentTasks();       // ⏰ 定时任务（读本地「资料库/定时任务」）
+  }
+  // ⏰ 定时任务：读后端 /agent/tasks（扫「资料库/定时任务/*/任务.md」）。端点缺失/空时优雅降级。
+  async function loadAgentTasks() {
+    const box = $("#ag-tasks"); if (!box) return;
+    try {
+      const d = await jget("/agent/tasks");
+      const items = (d && d.tasks) || [];
+      if (!items.length) {
+        box.innerHTML = `<div class="ag-tasks-empty">还没有定时任务。想让 AI 助手定期帮你搜集/综述（如每周少年司法动态），`
+          + `对它说「<b>帮我建一个每周一早上的少年司法周报定时任务</b>」，它会把任务定义写进 `
+          + `<code>资料库/定时任务/</code>，并在它自己的日程里排期。</div>`;
+        return;
+      }
+      box.innerHTML = items.map((t) => {
+        const off = t.enabled === false ? " off" : "";
+        return `<div class="ag-task-item${off}"><span class="ag-task-name">${esc(t.name || "未命名任务")}</span>`
+          + (t.freq ? `<span class="ag-task-freq">${esc(t.freq)}</span>` : "")
+          + (t.enabled === false ? `<span class="ag-task-freq" style="color:#94a3b8;background:rgba(148,163,184,.12)">已暂停</span>` : "")
+          + `<span class="ag-task-desc">${esc(t.desc || "")}</span></div>`;
+      }).join("");
+    } catch (e) {
+      // 端点尚未就绪（旧后端）或读失败：显示引导而非报错
+      box.innerHTML = `<div class="ag-tasks-empty">还没有定时任务。对 AI 助手说「帮我建一个每周定时任务」即可，`
+        + `任务定义会存进 <code>资料库/定时任务/</code>。</div>`;
+    }
   }
   (function wireAgentPage() {
     const su = $("#ag-scope-user"); if (su) su.addEventListener("change", renderAgentCmds);
@@ -2323,6 +2400,26 @@
       }
       setTimeout(() => (b.textContent = revert), 1500);
     }));
+    // 📂 打开文件夹（交付物/资料库/技能）——复用后端 /agent/open_folder
+    async function openAgentFolder(which, btn) {
+      const lbl = btn && btn.textContent;
+      try {
+        const r = await jpost("/agent/open_folder", { which });
+        if (r && r.ok === false) throw new Error(r.msg || "打开失败");
+        if (btn) { btn.textContent = "已在文件管理器打开 ✓"; setTimeout(() => (btn.textContent = lbl), 1600); }
+      } catch (e) {
+        if (btn) { btn.textContent = "打开失败：" + (e.message || e); setTimeout(() => (btn.textContent = lbl), 2200); }
+      }
+    }
+    $$(".ag-openbtn").forEach((b) => b.addEventListener("click", () => openAgentFolder(b.dataset.open, b)));
+    const osk = $("#ag-open-skills");
+    if (osk) osk.addEventListener("click", () => openAgentFolder("skills", null));
+    // 🧭 全屏教程浮层：开 / 关（Esc 也可关）
+    const guide = $("#ag-guide"), gopen = $("#ag-guide-open"), gclose = $("#ag-guide-close");
+    const showGuide = (v) => { if (guide) { guide.hidden = !v; if (v) guide.querySelector(".ag-guide-body").scrollTop = 0; } };
+    if (gopen) gopen.addEventListener("click", () => showGuide(true));
+    if (gclose) gclose.addEventListener("click", () => showGuide(false));
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape" && guide && !guide.hidden) showGuide(false); });
   })();
 
   // 只保留友好的「建议深读」标签，隐藏 ⭐15.7 这种裸数字（假精度；口径与设置「学科」无关，见 F17）
@@ -2729,26 +2826,55 @@
     loadOnlyPdf();    // 回填「只导入有 PDF」开关
   }
 
-  // ── 自动更新（即改即存）──
+  // ── 自动更新（按天 + 指定时刻 + 补跑；即改即存）──
+  function _auDaysLabel(d) { return d === 1 ? "每天" : `每 ${d} 天`; }
   async function loadAutoUpdate() {
-    const en = $("#au-enabled"), iv = $("#au-interval"); if (!en) return;
+    const en = $("#au-enabled"); if (!en) return;
+    const dd = $("#au-days"), tm = $("#au-time"), cu = $("#au-catchup");
     try {
       const s = await jget("/setup/auto_update");
       en.checked = !!s.enabled;
-      if (iv) iv.value = String(s.interval_min || 60);   // BF32：兜底与 settings.py DEFAULT=60 对齐，别再各写各的
+      if (dd) dd.value = String(Math.min(30, Math.max(1, s.interval_days || 1)));
+      if (tm) tm.value = s.at_time || "07:00";
+      if (cu) cu.checked = s.catch_up_on_launch !== false;
+      // 删除同步：folder 模式已内建自动清理，只提示；zotero 模式露出手动「清理已删除」按钮
+      const note = $("#au-del-note"), pb = $("#au-purge");
+      if (s.source === "folder") {
+        if (note) note.textContent = "🗑 删除同步：文件夹里删掉的 PDF 会在下次更新时自动清出（已内建）。";
+        if (pb) pb.hidden = true;
+      } else {
+        if (note) note.textContent = "🗑 删除同步：Zotero 里删掉的文献不会自动清出，可手动清理 →";
+        if (pb) pb.hidden = false;
+      }
     } catch (e) {}
   }
   async function saveAutoUpdate() {
-    const en = $("#au-enabled"), iv = $("#au-interval"), msg = $("#au-msg");
+    const en = $("#au-enabled"), dd = $("#au-days"), tm = $("#au-time"), cu = $("#au-catchup"), msg = $("#au-msg");
+    let days = parseInt(dd && dd.value, 10); if (!(days >= 1 && days <= 30)) days = 1;
+    if (dd) dd.value = String(days);
+    const at = (tm && /^\d{1,2}:\d{2}$/.test(tm.value)) ? tm.value : "07:00";
     try {
-      await jpost("/setup/auto_update", { enabled: en.checked, interval_min: parseInt(iv.value, 10) || 60 });   // BF32：兜底统一 60 分钟
-      if (msg) msg.textContent = en.checked ? `已开启：约每 ${iv.value} 分钟检查一次新增文献并自动更新。` : "已关闭：只能用顶栏「⟳ 手动更新知识库」手动更新。";
+      await jpost("/setup/auto_update", { enabled: en.checked, interval_days: days, at_time: at, catch_up_on_launch: !!(cu && cu.checked) });
+      if (msg) msg.textContent = en.checked
+        ? `已开启：${_auDaysLabel(days)} ${at} 检查一次新增文献并自动增量更新${(cu && cu.checked) ? "；错过会在开应用时补跑" : ""}。`
+        : "已关闭：只能用顶栏「⟳ 手动更新知识库」手动更新。";
     } catch (e) { if (msg) msg.textContent = "保存失败：" + e.message; }
   }
   (function wireAutoUpdate() {
-    const en = $("#au-enabled"), iv = $("#au-interval");
+    const en = $("#au-enabled"), dd = $("#au-days"), tm = $("#au-time"), cu = $("#au-catchup"), pb = $("#au-purge");
     if (en) en.addEventListener("change", saveAutoUpdate);
-    if (iv) iv.addEventListener("change", saveAutoUpdate);
+    if (dd) dd.addEventListener("change", saveAutoUpdate);
+    if (tm) tm.addEventListener("change", saveAutoUpdate);
+    if (cu) cu.addEventListener("change", saveAutoUpdate);
+    if (pb) pb.addEventListener("click", async () => {
+      const note = $("#au-del-note"); const lbl = pb.textContent;
+      pb.disabled = true; pb.textContent = "清理中…";
+      try {
+        const r = await jpost("/setup/purge_deleted", {});
+        if (note) note.textContent = (r && r.msg) || "已清理。";
+      } catch (e) { if (note) note.textContent = "清理失败：" + (e.message || e); }
+      pb.disabled = false; pb.textContent = lbl;
+    });
   })();
 
   // 只导入有 PDF（Zotero 模式）：设置里开关，改后需点「手动更新知识库」重建题录索引

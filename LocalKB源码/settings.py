@@ -25,11 +25,18 @@ DEFAULT = {
     # 整库锁定单学科（journal_grading 期刊权重引擎用）。产品默认标准 "law"；
     # 个人法学库改 "law_personal"（含 2026-06-28 旧档：台湾刊/顶尖外文法评/外文权威，外刊不打折）。
     "journal_discipline": "law",
-    # 自动更新：Zotero 新增条目 / 文件夹新增 PDF 时，后台定时增量更新（只跑轻量层+语义，深索永远手动）
+    # 自动更新：Zotero 新增条目 / 文件夹新增 PDF 时，后台定时增量更新（只跑轻量层+语义，深索永远手动）。
+    # 调度由「分钟级轮询」改为「按天(1-30) + 指定时刻」，默认每天 07:00——时段长、避开用库时间、降低与检索撞车。
     "auto_update": {
         "enabled": True,
-        # BF24：默认 60 分钟（唯一事实来源——server.py/app.js 的兜底一律引用/对齐此值，不再各写各的）
+        # 遗留字段：仅供老配置迁移参考，新调度不再用它（保留以免 _merge 丢字段）。
         "interval_min": 60,
+        # 按天间隔(1-30)：默认每天。UI 唯一事实来源——server/app.js 兜底一律引用此值。
+        "interval_days": 1,
+        # 每次触发的时刻 HH:MM（24h）。默认早 7 点。
+        "at_time": "07:00",
+        # 开应用时若上次计划更新已被错过（关机期间到点），补跑一次。
+        "catch_up_on_launch": True,
     },
     # 文件夹模式的题录抽取 LLM（key 空时复用 api/sac 的 key，见 folder_meta._conf）
     "folder_meta": {
