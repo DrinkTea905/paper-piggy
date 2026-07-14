@@ -1,8 +1,16 @@
 # PaperPiggy 发布与自动更新方案
 
 > 2026-07-13 拟定，2026-07-14 更新（目录重组 + 许可证合规）。
+> **2026-07-14 二次更新（发布形态定案，推翻了本文档若干旧结论，以本段为准）**：
+>   ① **只发 Inno 安装器，砍掉便携 zip**（§2b 已废止，原因见 installer/paperpiggy.iss §为什么砍掉便携 zip）。
+>   ② **用户级安装**（`PrivilegesRequired=lowest`，`{autopf}` → `%LOCALAPPDATA%\Programs`），不弹 UAC；
+>      安装向导保留「选择位置」页，用户可装到 `D:\PaperPiggy`。
+>   ③ **数据与程序同目录**：安装器带 `portable.txt`，索引/模型/wiki/0_Agent* 全在安装目录内。
+>      安装目录不可写时 config.py 自动回退 `%LOCALAPPDATA%\PaperPiggy`。
+>   ④ 数据目录由 `LocalKB` 改名为 **`PaperPiggy`**（环境变量 `LOCALKB_*` 不变）。
+>
 > 基于当前架构（内嵌 python-build-standalone CPython + app/ 纯源码 + pywebview/WebView2
-> + 首启下载 onnx 模型 + MinGit + 数据模型分离在 %LOCALAPPDATA%\LocalKB）。
+> + 首启下载 onnx 模型 + MinGit）。
 
 ---
 
@@ -64,7 +72,11 @@ build\py312\python.exe -c "import onnxruntime, lancedb, pypdfium2, docx; print('
 - [ ] `app/version.json` 的 sha256 与磁盘文件一致
 - [ ] 包内**没有** `app/data/`、`app/logs/` 残留
 - [ ] 包内**没有** `settings.json` 里的 API 密钥
-- [ ] 便携 zip **带** `portable.txt`；Inno 安装器**绝不能带**（否则会往 Program Files 写数据，必崩）
+- [ ] bundle **根目录**没有非空的 `data/`、`0_Agent交付物/`、`0_Agent资料库/`
+      （数据与程序同目录之后，自测这个包就会在包根留下真实数据 —— `build_installer.check_bundle()`
+      会中止出包并报警，别手贱跳过）
+- [ ] 安装器**带** `portable.txt`（由 .iss 从 `installer\portable.txt` 装入 = 数据同目录开关）
+- [ ] 安装器是**用户级**的（`PrivilegesRequired=lowest`）—— 与上一条是一套，只改一个必崩
 
 **干净机验收**（没装 VC++ 2015-2022、没装 WebView2 的全新 Windows）
 - [ ] `bundle\python\python.exe -c "import onnxruntime"` 不报 WinError 1114
@@ -72,7 +84,12 @@ build\py312\python.exe -c "import onnxruntime, lancedb, pypdfium2, docx; print('
 - [ ] 首启向导能下模型（本地模式）/ 能填 key（API 模式）
 - [ ] 能建库、能检索、能深索出正文
 - [ ] 关窗后进程干净退出（任务管理器里没有残留 python.exe）
-- [ ] 卸载后 `%LOCALAPPDATA%\LocalKB\data` 仍在（用户数据不能被卸载带走）
+- [ ] 装到默认位置：数据落**安装目录**的 `data\`（不是 C 盘用户目录）
+- [ ] 在向导里改装到 `D:\PaperPiggy`：数据跟着落 `D:\PaperPiggy\data\`
+- [ ] 硬把它装进 `C:\Program Files\PaperPiggy`（不可写）：**不崩**，数据回退
+      `%LOCALAPPDATA%\PaperPiggy\data`，日志里有 `[config] 安装目录不可写` 提示
+- [ ] 覆盖安装新版：`data\`、`0_Agent交付物\`、`0_Agent资料库\` 原样还在
+- [ ] 卸载后：上述三个目录**仍在**安装目录里（用户数据不能被卸载带走）
 
 **隐私**
 - [ ] `git ls-files | grep -iE "settings\.json|papers\.jsonl|\.key"` 为空
@@ -81,7 +98,7 @@ build\py312\python.exe -c "import onnxruntime, lancedb, pypdfium2, docx; print('
 
 ## 一句话结论
 
-**不要做单文件 exe（PyInstaller onefile），保持现有目录形态；Windows 发 Inno Setup 安装器 + 便携 zip 双形态；自更新自写（只换 app/，约 200 行）；Mac 出 CI 构建的实验性包、暂不买 $99 开发者账号；大陆分发用 GitHub Release 主源 + 多镜像前缀 + Cloudflare R2 免费第二源。**
+**不要做单文件 exe（PyInstaller onefile），保持现有目录形态；Windows ~~发 Inno Setup 安装器 + 便携 zip 双形态~~ → 只发 Inno Setup 安装器（用户级 + 数据同目录，便携 zip 已砍，见文首更新）；自更新自写（只换 app/，约 200 行）—— ⚠️ 代码写了但从未接线，updater.py 目前是死代码；Mac 出 CI 构建的实验性包、暂不买 $99 开发者账号；大陆分发用 GitHub Release 主源 + 多镜像前缀 + Cloudflare R2 免费第二源。**
 
 ---
 
@@ -93,16 +110,25 @@ build\py312\python.exe -c "import onnxruntime, lancedb, pypdfium2, docx; print('
 
 **结论：现有 bundle 形态就是正确答案，发布层只需要在外面"套壳"。**
 
-## 2. Windows 发布形态（双轨）
+## 2. Windows 发布形态（单轨：只发安装器）
 
-### 2a. Inno Setup 安装器（主推，给小白用户）
-- 对现有目录零侵入：把 bundle 整个打进去，装到 `%LOCALAPPDATA%\Programs\PaperPiggy`（用户级安装，无需管理员权限），开始菜单/桌面快捷方式指向 LocalKB.vbs 或专用小 exe 启动器。
-- 数据本来就在 `%LOCALAPPDATA%\LocalKB`，卸载重装不丢索引/模型 —— 架构天然支持。
+### 2a. Inno Setup 安装器（唯一发布形态）
+- 对现有目录零侵入：把 bundle 整个打进去，默认装到 `%LOCALAPPDATA%\Programs\PaperPiggy`
+  （`PrivilegesRequired=lowest` 之下 `{autopf}` 就解析到这里；**无需管理员权限、不弹 UAC**）。
+  安装向导的「选择位置」页**刻意保留** —— 包 800M + 模型 1~2G + 索引若干 G，用户想装 `D:\` 就该让他装。
+- **数据与程序同目录**：安装器带 `portable.txt`，索引/模型/wiki/`0_Agent*` 全落在安装目录内。
+  一个文件夹搬走就能换电脑，C 盘不占。卸载重装不丢索引 —— Inno 只删自己装进去的文件。
+  兜底：万一用户把它装进 `Program Files`（不可写），`config._writable()` 探测到就回退
+  `%LOCALAPPDATA%\PaperPiggy`，不崩。
 - 注意事项：安装器**不要命名为 setup.exe**（加重 Defender 盯梢），填全 Publisher/ProductName/版本元数据；加一段检测注册表无 WebView2 时运行 Evergreen Bootstrapper（约 2MB，随包携带）的脚本 —— Win11 出厂预装，Win10 绝大多数已推送但仍有漏网。
 - Inno Setup 支持中文向导，脚本 100 行以内。
 
-### 2b. 便携 zip（保留，给进阶用户/U盘场景）
-- 现有 bundle 直接 zip；包内 `portable.txt` 机制已实现（数据落包内）。
+### 2b. ~~便携 zip~~ ⛔ 已于 1.0.0 砍掉
+数据既然与程序同目录，「删掉旧文件夹、解压新版」—— 便携软件最常规的升级姿势 ——
+就会把用户的索引、wiki、API key、写好的论文一次性删光。走安装器升级则不会
+（Inno 只覆盖 `app\` 和 `python\`，不碰 `data\`）。所以只发安装器。
+`config.py` 里的 `portable.txt` 分支保留（它现在的语义是「数据同目录」，安装器正是靠它），
+但打包链路不再产出任何 zip。详见 `installer/paperpiggy.iss` 文件头。
 
 ### 2c. 代码签名（决定 SmartScreen 体验）
 | 选项 | 2026 现状 | 结论 |
@@ -160,7 +186,7 @@ build\py312\python.exe -c "import onnxruntime, lancedb, pypdfium2, docx; print('
 ## 6. 落地顺序建议
 
 1. **本轮**（发布前）：加 `APP_VERSION` + version.json 地基（半小时的活）。
-2. **v1.0 发布**：build_bundle 产出 → Inno Setup 打包 + 便携 zip → GitHub Release（含 app.zip + sha256）→ R2 同步一份 → README/小红书写清 SmartScreen"仍要运行"步骤。
+2. **v1.0 发布**：build_bundle 产出 → Inno Setup 打包（不再出便携 zip）→ GitHub Release（含 app.zip + sha256）→ R2 同步一份 → README/小红书写清 SmartScreen"仍要运行"步骤。
 3. **v1.0.x**：实装自更新（检查+下载+重启替换+回滚），用第一次小版本迭代实测更新链路。
 4. **之后按需**：Certum 证书（€69）→ mac 实验包（GitHub Actions）→ COS 加速 → （远期）$99 mac 公证。
 

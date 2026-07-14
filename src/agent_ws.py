@@ -3,9 +3,14 @@
 Agent 专属工作区：两个人类可读、留在知识库本地的文件夹——
   0_Agent交付物 (Output)：agent 的成品（论文/资料汇编/周报），每主题一子文件夹。
   0_Agent资料库 (Rely)  ：agent 干活要用的东西（记忆/技能/参考格式/交付模板/定时任务）。
-落点：
-  folder 模式——建在受管文件夹内部（folder_source.scan 已排除 0_Agent* 前缀目录，不入库）。
-  zotero 模式——无受管文件夹，落应用数据目录同级 %LOCALAPPDATA%\\LocalKB\\（=C.DATA.parent）。
+落点（唯一权威是 base_dir()，这段只是它的说明）：
+  一律 = C.DATA.parent —— 与 folder / zotero 模式**无关**。
+    · 安装器版（数据与程序同目录）→ 安装目录本身，比如 D:\\PaperPiggy\\
+    · 安装目录不可写而回退时     → %LOCALAPPDATA%\\PaperPiggy\\
+    · 源码开发态                  → 源码目录 src\\
+  唯一例外：老用户的受管文件夹里已经有非空的 0_Agent资料库 → 跟着它走（不迁移、不孤儿化）。
+  ⚠️ 旧版这里写的是「folder 模式建在受管文件夹内部」—— **那个行为已废止**，
+     别照着旧描述推理（folder_source.scan 仍排除 0_Agent* 前缀目录，这一条没变）。
 所有子目录/模板【幂等】创建。出厂模板（README/技能/工作流/规约摘要…）会**随版本升级**：
   与某个历史出厂版一字不差（= 用户没改过）→ 静默换成新版；被用户改过 → 原样保留，新版另存 <名>.new.md。
   见下方「出厂模板升级器」注释——**绝不覆盖**用户或 agent 写过一个字的文件。
@@ -412,7 +417,12 @@ def _template_specs():
 
 def _ensure_template(path, current_text, factory_hashes, mask=None, seed=False):
     """出厂模板的幂等落盘 + 升级。返回 created|current|upgraded|kept|forked|error（仅供测试/日志，调用方可忽略）。
-       绝不丢用户内容：唯一会覆盖已有文件的分支，是它与某个历史出厂版**一字不差**（= 用户没碰过）。"""
+
+    绝不丢用户内容 —— **覆盖一个已存在的文件，当且仅当它与某个历史出厂版一字不差**（= 用户没碰过）。
+    这条规矩对**主文件和 .new.md 旁本一视同仁**：旁本被改过，就另起名字（.new.2.md…），不覆盖。
+    （历史 bug：旁本曾经是无条件覆盖的 —— 提示语请用户「对照合并」，用户就在旁本里写笔记，
+      然后下一次启动/下一次 agent 连 MCP，笔记就被出厂原文静默盖掉。而那时这行 docstring
+      还宣称「唯一会覆盖的分支是一字不差」，把读代码的人也一起骗了。）"""
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         if not path.exists():
@@ -427,9 +437,27 @@ def _ensure_template(path, current_text, factory_hashes, mask=None, seed=False):
             return "upgraded"
         if seed:
             return "kept"                                      # 用户数据种子：写过了就是他的东西，安静走开
+
+        # 用户改过主文件 → 保留主文件，新版出厂模板另存为旁本。
+        # ⚠️ 旁本**也是用户的东西**：提示语让他「对照合并」，他就很可能直接在旁本里做合并笔记。
+        #    老代码在这里无条件 write_text，等于每次启动都把他的笔记盖回出厂原文（静默、无备份）。
+        #    现在：旁本一旦被改过，就换个不冲突的名字放新版，绝不覆盖。
         newp = path.with_name(path.stem + ".new" + path.suffix)   # 写论文与综述.md → 写论文与综述.new.md
-        if newp.exists() and _norm_hash(newp.read_text(encoding="utf-8"), mask) == cur_h:
-            return "kept"                                      # 新版旁本已在且就是这一版：别重复写、更别每次启动都刷屏
+        if newp.exists():
+            new_h = _norm_hash(newp.read_text(encoding="utf-8"), mask)
+            if new_h == cur_h:
+                return "kept"                                  # 旁本已是这一版：别重复写、更别每次启动刷屏
+            if new_h not in factory_hashes:                     # 旁本被用户改过 → 另起一个名字
+                for i in range(2, 100):
+                    alt = path.with_name(f"{path.stem}.new.{i}{path.suffix}")
+                    if not alt.exists():
+                        newp = alt
+                        break
+                    if _norm_hash(alt.read_text(encoding="utf-8"), mask) == cur_h:
+                        return "kept"                          # 这一版的旁本已经躺在那儿了
+                else:
+                    return "kept"                              # 攒了 98 个没合并的旁本？别再刷了。
+            # else：旁本还是某个历史出厂版（用户没碰过它）→ 直接换成新版，安全。
         newp.write_text(current_text, encoding="utf-8")
         print(f"[agent_ws] 「{path.name}」你改过，已原样保留；新版出厂模板另存为「{newp.name}」，"
               f"可对照合并（用不上就直接删掉 {newp.name}）", file=sys.stderr, flush=True)

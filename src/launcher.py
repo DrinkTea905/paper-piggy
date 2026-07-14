@@ -61,6 +61,32 @@ def server_running():
     return _health() is not None
 
 
+def _focus_existing_window():
+    """单实例：把已经在跑的那个 PaperPiggy 窗口拉到前台。找到并唤起 → True。
+
+    窗口标题固定是 "PaperPiggy"（`webview.create_window` 的第一个参数），
+    与 `_tint_titlebar_async()` 用的是同一套 FindWindowW 查找。
+    ⚠️ 必须先 ShowWindow(SW_SHOW)，不能只 SetForegroundWindow：
+       窗口有可能正处于**隐藏**状态（见 CLAUDE.md §6「启动器的 SW_HIDE」），
+       而 SetForegroundWindow 对隐藏窗口是无效的 —— 用户仍然什么都看不到。
+    """
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+        u32 = ctypes.windll.user32
+        hwnd = u32.FindWindowW(None, "PaperPiggy")
+        if not hwnd:
+            return False
+        SW_SHOW, SW_RESTORE = 5, 9
+        u32.ShowWindow(hwnd, SW_RESTORE if u32.IsIconic(hwnd) else SW_SHOW)
+        u32.SetForegroundWindow(hwnd)     # 前台锁下可能失败，但窗口已经 SW_SHOW 出来了
+        return True
+    except Exception as e:
+        _logline(f"唤起已有窗口失败：{repr(e)}")
+        return False
+
+
 def _port_in_use(host, port):
     """端口探测：仅判断 TCP 是否可连（区分「端口空闲」与「被别的程序占用」）。"""
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -217,7 +243,21 @@ def main():
     _check_path_ascii()
     proc = None
     logf = None
-    if not server_running():
+
+    running = server_running()
+
+    # ── 单实例 ──────────────────────────────────────────────────────────────
+    # 已经有一个 PaperPiggy 在跑 → 唤起它的窗口，自己退出，绝不再开第二个。
+    # 老行为：server 在跑就跳过起 server、直接再 create_window 一个 —— 于是**每双击一次
+    # 就多一个 launcher 进程**（都连同一个 server）。用户实机点了 6 次，攒了 6 个进程。
+    # 而当时窗口还因为 VBS 的 SW_HIDE 是隐藏的（见 CLAUDE.md §6），他看不见、以为没启动，
+    # 就继续点 —— 两个 bug 一叠加，就是「点了没反应，进程越攒越多」。
+    if running and _focus_existing_window():
+        _logline("已有实例在运行 → 已把它的窗口拉到前台，本次启动退出。")
+        return
+    # 找不到窗口（上一个实例的窗口已关、只剩 server 还活着）→ 往下走，开一个窗口连上它。
+
+    if not running:
         # 端口已被别的（非 LocalKB）程序占用 → 我们的 server 起不来，先给人话而非静默崩溃
         if _port_in_use(C.DAEMON_HOST, C.DAEMON_PORT):
             _logline(f"端口 {C.DAEMON_PORT} 被其它程序占用，无法启动。")

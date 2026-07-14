@@ -2,15 +2,29 @@
 r"""
 自动更新器 —— 只换 app\，绝不碰 python\ 与用户数据。
 
+⛔⛔ 这个模块目前是**死代码**：全仓 grep 过，server.py / launcher.py / 前端**没有任何地方
+     调用它**（应用里那个「自动检查更新」开关是知识库增量索引，跟版本升级无关）。
+     v1.0.0 的唯一升级路径是「重下安装器覆盖安装」，走 Inno，不走这里。
+     → 别花时间分析下面的权限模型和回滚逻辑，它一次都没跑过。要接线前先读 CLAUDE.md §7。
+     → 已知两个坑，接线之前必须先修：
+        ① 回滚用 rmtree(ignore_errors=True) + move：文件被占用时删不干净，move 会把备份塞进
+           残留目录里变成 app\app.bak-x.y.z\，而函数照样返回「已回滚成功」—— 假回滚。
+        ② 装到 Program Files 时程序目录不可写，第一步备份就 PermissionError。
+           （1.0.0 已改用户级安装 + 数据同目录，这条不再必然踩到，但要实测。）
+
 【为什么只换 app\】
   · python\ 是 800M 的运行时，换它等于重装，且失败风险高（DLL 被占用）。
-  · 用户数据在 %LOCALAPPDATA%\LocalKB\data，**任何情况下都不能动**。
+  · 用户数据在安装目录的 data\（数据与程序同目录）或 %LOCALAPPDATA%\PaperPiggy\data，
+    **任何情况下都不能动**。
   · app\ 是纯 .py + web\，几 MB，替换快、回滚易。
 
 【开源明文 .py 的特有坑 —— 用户可能改过包里的代码】
   本项目刻意以明文 .py 分发（不编译不混淆），所以用户完全可能自己改了 app\ 里的文件。
   无脑覆盖 = 把人家的修改抹掉。所以更新前会拿 app\version.json 里的 sha256 清单
   逐文件比对：改过的文件**不会被静默覆盖**，而是备份成 <name>.bak-<旧版本> 并提示。
+  ⚠️ 但这套保护**只存在于本模块里，而本模块没被调用** —— 实际走的 Inno 覆盖安装是
+     `Flags: ignoreversion` 无条件覆盖，用户改过的 app\ 文件会**静默消失，连 .bak 都没有**。
+     这是当前的真实行为，README / release notes 要如实告知用户。
 
 【流程】
   check()     查 GitHub Release latest → 比版本
@@ -37,7 +51,7 @@ UA = {"User-Agent": f"PaperPiggy/{getattr(C, 'APP_VERSION', '0')} (+https://gith
 
 APP_DIR    = C.APP                       # 分发包里 = <bundle>\app
 BUNDLE_DIR = APP_DIR.parent              # <bundle>
-UPDATE_DIR = C.DATA.parent / "update"    # %LOCALAPPDATA%\LocalKB\update（可写，且不在 app\ 里）
+UPDATE_DIR = C.DATA.parent / "update"    # 数据家下的 update\（可写，且不在 app\ 里）
 
 
 # ───────────────────────── 版本比较 ─────────────────────────

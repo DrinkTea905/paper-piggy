@@ -3,14 +3,14 @@
 本地知识库应用 —— 独立配置（中央路径/参数）。
 
 ⚠️ 独立性保证（与开发机上那个旧 rag 知识库目录的关系；路径由 LOCALKB_MODELS 指定，代码里不写死）：
-  - 本项目所有【写入】都落在 DATA / LOGS 之下（见下方 DATA 解析：分发版=%LOCALAPPDATA%\\LocalKB\\data，
+  - 本项目所有【写入】都落在 DATA / LOGS 之下（见下方 DATA 解析：分发版=%LOCALAPPDATA%\\PaperPiggy\\data，
     源码态=源码目录 data/，可被 LOCALKB_DATA / LOCALKB_HOME 覆盖），**绝不写入模型或知识库目录**。
   - 模型【只读复用】知识库已下载好的 ONNX/hub（省去重新下 12GB），可用环境变量改指别处。
   - 数据源直接读 Zotero 的 zotero.sqlite（不依赖 Better BibTeX 导出）。
   - daemon 端口用 8770（知识库 daemon 是 8765），两者可同时运行、互不干扰。
 所有引擎脚本统一 `import config as C`，改路径只改这一处。
 """
-import os
+import os, sys
 from pathlib import Path
 
 # ---- 应用版本（唯一事实源）----
@@ -23,11 +23,41 @@ APP = Path(__file__).parent                 # 源码目录；分发版 = bundle/
 RAG = APP                                    # 兼容：引擎脚本都在项目根
 
 # ---- 分发包路径引导（BLOCKER 修复）----
-# MCP / CLI 由 Claude Code 直接拉起 mcp_server.py / localkb.py 时不经过 run_localkb.py，
+# MCP / CLI 由 Claude Code 直接拉起 mcp_server.py / localkb.py 时不经过启动器，
 # 进程 env 里没有 LOCALKB_DATA/LOCALKB_MODELS。若不在此补上：DATA 会错落到 app/data
-# （只读、且自动更新替换 app/ 时被清掉），MCP/CLI 看到空库、拉起的假 server 占住 8770，
-# 与用户随后打开的真应用“数据脑裂”。此处复刻 run_localkb.py 的 HOME 解析，**仅在确为分发包时**
-# 接管；开发机（源码目录，其上一级探测不到 bundle 结构）原样跳过，数据仍落在源码 data/。
+# （会被升级安装覆盖掉），MCP/CLI 看到空库、拉起的假 server 占住 8770，
+# 与用户随后打开的真应用“数据脑裂”。开发机（源码目录，其上一级探测不到 bundle 结构）
+# 原样跳过，数据仍落在源码 data/。
+# ★ 这里是 HOME 解析的**唯一实现**。run_localkb.py 曾经自己复刻了一份，两处各算各的 ——
+#   典型的漂移种子（改一处忘一处 = 启动器和 MCP 认两个不同的数据目录）。现在启动器
+#   只是 `import config` 借道过来。别再把这段逻辑复制出去。
+
+
+def _writable(d):
+    """能不能真往这儿写。装到 Program Files 时包内只读，必须探出来而不是假设。"""
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+        t = d / ".write_test"
+        t.write_text("x", encoding="utf-8")
+        t.unlink()
+        return True
+    except Exception:
+        return False
+
+
+# 数据家的兜底位置：%LOCALAPPDATA%\PaperPiggy（1.0.0 起。此前叫 LocalKB —— 门面已全面
+# 改名，数据文件夹却还叫旧名，用户备份/找库/清卸载残留时会一脸问号，所以跟着改）。
+# 不写 LocalKB→PaperPiggy 迁移：1.0.0 尚未发布，没有外部用户，开发机那份旧数据自己删。
+# ⚠️ 环境变量 LOCALKB_* 刻意**不改**：只有开发者和 MCP 配置碰得到，改了要牵动
+#    CLAUDE.md / launch.json / MCP接入说明 / 一堆 .py，对用户零收益。
+def _user_home():
+    env = os.environ.get("LOCALKB_HOME")
+    if env:
+        return Path(env)                         # 用户显式指定，尊重之
+    appdata = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~\\AppData\\Local")
+    return Path(appdata) / "PaperPiggy"
+
+
 def _bootstrap_bundle_env():
     if os.environ.get("LOCALKB_DATA"):
         return                                   # 已由启动器/用户设定，尊重之
@@ -37,11 +67,23 @@ def _bootstrap_bundle_env():
                  or (root / "portable.txt").exists())
     if not is_bundle:
         return                                   # 开发机：让 DATA 默认落在源码目录 data/
+
+    # portable.txt =「数据与程序同在一个文件夹」，安装器版**默认带它**（产品决定）：
+    # 用户可以把整个应用连数据带模型装到 D:\PaperPiggy，一个文件夹搬走，C 盘一点不占。
+    # 升级由安装器做（只覆盖 app\ 和 python\，不碰 data\），所以不像手动解压 zip 那样
+    # 会把索引删光 —— 这也是 1.0.0 砍掉便携 zip、只发安装器的原因。
+    # ⚠️ 但安装向导允许用户把目录改到 Program Files，那里普通权限写不进去，首次建库必崩。
+    #    所以**探测可写性**，写不进去就回退 %LOCALAPPDATA% —— 宁可占点 C 盘，也不能崩。
+    home = None
     if (root / "portable.txt").exists():
-        home = root                              # 便携模式：数据/模型放包内
-    else:
-        appdata = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~\\AppData\\Local")
-        home = Path(os.environ.get("LOCALKB_HOME") or (Path(appdata) / "LocalKB"))
+        if _writable(root / "data"):
+            home = root
+        else:
+            print(f"[config] 安装目录不可写（{root}），数据回退到用户目录",
+                  file=sys.stderr, flush=True)
+    if home is None:
+        home = _user_home()
+
     try:
         (home / "data").mkdir(parents=True, exist_ok=True)
         (home / "models").mkdir(parents=True, exist_ok=True)

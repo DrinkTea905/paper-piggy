@@ -1,24 +1,29 @@
 # -*- coding: utf-8 -*-
 r"""
-出包总编排 —— 一条命令产出三样东西：
+出包总编排 —— 一条命令产出两样东西：
 
-  ① 安装器      dist-installer\PaperPiggy-<ver>-win64.exe   （Inno Setup；不带 portable.txt）
-  ② 便携 zip    dist-installer\PaperPiggy-<ver>-portable.zip（带 portable.txt，解压即用）
-  ③ 更新包      dist-installer\paper-piggy-app-<ver>.zip     （只含 app\，供 updater.py 用）
-                + 同名 .sha256
+  ① 安装器   dist-installer\PaperPiggy-<ver>-win64.exe    （Inno Setup）
+  ② 更新包   dist-installer\paper-piggy-app-<ver>.zip      （只含 app\，供 updater.py 用）
+             + 同名 .sha256
+             ⚠️ updater.py 目前是**死代码**（没有任何地方调用它），这个包暂时没人消费。
+                见 CLAUDE.md §7。
 
 前置：先跑 build_bundle.py 生成 src\dist\LocalKB\。
 
-【为什么 ① 和 ② 必须不同】
-  portable.txt 决定数据落哪：
-    有   → 数据写包内（U 盘、免安装场景）
-    没有 → 数据写 %LOCALAPPDATA%\LocalKB
-  安装器版装在 Program Files（只读），**绝不能带 portable.txt**，否则首次建库就崩。
-  这个脚本会强制检查这一点。
+【数据落在哪】
+  安装器会把 installer\portable.txt 一起装进安装目录，它是「数据与程序同目录」的开关：
+    有   → 索引/模型/wiki/0_Agent* 全在安装目录内（用户可整个装到 D:\PaperPiggy，C 盘不占）
+    没有 → 落 %LOCALAPPDATA%\PaperPiggy
+  这要求安装目录可写 → 安装器用**用户级**安装（PrivilegesRequired=lowest），
+  而不是 Program Files。两个决定是一套的，详见 paperpiggy.iss 文件头 §数据同目录。
+
+【便携 zip 已于 1.0.0 下线】
+  数据与程序同目录之后，「删掉旧文件夹、解压新版」会把用户的索引和论文一次性删光。
+  只发安装器。详见 paperpiggy.iss §为什么砍掉便携 zip。
 
 用法：
     python installer\build_installer.py              # 全出
-    python installer\build_installer.py --app-only   # 只出 ③（发小版本更新时用）
+    python installer\build_installer.py --app-only   # 只出 ②（发小版本更新时用）
 """
 import sys, os, json, shutil, hashlib, zipfile, argparse, subprocess
 from pathlib import Path
@@ -64,12 +69,34 @@ def check_bundle():
                          f"    干净电脑（没装 VC++ 2015-2022）上本地模式会直接 WinError 1114。\n"
                          f"    跑 build_bundle.py 的 ensure_vc_runtime()，或手动 copy。")
 
-    # 包里不该有开发机的数据/日志残留
+    # ① 错位残留：数据绝不该落在 app\ 下（那是代码目录）。这种一定是 bug 产物，直接清。
     for junk in ("app/data", "app/logs"):
         p = BUNDLE / junk
         if p.exists():
             print(f"[installer] ⚠ 清理残留：{junk}")
             shutil.rmtree(p, ignore_errors=True)
+
+    # ② 隐私闸门：数据与程序同目录之后，开发者自测 bundle 会在**包根**留下真实数据 ——
+    #    data\（含 settings.json 里的硅基流动 API key、文献元数据、索引）、
+    #    0_Agent交付物\（写好的论文）、0_Agent资料库\（项目记忆）。
+    #    .iss 的 Excludes 已经排除它们，但那是第二道；这里是第一道。
+    #    ⛔ 只报警中止，**绝不自动删** —— 那可能是你辛苦跑出来的自测索引，甚至是真实交付物。
+    dirty = []
+    for junk in ("data", "logs", "update", "0_Agent交付物", "0_Agent资料库"):
+        p = BUNDLE / junk
+        try:
+            if p.exists() and any(p.iterdir()):
+                dirty.append(junk)
+        except Exception:
+            pass
+    if dirty:
+        raise SystemExit(
+            f"[installer] ✗ bundle 根目录里有非空的用户数据：{', '.join(dirty)}\n"
+            f"    位置：{BUNDLE}\n"
+            f"    这些是你自测这个包时产生的（数据与程序同目录）。里面可能有 API key、\n"
+            f"    文献元数据、写好的论文 —— 不能打进公开安装包。\n"
+            f"    确认无用就手动删掉再出包；有用就先挪走。（本脚本刻意不替你删。）")
+
     print(f"[installer] bundle 检查通过：{BUNDLE}")
 
 
@@ -147,10 +174,13 @@ def build_setup(ver):
         print("    装：winget install JRSoftware.InnoSetup")
         return None
 
-    # 安装器绝不能带 portable.txt（.iss 的 Excludes 已排除，这里双保险）
-    pt = BUNDLE / "portable.txt"
-    if pt.exists():
-        print(f"[installer] ⚠ bundle 里有 portable.txt —— .iss 会排除它，但便携 zip 需要它，保留原文件")
+    # portable.txt（=「数据与程序同目录」开关）由 .iss 从 installer\portable.txt 装入，
+    # 不从 bundle 里带 —— bundle 里那份（如果开发者自测时留了一个）已被 .iss 的 Excludes 排除。
+    if not (HERE / "portable.txt").exists():
+        raise SystemExit(
+            "[installer] ✗ 缺 installer\\portable.txt —— 它是「数据与程序同目录」的开关，\n"
+            "    .iss 要把它装进安装目录。没有它，用户的数据会落到 %LOCALAPPDATA%\\PaperPiggy，\n"
+            "    与「一个文件夹装下一切」的产品设计不符。")
 
     ensure_webview2()
 
@@ -167,29 +197,11 @@ def build_setup(ver):
     return exe
 
 
-def build_portable(ver):
-    """便携 zip：解压即用，**带 portable.txt**（数据落包内）。"""
-    OUT.mkdir(exist_ok=True)
-    dst = OUT / f"PaperPiggy-{ver}-portable.zip"
-
-    # 临时塞入 portable.txt（build_bundle 默认不生成它）
-    pt = BUNDLE / "portable.txt"
-    created = not pt.exists()
-    if created:
-        pt.write_text("portable\n", encoding="utf-8")
-
-    try:
-        with zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
-            for p in BUNDLE.rglob("*"):
-                if p.is_dir() or "__pycache__" in p.parts:
-                    continue
-                z.write(p, Path("PaperPiggy") / p.relative_to(BUNDLE))
-    finally:
-        if created:
-            pt.unlink(missing_ok=True)      # 别把 portable.txt 留在 bundle 里污染安装器
-
-    print(f"[installer] ✓ 便携 zip → {dst}  ({dst.stat().st_size / 1e6:.1f} MB)")
-    return dst
+# ⛔ 便携 zip 已于 1.0.0 下线（原 build_portable 见 git 历史）。
+#    理由：数据与程序同目录之后，「删掉旧文件夹、解压新版」——便携软件最常规的升级姿势——
+#    会把用户的索引、wiki、API key、写好的论文一次性删光。安装器升级不会（只覆盖 app\ 和
+#    python\）。别为了「方便」把它加回来：那不是方便，是给用户挖坑。
+#    详见 paperpiggy.iss 文件头 §为什么砍掉便携 zip。
 
 
 def build_app_package(ver):
@@ -230,11 +242,10 @@ def main():
         build_app_package(ver)
     else:
         build_app_package(ver)
-        build_portable(ver)
         build_setup(ver)
 
     print(f"\n[installer] 产物都在 {OUT}")
-    print("[installer] 下一步：把安装器/便携 zip/更新包+sha256 传到 GitHub Release")
+    print("[installer] 下一步：把安装器 + 更新包 + sha256 传到 GitHub Release")
     print(f"    gh release create v{ver} dist-installer\\* --repo DrinkTea905/paper-piggy")
 
 

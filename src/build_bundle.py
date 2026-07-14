@@ -257,33 +257,25 @@ def copy_slim_models(src_dir=None):
 
 
 RUN_LOCALKB = r'''# -*- coding: utf-8 -*-
-"""LocalKB 分发版启动入口（由 python\\pythonw.exe 运行，无黑窗）。
-数据与模型统一放 %LOCALAPPDATA%\\LocalKB：① 必可写（装到 Program Files 等只读位置也安全）；
-② 自动更新替换 app/ 时不丢用户索引/模型。模型的下载在网页首启向导里完成（本地模式），
-   API 模式无需下载。"""
-import os, sys
+"""PaperPiggy 分发版启动入口（由 python\\pythonw.exe 运行，无黑窗）。
+
+★ 这个文件**刻意什么都不算**。数据/模型目录的解析全在 app\\config.py 的
+  _bootstrap_bundle_env() 里，`import config` 时自动跑完。
+  历史教训：这里曾经复刻过一份 HOME 解析，和 config.py 各算各的 —— 改一处忘一处，
+  启动器和 MCP 就会认两个不同的数据目录（数据脑裂）。**别再把逻辑搬回来。**
+
+⚠️ 文件名不能改：config.py 靠它判定「是不是分发包」（见 config._bootstrap_bundle_env）。
+
+数据落点：包目录带 portable.txt（安装器版默认带）→ 数据/模型与程序同在安装目录，
+一个文件夹搬走；安装目录不可写（比如用户装到了 Program Files）→ 自动回退
+%LOCALAPPDATA%\\PaperPiggy。模型下载在网页首启向导里完成（本地模式），API 模式无需下载。
+"""
+import sys
 from pathlib import Path
 ROOT = Path(__file__).resolve().parent
-appdata = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~\\AppData\\Local")
-# 便携模式：包目录放个 portable.txt 即把数据/模型放包内（供 U 盘等场景）
-if (ROOT / "portable.txt").exists():
-    HOME = ROOT
-else:
-    HOME = Path(os.environ.get("LOCALKB_HOME") or (Path(appdata) / "LocalKB"))
-try:
-    (HOME / "data").mkdir(parents=True, exist_ok=True)
-    (HOME / "models").mkdir(parents=True, exist_ok=True)
-except Exception:
-    pass
-os.environ.setdefault("LOCALKB_DATA", str(HOME / "data"))
-# 模型优先用包内 models/（--slim-models 打进包/首启已下载都落这里），否则退回 HOME/models：
-# 否则非便携首启会把 LOCALKB_MODELS 指向空的 HOME/models，忽略包内已带模型、误报“需下载”。
-_bundled = ROOT / "models"
-if (_bundled / "bge-m3-onnx" / "model_quantized.onnx").exists():
-    os.environ.setdefault("LOCALKB_MODELS", str(_bundled))
-else:
-    os.environ.setdefault("LOCALKB_MODELS", str(HOME / "models"))
 sys.path.insert(0, str(ROOT / "app"))
+
+import config      # noqa: F401 —— import 即设好 LOCALKB_DATA / LOCALKB_MODELS
 
 # server 无模型也能起（检索器空库优雅降级），模型下载/引擎选择交给网页向导。
 import launcher
@@ -292,9 +284,16 @@ launcher.main()
 
 BAT = 'start "" "%~dp0python\\pythonw.exe" "%~dp0run_localkb.py"\r\n'
 
+# ⚠️ 第二个参数**必须是 1（SW_SHOWNORMAL），不能是 0（SW_HIDE）**。
+# 真实事故（2026-07-14）：原来写的是 0，本意是「别闪黑窗」，结果 SW_HIDE 经由
+# STARTUPINFO.wShowWindow 传给子进程，pywebview 建窗口时继承成「隐藏」——
+# 应用每次都**启动成功但窗口不可见**。用户点一次快捷方式就多一个看不见的幽灵进程，
+# 点了 6 次就攒了 6 个。而 启动.bat 走 `start ""`（SW_SHOWNORMAL）所以正常，
+# 于是现象是「bat 能启动、快捷方式点了没反应」，极难定位。
+# 而且 0 本来就是多余的：pythonw.exe 自带无控制台，压根没有黑窗要藏。
 VBS = ('Set s = CreateObject("WScript.Shell")\r\n'
        'p = Left(WScript.ScriptFullName, InStrRev(WScript.ScriptFullName, "\\"))\r\n'
-       's.Run """" & p & "python\\pythonw.exe"" """ & p & "run_localkb.py""", 0, False\r\n')
+       's.Run """" & p & "python\\pythonw.exe"" """ & p & "run_localkb.py""", 1, False\r\n')
 
 
 def write_launchers():

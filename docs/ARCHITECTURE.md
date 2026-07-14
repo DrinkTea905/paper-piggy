@@ -80,12 +80,16 @@ is_bundle =  (root/"run_localkb.py").exists()
 
 | 分支 | 判定 | DATA |
 |---|---|---|
-| **① 源码态（开发）** | `is_bundle` 为假 → 直接 return（`config.py:31-32`） | `src\data`（`config.py:56` 的默认值 `APP/data`） |
-| **② 分发包 + `portable.txt`** | `config.py:33-34` | `<bundle>\data`（包内） |
-| **③ 分发包 无 `portable.txt`** | `config.py:35-37` | `%LOCALAPPDATA%\LocalKB\data`（可被 `LOCALKB_HOME` 覆盖） |
+| **① 源码态（开发）** | `is_bundle` 为假 → 直接 return | `src\data` |
+| **② 分发包 + `portable.txt` + 目录可写** | 安装器版**默认走这条** | `<安装目录>\data` —— 数据与程序同目录，用户可整个装到 `D:\PaperPiggy` |
+| **③ 分发包 + `portable.txt` 但目录不可写** | `_writable()` 探测失败（例如用户硬装进 `Program Files`） | 回退 `%LOCALAPPDATA%\PaperPiggy\data`，并打一行提示 —— **不崩** |
+| **④ 分发包 无 `portable.txt`** | 用户自己删了那个开关文件 | `%LOCALAPPDATA%\PaperPiggy\data` |
 
-②③ 都会 `os.environ.setdefault("LOCALKB_DATA", …)`（`config.py:43`），且**已有 `LOCALKB_DATA` 时直接 return，尊重外部设定**（`config.py:25-26`）。
-`run_localkb.py`（由 `build_bundle.py:192-224` 生成）在分发包里做同样的事，两处逻辑是刻意的复刻。
+`LOCALKB_HOME` 可覆盖 ③④ 的落点。②③④ 都会 `os.environ.setdefault("LOCALKB_DATA", …)`，
+且**已有 `LOCALKB_DATA` 时直接 return，尊重外部设定**。
+
+> ★ 这段解析是**唯一实现**。`run_localkb.py` 曾经复刻过一份（两处各算各的 = 启动器和 MCP
+> 认两个数据目录的漂移源），2026-07-14 已收成薄启动器：它只 `import config` 借道。**别再复制出去。**
 
 DATA 之下的一切派生路径见 `config.py:56-98`：`extracted/ chunks/ lancedb/ bm25/ bm25_meta/ meta/ state/ logs/ wiki/ categories/ pagemap/ summaries/ folder/` 等。
 **日志也跟随 DATA**（`config.py:64`，`LOGS = DATA/"logs"`）——放 `app/logs` 会在自动更新替换 `app/` 时丢失，且装到 Program Files 会因不可写而启动即崩。
@@ -274,7 +278,7 @@ light 模式走 `search_light`（`retriever.py:547`）：只有 bm25_meta + `_ap
   定时任务/ 说明.md
 ```
 
-**落点（`base_dir()`，`agent_ws.py:18-41`）**：默认 `C.DATA.parent`（源码态 = `src\`，分发态 = `%LOCALAPPDATA%\LocalKB\`）。
+**落点（`base_dir()`）**：一律 `C.DATA.parent`（源码态 = `src\`；安装器版 = **安装目录本身**，如 `D:\PaperPiggy\`；回退时 = `%LOCALAPPDATA%\PaperPiggy\`）。与 folder/zotero 模式**无关**。
 若 folder 模式的受管文件夹里已有非空的 `0_Agent资料库`，就跟着它走（避免老用户记忆孤儿化）。
 历史坑：落点曾随 folder/zotero 模式漂移，表现为「记忆凭空清零」。
 
