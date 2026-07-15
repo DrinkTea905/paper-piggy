@@ -161,6 +161,7 @@
   let lastIdxStatus = null;
   let wasDeepBusy = false;
   let wasBackfilling = false;   // 追踪「生成检索摘要」后台任务，结束时刷新列表/徽标
+  let lastDeepDone = -1, lastNoText = -1;   // 深索/扫描件计数变化 → 非破坏式刷新浏览徽标
   async function poll() {
     const s = $("#status");
     let h = null, st = null;
@@ -207,6 +208,12 @@
         else flashToast("⚠ 深索中断（原因见深索详情面板），已完成部分已保存。");
       }
       wasDeepBusy = deepBusyNow;
+      // 深索/自愈推进中：深索数或扫描件数一变，就非破坏式刷新浏览徽标——自愈清掉标记后立刻不再显示扫描件
+      const _dn = st.deep_done || 0, _nt = st.deep_no_text || 0;
+      if (_dn !== lastDeepDone || _nt !== lastNoText) {
+        if (browseLoaded && !$("#panel-browse").hidden) refreshBrowseDeepState();
+      }
+      lastDeepDone = _dn; lastNoText = _nt;
       // 「生成检索摘要」（第②步）后台任务结束→刷新库总览与浏览列表，让 sac 数字/徽标更新
       const bfNow = !!(st.sac_backfill && st.sac_backfill.running);
       if (wasBackfilling && !bfNow) {
@@ -423,14 +430,31 @@
         try { const r = await jpost("/index/retry_no_text", {}); flashToast(r.msg || `已清除 ${num(r.cleared || 0)} 篇。`); deepPanelPoll(); }
         catch (e) { flashToast("重试失败：" + (e.message || e)); }
       });
-      $("#dp-eta").textContent = DP.paused ? "⏸ 已暂停（正在跑的那批会跑完，队列保留）" : (eta || "");
-      const items = q.items || [];
-      $("#dp-items").innerHTML = items.length
-        ? items.map((it) => `<li title="${esc(it.title || it.key || "")}">${esc(it.title || it.key || "（未命名）")}</li>`).join("")
-        : `<li class="dp-empty">${listEmpty}</li>`;
+      // F4b：队列专属 UI（暂停/继续、「正在深索」列表、⏸已暂停文案）只在真·队列态出现。
+      // 整库深索(bulkDeep)走 subprocess、不是队列，即使 /index/queue 瞬时 inflight>0 也不显示队列件，
+      // 否则会与「整库深索进行中」并排冒出「暂停 + 队列items/暂无」→ 三态混显（用户 2026-07-15 反馈）。
+      const queueUI = queueActive && !bulkDeep;
+      $("#dp-eta").textContent = (queueUI && DP.paused)
+        ? "⏸ 已暂停（正在跑的那批会跑完，队列保留）"
+        : (eta || "");
+      const itemsH = $(".dp-items-h"), itemsUl = $("#dp-items");
+      if (queueUI) {
+        if (itemsH) itemsH.hidden = false;
+        if (itemsUl) {
+          const items = q.items || [];
+          itemsUl.hidden = false;
+          itemsUl.innerHTML = items.length
+            ? items.map((it) => `<li title="${esc(it.title || it.key || "")}">${esc(it.title || it.key || "（未命名）")}</li>`).join("")
+            : `<li class="dp-empty">${listEmpty}</li>`;
+        }
+      } else {
+        // 整库深索 / 空闲：队列列表不适用，连「正在深索」标题一起藏，面板只留 stat(+eta)(+停止整库)
+        if (itemsH) itemsH.hidden = true;
+        if (itemsUl) { itemsUl.hidden = true; itemsUl.innerHTML = ""; }
+      }
       const btn = $("#dp-pause");
-      // 仅当队列确有可暂停对象(在跑/排队)时显示暂停；空闲无对象→隐藏
-      if (btn) { btn.hidden = !queueActive; btn.textContent = DP.paused ? "继续" : "暂停"; btn.classList.toggle("primary-btn", DP.paused); btn.classList.toggle("ghost", !DP.paused); }
+      // 仅真·队列态显示暂停/继续；整库与空闲都藏（整库用下面的「停止整库深索」#dp-cancel）
+      if (btn) { btn.hidden = !queueUI; btn.textContent = DP.paused ? "继续" : "暂停"; btn.classList.toggle("primary-btn", DP.paused); btn.classList.toggle("ghost", !DP.paused); }
       // 整库深索走 subprocess、不进队列，「暂停」对它无效——给它一个真正的「停止」（终止子进程）
       const cb = $("#dp-cancel");
       if (cb) cb.hidden = !bulkDeep;
@@ -2614,6 +2638,7 @@
   function paperCard(p) {
     const div = document.createElement("div");
     div.className = "bcard";
+    div.dataset.key = p.key;   // 供深索推进时按 key 定位、非破坏式刷新徽标（refreshBrowseDeepState）
     // F13：勾选与「可深索」解耦——所有卡片都可勾选（供加分类/导引文/多选拖拽），深索时再各自过滤
     const checked = BR.selected.has(p.key) ? "checked" : "";
     div.innerHTML =
@@ -2739,6 +2764,35 @@
       if (myseq !== BR.reqSeq) return;
       $("#bl-msg").textContent = "加载失败：" + e.message;
     }
+  }
+
+  // 深索/自愈推进期间，只更新已渲染卡片的 no_text/deep/摘要徽标——不动勾选、滚动、分页。
+  // 治「自愈已把 deep_no_text 从 1382 清到 10，但浏览页整段深索期间不重取 /papers、仍显示扫描件」
+  // 这个 staleness（用户 2026-07-15 反馈）。后端 /papers 是实时算的，这里只是让前端跟上。
+  async function refreshBrowseDeepState() {
+    if (!browseLoaded || $("#panel-browse").hidden || !BR.papers.length) return;
+    if ($("#bl-list .bcard.dragging")) return;   // 有卡正在拖拽 → 本轮跳过（拖拽<1s，下轮进度变化会再刷）
+    const myseq = BR.reqSeq;                       // 不自增：换范围/排序会 bump reqSeq，本次结果作废
+    try {
+      const params = new URLSearchParams({ sort: BR.sort, limit: String(BR.papers.length), offset: "0" });
+      const s = BR.scope;
+      if (s.type === "topic") params.set("topic", s.id);
+      else if (s.type === "zotero") params.set("collection", s.id);
+      else if (s.type === "kbcat") params.set("category", s.id);
+      if (BR.deepFilter) params.set("deep", BR.deepFilter);
+      const d = await jget("/papers?" + params.toString());
+      if (myseq !== BR.reqSeq) return;             // 期间用户切了范围/排序 → 丢弃
+      const fresh = new Map((d.papers || []).map((x) => [x.key, x]));
+      BR.papers.forEach((p) => {
+        const f = fresh.get(p.key);
+        if (!f) return;
+        if (p.no_text === f.no_text && p.deep === f.deep && p.has_summary === f.has_summary) return;
+        p.no_text = f.no_text; p.deep = f.deep; p.has_summary = f.has_summary;
+        const old = $(`#bl-list .bcard[data-key="${CSS.escape(p.key)}"]`);
+        if (old) old.replaceWith(paperCard(p));    // 整卡重建：勾选态按 BR.selected 重算、事件重绑
+      });
+      refreshSelUI();                              // deepN 依赖 !no_text，需重算，顺带解禁被误挡的深索按钮
+    } catch (e) { /* 静默：后台刷新，不打扰用户 */ }
   }
 
   // ── W1：浏览页分页——「加载更多」追加下一页（不清勾选、不重置滚动位置）──

@@ -1597,7 +1597,8 @@ def topics_rebuild():
         try:
             env = dict(os.environ); env.pop("PYTHONUTF8", None)
             p = subprocess.run([sys.executable, str(C.APP / "build_ai_topics.py")],
-                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, timeout=900)
+                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, timeout=900,
+                               creationflags=C.SUBPROC_NO_WINDOW)
             TOPICS_BUILD["msg"] = "完成" if p.returncode == 0 else f"失败(code={p.returncode})"
         except Exception as e:
             log_error("topics/rebuild", repr(e)); TOPICS_BUILD["msg"] = f"异常：{e}"
@@ -2545,7 +2546,8 @@ def _run_build(stage, extra=None, on_done=None):
         try:
             env = _child_env()   # 任务五：稳定 UTF-8 输出，避免 build 日志乱码
             cmd = [sys.executable, str(C.APP / "build_all.py"), "--stage", stage] + (extra or [])
-            p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
+            p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env,
+                                 creationflags=C.SUBPROC_NO_WINDOW)   # ★ 不闪黑窗
             BUILD["proc"] = p            # 留句柄给 /build/cancel
             for raw in p.stdout:
                 BUILD["log"].append(raw.decode("utf-8", errors="replace").rstrip())
@@ -2623,7 +2625,8 @@ def _kill_tree(p):
     if sys.platform == "win32":
         try:
             r = subprocess.run(["taskkill", "/PID", str(p.pid), "/T", "/F"],
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15,
+                               creationflags=C.SUBPROC_NO_WINDOW)
             if r.returncode == 0:
                 return
             log_error("build/cancel taskkill", f"taskkill rc={r.returncode}，兜底 terminate")
@@ -2833,7 +2836,8 @@ def _run_stage_blocking(stage, extra=None):
     """阻塞跑一段 build_all（子进程 subprocess.run，捕获 stdout 不污染 HTTP 响应）。返回 returncode。"""
     env = _child_env()
     cmd = [sys.executable, str(C.APP / "build_all.py"), "--stage", stage] + (extra or [])
-    p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
+    p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env,
+                       creationflags=C.SUBPROC_NO_WINDOW)
     try:
         out = (p.stdout or b"").decode("utf-8", errors="replace")
         BUILD["log"].append(f"[deep_agent:{stage}] rc={p.returncode}")

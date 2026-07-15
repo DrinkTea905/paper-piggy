@@ -332,12 +332,24 @@ def _rename_retry(src, dst, tries=20, wait=0.5):
     raise last
 
 
+# ★ 无窗铁律（CLAUDE.md §0.5）：更新链路里的每个子进程都必须无控制台窗口，
+#   否则升级时会闪黑窗。用包内 pythonw.exe（GUI 子系统、无控制台）+ CREATE_NO_WINDOW 双保险。
+_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0   # CREATE_NO_WINDOW
+
+
+def _pyw():
+    """无窗解释器：优先包内 pythonw.exe，回退当前解释器（源码态可能是 python.exe，但那不发布）。"""
+    p = BUNDLE_DIR / "python" / "pythonw.exe"
+    return str(p) if p.exists() else sys.executable
+
+
 def _importable(app_dir):
     """在给定 app 目录里能不能 import config 并读出版本 —— 换代码前后都用它把关。"""
     r = subprocess.run(
-        [sys.executable, "-c",
+        [_pyw(), "-c",
          "import sys; sys.path.insert(0, r'%s'); import config; print(config.APP_VERSION)" % app_dir],
         capture_output=True, text=True, timeout=60,
+        creationflags=_NO_WINDOW,        # ★ 不闪黑窗
     )
     if r.returncode != 0:
         raise RuntimeError((r.stderr or "")[-500:])
@@ -347,12 +359,9 @@ def _importable(app_dir):
 def _relaunch():
     r"""换完代码后把应用重新拉起来（分发包里 = pythonw run_localkb.py，无黑窗）。"""
     try:
-        pyw = BUNDLE_DIR / "python" / "pythonw.exe"
         run = BUNDLE_DIR / "run_localkb.py"
-        exe = str(pyw) if pyw.exists() else sys.executable
-        flags = 0x00000008 if sys.platform == "win32" else 0   # DETACHED_PROCESS
-        subprocess.Popen([exe, str(run)], cwd=str(BUNDLE_DIR),
-                         creationflags=flags, close_fds=True)
+        subprocess.Popen([_pyw(), str(run)], cwd=str(BUNDLE_DIR),
+                         creationflags=_NO_WINDOW, close_fds=True)   # ★ 不闪黑窗
         return True
     except Exception:
         return False

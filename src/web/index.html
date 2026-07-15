@@ -554,6 +554,8 @@
         <label class="eng-mode"><input type="radio" name="eng-backend" value="api" /> ☁️ API（SiliconFlow 等 OpenAI 兼容，免费免下载）</label>
         <div id="eng-api">
           <p class="hint">👉 没有 Key？去 <a href="https://account.siliconflow.cn/zh/login" target="_blank" rel="noopener">SiliconFlow（硅基流动）</a> 登录领免费额度，填这一个即可全局复用。</p>
+          <p class="hint">💰 <b>强烈建议往 SiliconFlow 充 ¥1</b>：账户余额为 0 时，<b>连免费模型（bge-m3）也会报 403 失败</b>，
+             深索/检索会莫名跑不动；充 ¥1 后免费模型即可一直正常用（免费额度不扣这 ¥1）。<code>.cn</code> 和 <code>.com</code> 账号不互通。</p>
           <label>Base URL <input id="eng-base" placeholder="https://api.siliconflow.cn/v1" /></label>
           <label>API Key <input id="eng-key" type="password" placeholder="填过就不用再填，留空即可" /></label>
           <details>

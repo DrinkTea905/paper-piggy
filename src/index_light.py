@@ -164,6 +164,84 @@ def compute_stats(papers):
         "updated_at": now_iso,
     }
 
+# ═══ 去重（Zotero 侧同一篇多次入库=不同 itemKey）══════════════════════════
+_DEDUP_LAW_TYPES = {"statute", "case", "standard", "report"}
+
+
+def _protect_stems():
+    """带『深索产物』的 stem 并集——去重绝不能删这些 key。
+    铁律：papers.jsonl 掉一个 key → 下一步 index_semantic._purge_deleted 会把它的
+    LanceDB chunk 行 + 磁盘 chunks/extracted/summaries 一并清掉。故凡带深索产物者一律保留。
+    ⚠ **不含 meta_embedded**：语义层给全库每篇都嵌了题录向量，若护它=护全库、去重就白做；
+      而题录向量很便宜、survivor 副本本就覆盖，删掉无损。真正贵的是 chunk（深索成果）。
+    额外扫磁盘 chunks（>10B=有真实块）——防 embedded_keys.txt 漏标却已有块的历史不一致(BF26/27/34)。"""
+    prot = set()
+    for fn in ("embedded_keys.txt", "deep_no_text.txt"):
+        f = C.STATE / fn
+        if f.exists():
+            try:
+                prot |= set(f.read_text(encoding="utf-8").split())
+            except Exception:
+                pass
+    try:
+        for cf in C.CHUNKS.glob("*.json"):
+            try:
+                if cf.stat().st_size > 10:
+                    prot.add(cf.stem)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return prot
+
+
+# 泛标题黑名单：这些不同刊不同期都叫同名、内容各异，绝不能按标题合并。
+_GENERIC_TITLES = {"目录", "编者按", "卷首语", "本期导读", "前言", "摘要", "引言", "后记",
+                   "编后记", "编者的话", "主编寄语", "编辑手记", "编者手记", "导读", "序", "序言"}
+
+
+def _dedup_sig(p):
+    """同一篇的判据。DOI 最可靠；法源/泛标题各留一份不并；否则 归一标题+首作者+年。"""
+    doi = re.sub(r'^https?://(dx\.)?doi\.org/', '', (p.get("doi") or "").strip().lower())
+    if doi:
+        return ("doi", doi)
+    if (p.get("itemtype") or "") in _DEDUP_LAW_TYPES:   # 法源同名不同版本(现行/已废止)必须各留→不并
+        return ("key", p["key"])
+    raw = (p.get("title") or "").strip()
+    t = re.sub(r'[\s\W_]+', '', raw).lower()
+    # ⚠ 阈值按字符数：中文标题字少义足（「司法信任研究」6 字就是真标题），故用 < 4 而非英文式的 < 8；
+    #   泛标题(目录/编者按/卷首语等)再用黑名单兜住——它们同名不同内容，不能并。
+    if len(t) < 4 or raw in _GENERIC_TITLES:
+        return ("key", p["key"])
+    au = re.sub(r'[\s,]+', '', (p.get("author") or "").split(";")[0]).lower()
+    return ("tay", t, au, (p.get("year") or "").strip())
+
+
+def _dedup_papers(papers, protect):
+    """删纯题录重复、保留一切带深索产物的副本。返回 (去重后 papers, 删除数)。"""
+    groups = {}
+    for i, p in enumerate(papers):
+        groups.setdefault(_dedup_sig(p), []).append(i)
+    drop = set()
+    for idxs in groups.values():
+        if len(idxs) == 1:
+            continue
+        earliest = min((papers[i].get("ingested_at") or "9999") for i in idxs)
+        prot_idx = [i for i in idxs if safe_name(papers[i]["key"]) in protect]
+        if prot_idx:
+            keep = set(prot_idx)   # 有深索产物的成员全保留（下游 purge 才不会删其 chunks/向量）
+        else:
+            keep = {sorted(idxs, key=lambda i: (not papers[i].get("has_pdf"),
+                                                papers[i].get("ingested_at") or "9999"))[0]}
+        for i in keep:             # survivor 继承最早入库时间，别让去重把"首次入库"抹成 now
+            if (papers[i].get("ingested_at") or "9999") > earliest:
+                papers[i]["ingested_at"] = earliest
+        drop |= (set(idxs) - keep)
+    if not drop:
+        return papers, 0
+    return [p for i, p in enumerate(papers) if i not in drop], len(drop)
+
+
 def main():
     t0 = time.time()
     now = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -196,6 +274,20 @@ def main():
         except Exception:
             old_ingested = {}
     papers = [enrich(m, now, old_ingested) for m in papers]
+
+    # 去重：Zotero 里同一篇被重复添加（各自不同 itemKey），管线本会当成互不相干的多篇。
+    # 仅 zotero 模式（folder 靠路径自洽）。放在 enrich 之后：要用 ingested_at 选 survivor / 继承最早时间。
+    # ⚠ 安全命根子：被删 key 的 LanceDB 行/产物会在下一步 index_semantic._purge_deleted 被清，
+    #   所以 _protect_stems() 把一切带深索产物的 key 排除在可删集外——**已深索的重复一律保留、绝不删**，
+    #   只删「纯题录」副本（无 chunk、无向量），不丢深索成果、不白烧 API 钱。老用户升级后首次 light 生效。
+    try:
+        import settings as _S2
+        if _S2.source() == "zotero":
+            papers, _nd = _dedup_papers(papers, _protect_stems())
+            if _nd:
+                print(f"[light] 去重：删 {_nd} 条纯题录重复（已深索的副本一律保留）", flush=True)
+    except Exception as e:
+        print(f"[light] 去重跳过（{type(e).__name__}: {e}）", flush=True)
 
     C.META_DIR.mkdir(parents=True, exist_ok=True)
     # BF3：原子写，见 _atomic_write_lines

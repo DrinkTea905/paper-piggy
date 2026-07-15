@@ -42,7 +42,7 @@
 
 ### 它有自己的工作区，而且是人类可读的
 
-接入后，PaperPiggy 会在**自己的数据目录里**（和索引、模型放在一起，比如 `D:\PaperPiggy\`，**不在你的 Zotero 文库旁边**）多出两个文件夹：
+接入后，PaperPiggy 会在**安装目录里**（就是索引和模型待的地方，比如 `D:\PaperPiggy\`）多出两个文件夹，和你的 Zotero 文库互不干扰：
 
 ```
 0_Agent资料库/          ← AI 干活要用的东西（不是你的文献）
@@ -141,7 +141,7 @@ Windows 10/11 64 位。无需预装 Python 或 VC++ 运行库。缺 WebView2 时
 1. 每次发版时，把 Release 里的 `paper-piggy-app-<版本>.zip` 和同名 `.sha256`（就这两个小文件）
    传到一个国内能快速访问的地方——**Gitee Release** 最省事（免费、免备案），或对象存储（Cloudflare R2 / 阿里云 OSS 等）。
 2. 在应用「⚙ 设置 → ⬆️ 应用更新 → 国内镜像」里，填这两个文件所在的**目录前缀**（以 `/` 结尾），例如
-   `https://gitee.com/你的名/paper-piggy/releases/download/v1.0.4/`。
+   `https://gitee.com/你的名/paper-piggy/releases/download/v<版本>/`。
 3. 之后应用内更新会先试 GitHub、连不上就走镜像。检查更新仍走 GitHub API（小、通常能连）。
 
 （首启的模型下载走另一套镜像位 `models_manifest.json` 的 `mirror_base`，那是 900MB 的大文件、

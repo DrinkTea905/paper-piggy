@@ -70,7 +70,8 @@ def main():
     emit(f"\n===== 建库开始 stage={args.stage} {time.strftime('%Y-%m-%d %H:%M:%S')} =====")
     for name, cmd in steps:
         emit(f"[build] 开始：{name}")
-        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
+        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env,
+                             creationflags=C.SUBPROC_NO_WINDOW)   # ★ 不闪黑窗（extract/chunk/embed 子进程）
         for raw in p.stdout:
             emit(raw.decode("utf-8", errors="replace").rstrip("\r\n"))
         p.wait()

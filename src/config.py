@@ -13,11 +13,15 @@
 import os, sys
 from pathlib import Path
 
+# ★ 无窗铁律（CLAUDE.md §0.5）：所有 subprocess 在 Windows 上都带这个 flag，绝不闪控制台黑窗。
+#   子进程用 pythonw + 此 flag 双保险。加任何拉起进程的新功能，creationflags 默认写 C.SUBPROC_NO_WINDOW。
+SUBPROC_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0   # CREATE_NO_WINDOW
+
 # ---- 应用版本（唯一事实源）----
 # 全项目**只有这一处**版本字面量：发版改版本号只改这里，其余地方一律 `C.APP_VERSION` 引用
 # （踩过的坑：版本号散落在 mcp_server 的 serverInfo、打包脚本、页脚里，改一处漏三处，
 #  用户报 bug 时报的版本对不上代码）。1.0.0 = 首个公开发布版（Apache-2.0 开源）。
-APP_VERSION = "1.0.7"
+APP_VERSION = "1.0.8"
 
 APP = Path(__file__).parent                 # 源码目录；分发版 = bundle/app
 RAG = APP                                    # 兼容：引擎脚本都在项目根
