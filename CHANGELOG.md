@@ -20,7 +20,7 @@
 - **macOS 从源码运行支持**（面向个人自用，非公开发布的打包）：数据落点改到
   `~/Library/Application Support/PaperPiggy`、依赖按平台分流（macOS 装 pyobjc、跳过 Windows 专属的
   pythonnet）、Zotero 目录探测支持 macOS profile、打开文件夹/取消建库等改为跨平台。
-  详见 [docs/MAC-从源码运行.md](docs/MAC-从源码运行.md)。**以上改动在 Windows 上一律无变化。**
+  详见 [MAC-从源码运行.md](MAC-从源码运行.md)。**以上改动在 Windows 上一律无变化。**
 
 ## [1.0.9] — 2026-07-15
 

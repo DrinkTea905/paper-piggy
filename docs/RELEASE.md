@@ -98,7 +98,7 @@ build\py312\python.exe -c "import onnxruntime, lancedb, pypdfium2, docx; print('
 
 ## 一句话结论
 
-**不要做单文件 exe（PyInstaller onefile），保持现有目录形态；Windows ~~发 Inno Setup 安装器 + 便携 zip 双形态~~ → 只发 Inno Setup 安装器（用户级 + 数据同目录，便携 zip 已砍，见文首更新）；自更新自写（只换 app/，约 200 行）—— ✅ **已接线**（1.0.x 起）：`server /update/{check,download,status,mirror}` + `launcher.apply_update()` 拉起独立 `updater.py --apply` 换 `app\` 并重启，顶栏 `#up-badge` 提示新版；数据安全保证见 `updater.apply()`（只碰 `app\`）；macOS 目前不打包、只从源码运行（见 [MAC-从源码运行.md](MAC-从源码运行.md)），暂不买 $99 Apple 开发者账号；大陆分发用 GitHub Release 主源 + 多镜像前缀 + Cloudflare R2 免费第二源。**
+**不要做单文件 exe（PyInstaller onefile），保持现有目录形态；Windows ~~发 Inno Setup 安装器 + 便携 zip 双形态~~ → 只发 Inno Setup 安装器（用户级 + 数据同目录，便携 zip 已砍，见文首更新）；自更新自写（只换 app/，约 200 行）—— ✅ **已接线**（1.0.x 起）：`server /update/{check,download,status,mirror}` + `launcher.apply_update()` 拉起独立 `updater.py --apply` 换 `app\` 并重启，顶栏 `#up-badge` 提示新版；数据安全保证见 `updater.apply()`（只碰 `app\`）；macOS 目前不打包、只从源码运行（见 [MAC-从源码运行.md](../MAC-从源码运行.md)），暂不买 $99 Apple 开发者账号；大陆分发用 GitHub Release 主源 + 多镜像前缀 + Cloudflare R2 免费第二源。**
 
 ---
 

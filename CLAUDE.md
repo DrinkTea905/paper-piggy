@@ -83,7 +83,7 @@ README / CHANGELOG / release notes 会被全世界看到。改文案时别留「
 全本地运行（也支持 API 模式）。开源，**明文 .py 分发，不编译不混淆**。
 
 **当前阶段：已发布 Windows 安装器并持续迭代修复中**（当前版本以 `config.APP_VERSION` 为准，逐版本变更见 [CHANGELOG.md](CHANGELOG.md)）。
-打包/自动更新细节见 [docs/RELEASE.md](docs/RELEASE.md)；macOS 目前只支持从源码运行（[docs/MAC-从源码运行.md](docs/MAC-从源码运行.md)），未打包。
+打包/自动更新细节见 [docs/RELEASE.md](docs/RELEASE.md)；macOS 目前只支持从源码运行（[MAC-从源码运行.md](MAC-从源码运行.md)），未打包。
 
 ---
 
@@ -93,6 +93,7 @@ README / CHANGELOG / release notes 会被全世界看到。改文案时别留「
 <仓库根>\                          ← git 根（本机：D:\Onedrive\AI\知识库应用）
 ├─ CLAUDE.md                      ← 你正在读的
 ├─ README.md                      开源门面
+├─ MAC-从源码运行.md              macOS 从源码跑（放根级=首页可见；个人自用，未打包）
 ├─ LICENSE                        Apache-2.0
 ├─ CHANGELOG.md
 ├─ THIRD-PARTY-NOTICES.md         MinGit(GPLv2) / python-build-standalone / 微软 VC redist
@@ -112,7 +113,6 @@ README / CHANGELOG / release notes 会被全世界看到。改文案时别留「
 │   ├─ ARCHITECTURE.md            五分钟架构（新 agent 必读）
 │   ├─ MAINTENANCE.md             ★「改了 X → 必须同步 Y」映射表
 │   ├─ RELEASE.md                 打包与自动更新
-│   ├─ MAC-从源码运行.md          macOS 从源码跑（个人自用，未打包；v1.0.10 起适配）
 │   ├─ 开发\  设计\  assets\
 │
 ├─ installer\                     出包（1.0.0 起：只发 Inno 安装器，不再出便携 zip）
@@ -270,7 +270,7 @@ $env:LOCALKB_MODELS = 'D:\00Zotero知识库\rag\data\models'
   → 仍然为真的坑：Inno 覆盖安装用 `ignoreversion` **无条件覆盖** `app\`，用户改过的 `.py` 会被覆盖（README 已告知先备份）。而应用内更新会把用户改动存进 `你改过的旧代码-<ver>\`，比覆盖安装更善待魔改用户。
   → **首次可用性**：`app\` 里有本功能的那一版必须先靠**安装器**装上，之后的版本才能应用内一键升级（历史：1.0.1 用户升 1.0.2 仍需手动下安装器）。
   → **顶栏自动更新徽标**（v1.0.10，纯前端）：`index.html` 的 `.actions` 里 `#up-badge`，`app.js` 的 `renderUpdateBadge()` 在 `checkUpdate()` 每次返回时刷新；启动静默 `checkUpdate(true)`。两个 localStorage 状态键：`localkb.autoUpdateCheck`（"启动时自动检查"开关，默认开）、`localkb.updateDismissed`（按版本忽略）。设置页开关 `#up-autocheck`。改更新 UX 前先知道这两个键。
-- **macOS 从源码运行适配已入代码（v1.0.10）但无真机验证**：`config._user_home` / `server`(`_kill_tree` killpg、`/backup/open_dir`、建库 `Popen(start_new_session)`) / `zotero_source._zotero_prefs_files` / `requirements.txt` 现在都带 `sys.platform` 分支。**改这些代码、或新加任何 `subprocess`/路径/Zotero 探测时，必须保留跨平台守卫，别退化成 Windows-only**（Windows 上非 win32 分支=no-op，不影响你）。待真机验证项见 [docs/MAC-从源码运行.md](docs/MAC-从源码运行.md) §6（killpg 取消建库 / 单实例唤起 / pyobjc 窗口）。分发仍只有 Windows 安装器，macOS 不打包。
+- **macOS 从源码运行适配已入代码（v1.0.10）但无真机验证**：`config._user_home` / `server`(`_kill_tree` killpg、`/backup/open_dir`、建库 `Popen(start_new_session)`) / `zotero_source._zotero_prefs_files` / `requirements.txt` 现在都带 `sys.platform` 分支。**改这些代码、或新加任何 `subprocess`/路径/Zotero 探测时，必须保留跨平台守卫，别退化成 Windows-only**（Windows 上非 win32 分支=no-op，不影响你）。待真机验证项见 [MAC-从源码运行.md](MAC-从源码运行.md) §6（killpg 取消建库 / 单实例唤起 / pyobjc 窗口）。分发仍只有 Windows 安装器，macOS 不打包。
 - **打包发布**：见 [docs/RELEASE.md](docs/RELEASE.md)。发布形态已定案（2026-07-14）：**只发 Inno 安装器**（便携 zip 已砍）、**用户级安装**（不弹 UAC，可改装到 D 盘）、**数据与程序同目录**（索引/模型/wiki/`0_Agent*` 全在安装目录内，一个文件夹搬走）、数据目录由 `LocalKB` **改名为 `PaperPiggy`**（环境变量 `LOCALKB_*` 保持不变）。
   ⚠️ **「数据同目录」和「用户级安装」是一套的，别只改一个** —— 改回 Program Files 而留着 `portable.txt`，用户首次建库就崩在「包内不可写」上（已有 `config._writable()` 兜底回退，但那是兜底不是设计）。
   **两个曾经的 blocker 已解决**（2026-07-15 核实）：① GitHub 仓库 `DrinkTea905/paper-piggy` 已建（公开）；② 模型已传到 Release `models-v1`（`bge-m3-onnx.tar.gz` 472MB + `bge-reranker-v2-m3-onnx.tar.gz` 473MB），`models_manifest.json` 的 URL 实测可下，「首启下模型」链路通了。

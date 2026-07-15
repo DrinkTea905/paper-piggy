@@ -92,7 +92,7 @@ is_bundle =  (root/"run_localkb.py").exists()
 > **平台**：③④ 的"用户目录"由 `config._user_home()` 按平台决定——Windows=`%LOCALAPPDATA%\PaperPiggy`、
 > macOS=`~/Library/Application Support/PaperPiggy`、Linux=`$XDG_DATA_HOME`（v1.0.10 起）。
 > Windows 有打包安装器（走 ①②③④ 全链路）；**macOS/Linux 目前只支持从源码运行**（走分支①源码态），
-> 见 [MAC-从源码运行.md](MAC-从源码运行.md)。
+> 见 [MAC-从源码运行.md](../MAC-从源码运行.md)。
 
 > ★ 这段解析是**唯一实现**。`run_localkb.py` 曾经复刻过一份（两处各算各的 = 启动器和 MCP
 > 认两个数据目录的漂移源），2026-07-14 已收成薄启动器：它只 `import config` 借道。**别再复制出去。**
