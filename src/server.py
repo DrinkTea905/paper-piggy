@@ -768,6 +768,96 @@ def _reset_vectors_for_reembed():
         log_error("reset vectors for reembed", repr(e), traceback.format_exc())
         return False
 
+
+def _reset_index_full():
+    """『清空并重建』：把全部索引产物移到一个可恢复的 stash + drop 向量表，让下次「更新知识库」
+       从头重建。重建时题录会重新**去重**（合并「已深索、在现有库上删不掉」的重复副本）、并按
+       「只导 PDF」严格重新导入。
+       **只清索引产物**，明确**保留**：综述 wiki / 收藏夹分类 / 期刊分级 / 检索摘要 SAC /
+       页码映射 pagemap / 设置 / 0_Agent 工作区（人写的、花过 API 钱的、或重解析 PDF 很贵的）。
+       stash 里放的是纯文件产物（chunks/extracted/bm25/state/manifest），重建确认无误后用户可删；
+       向量表是 drop（不入 stash，本就要弃）——所以调用前 UI 会强烈建议先备份。
+       返回 {ok, stash, moved, dropped_table, failed}。调用方须先确认没有在建索引（占 running 锁）。"""
+    import shutil
+    home = C.DATA.parent
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    stash = home / f"_reset_index_backup_{stamp}"
+    # 先置未就绪 + 释放内存里的索引句柄，免得 Windows 下移动/删除被占用（bm25 可能 mmap、表句柄占 lancedb）
+    R.STATE["ready"] = False
+    for k in ("tbl", "records", "bm25", "bm25_ids", "meta_bm25", "meta_ids"):
+        R.M.pop(k, None)
+    try:
+        import gc; gc.collect()
+    except Exception:
+        pass
+    # ① 把纯文件索引产物移到 stash（可恢复）。只移这些——绝不碰 wiki/categories/summaries/pagemap/meta/settings
+    moved, failed = [], []
+    for src, name in [(C.CHUNKS, "chunks"), (C.EXTRACTED, "extracted"),
+                      (C.BM25_DIR, "bm25"), (C.BM25_META_DIR, "bm25_meta"),
+                      (C.STATE, "state"), (C.INDEX_MANIFEST, "index_manifest.json")]:
+        if not src.exists():
+            continue
+        try:
+            dst = stash / "data" / name
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(src), str(dst))
+            moved.append(name)
+        except Exception as e:
+            failed.append(f"{name}: {e}")
+            log_error("reset move", f"{name}: {e!r}", traceback.format_exc())
+    # ② drop 向量表（LanceDB API 自己处理句柄；表在重建的 semantic 阶段以 mode=overwrite 重造，
+    #    wiki 行由 load_all→reindex_missing_pages 从磁盘 markdown 回灌）
+    dropped = False
+    try:
+        import lancedb
+        db = lancedb.connect(str(C.LANCEDB_DIR))
+        if C.TABLE_NAME in db.table_names():
+            db.drop_table(C.TABLE_NAME)
+            dropped = True
+    except Exception as e:
+        failed.append(f"drop_table: {e}")
+        log_error("reset drop_table", repr(e), traceback.format_exc())
+    # ③ 重建空目录（server 进程不会再跑 config 的 mkdir；留空目录免得后续写入撞到缺目录）
+    for d in (C.EXTRACTED, C.CHUNKS, C.BM25_DIR, C.BM25_META_DIR, C.STATE, C.LANCEDB_DIR):
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+    # ④ 刷新内存索引状态 → 未建库/待重建（表没了、bm25_meta 没了 → load_all 落到「未建库」）
+    try:
+        R.load_all()
+    except Exception as e:
+        log_error("reset reload", repr(e), traceback.format_exc())
+    return {"ok": not failed, "stash": str(stash), "moved": moved,
+            "dropped_table": dropped, "failed": failed}
+
+
+class ResetIndexQ(BaseModel):
+    confirm: bool = False
+
+@app.post("/index/reset")
+def index_reset(q: ResetIndexQ = None):
+    """『清空并重建』索引：清索引产物（保留 wiki/分类/SAC/分级/设置/Agent 工作区），供从头重建。
+       destructive——须 confirm=true。忙时拒绝。见 _reset_index_full。"""
+    if not (q and q.confirm):
+        return {"ok": False, "need_confirm": True}
+    with _BUILD_LOCK:
+        if BUILD["running"]:
+            return {"ok": False, "busy": True, "msg": "正在建索引，请等它结束或先停止，再清空。"}
+        BUILD["running"] = True; BUILD["stage"] = "reset"   # 占位防清空途中有 build 抢锁
+    try:
+        r = _reset_index_full()
+    finally:
+        with _BUILD_LOCK:
+            BUILD["running"] = False; BUILD["stage"] = ""
+    if r.get("ok"):
+        r["msg"] = ("索引已清空（旧的提取/切块/向量已移到 " + r["stash"] + "，确认重建无误后可自行删除）。"
+                    "下一步：① 点顶栏『⟳ 更新知识库』重建题录+语义层（会自动去重、按只导 PDF 重新导入）；"
+                    "② 完成后到首页或『浏览』点『深索全部』重新深索。")
+    else:
+        r["msg"] = "清空未完全成功（详见 failed）。可重启应用后重试；已移走的产物在 " + r.get("stash", "") + "。"
+    return r
+
 @app.post("/setup/backend")
 def setup_backend(q: BackendQ):
     """保存检索引擎后端选择（本地/API）。API 模式存 SiliconFlow 等的 key。

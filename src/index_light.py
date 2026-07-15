@@ -251,11 +251,11 @@ def main():
         import settings as _S
         if _S.source() == "zotero" and _S.load().get("import_only_pdf"):
             before = len(papers)
-            # 豁免法源类条目：法规/案例/标准/报告在 Zotero 里通常只有网页快照或纯题录（has_pdf=False），
-            # 若被「只导入有 PDF」一并剔除，其法源定档/法条时效/法律词典取词等整条链路全失效，用户还难以察觉。
-            papers = [p for p in papers if p.get("has_pdf")
-                      or (p.get("itemtype") in ("statute", "case", "standard", "report"))]
-            print(f"[light] 仅导入有 PDF（法源类不受此限）：{before} → {len(papers)} 篇", flush=True)
+            # 严格「只导入有 PDF」：不再豁免法源类。产品所有者 2026-07-15 明确要求——
+            # 他会给重要法条/法规自己补上 PDF 再入库，宁可漏也不要一堆无正文的纯题录混进来。
+            # （此前豁免 statute/case/standard/report，见 git 历史；CLAUDE.md §7 已同步。）
+            papers = [p for p in papers if p.get("has_pdf")]
+            print(f"[light] 仅导入有 PDF：{before} → {len(papers)} 篇", flush=True)
     except Exception:
         pass
     print(f"[light] 数据源={source}，{len(papers)} 篇", flush=True)

@@ -701,6 +701,31 @@
         <div id="bk-list" class="bk-list"></div>
       </div>
 
+      <div class="set-section" id="sec-rebuild">
+        <h4>🧹 清空并从头重建索引</h4>
+        <p class="hint">想把整个索引<b>推倒重来</b>时用（比如库里有重复文献要合并、或深索乱了想重跑）。
+          它<b>只清索引</b>：全文提取、切块、向量、bm25、深索进度标记、整库状态。<br>
+          ✅ <b>明确保留</b>：综述 wiki、收藏夹分类、期刊分级、检索摘要（花过 API 钱的）、
+          页码映射、你的设置、<code>0_Agent</code> 工作区。<br>
+          清空后按提示点顶栏「⟳ 更新知识库」重建题录+语义（会<b>自动去重、按“只导 PDF”重新导入</b>），
+          再到首页点「深索全部」重新深索。</p>
+        <p class="hint"><b class="danger-text">⚠ 向量索引会被丢弃、需要重新嵌入</b>（1400 篇要几十分钟到几小时、
+          API 模式还要再花一次嵌入的钱）。<b>强烈建议先在上面「💾 立即备份」打一份</b>（勾上“包含向量索引”），
+          万一想反悔能整包恢复。旧的提取/切块会移到一个备份目录、可手动捞回，但向量表是直接丢弃的。</p>
+        <div class="set-errbtns">
+          <button id="rb-open" class="ghost danger">🧹 清空索引…</button>
+          <span id="rb-msg" class="hint"></span>
+        </div>
+        <div id="rb-confirm" class="rb-confirm" hidden>
+          <p class="hint">确认要<b>清空索引并从头重建</b>吗？综述、分类、分级、设置、Agent 工作区都会保留，
+            但<b>向量索引会丢弃、需重新嵌入</b>。这一步不可逆（除手动从备份目录捞回提取/切块）。</p>
+          <div class="set-errbtns">
+            <button id="rb-cancel" class="ghost">取消</button>
+            <button id="rb-go" class="ghost danger">确认清空，我已了解需要重新深索</button>
+          </div>
+        </div>
+      </div>
+
       <div class="set-section" id="sec-update">
         <h4>⬆️ 应用更新</h4>
         <p class="hint">检查并升级到新版本。升级<b>只替换程序本体</b>，你的索引、综述、Agent 交付物等

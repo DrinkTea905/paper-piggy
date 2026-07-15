@@ -204,6 +204,8 @@ button:disabled { opacity: .6; cursor: default; }
 .set-section .sac-toggle { margin: 10px 0 0; }          /* 勾选项统一间距（替代散落的 inline style） */
 .au-sched { margin: 6px 0 2px; }
 .au-del { margin-top: 8px; }
+.rb-confirm { margin-top: 10px; padding: 10px 12px; border: 1px solid #b91c1c; border-radius: 8px; background: rgba(185,28,28,.06); }
+.rb-confirm > .hint { margin: 0 0 8px; }
 .set-errbtns { display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
 .set-errbtns .ghost { border: 1px solid var(--line); background: transparent; color: var(--muted); padding: 7px 14px; border-radius: 8px; cursor: pointer; font-size: 13px; }
 .set-errbtns .ghost:hover { border-color: var(--accent); color: var(--accent); }

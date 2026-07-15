@@ -351,9 +351,19 @@
     // F4：只在 stage==="deep" 时才叫「深索中」——增量更新(stage=all)/队列空闲时不再误报「深索中 0%」
     if (deepBusy) {
       // 深索（把有 PDF 的文献全文拆成可检索的小段）
-      done = deep; total = withPdf || 1;
-      const eta = estimateEta("deep", deep, withPdf || 0);
-      txt = `深索中… ${num(deep)}/${num(withPdf)}` + (qPending ? ` · 另 ${num(qPending)} 篇排队` : "") + (eta ? ` · ${eta}` : "");
+      const noText = st.deep_no_text || 0;
+      if (withPdf > 0 && (deep + noText) >= withPdf) {
+        // embed 已全部嵌完（有正文的全嵌了、其余是扫描件），但整库深索还有最后一步：
+        // 重建 bm25 检索索引 + 印刷页码映射（20 多万块，分词+建索引要好几分钟）。
+        // 这期间深索计数已到顶，若仍显示「深索中 1388/1398 · 99%」会让人误以为卡死——
+        // 明确告诉用户在收尾（用户 2026-07-15 反馈「卡在 99% 不动」，实为此阶段）。
+        done = 1; total = 1;
+        txt = `深索已完成，正在重建检索索引（收尾中，请稍候）`;
+      } else {
+        done = deep; total = withPdf || 1;
+        const eta = estimateEta("deep", deep, withPdf || 0);
+        txt = `深索中… ${num(deep)}/${num(withPdf)}` + (qPending ? ` · 另 ${num(qPending)} 篇排队` : "") + (eta ? ` · ${eta}` : "");
+      }
     } else if (semanticPending && st.building) {
       // 语义层提质（**正在跑**才画动进度条）
       done = meta; total = papers || 1;
@@ -405,8 +415,16 @@
       // F4：分「整库深索中 / 队列进行中 / 空闲」三态，空闲不再假显示「深索中」，无可暂停对象时藏起暂停按钮
       let stat, eta = _etaText(q.eta_seconds), listEmpty;
       if (bulkDeep) {
-        stat = `整库深索进行中… 已深索 <b>${num(deep)}</b> / ${num(withPdf)} 篇`;
-        listEmpty = "正在整库深索（本批完成后自动继续下一批）";
+        const noText2 = q.deep_no_text || 0;
+        if (withPdf > 0 && (deep + noText2) >= withPdf) {
+          // 有正文的全嵌完了、剩下是扫描件——整库深索进入最后的「重建检索索引」阶段。
+          // 别再显示冻住的 1388/1398，明说在收尾（同 updateProgress 的处理）。
+          stat = `深索已完成，正在重建检索索引（bm25 + 页码映射，20 多万块，需几分钟）…请稍候`;
+          listEmpty = "正在重建检索索引，本步骤完成后整库深索即结束";
+        } else {
+          stat = `整库深索进行中… 已深索 <b>${num(deep)}</b> / ${num(withPdf)} 篇`;
+          listEmpty = "正在整库深索（本批完成后自动继续下一批）";
+        }
       } else if (queueActive) {
         // BF31：点明队列态只深索用户点选/排队的那些，别让人误以为在整库深索
         stat = `已深索 <b>${num(deep)}</b> / ${num(withPdf)} 篇 · 队列剩余 <b>${num(pending)}</b> 篇`
@@ -3409,6 +3427,40 @@
         const dir = await window.pywebview.api.pick_folder();
         if (dir) { bkdir.value = dir; await saveBkConf({ dir }); }
       } catch (e) {}
+    });
+
+    // 🧹 清空并从头重建索引（两步确认；destructive）
+    const rbOpen = $("#rb-open"), rbConfirm = $("#rb-confirm"),
+          rbCancel = $("#rb-cancel"), rbGo = $("#rb-go"), rbMsg = $("#rb-msg");
+    if (rbOpen) rbOpen.addEventListener("click", () => {
+      if (rbConfirm) rbConfirm.hidden = false;
+      rbOpen.hidden = true; if (rbMsg) rbMsg.textContent = "";
+    });
+    if (rbCancel) rbCancel.addEventListener("click", () => {
+      if (rbConfirm) rbConfirm.hidden = true;
+      if (rbOpen) rbOpen.hidden = false;
+    });
+    if (rbGo) rbGo.addEventListener("click", async () => {
+      rbGo.disabled = true; const old = rbGo.textContent; rbGo.textContent = "清空中…";
+      try {
+        const r = await jpost("/index/reset", { confirm: true });
+        if (r && r.busy) {
+          if (rbMsg) rbMsg.textContent = "⚠ " + (r.msg || "正在建索引，请稍后再试");
+        } else if (r && r.ok) {
+          if (rbConfirm) rbConfirm.hidden = true;
+          if (rbMsg) { rbMsg.textContent = "✓ 已清空。" + (r.msg || ""); }
+          flashToast("✓ 索引已清空。点顶栏「⟳ 更新知识库」重建，再「深索全部」。");
+          // 刷新顶栏/首页，反映「未建库/待重建」
+          poll(); if (dashLoaded) loadDashboard("silent");
+        } else {
+          if (rbMsg) rbMsg.textContent = "❌ " + ((r && r.msg) || "清空失败");
+        }
+      } catch (e) {
+        if (rbMsg) rbMsg.textContent = "❌ 清空失败：" + e.message;
+      } finally {
+        rbGo.disabled = false; rbGo.textContent = old;
+        if (rbOpen && rbConfirm && rbConfirm.hidden) rbOpen.hidden = false;
+      }
     });
   }
 
