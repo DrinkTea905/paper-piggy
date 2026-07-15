@@ -9,6 +9,8 @@
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows-lightgrey.svg)]()
 [![Python](https://img.shields.io/badge/python-3.12-green.svg)]()
+[![Downloads](https://img.shields.io/github/downloads/DrinkTea905/paper-piggy/total.svg)](https://github.com/DrinkTea905/paper-piggy/releases)
+[![Stars](https://img.shields.io/github/stars/DrinkTea905/paper-piggy.svg)](https://github.com/DrinkTea905/paper-piggy/stargazers)
 
 </div>
 
