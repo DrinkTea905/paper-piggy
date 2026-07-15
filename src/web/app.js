@@ -3000,6 +3000,7 @@
     loadAutoUpdate(); // 回填自动更新开关/间隔
     loadOnlyPdf();    // 回填「只导入有 PDF」开关
     loadBackup();     // 回填备份位置/自动备份，并列出已有备份包
+    checkUpdate(true); // 静默查一次新版（用缓存、失败不吭声），有新版才显示升级面板
   }
 
   // ── 自动更新（按天 + 指定时刻 + 补跑；即改即存）──
@@ -3345,6 +3346,66 @@
       } catch (e) {}
     });
   }
+
+  // ── 应用更新（版本升级）────────────────────────────────
+  // 只换 app\，数据不动（server /update/* + launcher 桥 apply_update）。
+  async function checkUpdate(quiet) {
+    const msg = $("#up-msg"), panel = $("#up-panel");
+    if (!msg) return null;
+    if (!quiet) msg.textContent = "检查中…";
+    try {
+      const r = await jget("/update/check" + (quiet ? "" : "?force=1"));
+      if (!r.ok || r.error) {
+        if (!quiet) msg.textContent = "检查失败：" + (r.error || "未知") + "（多半是网络问题）";
+        return r;
+      }
+      if (r.has_update) {
+        msg.textContent = "";
+        $("#up-ver").innerHTML = `当前 <b>${r.current}</b> → 有新版 <b>${r.latest}</b>`;
+        if (r.notes) { $("#up-notes").textContent = r.notes; $("#up-notes-wrap").hidden = false; }
+        panel.hidden = false;
+      } else {
+        if (!quiet) msg.textContent = `已是最新版（${r.current}）。`;
+        panel.hidden = true;
+      }
+      return r;
+    } catch (e) { if (!quiet) msg.textContent = "❌ " + e; return null; }
+  }
+
+  async function doUpdate() {
+    const btn = $("#up-apply"), msg = $("#up-apply-msg");
+    const bridge = window.pywebview && window.pywebview.api && window.pywebview.api.apply_update;
+    if (!bridge) { msg.textContent = "请在 PaperPiggy 应用窗口里升级（浏览器模式不支持）。"; return; }
+    if (!confirm("开始升级？\n\n会下载新版程序 → 关闭应用 → 替换后自动重启。\n" +
+                 "你的数据（索引、综述、Agent 交付物、期刊分级）完全不受影响。")) return;
+    btn.disabled = true;
+    msg.textContent = "下载中…";
+    try {
+      const d = await jpost("/update/download", {});
+      if (!d.ok) { msg.textContent = "❌ " + (d.error || "下载失败"); btn.disabled = false; return; }
+      let zip = null;
+      for (let i = 0; i < 600; i++) {
+        await new Promise(r => setTimeout(r, 700));
+        const s = await jget("/update/status");
+        if (s.error) { msg.textContent = "❌ " + s.error; btn.disabled = false; return; }
+        if (!s.downloading) { zip = s.zip; break; }
+        const pct = s.total ? Math.floor(s.done / s.total * 100) : 0;
+        msg.textContent = `下载中… ${pct}%`;
+      }
+      if (!zip) { msg.textContent = "❌ 下载未完成"; btn.disabled = false; return; }
+      msg.textContent = "即将关闭并升级…";
+      const r = await window.pywebview.api.apply_update(zip);
+      if (r && r.ok) {
+        msg.textContent = "正在升级，应用马上会自动重启…（窗口即将关闭）";
+      } else {
+        msg.textContent = "❌ " + ((r && r.error) || "升级启动失败");
+        btn.disabled = false;
+      }
+    } catch (e) { msg.textContent = "❌ " + e; btn.disabled = false; }
+  }
+
+  { const c = $("#up-check"); if (c) c.addEventListener("click", () => checkUpdate(false));
+    const a = $("#up-apply"); if (a) a.addEventListener("click", doUpdate); }
 
   // ── 对话页「模型设置」折叠区（原设置弹窗的 LLM 服务商块内联到此，onChange 即存）──
   // 冷启动即回填对话页模型设置（原逻辑只在打开设置弹窗时回填）

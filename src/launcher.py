@@ -5,7 +5,7 @@ PaperPiggy 启动器 —— pywebview 原生应用窗口（真应用，非浏览
 双击 启动.bat（pythonw，无黑窗）调用本文件。
 pywebview 不可用（如缺 WebView2 运行时）时自动回退系统浏览器，并给出可见提示。
 """
-import subprocess, sys, time, socket
+import subprocess, sys, time, socket, os
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import config as C
@@ -237,6 +237,51 @@ class _JsApi:
         except Exception as e:
             _logline(f"pick_folder 失败：{repr(e)}")
             return ""
+
+    def apply_update(self, zip_path=""):
+        r"""执行版本升级：拉起**独立的** updater 进程（它会等本应用退出→换 app\→重启），
+        然后关掉窗口让本应用退出。必须在 launcher 进程里做——只有这里能关原生窗口、
+        也只有本应用退出后 app\ 里的 .py 才解锁、才能被替换。
+        为什么另起进程：updater 自己就在 app\ 里，不能一边替换 app\ 一边还在运行它。
+
+        返回 {ok, error?}。ok=True 后窗口即将关闭、应用会自动重启到新版。
+        """
+        try:
+            import config as C
+            up_dir = C.DATA.parent / "update"
+            zp = Path(zip_path) if zip_path else None
+            if not (zp and zp.exists()):
+                cands = sorted(up_dir.glob("app-*.zip"), key=lambda p: p.stat().st_mtime)
+                if not cands:
+                    return {"ok": False, "error": "没找到已下载的更新包，请先下载"}
+                zp = cands[-1]
+
+            updater = C.APP / "updater.py"
+            pyw = C.APP.parent / "python" / "pythonw.exe"
+            exe = str(pyw) if pyw.exists() else sys.executable
+            flags = 0x00000008 if sys.platform == "win32" else 0   # DETACHED_PROCESS：脱离本进程，
+            #                                     本应用退出后 updater 仍活着，才能完成替换+重启
+            subprocess.Popen(
+                [exe, str(updater), "--apply", str(zp), "--pid", str(os.getpid())],
+                cwd=str(C.APP.parent), creationflags=flags, close_fds=True,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            _logline(f"已拉起 updater 应用更新（pid={os.getpid()} 退出后替换），即将关闭窗口。")
+
+            # 稍等一下让 updater 起来并进入「等本进程退出」的循环，再关窗口
+            def _close():
+                time.sleep(1.0)
+                try:
+                    import webview
+                    if getattr(webview, "windows", None):
+                        webview.windows[0].destroy()   # → webview.start() 返回 → 应用退出
+                except Exception as e:
+                    _logline(f"关窗失败（updater 仍会在超时后继续）：{repr(e)}")
+            threading.Thread(target=_close, daemon=True).start()
+            return {"ok": True}
+        except Exception as e:
+            _logline(f"apply_update 失败：{repr(e)}")
+            return {"ok": False, "error": str(e)}
 
 
 def main():

@@ -699,6 +699,27 @@
         <div id="bk-list" class="bk-list"></div>
       </div>
 
+      <div class="set-section" id="sec-update">
+        <h4>⬆️ 应用更新</h4>
+        <p class="hint">检查并升级到新版本。升级<b>只替换程序本体</b>，你的索引、综述、Agent 交付物等
+          <b>数据一律不动</b>。升级完应用会自动重启。</p>
+        <div class="set-errbtns">
+          <button id="up-check" class="ghost">🔍 检查更新</button>
+          <span id="up-msg" class="hint"></span>
+        </div>
+        <div id="up-panel" hidden>
+          <p class="hint" id="up-ver"></p>
+          <details id="up-notes-wrap" hidden>
+            <summary>更新说明</summary>
+            <div id="up-notes" class="up-notes"></div>
+          </details>
+          <div class="set-errbtns">
+            <button id="up-apply" class="ghost">⬆️ 下载并升级</button>
+            <span id="up-apply-msg" class="hint"></span>
+          </div>
+        </div>
+      </div>
+
       <div class="set-section">
         <h4>🛠 帮助与维护</h4>
         <div class="set-errbtns">

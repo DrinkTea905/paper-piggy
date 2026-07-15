@@ -3380,6 +3380,68 @@ def backup_open_dir():
         return {"ok": False, "error": str(e), "dir": str(d)}
 
 
+# ── 应用内更新（版本升级）────────────────────────────────
+# 只换 app\（纯代码），data\ / 0_Agent* / models\ 一律不碰 —— 数据安全的保证全在 updater.apply()。
+# 分工：server 负责「查新版 + 下载增量包」；真正的替换由 launcher 的 pywebview 桥
+# apply_update() 拉起独立 updater 进程执行（因为要先关掉应用、解锁 app\ 里的 .py）。
+UPDATE = {"checking": False, "info": None, "checked_at": 0,
+          "downloading": False, "done": 0, "total": 0, "zip": None, "error": None}
+
+
+@app.get("/update/check")
+def update_check(force: int = 0):
+    """查 GitHub 有没有新版。结果缓存 10 分钟，避免频繁打 GitHub API。"""
+    import updater as UPD
+    now = time.time()
+    if not force and UPDATE["info"] and (now - UPDATE["checked_at"] < 600):
+        return {"ok": True, "cached": True, **UPDATE["info"]}
+    try:
+        info = UPD.check()
+        UPDATE["info"] = info
+        UPDATE["checked_at"] = now
+        return {"ok": True, "cached": False, **info}
+    except Exception as e:
+        log_error("update_check", repr(e))
+        return {"ok": False, "error": str(e)}
+
+
+@app.post("/update/download")
+def update_download():
+    """下载 app 增量包到 update\（后台跑，进度见 /update/status）。"""
+    import updater as UPD
+    if UPDATE["downloading"]:
+        return {"ok": False, "error": "已经在下载了"}
+    info = UPDATE["info"] or UPD.check()
+    if not info.get("has_update"):
+        return {"ok": False, "error": "当前已是最新版，没有可下载的更新"}
+
+    UPDATE.update({"downloading": True, "done": 0, "total": 0, "zip": None, "error": None})
+
+    def work():
+        try:
+            def prog(d, t):
+                UPDATE["done"], UPDATE["total"] = d, t
+            r = UPD.download(info, progress=prog)
+            if r.get("ok"):
+                UPDATE["zip"] = r["zip"]
+            else:
+                UPDATE["error"] = r.get("error") or "下载失败"
+        except Exception as e:
+            log_error("update_download", repr(e))
+            UPDATE["error"] = str(e)
+        finally:
+            UPDATE["downloading"] = False
+
+    threading.Thread(target=work, daemon=True).start()
+    return {"ok": True, "started": True}
+
+
+@app.get("/update/status")
+def update_status():
+    return {"ok": True, **{k: UPDATE[k] for k in
+            ("downloading", "done", "total", "zip", "error")}}
+
+
 # ── 静态 UI ───────────────────────────────────────────────
 WEB = C.APP / "web"
 

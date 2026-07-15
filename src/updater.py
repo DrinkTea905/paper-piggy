@@ -198,81 +198,204 @@ def local_modifications():
 
 
 # ───────────────────────── 应用更新（独立进程执行）─────────────────────────
+#
+# ★★ 数据安全的全部保证都在这一节 ★★
+# apply() **只操作 app\ 和它的临时兄弟目录**（.app.new / .app.old / 你改过的旧代码-<ver>）。
+# 从头到尾**不引用** DATA、0_Agent交付物、0_Agent资料库、models\、python\、git\ ——
+# 数据与程序同目录后，这条边界就是「升级不丢数据」的命根子，改这一节前先想清楚这句话。
+#
+# 与旧版的关键区别（旧版有「假回滚」bug）：
+#   旧：备份 app\ → 就地 extractall 覆盖 live app\ → 失败时 rmtree(live)+move(backup)。
+#       rmtree 删不干净（文件被占用）时，move 会把备份塞进残缺目录里，app\ 留在半坏状态。
+#   新：新版**先解压到暂存目录并验证能启动**，全程不碰 live app\；确认没问题后才做
+#       **两次改名**交换（同卷 rename，快且原子）。回滚 = 一次改名，最稳。
+
+def _pid_alive(pid):
+    r"""进程还活着吗 —— **非破坏性**探测。
+    ⚠️ 绝不能用 os.kill(pid, 0)：在 Windows 上 Python 的 os.kill 对非 CTRL 信号一律
+       调 TerminateProcess **强杀**目标（signal 0 也不例外）—— 那会在升级时把 launcher
+       打死，而不是"等它自己退"。所以用 OpenProcess + GetExitCodeProcess 只读地查。"""
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            k32 = ctypes.windll.kernel32
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            h = k32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+            if not h:
+                return False                       # 打不开句柄 → 当作已退出
+            code = ctypes.c_ulong()
+            k32.GetExitCodeProcess(h, ctypes.byref(code))
+            k32.CloseHandle(h)
+            return code.value == 259               # STILL_ACTIVE
+        except Exception:
+            return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
 
 def _wait_pid_exit(pid, timeout=60):
-    r"""等主进程退出。app\ 里的 .py 被占用时替换会失败。"""
+    r"""等主进程退出。app\ 里的 .py 被占用时改名会失败。"""
     if not pid:
         return True
     t0 = time.time()
     while time.time() - t0 < timeout:
-        try:
-            os.kill(pid, 0)            # Windows 上 signal 0 = 只探测存在性
-        except OSError:
-            return True                # 进程没了
+        if not _pid_alive(pid):
+            return True
         time.sleep(0.5)
     return False
 
 
-def apply(zip_path, pid=None):
-    r"""备份 app\ → 解压新版覆盖 → 校验 → 失败整体回滚。只碰 app\。"""
+def _writable(d):
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+        t = d / ".w"
+        t.write_text("x", encoding="utf-8"); t.unlink()
+        return True
+    except Exception:
+        return False
+
+
+def _rename_retry(src, dst, tries=20, wait=0.5):
+    r"""改名，带重试。杀软/OneDrive/刚退出的进程可能还攥着 app\ 里的文件句柄，
+    第一下 rename 会 PermissionError；等一会儿句柄释放就成了。20×0.5s = 最多等 10s。"""
+    last = None
+    for _ in range(tries):
+        try:
+            os.rename(src, dst)
+            return
+        except OSError as e:
+            last = e
+            time.sleep(wait)
+    raise last
+
+
+def _importable(app_dir):
+    """在给定 app 目录里能不能 import config 并读出版本 —— 换代码前后都用它把关。"""
+    r = subprocess.run(
+        [sys.executable, "-c",
+         "import sys; sys.path.insert(0, r'%s'); import config; print(config.APP_VERSION)" % app_dir],
+        capture_output=True, text=True, timeout=60,
+    )
+    if r.returncode != 0:
+        raise RuntimeError((r.stderr or "")[-500:])
+    return (r.stdout or "").strip()
+
+
+def _relaunch():
+    r"""换完代码后把应用重新拉起来（分发包里 = pythonw run_localkb.py，无黑窗）。"""
+    try:
+        pyw = BUNDLE_DIR / "python" / "pythonw.exe"
+        run = BUNDLE_DIR / "run_localkb.py"
+        exe = str(pyw) if pyw.exists() else sys.executable
+        flags = 0x00000008 if sys.platform == "win32" else 0   # DETACHED_PROCESS
+        subprocess.Popen([exe, str(run)], cwd=str(BUNDLE_DIR),
+                         creationflags=flags, close_fds=True)
+        return True
+    except Exception:
+        return False
+
+
+def apply(zip_path, pid=None, relaunch=True):
+    r"""把新版 app\ 换上去。**只碰 app\**，数据一律不动。失败必回滚，且回滚是真的。
+
+    流程：等主进程退出 → 解压新版到暂存区并验证能启动（不碰 live）→ 保留用户改过的代码
+    → 两次改名交换 app\ → 落地再验一次 → 成功清理并重启 / 失败一次改名回滚。
+    """
     zip_path = Path(zip_path)
     if not zip_path.exists():
         return {"ok": False, "error": f"更新包不存在：{zip_path}"}
-
     if not _wait_pid_exit(pid):
-        return {"ok": False, "error": f"主进程（PID {pid}）60 秒内没退出，放弃更新"}
+        return {"ok": False, "error": f"主进程（PID {pid}）60 秒内没退出，放弃更新（未做任何改动）"}
 
     old_ver = getattr(C, "APP_VERSION", "0")
-    backup = BUNDLE_DIR / f"app.bak-{old_ver}"
+    parent = BUNDLE_DIR
+    if not _writable(parent):
+        return {"ok": False, "error": f"安装目录不可写（{parent}），无法更新（未做任何改动）"}
 
-    # 用户改过的文件：先单独留一份，别让他们的修改无声消失
-    mods = local_modifications()
-    for rel in mods:
-        src = APP_DIR / rel
-        keep = src.with_suffix(src.suffix + f".bak-{old_ver}")
-        try:
-            shutil.copy2(src, keep)
-        except Exception:
-            pass
+    staging = parent / ".app.new"
+    old_keep = parent / f".app.old-{old_ver}"
+    for tmp in (staging, old_keep):
+        if tmp.exists():
+            shutil.rmtree(tmp, ignore_errors=True)
 
-    # ① 整体备份 app\（回滚的依据）
-    if backup.exists():
-        shutil.rmtree(backup, ignore_errors=True)
-    try:
-        shutil.copytree(APP_DIR, backup)
-    except Exception as e:
-        return {"ok": False, "error": f"备份 app\\ 失败，已中止（未做任何改动）：{e}"}
-
-    # ② 解压覆盖
+    # ① 解压新版到暂存区（全新目录）——失败/坏包都不碰 live app\
     try:
         with zipfile.ZipFile(zip_path) as z:
             bad = z.testzip()
             if bad:
                 raise RuntimeError(f"更新包损坏（首个坏文件：{bad}）")
-            z.extractall(APP_DIR)
+            z.extractall(staging)
     except Exception as e:
-        # ③ 回滚
-        shutil.rmtree(APP_DIR, ignore_errors=True)
-        shutil.move(str(backup), str(APP_DIR))
-        return {"ok": False, "error": f"解压失败，已回滚到 {old_ver}：{e}"}
+        shutil.rmtree(staging, ignore_errors=True)
+        return {"ok": False, "error": f"更新包解压失败，未改动应用：{e}"}
 
-    # ④ 落地校验：新版必须能 import（否则回滚）
+    # ② 在暂存区就把关：新版能不能 import 起来。**这一步在碰 live app\ 之前**，
+    #    所以「新版需要装新依赖 / 代码有语法错」都会在这里被挡下、应用毫发无伤。
     try:
-        r = subprocess.run(
-            [sys.executable, "-c", "import sys; sys.path.insert(0, r'%s'); import config; print(config.APP_VERSION)" % APP_DIR],
-            capture_output=True, text=True, timeout=60,
-        )
-        if r.returncode != 0:
-            raise RuntimeError((r.stderr or "")[-500:])
-        new_ver = (r.stdout or "").strip()
+        new_ver = _importable(staging)
     except Exception as e:
-        shutil.rmtree(APP_DIR, ignore_errors=True)
-        shutil.move(str(backup), str(APP_DIR))
-        return {"ok": False, "error": f"新版无法启动，已回滚到 {old_ver}：{e}"}
+        shutil.rmtree(staging, ignore_errors=True)
+        return {"ok": False,
+                "error": f"新版无法在本机启动（可能需要新依赖），已放弃、未改动应用。"
+                         f"请到 GitHub 下载完整安装器升级。详情：{e}"}
 
-    shutil.rmtree(backup, ignore_errors=True)
+    # ③ 用户改过的 .py：复制到一个清晰命名、成功后也不删的文件夹，绝不让改动无声消失
+    mods = local_modifications()
+    kept_dir = None
+    if mods:
+        kept_dir = parent / f"你改过的旧代码-{old_ver}"
+        for rel in mods:
+            try:
+                dst = kept_dir / rel
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(APP_DIR / rel, dst)
+            except Exception:
+                pass
+
+    # ④ 交换：两次改名（同卷、瞬间）。这是唯一真正动 live app\ 的窗口，只有毫秒级。
+    try:
+        _rename_retry(APP_DIR, old_keep)          # app\ → .app.old（旧版让位）
+    except Exception as e:
+        shutil.rmtree(staging, ignore_errors=True)
+        return {"ok": False,
+                "error": f"移走旧 app\\ 失败（可能有进程仍占用），已放弃、未改动应用：{e}"}
+    try:
+        _rename_retry(staging, APP_DIR)           # .app.new → app\（新版就位）
+    except Exception as e:
+        # 新版没放上去 → 把旧版改名回来（一次 rename，最稳的回滚）
+        try:
+            _rename_retry(old_keep, APP_DIR)
+        except Exception:
+            pass
+        shutil.rmtree(staging, ignore_errors=True)
+        return {"ok": False, "error": f"放置新版失败，已回滚到 {old_ver}：{e}"}
+
+    # ⑤ 落地再验一次（暂存验过了，这是双保险，防跨目录后路径/权限异常）
+    try:
+        new_ver = _importable(APP_DIR)
+    except Exception as e:
+        # 回滚：把新版挪走、旧版改名回来
+        try:
+            _rename_retry(APP_DIR, parent / ".app.failed")
+            _rename_retry(old_keep, APP_DIR)
+        except Exception:
+            pass
+        shutil.rmtree(parent / ".app.failed", ignore_errors=True)
+        return {"ok": False, "error": f"新版落地后仍无法启动，已回滚到 {old_ver}：{e}"}
+
+    # ⑥ 成功：旧版可删（用户改过的代码已另存在「你改过的旧代码-<ver>\」），删更新包
+    shutil.rmtree(old_keep, ignore_errors=True)
     zip_path.unlink(missing_ok=True)
-    return {"ok": True, "from": old_ver, "to": new_ver, "user_modified_kept": mods}
+
+    result = {"ok": True, "from": old_ver, "to": new_ver}
+    if kept_dir:
+        result["user_modified_kept"] = str(kept_dir)
+    if relaunch:
+        result["relaunched"] = _relaunch()
+    return result
 
 
 def main():
@@ -281,6 +404,7 @@ def main():
     ap.add_argument("--download", action="store_true")
     ap.add_argument("--apply", metavar="ZIP", nargs="?", const="")
     ap.add_argument("--pid", type=int, default=0, help="等这个进程退出后再替换 app\\")
+    ap.add_argument("--no-relaunch", action="store_true", help="换完不自动重启应用（测试用）")
     a = ap.parse_args()
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -298,7 +422,7 @@ def main():
             if not cands:
                 print(json.dumps({"ok": False, "error": "update/ 里没有待应用的包"}, ensure_ascii=False)); return 1
             z = cands[-1]
-        print(json.dumps(apply(z, a.pid), ensure_ascii=False, indent=2))
+        print(json.dumps(apply(z, a.pid, relaunch=not a.no_relaunch), ensure_ascii=False, indent=2))
     else:
         ap.print_help()
     return 0
