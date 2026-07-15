@@ -2551,20 +2551,30 @@
     loadAgentTasks();       // ⏰ 定时任务（读本地「资料库/定时任务」）
     loadAgentOutputs();     // 📦 最近交付物主题（读本地「交付物/*」）
   }
-  // C4：交付物卡「最近做了哪些主题」——读 /agent/outputs（扫「交付物/*」子文件夹）。端点缺失/空时不渲染。
+  // C4：交付物卡「最近做了哪些主题」——读 /agent/outputs（扫「交付物/*」子文件夹）。
+  //     常显：空/失败也显示引导（配合标题的「🔄 刷新」，新增交付物不必重启即可看到）。
   async function loadAgentOutputs() {
-    const card = $("#ag-outputs-card"), box = $("#ag-outputs"); if (!box) return;
-    const hide = () => { if (card) card.hidden = true; box.innerHTML = ""; };
+    const box = $("#ag-outputs"); if (!box) return;
+    const empty = (msg) => { box.innerHTML = `<div class="ag-outputs-empty">${msg}</div>`; };
     try {
       const d = await jget("/agent/outputs");
       const items = (d && d.outputs) || [];
-      if (!items.length) { hide(); return; }
-      if (card) card.hidden = false;
-      box.innerHTML = items.map((o) =>
-        `<div class="ag-output-item"><span class="ag-output-name">📁 ${esc(o.name)}</span>`
-        + (o.mtime ? `<span class="ag-output-mt">${esc(o.mtime)}</span>` : "")
-        + `<span class="ag-output-n">${o.n_files || 0} 个文件${o.has_readme ? " · 含说明" : ""}</span></div>`).join("");
-    } catch (e) { hide(); }
+      if (!items.length) {
+        empty(`还没有交付物主题。让 AI 助手把成品（论文 / 资料汇编 / 周报）写进「交付物」后，点右上角 <b>🔄 刷新</b> 即可看到。`);
+        return;
+      }
+      box.innerHTML = items.map((o) => {
+        const meta = [o.mtime ? esc(o.mtime) : null,
+                      `${o.n_files || 0} 个文件`,
+                      o.has_readme ? "含说明" : null]
+          .filter(Boolean).map((x) => `<span>${x}</span>`).join(`<i class="ag-sep">·</i>`);
+        return `<div class="ag-output-item">`
+          + `<div class="ag-output-name"><span class="ag-output-ico">📁</span><span>${esc(o.name)}</span></div>`
+          + `<div class="ag-output-meta">${meta}</div></div>`;
+      }).join("");
+    } catch (e) {
+      empty(`暂时读不到交付物列表（可能是后端未就绪）。稍后点 <b>🔄 刷新</b> 再试。`);
+    }
   }
   // ⏰ 定时任务：读后端 /agent/tasks（扫「资料库/定时任务/*/任务.md」）。端点缺失/空时优雅降级。
   async function loadAgentTasks() {
@@ -2637,6 +2647,21 @@
     $$(".ag-openbtn").forEach((b) => b.addEventListener("click", () => openAgentFolder(b.dataset.open, b)));
     const osk = $("#ag-open-skills");
     if (osk) osk.addEventListener("click", () => openAgentFolder("skills", null));
+    // 🔄 刷新：定时任务 / 最近交付物 首次加载后被 agentLoaded 门控锁住，切页不再重拉；
+    //   这两个按钮直接重新扫盘，让「新建的任务 / 新写的交付物」不必重启应用即可看到。
+    function wireRefresh(id, loader) {
+      const b = $("#" + id); if (!b) return;
+      b.addEventListener("click", async () => {
+        if (b.disabled) return;
+        if (!b.dataset.lbl) b.dataset.lbl = b.textContent;
+        b.disabled = true; b.textContent = "刷新中…";
+        try { await loader(); b.textContent = "已刷新 ✓"; }
+        catch (_) { b.textContent = "刷新失败"; }
+        setTimeout(() => { b.textContent = b.dataset.lbl; b.disabled = false; }, 1200);
+      });
+    }
+    wireRefresh("ag-tasks-refresh", loadAgentTasks);
+    wireRefresh("ag-outputs-refresh", loadAgentOutputs);
     // 🧭 全屏教程浮层：开 / 关（Esc 也可关）
     const guide = $("#ag-guide"), gopen = $("#ag-guide-open"), gclose = $("#ag-guide-close");
     const showGuide = (v) => { if (guide) { guide.hidden = !v; if (v) guide.querySelector(".ag-guide-body").scrollTop = 0; } };

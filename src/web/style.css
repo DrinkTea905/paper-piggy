@@ -699,7 +699,8 @@ button:disabled { opacity: .6; cursor: default; }
 .ag-openbtn { font-size: 13px; }
 /* ⏰ 定时任务卡（跨满） */
 .ag-tasks-card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 14px 18px; }
-.ag-tasks-h { font-size: 15px; font-weight: 700; color: var(--fg); margin-bottom: 10px; }
+.ag-tasks-h { font-size: 15px; font-weight: 700; color: var(--fg); margin-bottom: 10px;
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .ag-tasks-sub { font-size: 12px; font-weight: 400; color: var(--muted); margin-left: 6px; }
 .ag-tasks-list { display: flex; flex-direction: column; gap: 8px; }
 .ag-task-item { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
@@ -716,12 +717,28 @@ button:disabled { opacity: .6; cursor: default; }
 .ag-tasks-note { margin-top: 10px; }
 .ag-tasks-note small { color: var(--muted); }
 /* C4：交付物「最近主题」——独立整行卡片，响应式网格填满宽度 */
-.ag-recent h3 { margin-bottom: 8px; }
-.ag-outputs { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 8px; }
-.ag-output-item { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12.5px; }
-.ag-output-item .ag-output-name { font-weight: 600; color: var(--fg); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 60%; }
-.ag-output-item .ag-output-mt { font-size: 11.5px; color: var(--muted); }
-.ag-output-item .ag-output-n { font-size: 11.5px; color: var(--muted); }
+/* 🔄 刷新按钮（定时任务 / 最近交付物 标题右侧；新增内容不必重启即可看到） */
+.ag-refresh { margin-left: auto; font-size: 11.5px; font-weight: 600; color: var(--muted);
+  background: transparent; border: 1px solid var(--line); border-radius: 8px; padding: 3px 10px;
+  cursor: pointer; white-space: nowrap; transition: color .15s, border-color .15s, background .15s; }
+.ag-refresh:hover:not(:disabled) { color: var(--accent); border-color: var(--accent); background: rgba(37,99,235,.06); }
+.ag-refresh:disabled { opacity: .6; cursor: default; }
+:root[data-theme="dark"] .ag-refresh:hover:not(:disabled) { background: rgba(110,168,254,.12); }
+
+/* 📦 最近的交付物主题——卡片网格（每个主题一张卡：📁 名称 + 日期·文件数·含说明） */
+.ag-recent h3 { margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
+.ag-outputs { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+.ag-output-item { background: var(--bg); border: 1px solid var(--line); border-radius: 12px;
+  padding: 12px 14px; display: flex; flex-direction: column; gap: 8px;
+  transition: border-color .15s, transform .15s, box-shadow .15s; }
+.ag-output-item:hover { border-color: var(--accent); transform: translateY(-1px); box-shadow: 0 4px 14px rgba(0,0,0,.07); }
+.ag-output-item .ag-output-name { display: flex; align-items: flex-start; gap: 7px;
+  font-weight: 650; color: var(--fg); font-size: 13.5px; line-height: 1.35; word-break: break-word; }
+.ag-output-item .ag-output-ico { flex: 0 0 auto; font-size: 15px; line-height: 1.3; }
+.ag-output-item .ag-output-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+  font-size: 11.5px; color: var(--muted); }
+.ag-output-item .ag-output-meta .ag-sep { color: var(--line); font-style: normal; }
+.ag-outputs-empty { font-size: 12.5px; color: var(--muted); line-height: 1.7; }
 /* A3：建议横幅里「新主题·建议新建页」标记 */
 .wk-suggest .wsg-newpage { font-size: 12px; color: #b45309; background: rgba(180,83,9,.10); padding: 2px 8px; border-radius: 999px; }
 :root[data-theme="dark"] .wk-suggest .wsg-newpage { color: #fbbf24; background: rgba(251,191,36,.12); }

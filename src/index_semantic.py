@@ -58,6 +58,13 @@ def _purge_deleted(papers, tbl):
         gone = [k for k in tbl_keys if k not in live]
         if not gone:
             return
+        # ★ 安全阈值（2026-07-15，对齐手动「删除同步」按钮 server.py:323/329）：活库为空、或一次要删过半 →
+        #    拒绝清理。防数据源读取异常（配置库掉线回退空库 / Zotero 正在写时读到半截 / WAL 半状态）
+        #    把整库深索成果误抹（零备份不可恢复）。宁可暂留几条已删残留，也绝不整库清空。
+        if not live or len(gone) > max(20, len(tbl_keys) // 2):
+            print(f"[semantic] ⚠ 拒绝清理 {len(gone)}/{len(tbl_keys)} 条（活库仅 {len(live)} 篇）—— "
+                  f"疑似数据源读取异常，已跳过删除以防误抹整库。请确认 Zotero 库完整后再更新。", flush=True)
+            return
         print(f"[semantic] 清理 {len(gone)} 条已从数据源删除的残留（表行+进度+产物）", flush=True)
         FI._purge_db_rows(gone)
         FI._purge_key_artifacts(gone)

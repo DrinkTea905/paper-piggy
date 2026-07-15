@@ -322,15 +322,15 @@
         <button class="ghost2 ag-openbtn" data-open="rely">📂 打开资料库文件夹</button>
       </section>
 
-      <!-- 📦 最近交付物主题（跨满一行，独立于上面两卡，使交付物/资料库两卡对齐；空则不显示） -->
-      <section class="ag-card ag-full ag-recent" id="ag-outputs-card" hidden>
-        <h3>📦 最近的交付物主题</h3>
+      <!-- 📦 最近交付物主题（跨满一行，独立于上面两卡）——常显 + 🔄 刷新：新增交付物无需重启即可看到 -->
+      <section class="ag-card ag-full ag-recent" id="ag-outputs-card">
+        <h3>📦 最近的交付物主题 <button class="ag-refresh" id="ag-outputs-refresh" type="button" title="重新扫描交付物文件夹（新写的交付物点这里就能看到，不用重启）">🔄 刷新</button></h3>
         <div class="ag-outputs" id="ag-outputs"></div>
       </section>
 
       <!-- ⏰ 定时任务（跨满一行）——读本地「资料库/定时任务」展示；执行由用户的 AI 助手负责 -->
       <section class="ag-tasks-card ag-full">
-        <div class="ag-tasks-h">⏰ 定时任务 <span class="ag-tasks-sub">让 AI 助手定期帮你搜集 / 综述（如少年司法周报）</span></div>
+        <div class="ag-tasks-h">⏰ 定时任务 <span class="ag-tasks-sub">让 AI 助手定期帮你搜集 / 综述（如少年司法周报）</span><button class="ag-refresh" id="ag-tasks-refresh" type="button" title="重新扫描定时任务文件夹（新建的任务点这里就能看到，不用重启）">🔄 刷新</button></div>
         <div id="ag-tasks" class="ag-tasks-list">读取定时任务…</div>
         <p class="ag-note ag-tasks-note">任务定义存在「资料库 › 定时任务」（换 AI 助手也能读、照着重建）；成果落「交付物 › 定时任务」；每跑完一次，AI 会依时效内容更新综述库。<br><small>说明：定时触发由你的 AI 助手在它自己的日程里执行——本应用不联网、不含大模型，只负责登记、展示与把成果入库。</small></p>
       </section>

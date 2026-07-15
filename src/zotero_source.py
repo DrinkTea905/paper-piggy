@@ -39,21 +39,32 @@ def _zotero_prefs_files():
 
 
 def detect_data_dir():
-    """探测 Zotero 数据目录（含 zotero.sqlite）。返回 Path 或 None。"""
+    """探测 Zotero 数据目录（含 zotero.sqlite）。返回 Path 或 None。
+
+    ★ 数据安全（2026-07-15）：只要用户「显式配置过」库（env / config.ZOTERO_DIR / settings.zotero_dir），
+      就绝不回退到默认 ~/Zotero。否则配置的库一掉线（D 盘拔了 / 目录被改名），会静默落到那个早已废弃的
+      空 ~/Zotero，读出几条 → 下一步 index_semantic._purge_deleted 把整库深索成果清光（零备份则不可恢复）。
+      有显式配置但当前读不到时：先试 Zotero 自己的 prefs.js（能接住「用户搬过库」），仍找不到就返回 None，
+      让上层 get_papers() 抛「未探测到 zotero.sqlite」安全中止 —— papers.jsonl 根本不会被改写。"""
+    explicit = ""   # 非空 = 用户显式配置过库 → 绝不回退到默认 ~/Zotero
     # ① 显式覆盖（环境变量 / config.ZOTERO_DIR）——保持最高优先级：临时切库的逃生口不能被持久设置压住
     env = os.environ.get("LOCALKB_ZOTERO_DIR") or getattr(C, "ZOTERO_DIR", "")
-    if env and (Path(env) / "zotero.sqlite").exists():
-        return Path(env)
+    if env:
+        explicit = env
+        if (Path(env) / "zotero.sqlite").exists():
+            return Path(env)
     # ①b BF28：向导里手填的 zotero_dir 落在 settings，此前从没被读过（填了等于白填）。
     # settings.py 不 import zotero_source（只 import config），此处反向 import 无循环。
     try:
         import settings as S
         sd = S.load().get("zotero_dir") or ""
-        if sd and (Path(sd) / "zotero.sqlite").exists():
-            return Path(sd)
     except Exception:
-        pass
-    # ② Zotero profile 的 prefs.js 里记录的 dataDir（自定义目录的唯一可靠来源）
+        sd = ""
+    if sd:
+        explicit = explicit or sd
+        if (Path(sd) / "zotero.sqlite").exists():
+            return Path(sd)
+    # ② Zotero profile 的 prefs.js 里记录的 dataDir（自定义目录的唯一可靠来源；也能接住「用户搬过库」）
     for prefs in _zotero_prefs_files():
         try:
             txt = open(prefs, encoding="utf-8", errors="replace").read()
@@ -64,10 +75,12 @@ def detect_data_dir():
                     return d
         except Exception:
             pass
-    # ③ 默认位置
-    for d in [Path(os.path.expanduser("~/Zotero")), Path.home() / "Zotero"]:
-        if (d / "zotero.sqlite").exists():
-            return d
+    # ③ 默认位置 ~/Zotero —— ★ 仅当「从未显式配置库」时才用。显式配了库却当前读不到，绝不静默换到默认空库
+    #    （返回 None → get_papers() 安全中止，防「配置库掉线 → 读默认空库 → purge 误清整库」）。
+    if not explicit:
+        for d in [Path(os.path.expanduser("~/Zotero")), Path.home() / "Zotero"]:
+            if (d / "zotero.sqlite").exists():
+                return d
     return None
 
 def _base_attachment_path():
