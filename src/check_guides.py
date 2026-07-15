@@ -200,6 +200,11 @@ def check_backup_coverage():
     第一版清单凭印象列，就漏了 grading_memo.json（689 条 LLM 期刊分级，花过真钱）、
     summaries/（SAC 检索摘要，花过 API 钱）、tier_overrides.json（用户一条条手改的档位）。
     所以：新增任何 `C.DATA / "xxx"`，都必须在 backup.py 的四个清单里选一个落座，否则构建失败。
+
+    ⚠️ **盲区（有意为之，但要知道）**：本检查只扫 `C.DATA / "xxx"` 这一层，**不扫 home 级
+    `C.DATA.parent / "xxx"`**（如 `0_Agent交付物`/`0_Agent资料库`，它们归 backup.CORE_IN_HOME）。
+    将来谁在 home 级新增一个需备份的数据目录，这里**不会**报警——那一层的备份归类纯靠人。
+    见 docs/MAINTENANCE.md §1.5「home 级落点」那一行。
     """
     name = "⑥ data/ 的每个落点都在 backup.py 里分了类（防备份静默漏数据）"
     try:

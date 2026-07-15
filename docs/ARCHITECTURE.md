@@ -3,8 +3,9 @@
 面向接手本项目的 AI 开发 agent。所有事实都带 `文件:行号` 证据（行号基于 2026-07-14 的源码）。
 不确定的地方标了「待核」，请自行验证后再依赖。
 
-**唯一可改的目录是 `src\`。** 分发包里的 `app\` 是构建产物（`build_bundle.py --sync-only` 刷新），直接改它会被下次构建覆盖。
-（历史：曾有个 `sync_app.ps1` 把源码同步进桌面上的 `LocalKB\app\`。那个常驻分发目录已删除，脚本随之删除——现在只有 `build_bundle.py` 一条生成路径。）
+**唯一可改的目录是 `src\`，而且 `src\` 就是运行目标——没有常驻的分发副本需要同步**（见 CLAUDE.md §3 铁律 v2）。
+开发态直接 `build\py312\python.exe src\launcher.py` 跑验证；**只有真要出包时**才 `build_bundle.py` 把 `src\` 组装成一次性的 `dist\` bundle。
+（历史：曾有个 `sync_app.ps1` / 常驻 `LocalKB\app\` 副本，"改了源码忘同步、验证的其实是旧代码"是一类幽灵 bug 之源，已整个删除。`build_bundle.py --sync-only` 参数仍在，但那只是"刷新某个既有 bundle 的 app\"的可选手段，**不是日常开发步骤**——日常只改 `src\` 并直接跑。）
 
 ---
 
@@ -87,6 +88,11 @@ is_bundle =  (root/"run_localkb.py").exists()
 
 `LOCALKB_HOME` 可覆盖 ③④ 的落点。②③④ 都会 `os.environ.setdefault("LOCALKB_DATA", …)`，
 且**已有 `LOCALKB_DATA` 时直接 return，尊重外部设定**。
+
+> **平台**：③④ 的"用户目录"由 `config._user_home()` 按平台决定——Windows=`%LOCALAPPDATA%\PaperPiggy`、
+> macOS=`~/Library/Application Support/PaperPiggy`、Linux=`$XDG_DATA_HOME`（v1.0.10 起）。
+> Windows 有打包安装器（走 ①②③④ 全链路）；**macOS/Linux 目前只支持从源码运行**（走分支①源码态），
+> 见 [MAC-从源码运行.md](MAC-从源码运行.md)。
 
 > ★ 这段解析是**唯一实现**。`run_localkb.py` 曾经复刻过一份（两处各算各的 = 启动器和 MCP
 > 认两个数据目录的漂移源），2026-07-14 已收成薄启动器：它只 `import config` 借道。**别再复制出去。**
@@ -332,7 +338,7 @@ server 侧 `GET /agent/tasks`（`server.py:649`）解析 `任务.md` 的 frontma
    - `catalogs/*.json`（15 个目录）：`sjr / pku / cssci / clsci / ami / fms / if_cnki / ssci / ssci_law_authority / ahci / abs / ft50 / erih / law_review_top / newspaper`。
    - 配置 `config/grading_config.json`（档位表、优先级、学科定义、可见目录）；加载层 `loader.py`（`by_issn` / `by_name` 索引）；识别层 `identify.py`；归一化 `normalize.py`；自检 `selftest.py`。
    - 未识别 → `tier="待确认"`、`needs_review=True`，**不静默按普通档发**（`resolver.py:14`）。
-   - 学科从 `settings.journal_discipline` 实时读（默认 `"law"`，可选 `"law_personal"`），**改设置即时生效、不用重建索引**（`retriever.py:217-223`、`settings.py:25-27`）。
+   - 学科从 `settings.journal_discipline` 实时读（出厂默认 `"law_personal"` = 法学开发者增强档，外刊不打折；标准法学是 `"law"`；以 `settings.DEFAULT` 为准），**改设置即时生效、不用重建索引**（`retriever.py`、`settings.py:31`）。
 3. **`journal_tiers.py`** —— 旧的离散档（CLSCI/CSSCI/普刊/…），数据在 `journal_tiers.json`。作为兜底：引擎算不出时 `_apply_sort` 用 `config.TIER_BONUS`（`config.py:169-177`）。索引期写进表的 `journal_tier` 列也是这套。
 
 **`grading_svc.py`** 是给 UI/统计用的服务层：`grade()`/`grade_paper()`（`:110`/`:140`）带落盘 memo（`data/grading_memo.json`）、`weight_dist()`（`:163`）算全库分布（`data/grading_dist.json`），`warm_async()`（`:226`）在 server 启动后台预热（首次冷算 20+s，`server.py:372-377`）。
@@ -421,6 +427,8 @@ server 侧 `GET /agent/tasks`（`server.py:649`）解析 `任务.md` 的 frontma
 | `folder_meta.py` | 文件夹模式：LLM 从 PDF 首 1-2 页抽题录（严格 JSON + 兜底） |
 | `folder_ingest.py` | 文件夹模式 build 步骤：并发抽题录写 meta_cache（必须先于 index_light） |
 | `models_bootstrap.py` | 首启从云端下载两个 INT8 ONNX 模型（~1.2GB），校验 sha256 + 解压 |
+| `updater.py` | **应用自更新**（不同于知识库自动更新）：`server /update/*` 下载增量包 → `launcher.apply_update()` 拉起独立进程换 `app\` 并重启；暂存验证+改名交换+回滚。**只碰 `app\`，从不引用 DATA/models/0_Agent**。顶栏 `#up-badge` 提示新版 |
+| `backup.py` | 备份/恢复（zip）+ 清空重建的落点分类源（`CORE/INDEX/NEVER/SPECIAL_IN_DATA`，`check_guides ⑥` 据此断言） |
 
 ### 建库管线（子进程，由 `build_all.py` 编排）
 
@@ -439,7 +447,7 @@ server 侧 `GET /agent/tasks`（`server.py:649`）解析 `任务.md` 的 frontma
 
 | 文件 | 一行说明 |
 |---|---|
-| `build_bundle.py` | 组装可分发 bundle（`dist/LocalKB/`：python/ app/ models/ data/ + run_localkb.py/启动.bat/LocalKB.vbs）。`--sync-only` 只刷 app/ |
+| `build_bundle.py` | 组装可分发 bundle（`dist/LocalKB/`：python/ app/ models/ data/ + run_localkb.py/启动.bat/PaperPiggy.vbs）。`--sync-only` 只刷 app/（非日常步骤，见 §11） |
 | `pack_models.py` | 打包「瘦模型」资产（`.tar.gz` + `models_manifest.json`，含 sha256），供首启下载 |
 | `fetch_mingit.py` | 下载 MinGit 塞进 `<bundle>/git/`，让分发版用户也有真 git（无它则退回快照） |
 | `gen_mcp_doc.py` | 从 `mcp_server.TOOLS` 生成 `MCP接入说明.md` 的工具表；`--check` 可校验过期（改 TOOLS 后必跑） |
@@ -461,7 +469,7 @@ server 侧 `GET /agent/tasks`（`server.py:649`）解析 `任务.md` 的 frontma
 
 ## 11. 接手前必读的几条铁律
 
-1. **只改 `src\`**，改完用 `python build_bundle.py --sync-only` 刷新 bundle 的 `app\`。直接改 `app\` 会被覆盖。
+1. **只改 `src\`，源码即运行目标**——开发态直接 `build\py312\python.exe src\launcher.py` 验证，**只有真要出包时**才 `build_bundle.py`。没有常驻分发副本需要同步（`--sync-only` 只是刷新既有 bundle 的可选手段，非日常步骤）。详见 CLAUDE.md §3。
 2. **源码态要用本地模型必须显式设 `LOCALKB_MODELS`**（§2.2），否则 MODELS 指向不存在的 `src\models`。
 3. **建索引与查询必须用同一个 backend**（local ONNX-INT8 vs API 全精度，向量不一致会掉点）——`settings.py:5-6` 把它列为铁律，backend 写进 `index_manifest.json`。
 4. **改 `WIKI_MD_SEED` 要同步追加旧版 sha1 到 `_FACTORY_HASHES`**（§5.2），否则老用户的 WIKI.md 自动升级会静默断掉。

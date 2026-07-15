@@ -98,7 +98,7 @@ build\py312\python.exe -c "import onnxruntime, lancedb, pypdfium2, docx; print('
 
 ## 一句话结论
 
-**不要做单文件 exe（PyInstaller onefile），保持现有目录形态；Windows ~~发 Inno Setup 安装器 + 便携 zip 双形态~~ → 只发 Inno Setup 安装器（用户级 + 数据同目录，便携 zip 已砍，见文首更新）；自更新自写（只换 app/，约 200 行）—— ⚠️ 代码写了但从未接线，updater.py 目前是死代码；Mac 出 CI 构建的实验性包、暂不买 $99 开发者账号；大陆分发用 GitHub Release 主源 + 多镜像前缀 + Cloudflare R2 免费第二源。**
+**不要做单文件 exe（PyInstaller onefile），保持现有目录形态；Windows ~~发 Inno Setup 安装器 + 便携 zip 双形态~~ → 只发 Inno Setup 安装器（用户级 + 数据同目录，便携 zip 已砍，见文首更新）；自更新自写（只换 app/，约 200 行）—— ✅ **已接线**（1.0.x 起）：`server /update/{check,download,status,mirror}` + `launcher.apply_update()` 拉起独立 `updater.py --apply` 换 `app\` 并重启，顶栏 `#up-badge` 提示新版；数据安全保证见 `updater.apply()`（只碰 `app\`）；macOS 目前不打包、只从源码运行（见 [MAC-从源码运行.md](MAC-从源码运行.md)），暂不买 $99 Apple 开发者账号；大陆分发用 GitHub Release 主源 + 多镜像前缀 + Cloudflare R2 免费第二源。**
 
 ---
 
@@ -145,7 +145,7 @@ build\py312\python.exe -c "import onnxruntime, lancedb, pypdfium2, docx; print('
 现有架构已为此铺好路：app/（代码）与 data/models/（用户资产）彻底分离，更新=只换 app/。
 
 ### 设计（约 200 行）
-1. **版本地基**：`config.py` 加 `APP_VERSION = "1.0.0"`（当前全仓库无版本号，仅 mcp_server.py 硬编码 serverInfo 1.2.0，需统一）；build_bundle.py 打包时生成 `app/version.json`（版本+构建日期+app.zip 的 sha256）。
+1. **版本地基**（✅ 已落地）：唯一版本字面量是 `config.APP_VERSION`（当前值以代码为准，别在文档里抄）；`mcp_server.py` 的 serverInfo 已引用 `C.APP_VERSION`（不再硬编码）；`build_bundle.py` 打包时生成 `app/version.json`（版本+构建日期+app.zip 的 sha256）。`check_guides ⑤` 断言版本只此一处。
 2. **检查**：server 后台（可顺搭现有 `_auto_update_loop`，注意与"知识库自动更新"是两回事，UI 文案要区分）或设置页按钮，请求 GitHub API latest release → 比版本 → UI 顶栏提示"有新版 vX.Y.Z"。
 3. **下载**：只下 `app.zip`（纯源码，约几 MB，不含 python/models）→ sha256 校验 → 解压到 `app_new/`。多镜像 fallback 复用 models_manifest.json 的思路（见 §5）。
 4. **替换**：Windows 不能替换运行中的 exe/被占用文件，所以交给**独立小脚本**：主进程写 `update_pending` 标记后退出 → run_localkb.py 启动时发现标记 → `app→app_old, app_new→app` → 失败回滚 `app_old` → 正常启动。（.py 文件本身不锁，但 server 进程活着时换代码不生效，重启替换最干净。）

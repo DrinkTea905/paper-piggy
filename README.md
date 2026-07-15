@@ -164,6 +164,10 @@ $env:LOCALKB_MODELS = 'X:\path\to\models'   # 本地模式需要；API 模式可
 .\.venv\Scripts\python src\server.py        # 或只起后端，浏览器开 http://127.0.0.1:8770
 ```
 
+**在 macOS / Linux 上跑？** 正式发布只有 Windows 安装器，但整套是纯 Python + 本地网页，
+**从源码直接跑得起来**（数据落点、Zotero 探测、依赖已按平台分流）——见
+**[docs/MAC-从源码运行.md](docs/MAC-从源码运行.md)**（面向技术型个人自用，含 macOS 专属注意事项）。
+
 **AI agent 接手这个项目做开发？** 先读 [CLAUDE.md](CLAUDE.md)，那是给你的入口。
 
 ## 文档
@@ -174,6 +178,7 @@ $env:LOCALKB_MODELS = 'X:\path\to\models'   # 本地模式需要；API 模式可
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 架构：进程模型、三档索引、检索管线、Wiki、Agent 层 |
 | [docs/MAINTENANCE.md](docs/MAINTENANCE.md) | 维护：「改了 X → 必须同步 Y」映射表 |
 | [docs/RELEASE.md](docs/RELEASE.md) | 打包与自动更新 |
+| [docs/MAC-从源码运行.md](docs/MAC-从源码运行.md) | 在 macOS 上从源码运行（技术型个人自用） |
 | [src/MCP接入说明.md](src/MCP接入说明.md) | MCP 接入（32 个工具，由代码自动生成） |
 
 ## 技术栈
