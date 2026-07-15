@@ -25,6 +25,22 @@
 | **ONNX 模型** | `D:\00Zotero知识库\rag\data\models\` | ❌ | **母本，勿删**。重新量化要几小时 |
 | 源码 | `src/` | ✅ | `git checkout` |
 
+### 0.1b Inno Setup（ISCC）装在**用户级路径** —— 别因 `where ISCC` 查不到就以为出不了安装器
+
+编译安装器 `.exe` 用的 `ISCC.exe` 装在 **`%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe`**
+（本机 = `C:\Users\Lsj13\AppData\Local\Programs\Inno Setup 6\`），**不在 `Program Files`**——
+本项目一贯走用户级安装（不弹 UAC），Inno Setup 也是这么装的。
+
+⚠️ **踩过（2026-07-15）**：只跑 `where ISCC` 或只翻 `C:\Program Files*` 会查不到它，从而**误判成
+「Inno 没装、出不了安装器」**。别下这个结论 —— `installer/build_installer.py` 的 `ISCC_CANDIDATES`
+**第一个候选就是这个用户级路径**（见该文件 `ISCC_CANDIDATES`），`build_installer.py` 能自动找到、
+正常产出 `PaperPiggy-<ver>-win64.exe`。要确认它到底找没找到，直接跑 build_installer 看日志那行
+`编译安装器：<ISCC 路径>` 即可，不要凭 `where` 的空结果臆断。
+
+真没装时才需要装：`winget install JRSoftware.InnoSetup`（默认也落用户级）。**没装也不致命**：
+build_installer 会打印「没找到 ISCC.exe，跳过安装器」、不报错、仍产出 `paper-piggy-app-<ver>.zip`
+更新包（存量用户能一键升级，只是新用户装机缺 `.exe`）。
+
 ### 0.2 重建 `build/py312`（唯一不可自动重建的环节）
 
 `build_bundle.py` 只**检查** `python/python.exe` 存不存在，**不会创建它**。所以这一步必须手工做：
