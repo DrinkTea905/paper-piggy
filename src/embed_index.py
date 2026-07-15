@@ -74,6 +74,29 @@ def main():
 
     done = load_done()
     no_text = load_no_text()   # C1/A2：已判定扫描件的跳过，避免反复重抽
+
+    # ★ 自愈「僵尸扫描件标记」（2026-07-15 PDFium 线程不安全事故的后遗症）：
+    #   当初并发崩溃导致大批 PDF 假失败 → 空 chunks → 被误标 no_text；后来 extract 修好、
+    #   已重新提取并切出真实块，但这个 no_text 标记是**粘性**的、从不复查，害得 embed 永远
+    #   跳过它们、浏览永远显示「扫描件」。这里对账：凡在 no_text 里、chunk 文件却有真实内容的，
+    #   一律清掉标记、放它们进深索。("[]" 是 2 字节；有真实块必远大于此，用文件大小判即可、免解析。)
+    if no_text:
+        still = set()
+        for stem in no_text:
+            cf = C.CHUNKS / f"{stem}.json"
+            try:
+                if cf.exists() and cf.stat().st_size > 10:
+                    continue                    # 有真实块 → 不是扫描件，清标记
+            except Exception:
+                pass
+            still.add(stem)
+        if len(still) != len(no_text):
+            healed = len(no_text) - len(still)
+            NO_TEXT_FILE.write_text(("\n".join(sorted(still)) + "\n") if still else "", encoding="utf-8")
+            no_text = still
+            print(f"[embed] 自愈：清除 {healed} 个僵尸『扫描件』标记"
+                  f"（这些篇已重新提取切块成功，将补入深索）", flush=True)
+
     files = sorted(C.CHUNKS.glob("*.json"))
     if args.limit:
         files = files[:args.limit]
