@@ -9,7 +9,7 @@ F 档 · 提取：从 papers.jsonl 中【有 PDF】的篇提取逐页文本 → 
 断点续跑：已提取的跳过。ThreadPool（避开本机多进程 spawn 坑）。
 用法: python extract.py [--scope all] [--workers 4] [--limit N]
 """
-import sys, os, json, argparse, time
+import sys, os, json, argparse, time, threading
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 sys.path.insert(0, str(Path(__file__).parent))
@@ -39,24 +39,46 @@ META_FIELDS = ("title", "author", "year", "journal", "doi", "langid",
 # 与之前一样：不做 OCR，扫描版 PDF 取不到文本（返回空页，由上层跳过）。不联网。
 import pypdfium2 as _pdfium
 
-def _extract_pages(pdf):
-    """返回 [{'page': i, 'text': ...}]（只保留有文本的页）。"""
-    doc = _pdfium.PdfDocument(pdf)
-    try:
-        pages = []
-        for i in range(len(doc)):
-            page = doc[i]
-            tp = page.get_textpage()
-            try:
-                t = (tp.get_text_range() or "").strip()
-            finally:
-                tp.close()
-                page.close()
-            if t:
-                pages.append({"page": i + 1, "text": t})
-        return pages
-    finally:
-        doc.close()
+# ★★ PDFium 不是线程安全的 ★★（2026-07-15 用户实机事故，Windows 事件日志确诊）：
+# extract 用 4 线程 ThreadPool 并发调 pypdfium2，多线程同时进 PDFium → 损坏其内部堆，
+# 表现为 ① 崩进程（0xc0000374 heap corruption / 0x80000003 断言，故障模块 pdfium.dll）——
+#        分发版里 server 拉起的 launcher 进程随之关窗；
+#      ② 大量随机「PdfiumError: Failed to load」（同一 PDF 单独打开却好好的），
+#        被上层误标成「扫描件·需 OCR」，害得能深索的篇数虚低。
+# 修法：所有 pypdfium2 调用**全局串行**（一把进程内锁罩住整个文档生命周期）。
+# 代价只是 PDF 提取变单线程（~0.3s/篇），换来绝不崩。folder_ingest 也走这个函数，一并受保护。
+_PDFIUM_LOCK = threading.Lock()
+
+
+def _extract_pages(pdf, _tries=3):
+    """返回 [{'page': i, 'text': ...}]（只保留有文本的页）。
+    全程持 _PDFIUM_LOCK（PDFium 线程不安全，并发会崩进程 heap corruption）。
+    带重试：串行后仍偶发的瞬时 Failed to load（文件被 OneDrive/杀软/Zotero 短暂占用）多试两次。"""
+    last = None
+    for attempt in range(_tries):
+        try:
+            with _PDFIUM_LOCK:
+                doc = _pdfium.PdfDocument(pdf)
+                try:
+                    pages = []
+                    for i in range(len(doc)):
+                        page = doc[i]
+                        tp = page.get_textpage()
+                        try:
+                            t = (tp.get_text_range() or "").strip()
+                        finally:
+                            tp.close()
+                            page.close()
+                        if t:
+                            pages.append({"page": i + 1, "text": t})
+                    return pages
+                finally:
+                    doc.close()
+        except Exception as e:
+            last = e
+            if attempt < _tries - 1:
+                time.sleep(0.3 * (attempt + 1))
+    raise last
 
 def load_papers():
     if not C.PAPERS_JSONL.exists():
