@@ -3442,6 +3442,24 @@ def update_status():
             ("downloading", "done", "total", "zip", "error")}}
 
 
+class MirrorQ(BaseModel):
+    mirror_base: str = ""
+
+
+@app.get("/update/mirror")
+def update_mirror_get():
+    import settings as S
+    return {"ok": True, "mirror_base": (S.load().get("update") or {}).get("mirror_base") or ""}
+
+
+@app.post("/update/mirror")
+def update_mirror_set(q: MirrorQ):
+    import settings as S
+    v = (q.mirror_base or "").strip()
+    S.save({"update": {"mirror_base": v}})
+    return {"ok": True, "mirror_base": v}
+
+
 # ── 静态 UI ───────────────────────────────────────────────
 WEB = C.APP / "web"
 

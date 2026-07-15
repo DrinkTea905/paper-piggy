@@ -59,6 +59,13 @@ DEFAULT = {
         "embed_model": "BAAI/bge-m3",
         "rerank_model": "BAAI/bge-reranker-v2-m3",
     },
+    # 应用内更新（updater.py）。mirror_base：国内镜像的目录前缀，用来兜底 GitHub 下载超时。
+    # 只需在该前缀下放两个小文件：paper-piggy-app-<版本>.zip 和同名 .sha256（约 1MB）。
+    # 例：填 "https://gitee.com/你的名/paper-piggy/releases/download/v1.0.4/" 或 R2 桶的公开前缀。
+    # 空=只走 GitHub。检查更新仍走 GitHub API（那个小、通常能连上），镜像只兜底大文件下载。
+    "update": {
+        "mirror_base": "",
+    },
     # 备份与恢复（backup.py）。把「丢了就再也没有的东西」打成 zip，放哪由用户定。
     # dir 可以指到 OneDrive 里的某个文件夹 —— 同步一个**静态 zip** 是安全的，
     # 而让云盘去实时同步 lancedb 那种持续读写的数据库，早晚会把索引搞坏（见 backup.py 文件头）。

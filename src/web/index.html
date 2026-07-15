@@ -707,6 +707,16 @@
           <button id="up-check" class="ghost">🔍 检查更新</button>
           <span id="up-msg" class="hint"></span>
         </div>
+        <details class="up-mirror-wrap">
+          <summary class="hint">国内下载慢/超时？填个镜像地址兜底</summary>
+          <p class="hint">检查更新走 GitHub API（小、通常能连）；只有下载增量包（约 1MB）会用镜像兜底。
+            把 <code>paper-piggy-app-&lt;版本&gt;.zip</code> 和同名 <code>.sha256</code> 传到 Gitee Release
+            或对象存储，把它们所在的<b>目录前缀</b>填这里（以 <code>/</code> 结尾）。留空=只走 GitHub。</p>
+          <label>镜像目录前缀
+            <input id="up-mirror" placeholder="https://gitee.com/你的名/paper-piggy/releases/download/v1.0.4/" />
+          </label>
+          <span id="up-mirror-msg" class="hint"></span>
+        </details>
         <div id="up-panel" hidden>
           <p class="hint" id="up-ver"></p>
           <details id="up-notes-wrap" hidden>

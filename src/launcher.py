@@ -5,7 +5,7 @@ PaperPiggy 启动器 —— pywebview 原生应用窗口（真应用，非浏览
 双击 启动.bat（pythonw，无黑窗）调用本文件。
 pywebview 不可用（如缺 WebView2 运行时）时自动回退系统浏览器，并给出可见提示。
 """
-import subprocess, sys, time, socket, os
+import subprocess, sys, time, socket, os, threading
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import config as C
@@ -186,7 +186,6 @@ def _tint_titlebar_async():
     #1b：顺手把窗口图标从 pythonw 默认的 Python 图标换成 PaperPiggy。"""
     if sys.platform != "win32":
         return
-    import threading
     def work():
         try:
             import ctypes

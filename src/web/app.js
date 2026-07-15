@@ -3001,6 +3001,7 @@
     loadOnlyPdf();    // 回填「只导入有 PDF」开关
     loadBackup();     // 回填备份位置/自动备份，并列出已有备份包
     checkUpdate(true); // 静默查一次新版（用缓存、失败不吭声），有新版才显示升级面板
+    loadMirror();     // 回填国内镜像地址
   }
 
   // ── 自动更新（按天 + 指定时刻 + 补跑；即改即存）──
@@ -3404,8 +3405,21 @@
     } catch (e) { msg.textContent = "❌ " + e; btn.disabled = false; }
   }
 
+  async function loadMirror() {
+    const el = $("#up-mirror"); if (!el) return;
+    try { const r = await jget("/update/mirror"); el.value = r.mirror_base || ""; } catch (e) {}
+  }
+  async function saveMirror() {
+    const el = $("#up-mirror"), msg = $("#up-mirror-msg"); if (!el) return;
+    try {
+      const r = await jpost("/update/mirror", { mirror_base: el.value.trim() });
+      if (msg) msg.textContent = r.ok ? (r.mirror_base ? "✅ 已保存镜像地址" : "已清空（只走 GitHub）") : "❌ 保存失败";
+    } catch (e) { if (msg) msg.textContent = "❌ " + e; }
+  }
+
   { const c = $("#up-check"); if (c) c.addEventListener("click", () => checkUpdate(false));
-    const a = $("#up-apply"); if (a) a.addEventListener("click", doUpdate); }
+    const a = $("#up-apply"); if (a) a.addEventListener("click", doUpdate);
+    const m = $("#up-mirror"); if (m) m.addEventListener("change", saveMirror); }
 
   // ── 对话页「模型设置」折叠区（原设置弹窗的 LLM 服务商块内联到此，onChange 即存）──
   // 冷启动即回填对话页模型设置（原逻辑只在打开设置弹窗时回填）

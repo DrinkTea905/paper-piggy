@@ -86,15 +86,24 @@ def is_newer(remote, local):
 
 # ───────────────────────── 查新版 ─────────────────────────
 
-def check(timeout=10):
-    """返回 {'current','latest','has_update','url','sha256','notes'}；网络失败返回 error 字段。"""
+def check(timeout=12, tries=3):
+    """返回 {'current','latest','has_update','url','sha256','notes'}；网络失败返回 error 字段。
+    带重试：国内连 GitHub 偶发超时，多试两次往往就通了。"""
     cur = getattr(C, "APP_VERSION", "0.0.0")
-    try:
-        req = Request(API_LATEST, headers=UA)
-        with urlopen(req, timeout=timeout) as r:
-            rel = json.loads(r.read().decode("utf-8"))
-    except (URLError, HTTPError, TimeoutError, OSError) as e:
-        return {"current": cur, "has_update": False, "error": f"{type(e).__name__}: {e}"}
+    rel = None
+    last = None
+    for i in range(tries):
+        try:
+            req = Request(API_LATEST, headers=UA)
+            with urlopen(req, timeout=timeout) as r:
+                rel = json.loads(r.read().decode("utf-8"))
+            break
+        except (URLError, HTTPError, TimeoutError, OSError) as e:
+            last = e
+            if i < tries - 1:
+                time.sleep(1.5 * (i + 1))
+    if rel is None:
+        return {"current": cur, "has_update": False, "error": f"{type(last).__name__}: {last}"}
 
     latest = (rel.get("tag_name") or "").lstrip("vV")
     if not latest:
@@ -132,47 +141,98 @@ def _sha256(path, chunk=1 << 20):
     return h.hexdigest()
 
 
-def download(info=None, progress=None):
-    """下 app 包并校验 sha256。校验不过 → 删掉，返回 error（绝不把坏包留在盘上）。"""
+def _mirror_base():
+    """国内镜像目录前缀（settings.update.mirror_base）。空则不启用。"""
+    try:
+        import settings as S
+        b = (S.load().get("update") or {}).get("mirror_base") or ""
+        return b.rstrip("/") + "/" if b else ""
+    except Exception:
+        return ""
+
+
+def _candidate_urls(primary_url, filename):
+    """下载源，按序尝试：GitHub 直链优先，再镜像。镜像 URL = mirror_base + 文件名。"""
+    urls = [primary_url] if primary_url else []
+    mb = _mirror_base()
+    if mb and filename:
+        murl = mb + filename
+        if murl not in urls:
+            urls.append(murl)
+    return urls
+
+
+def _fetch_to(url, dst, progress=None, timeout=60):
+    """把 url 下到 dst。任一步失败抛异常（调用方负责删残包、试下一个源）。"""
+    with urlopen(Request(url, headers=UA), timeout=timeout) as r:
+        total = int(r.headers.get("Content-Length") or 0)
+        done = 0
+        with open(dst, "wb") as f:
+            while True:
+                b = r.read(1 << 16)
+                if not b:
+                    break
+                f.write(b)
+                done += len(b)
+                if progress:
+                    progress(done, total)
+
+
+def _fetch_text(url, timeout=15, tries=2):
+    for i in range(tries):
+        try:
+            with urlopen(Request(url, headers=UA), timeout=timeout) as r:
+                return r.read().decode("utf-8")
+        except Exception:
+            if i < tries - 1:
+                time.sleep(1.0)
+    return None
+
+
+def download(info=None, progress=None, tries=3):
+    """下 app 包并校验 sha256。校验不过 → 删掉，返回 error（绝不把坏包留在盘上）。
+    多源 + 重试：每个源（GitHub 直链、国内镜像）各试几次；国内连 GitHub 易超时，镜像兜底。"""
     info = info or check()
     if not info.get("has_update"):
         return {"ok": False, "error": "没有可用更新"}
 
     UPDATE_DIR.mkdir(parents=True, exist_ok=True)
     dst = UPDATE_DIR / f"app-{info['latest']}.zip"
+    filename = f"paper-piggy-app-{info['latest']}.zip"
 
-    # 期望的 sha256（Release 里单独放一个 .sha256 资产）
+    # 期望的 sha256（GitHub 直链 + 镜像都试）
     want = None
-    if info.get("sha256_url"):
-        try:
-            with urlopen(Request(info["sha256_url"], headers=UA), timeout=15) as r:
-                want = r.read().decode("utf-8").split()[0].strip().lower()
-        except Exception:
-            want = None
+    for surl in _candidate_urls(info.get("sha256_url"), filename + ".sha256"):
+        txt = _fetch_text(surl)
+        if txt:
+            want = txt.split()[0].strip().lower()
+            break
 
-    try:
-        with urlopen(Request(info["url"], headers=UA), timeout=60) as r:
-            total = int(r.headers.get("Content-Length") or 0)
-            done = 0
-            with open(dst, "wb") as f:
-                while True:
-                    b = r.read(1 << 16)
-                    if not b:
-                        break
-                    f.write(b)
-                    done += len(b)
-                    if progress:
-                        progress(done, total)
-    except Exception as e:
-        dst.unlink(missing_ok=True)
-        return {"ok": False, "error": f"下载失败：{type(e).__name__}: {e}"}
+    urls = _candidate_urls(info.get("url"), filename)
+    if not urls:
+        return {"ok": False, "error": "Release 里没有可下载的 app 包资产"}
 
-    got = _sha256(dst)
-    if want and got != want:
-        dst.unlink(missing_ok=True)   # 坏包立即删除，不给"下次凑合用"的机会
-        return {"ok": False, "error": f"sha256 校验失败（期望 {want[:12]}…，实际 {got[:12]}…），已删除"}
+    last_err = None
+    for url in urls:
+        src = "镜像" if url != info.get("url") else "GitHub"
+        for i in range(tries):
+            try:
+                _fetch_to(url, dst, progress=progress, timeout=90)
+                got = _sha256(dst)
+                if want and got != want:
+                    dst.unlink(missing_ok=True)
+                    last_err = f"{src} sha256 不符（期望 {want[:12]}…，实际 {got[:12]}…）"
+                    break                      # 校验失败换下一个源，别在同一坏源上重试
+                return {"ok": True, "zip": str(dst), "version": info["latest"],
+                        "sha256": got, "verified": bool(want), "source": src}
+            except Exception as e:
+                dst.unlink(missing_ok=True)
+                last_err = f"{src}: {type(e).__name__}: {e}"
+                if i < tries - 1:
+                    time.sleep(2.0 * (i + 1))
 
-    return {"ok": True, "zip": str(dst), "version": info["latest"], "sha256": got, "verified": bool(want)}
+    hint = "" if _mirror_base() else "（可在设置里填「国内镜像」兜底，见 README）"
+    return {"ok": False, "error": f"下载失败{hint}：{last_err}"}
 
 
 # ───────────────────────── 用户改动检测 ─────────────────────────
