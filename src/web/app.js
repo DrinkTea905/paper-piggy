@@ -412,7 +412,7 @@
       const deep = q.deep_done || 0, withPdf = q.with_pdf || 0;
       const pending = q.pending || 0, inflight = q.in_flight || 0;
       const building = !!q.building, stage = q.stage || "";
-      const undeep = Math.max(0, withPdf - deep);
+      const undeep = Math.max(0, withPdf - deep - (q.deep_no_text || 0));   // 扣掉扫描件：它们没法常规深索，不算"待深索"
       // BF31：整库深索以后端 /index/queue 的 bulk 字段为准（队列批次也可能瞬时 inflight=0，旧推断会误报「整库」）；
       // 旧后端没有 bulk 字段（undefined）时回退旧推断，保持兼容
       const bulkDeep = building && stage === "deep" &&
@@ -1320,15 +1320,19 @@
         <div class="hbar deep-prog-bar"><span class="track"><span class="fill" style="width:0%;background:#16a085"></span></span><span class="val">0%</span></div>
         <p class="deep-prog-txt">暂无可深索文献</p></div>`;
     }
-    const rawPct = (deep / withPdf) * 100;
-    const barPct = deep > 0 ? Math.max(3, Math.round(rawPct)) : 0;   // 有成果就留一条可见的进度条，避免 2/1443 显示 0%
-    const pctLabel = (deep > 0 && rawPct < 1) ? "<1%" : Math.round(rawPct) + "%";
-    const remain = Math.max(0, withPdf - deep);
+    const noText = st.deep_no_text || 0;                        // 扫描件：不算"待深索"
+    const processed = Math.min(withPdf, deep + noText);
+    const rawPct = (processed / withPdf) * 100;                  // 按"已处理"算，剩下全是扫描件也到 100%
+    const barPct = processed > 0 ? Math.max(3, Math.round(rawPct)) : 0;   // 有成果就留一条可见的进度条，避免 2/1443 显示 0%
+    const pctLabel = (processed > 0 && rawPct < 1) ? "<1%" : Math.round(rawPct) + "%";
+    const remain = Math.max(0, withPdf - deep - noText);
     const clickable = remain > 0;
     const bar = `<span class="track"><span class="fill" style="width:${barPct}%;background:#16a085"></span></span>`;
     const txt = (remain > 0
       ? `已深索 <b>${num(deep)}</b> / 有PDF ${num(withPdf)} 篇，还有 ${num(remain)} 篇可深索`
-      : `已深索 <b>${num(deep)}</b> / 有PDF ${num(withPdf)} 篇，已全部深索完成 ✓`) + sacFrag(st);
+      : (noText > 0
+          ? `已深索 <b>${num(deep)}</b> / 有PDF ${num(withPdf)} 篇，已全部深索完成 ✓（另 ${num(noText)} 篇扫描件无法深索）`
+          : `已深索 <b>${num(deep)}</b> / 有PDF ${num(withPdf)} 篇，已全部深索完成 ✓`)) + sacFrag(st);
     // 查看「已深索了哪些」（跳到浏览的「已深索」筛选）。整卡可点→浏览挑未深索去深索。
     const seeLink = deep > 0 ? `<span class="deep-prog-see" id="deep-prog-see">查看已深索 ${num(deep)} 篇 →</span>` : "";
     return `<div class="dcard span2 deep-prog${clickable ? " clickable" : ""}"${clickable ? ' id="deep-prog-card"' : ""}>
@@ -1351,10 +1355,13 @@
     const health = d.health || {};
     const st = status || {};
     const withPdf = st.with_pdf || 0, deep = st.deep_done || 0;
-    const remain = Math.max(0, withPdf - deep);
-    const rawPct = withPdf ? (deep / withPdf) * 100 : 0;
-    const barPct = deep > 0 ? Math.max(3, Math.round(rawPct)) : 0;
-    const pctLabel = withPdf === 0 ? "—" : (deep > 0 && rawPct < 1 ? "<1%" : Math.round(rawPct) + "%");
+    const noText = st.deep_no_text || 0;                        // 扫描件/无正文：没法深索，不算"待深索"
+    const remain = Math.max(0, withPdf - deep - noText);        // 真正还能深索的（扣掉扫描件）
+    const processed = Math.min(withPdf, deep + noText);         // 已处理＝已深索 + 已确认扫描件
+    // 进度按"已处理"算：深索完 + 剩下的都是扫描件 → 100%，不再永远卡在 99%
+    const rawPct = withPdf ? (processed / withPdf) * 100 : 0;
+    const barPct = processed > 0 ? Math.max(3, Math.round(rawPct)) : 0;
+    const pctLabel = withPdf === 0 ? "—" : (processed > 0 && rawPct < 1 ? "<1%" : Math.round(rawPct) + "%");
     // 第②步 检索摘要 的进度（分母＝已深索数，摘要只对已深索的篇有意义）
     const sac = st.sac_done || 0;
     const sacRawPct = deep > 0 ? (sac / deep) * 100 : 0;
@@ -1374,7 +1381,9 @@
           <div class="hbar dh-bar"><span class="track"><span class="fill" style="width:${barPct}%;background:#7ee0b8"></span></span></div>
           <div class="dh-deep-txt">${withPdf === 0 ? "暂无可深索文献。" : (remain > 0
               ? `把 PDF 全文拆成可检索的小段，回答才能精确到页码。已深索 <b>${num(deep)}</b>/${num(withPdf)} 篇，还有 ${num(remain)} 篇。`
-              : `已全部深索完成 ✓`)}
+              : (noText > 0
+                  ? `已全部深索完成 ✓ —— 另有 <b>${num(noText)}</b> 篇是扫描件/无正文（没有文字层，需 OCR 才能深索），已跳过。`
+                  : `已全部深索完成 ✓`))}
             ${deep > 0 ? `<a class="dh-link" id="dash-see-deep">查看已深索 ${num(deep)} 篇 →</a>` : ""}
             ${remain > 0 ? `<a class="dh-link" id="dash-go-deep">深索全部未深索文献 →</a>` : ""}
             ${withPdf > 0 ? `<a class="dh-link dash-deep-detail" id="dash-deep-detail">深索详情 / 暂停 →</a>` : ""}</div>
@@ -2508,11 +2517,12 @@
   async function loadAgentDeep() {
     try {
       const st = await jget("/index/status");
-      const withPdf = st.with_pdf || 0, deep = st.deep_done || 0;
-      const pct = withPdf ? Math.round((deep / withPdf) * 100) : 0;
+      const withPdf = st.with_pdf || 0, deep = st.deep_done || 0, noText = st.deep_no_text || 0;
+      const pct = withPdf ? Math.round((Math.min(withPdf, deep + noText) / withPdf) * 100) : 0;   // 已处理占比（扫描件算已处理）
       $("#ag-deep").innerHTML = withPdf
         ? `已深索 <b>${num(deep)}</b> / 有 PDF ${num(withPdf)} 篇（${pct}%）。` +
-          (deep < withPdf ? ` <a class="ag-link" id="ag-godeep">去「浏览」深索更多 →</a>` : ` 已全部深索完成 ✓`) + sacFrag(st)
+          ((deep + noText) < withPdf ? ` <a class="ag-link" id="ag-godeep">去「浏览」深索更多 →</a>`
+            : (noText > 0 ? ` 已全部深索完成 ✓（另 ${num(noText)} 篇扫描件无法深索）` : ` 已全部深索完成 ✓`)) + sacFrag(st)
         : `暂无可深索文献（库里没有带 PDF 的文献，或尚未建库）。`;
       const g = $("#ag-godeep");
       if (g) g.addEventListener("click", () => switchTab("browse"));
@@ -4498,8 +4508,8 @@
     let st = lastIdxStatus;
     if (!st) { try { st = await jget("/index/status"); lastIdxStatus = st; } catch (e) { return; } }
     if (st.mode !== "full") return;                       // 语义层未就绪不弹
-    const withPdf = st.with_pdf || 0, deep = st.deep_done || 0;
-    if (!(withPdf > 0 && deep < withPdf)) return;          // 已全部深索完，无需弹
+    const withPdf = st.with_pdf || 0, deep = st.deep_done || 0, noText = st.deep_no_text || 0;
+    if (!(withPdf > 0 && (deep + noText) < withPdf)) return;   // 已全部深索完（剩下的都是扫描件）→ 无需弹
     renderDeepInvite(deep, withPdf, st.building && st.stage === "deep", st);
   }
   function renderDeepInvite(deep, withPdf, alreadyBusy, st) {
