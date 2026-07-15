@@ -30,6 +30,9 @@
 - **数据与程序放同一个文件夹**：索引、模型、综述、Agent 交付物全在安装目录内，
   整个文件夹拷走即可换机。安装目录不可写时自动回退到 `%LOCALAPPDATA%\PaperPiggy`。
 - 用户数据目录由 `%LOCALAPPDATA%\LocalKB` 改名为 `PaperPiggy`。
+- **更新方式说明**：目前没有应用内自动更新；升级 = 到 GitHub 下新版安装器覆盖安装，
+  只覆盖程序本体（`app\`、`python\`），索引、综述、写好的论文等数据不受影响。
+  （注意与设置里的「自动更新知识库」区分——那是知识库增量索引，不是版本升级。）
 
 ### 新增
 - **备份与恢复**（设置 → 💾 备份与恢复）：把综述、Agent 写的论文与记忆、收藏夹、
@@ -41,7 +44,7 @@
 
 ## [1.0.0] — 2026-07-14
 
-首个公开版本。[下载](https://github.com/DrinkTea905/paper-piggy/releases/tag/v1.0.0)
+首个公开版本。**已撤下**——存在启动窗口不显示的 bug（见 1.0.1 修复），release 与其安装包已删除，请用 1.0.1。
 
 ### 新增
 - 项目指引本地化：`CLAUDE.md`（AI agent 总纲）、`docs/ARCHITECTURE.md`、`docs/MAINTENANCE.md`
@@ -73,7 +76,6 @@
 - Inno Setup 安装器（177 MB）+ 便携 zip（282 MB）+ updater 用的增量包
 - 模型（约 900 MB）走 GitHub Release 按需下载，支持断点续传与 sha256 校验；API 模式无需下载
 - 缺 WebView2 时安装器静默安装 Evergreen Runtime
-- 自动更新：只替换 `app/`，不碰 Python 运行时与用户数据；用 sha256 清单识别用户改过的文件，不静默覆盖
 
 ---
 
