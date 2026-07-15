@@ -124,8 +124,12 @@ def main():
         print(f"[embed] 自动 SAC 跳过（{e}）", flush=True)
     n_sum = 0
     n_chunks = 0
+    aborted = None       # 非 None=致命中止原因；末尾据此非0退出（★铁律：rc=0 ⟺ 全部 todo 已嵌）
+    n_fail = 0           # 因限流/网络被跳过（未嵌）的篇数；>0 即末尾非0退出，杜绝「半个库报完成」
+    consec = 0           # 连续传输失败计数（连续 3 篇判死，避免整库每篇重撞同一堵墙、疯狂打 API）
     if todo:
         from embedder import get_embedder
+        from siliconflow_embedder import EmbedClientError, EmbedTransientError
         import settings as S
         print("[model] 加载嵌入器（" + ("API" if S.is_api() else "本地 bge-m3 ONNX-INT8") + "）...", flush=True)
         print(f"[model] 文档摘要前缀(SAC): 已加载 {len(summaries)} 篇摘要" if summaries
@@ -148,7 +152,20 @@ def main():
                 embed_texts = [f"{summ}\n\n{c['text']}" for c in chunks]
             else:
                 embed_texts = [c["text"] for c in chunks]
-            vecs = model.encode(embed_texts, batch_size=args.batch, max_length=512)
+            try:
+                vecs = model.encode(embed_texts, batch_size=args.batch, max_length=512)
+                consec = 0
+            except EmbedClientError as e:
+                # 4xx：密钥/余额/模型名——重试无用，立即整批中止（别再往下逐篇打 API）
+                aborted = f"嵌入中止（密钥/余额/模型名问题，重试无用）：{e}"; break
+            except EmbedTransientError as e:
+                # 限流/网络/服务端——跳过本篇（不 mark_done，下次续跑）；连续 3 篇则判死中止
+                n_fail += 1; consec += 1
+                print(f"[embed] 第 {i}/{len(todo)} 篇嵌入失败（{e}），已跳过；连续失败 {consec}/3", flush=True)
+                if consec >= 3:
+                    aborted = f"嵌入连续 3 篇失败，判定 API 不可用，中止：{e}"; break
+                continue
+            # 其它异常（本地模型故障 / 真 bug）不吞：让子进程带 traceback 退出，前端仍 rc≠0，日志有栈可查
             rows = []
             for c, v in zip(chunks, vecs):
                 r = dict(c)
@@ -204,6 +221,13 @@ def main():
         print(f"[bm25] 完成，{len(ids)} 文档 -> {C.BM25_DIR}", flush=True)
 
     print(f"[done] 表总行数 ≈ {tbl.count_rows() if tbl is not None else 0}", flush=True)
+    # ★ 铁律：只要有一篇没嵌成功，就非0退出。rc=0 必须严格等价于「全部 todo 已嵌」——
+    #   否则 build_all 当成功、前端误报「深索完成」，而半个库其实没入。已嵌的篇/bm25 已落盘，可续跑。
+    if aborted:
+        print(f"[embed] {aborted}", flush=True); sys.exit(2)
+    if n_fail:
+        print(f"[embed] {n_fail} 篇因限流/网络未嵌（其余已保存）；稍后重跑「深索」即可续。", flush=True)
+        sys.exit(2)
 
 if __name__ == "__main__":
     main()

@@ -2592,8 +2592,13 @@ def _run_build(stage, extra=None, on_done=None):
                     on_done(rc)
                 except Exception as e:
                     log_error("deep queue on_done", repr(e))
-            elif not BUILD.get("cancelled"):
-                # 被取消时不再排空队列——否则子进程一死就立刻起新批，用户会以为取消没生效
+            elif not BUILD.get("cancelled") and not (pre_deep is not None and rc != 0):
+                # 被取消时不排空队列——否则子进程一死就立刻起新批，用户会以为取消没生效。
+                # ★ 整库深索失败(rc≠0)时也不立刻排空：否则紧接着起的队列批次会把全局 BUILD["rc"]
+                #   从非0覆写成0/None（server.py:2535 起手重置 + 空批退0），前端在 deep 忙→闲的
+                #   跳变里读到 rc=0/None 就误报「✓ 深索完成」，而其实半个库没入。让失败的整库深索
+                #   自然落地(idle, rc≠0)，队列已持久化，改由下次 enqueue / 每日增量 / 重启时排空。
+                #   条件 pre_deep is not None ⟺ 本次是整库深索；常规 all/semantic/light/folder 维持原样。
                 try:
                     _drain_deep_queue()
                 except Exception as e:

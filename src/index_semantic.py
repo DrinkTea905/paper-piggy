@@ -80,15 +80,30 @@ def main(batch=64):
     todo = [p for p in papers if p.get("stem") not in done]
     print(f"[semantic] 题录 {len(papers)}，待嵌入 {len(todo)}（已嵌 {len(done)}）", flush=True)
 
+    aborted = None       # 非 None=致命中止原因；末尾据此非0退出（★铁律：rc=0 ⟺ 全部 todo 已嵌）
+    n_fail = 0           # 因限流/网络被跳过（未嵌）的批数；>0 即末尾非0退出，杜绝卡死进度条谎报完成
+    consec = 0
     if todo:
         from embedder import get_embedder
+        from siliconflow_embedder import EmbedClientError, EmbedTransientError
         import settings as S
         print("[semantic] 加载嵌入器（" + ("API" if S.is_api() else "本地 bge-m3 ONNX-INT8") + "）...", flush=True)
         model = get_embedder(batch_size=batch)
         n = 0
         for i in range(0, len(todo), batch):
             grp = todo[i:i + batch]
-            vecs = model.encode([p["text"] for p in grp], batch_size=batch, max_length=512)
+            try:
+                vecs = model.encode([p["text"] for p in grp], batch_size=batch, max_length=512)
+                consec = 0
+            except EmbedClientError as e:
+                aborted = f"提升检索质量中止（密钥/余额/模型名问题，重试无用）：{e}"; break
+            except EmbedTransientError as e:
+                n_fail += 1; consec += 1
+                print(f"[semantic] 第 {min(i+batch,len(todo))}/{len(todo)} 批嵌入失败（{e}），已跳过；连续失败 {consec}/3", flush=True)
+                if consec >= 3:
+                    aborted = f"连续 3 批失败，判定 API 不可用，中止：{e}"; break
+                continue
+            # 其它异常不吞：子进程带 traceback 退出，前端仍 rc≠0，日志有栈可查
             rows = [meta_row(p, v) for p, v in zip(grp, vecs)]
             if tbl is None:
                 import pyarrow as pa
@@ -137,6 +152,13 @@ def main(batch=64):
         except Exception as e:
             print(f"[semantic] 写 manifest.backend 失败：{e}", flush=True)
     print(f"[semantic] 表总行数 ≈ {tbl.count_rows() if tbl else 0}，总用时 {time.time()-t0:.0f}s", flush=True)
+    # ★ 铁律：有一批没嵌成功就非0退出——否则前端进度条会永远卡在「正在提升检索质量 X/Y」谎报进行中。
+    #   已嵌的批与 bm25 已落盘，重跑「更新知识库」即从断点续跑。
+    if aborted:
+        print(f"[semantic] {aborted}", flush=True); sys.exit(2)
+    if n_fail:
+        print(f"[semantic] {n_fail} 批因限流/网络未嵌（其余已保存）；稍后点「更新知识库」即可续。", flush=True)
+        sys.exit(2)
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()

@@ -199,10 +199,12 @@
         if (dashLoaded) loadDashboard("silent");
         // B4：若正在「浏览」页且已加载，静默刷新列表与分类，否则卡片仍显示「未深索」误导重复触发
         if (browseLoaded && !$("#panel-browse").hidden) { loadPapers(); loadKbCats(); }
-        // BF14：结束≠成功——按后端 cancelled/rc 区分「手动停止 / 异常中断 / 真完成」，不再一律报 ✓
+        // BF14+：结束≠成功。**只有拿到 rc===0 的阳性证据才报完成**；rc 非0/未知(null)一律按「中断」。
+        // （深索失败后 rc 会被紧接着的其它构建重置成 null/0——后端已加排空守卫防覆写，这里再兜一层：
+        //   宁可提示用户去核验，也绝不谎报「已入库」。）
         if (st.cancelled) flashToast("已停止深索，已完成部分已保存。");
-        else if (st.rc != null && st.rc !== 0) flashToast("⚠ 深索中断（原因见深索详情面板），已完成部分已保存。");
-        else flashToast("✓ 深索完成，相关文献已可精读到页码。");
+        else if (st.rc === 0) flashToast("✓ 深索完成，相关文献已可精读到页码。");
+        else flashToast("⚠ 深索中断（原因见深索详情面板），已完成部分已保存。");
       }
       wasDeepBusy = deepBusyNow;
       // 「生成检索摘要」（第②步）后台任务结束→刷新库总览与浏览列表，让 sac 数字/徽标更新
@@ -345,10 +347,18 @@
       done = deep; total = withPdf || 1;
       const eta = estimateEta("deep", deep, withPdf || 0);
       txt = `深索中… ${num(deep)}/${num(withPdf)}` + (qPending ? ` · 另 ${num(qPending)} 篇排队` : "") + (eta ? ` · ${eta}` : "");
-    } else if (semanticPending || (st.building && stage === "semantic")) {
-      // 语义层提质
+    } else if (semanticPending && st.building) {
+      // 语义层提质（**正在跑**才画动进度条）
       done = meta; total = papers || 1;
       txt = `正在提升检索质量… ${num(meta)}/${num(papers)}`;
+    } else if (semanticPending) {
+      // meta<papers 但没有构建在跑 = 上次语义嵌入中途崩了/被中断，进度冻结在此。
+      // 不再画会动的假进度条（否则永远卡着谎报「正在提升」）；给静态诚实提示 + 续跑入口。
+      const pct = Math.max(0, Math.min(100, Math.round((meta / (papers || 1)) * 100)));
+      $("#idx-progress-fill").style.width = pct + "%";
+      $("#idx-progress-txt").textContent =
+        `检索质量待建完 ${num(meta)}/${num(papers)}（上次未完成）· 点顶栏「⟳ 手动更新知识库」继续`;
+      bar.hidden = false; return;
     } else if (qPending > 0) {
       // 有文献排队等待深索、但深索尚未开跑（防抖窗口 / 等其它构建让出锁）
       $("#idx-progress-fill").style.width = "100%";

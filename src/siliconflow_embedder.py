@@ -35,6 +35,20 @@ DEFAULT_MODEL = "BAAI/bge-m3"
 MAX_BATCH = 64
 
 
+# 类型化异常：让批量嵌入的调用方能区分「重试无用、立即中止」与「传输抖动、可再等」。
+# 都继承 RuntimeError —— 老代码里的 except RuntimeError / except Exception 全兼容，不破坏现有捕获。
+class EmbedError(RuntimeError):
+    pass
+
+
+class EmbedClientError(EmbedError):
+    """4xx（密钥无效 / 余额不足 / 模型名错 / base 地址错）——重试无用，整批立即中止。"""
+
+
+class EmbedTransientError(EmbedError):
+    """限流 / 服务端繁忙 / 网络超时 / 返回条数不符——重试耗尽后抛；连续多次才判死。"""
+
+
 class SiliconFlowEmbedder:
     """OpenAI 兼容 /embeddings 客户端（默认 SiliconFlow，免费 bge-m3）。"""
 
@@ -82,7 +96,7 @@ class SiliconFlowEmbedder:
                 last = f"{r.status_code} 服务端繁忙"
                 time.sleep(min(10, 1.5 ** attempt) + random.uniform(0, 0.3)); continue
             if 400 <= r.status_code < 500:                       # R1：4xx(密钥/额度/参数/模型名) 重试无用，快速失败
-                raise RuntimeError(_client_err(r.status_code, self.model))
+                raise EmbedClientError(_client_err(r.status_code, self.model))
             try:                                                # 2xx：解析（偶发坏响应/维度不符仍可重试）
                 r.raise_for_status()
                 data = sorted(r.json()["data"], key=lambda x: x.get("index", 0))
@@ -99,7 +113,7 @@ class SiliconFlowEmbedder:
             except Exception as e:
                 last = repr(e)
                 time.sleep(min(10, 1.5 ** attempt) + random.uniform(0, 0.3))
-        raise RuntimeError(f"嵌入 API 连续失败：{last}（检查 API key / 网络 / 额度 / base 地址）")
+        raise EmbedTransientError(f"嵌入 API 连续失败：{last}（检查 API key / 网络 / 额度 / base 地址）")
 
     # ---- 对外主接口（与本地 Embedder 同签名）----
     def encode(self, texts, batch_size=None, max_length=None):
