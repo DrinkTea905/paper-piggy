@@ -17,7 +17,7 @@ from pathlib import Path
 # 全项目**只有这一处**版本字面量：发版改版本号只改这里，其余地方一律 `C.APP_VERSION` 引用
 # （踩过的坑：版本号散落在 mcp_server 的 serverInfo、打包脚本、页脚里，改一处漏三处，
 #  用户报 bug 时报的版本对不上代码）。1.0.0 = 首个公开发布版（Apache-2.0 开源）。
-APP_VERSION = "1.0.1"
+APP_VERSION = "1.0.2"
 
 APP = Path(__file__).parent                 # 源码目录；分发版 = bundle/app
 RAG = APP                                    # 兼容：引擎脚本都在项目根
