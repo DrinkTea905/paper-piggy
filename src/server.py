@@ -2637,7 +2637,9 @@ def _run_build(stage, extra=None, on_done=None):
             env = _child_env()   # 任务五：稳定 UTF-8 输出，避免 build 日志乱码
             cmd = [sys.executable, str(C.APP / "build_all.py"), "--stage", stage] + (extra or [])
             p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env,
-                                 creationflags=C.SUBPROC_NO_WINDOW)   # ★ 不闪黑窗
+                                 creationflags=C.SUBPROC_NO_WINDOW,   # ★ 不闪黑窗（Windows）
+                                 # macOS/Linux：起在独立进程组，取消时 _kill_tree 用 killpg 连孙进程一起杀
+                                 start_new_session=(sys.platform != "win32"))
             BUILD["proc"] = p            # 留句柄给 /build/cancel
             for raw in p.stdout:
                 BUILD["log"].append(raw.decode("utf-8", errors="replace").rstrip())
@@ -2710,8 +2712,11 @@ def build_ep():
     return {"ok": _run_build(stage)}
 
 def _kill_tree(p):
-    """BF7：Windows 下 p.terminate() 只杀 build_all 本体，它派生的孙进程（嵌入/抽取 worker）
-       会变孤儿继续跑、继续烧 API 额度——taskkill /T /F 终止整棵进程树；失败兜底 terminate 并记日志。"""
+    """终止建库进程树。子进程（build_all）会派生嵌入/抽取 worker 孙进程，只杀本体它们会变孤儿、
+       继续跑继续烧 API 额度。
+       Windows：taskkill /T /F 杀整棵树；失败兜底 terminate。
+       macOS/Linux：子进程用 start_new_session 起在独立进程组里（见 _run_build 的 Popen），
+         这里 killpg 杀整组；拿不到进程组则兜底 terminate。"""
     if sys.platform == "win32":
         try:
             r = subprocess.run(["taskkill", "/PID", str(p.pid), "/T", "/F"],
@@ -2722,6 +2727,13 @@ def _kill_tree(p):
             log_error("build/cancel taskkill", f"taskkill rc={r.returncode}，兜底 terminate")
         except Exception as e:
             log_error("build/cancel taskkill", repr(e))
+    else:
+        try:
+            import os as _os, signal as _sig
+            _os.killpg(_os.getpgid(p.pid), _sig.SIGTERM)   # 杀整个进程组（含嵌入/抽取孙进程）
+            return
+        except Exception as e:
+            log_error("build/cancel killpg", repr(e))
     p.terminate()
 
 @app.post("/build/cancel")
@@ -3473,7 +3485,12 @@ def backup_open_dir():
     d = BK.backup_dir()
     try:
         d.mkdir(parents=True, exist_ok=True)
-        os.startfile(str(d))
+        if sys.platform == "win32":
+            os.startfile(str(d))  # noqa
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", str(d)])
+        else:
+            subprocess.Popen(["xdg-open", str(d)])
         return {"ok": True, "dir": str(d)}
     except Exception as e:
         return {"ok": False, "error": str(e), "dir": str(d)}

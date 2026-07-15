@@ -21,7 +21,7 @@ SUBPROC_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0   # CREATE_NO_W
 # 全项目**只有这一处**版本字面量：发版改版本号只改这里，其余地方一律 `C.APP_VERSION` 引用
 # （踩过的坑：版本号散落在 mcp_server 的 serverInfo、打包脚本、页脚里，改一处漏三处，
 #  用户报 bug 时报的版本对不上代码）。1.0.0 = 首个公开发布版（Apache-2.0 开源）。
-APP_VERSION = "1.0.9"
+APP_VERSION = "1.0.10"
 
 APP = Path(__file__).parent                 # 源码目录；分发版 = bundle/app
 RAG = APP                                    # 兼容：引擎脚本都在项目根
@@ -58,8 +58,17 @@ def _user_home():
     env = os.environ.get("LOCALKB_HOME")
     if env:
         return Path(env)                         # 用户显式指定，尊重之
-    appdata = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~\\AppData\\Local")
-    return Path(appdata) / "PaperPiggy"
+    # 各平台的用户数据惯例位置。Windows：%LOCALAPPDATA%\PaperPiggy；
+    # macOS：~/Library/Application Support/PaperPiggy；Linux：$XDG_DATA_HOME 或 ~/.local/share。
+    # （此前只有 Windows 分支，且兜底写死 '~\\AppData\\Local' —— 在 mac/Linux 上会产出含字面反斜杠
+    #   的垃圾路径。给朋友的 macOS 源码版加分支，Windows 行为一字不变。）
+    if sys.platform == "darwin":
+        return Path(os.path.expanduser("~/Library/Application Support")) / "PaperPiggy"
+    if sys.platform.startswith("win"):
+        appdata = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~\\AppData\\Local")
+        return Path(appdata) / "PaperPiggy"
+    xdg = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+    return Path(xdg) / "PaperPiggy"
 
 
 def _bootstrap_bundle_env():

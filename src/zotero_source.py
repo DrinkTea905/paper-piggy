@@ -23,6 +23,21 @@ def _utc_to_local(s):
     except Exception:
         return s or ""
 
+def _zotero_prefs_files():
+    """跨平台枚举 Zotero profile 的 prefs.js（自定义 dataDir/baseAttachmentPath 的唯一可靠来源）。
+       Win：%APPDATA%\\Zotero\\Zotero\\Profiles\\*；mac：~/Library/Application Support/Zotero/Profiles\\*；
+       Linux：~/.zotero/zotero/*。（此前只写死了 Windows 的 %APPDATA% 路径。）"""
+    if sys.platform == "darwin":
+        pat = os.path.join(os.path.expanduser("~/Library/Application Support/Zotero"),
+                           "Profiles", "*", "prefs.js")
+    elif sys.platform.startswith("win"):
+        appdata = os.environ.get("APPDATA") or os.path.expanduser("~/AppData/Roaming")
+        pat = os.path.join(appdata, "Zotero", "Zotero", "Profiles", "*", "prefs.js")
+    else:
+        pat = os.path.join(os.path.expanduser("~/.zotero/zotero"), "*", "prefs.js")
+    return glob.glob(pat)
+
+
 def detect_data_dir():
     """探测 Zotero 数据目录（含 zotero.sqlite）。返回 Path 或 None。"""
     # ① 显式覆盖（环境变量 / config.ZOTERO_DIR）——保持最高优先级：临时切库的逃生口不能被持久设置压住
@@ -39,8 +54,7 @@ def detect_data_dir():
     except Exception:
         pass
     # ② Zotero profile 的 prefs.js 里记录的 dataDir（自定义目录的唯一可靠来源）
-    appdata = os.environ.get("APPDATA") or os.path.expanduser("~/AppData/Roaming")
-    for prefs in glob.glob(os.path.join(appdata, "Zotero", "Zotero", "Profiles", "*", "prefs.js")):
+    for prefs in _zotero_prefs_files():
         try:
             txt = open(prefs, encoding="utf-8", errors="replace").read()
             m = re.search(r'extensions\.zotero\.dataDir",\s*"([^"]+)"', txt)
@@ -59,8 +73,7 @@ def detect_data_dir():
 def _base_attachment_path():
     """读 Zotero prefs.js 的 extensions.zotero.baseAttachmentPath（链接附件 'attachments:xxx' 的相对根）。
     返回存在的 Path，或 None（未设置/目录不存在）。探测方式复用 detect_data_dir 里对 prefs.js 的解析。"""
-    appdata = os.environ.get("APPDATA") or os.path.expanduser("~/AppData/Roaming")
-    for prefs in glob.glob(os.path.join(appdata, "Zotero", "Zotero", "Profiles", "*", "prefs.js")):
+    for prefs in _zotero_prefs_files():
         try:
             txt = open(prefs, encoding="utf-8", errors="replace").read()
             m = re.search(r'extensions\.zotero\.baseAttachmentPath",\s*"([^"]+)"', txt)

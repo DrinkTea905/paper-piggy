@@ -44,6 +44,10 @@ body {
 .actions { margin-left: auto; display: flex; gap: 8px; flex: 0 0 auto; }
 .ghost { background: transparent; border: 1px solid var(--line); color: var(--muted); padding: 6px 12px; border-radius: 8px; cursor: pointer; font-size: 13px; }
 .ghost:hover { border-color: var(--accent); color: var(--accent); }
+/* 顶栏「有新版」徽标：显眼但克制的胶囊，恒在 .actions 内不被挤出 */
+.up-badge { flex: 0 0 auto; background: var(--accent); border: 1px solid var(--accent); color: #fff;
+  padding: 6px 12px; border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 600; white-space: nowrap; }
+.up-badge:hover { filter: brightness(1.08); }
 /* 副本#1：顶栏改浅色系后，右侧按钮沿用通用 ghost 样式即可（原深底半透明白描边已随之移除） */
 
 /* S 档语义 / F 档深索 常驻细进度条（顶栏下方，克制） */

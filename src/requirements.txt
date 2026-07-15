@@ -22,4 +22,9 @@ pypdfium2                  # PDF 取文本（BSD-3/Apache-2.0）。
 python-docx>=1.1           # 综述导出 Word（缺它则导出恒降级为 .md，且不报错）
 requests
 pywebview
-pythonnet
+# 桌面窗口后端按平台分：Windows 走 WebView2，靠 pythonnet(.NET 桥)；macOS 走 Cocoa/WebKit，靠 pyobjc。
+# ⚠️ pythonnet 在 macOS 上需要 .NET/Mono、pip 装常直接失败——所以限定 win32，别让它拖垮 mac 的安装。
+#    Linux 若要跑还需 pywebview[gtk] 或 [qt] 及对应系统库，另行处理。
+pythonnet ; sys_platform == "win32"
+pyobjc-framework-WebKit ; sys_platform == "darwin"
+pyobjc-framework-Cocoa ; sys_platform == "darwin"

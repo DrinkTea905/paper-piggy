@@ -19,6 +19,7 @@
       <button class="tab" data-tab="chat">💬 对话</button>
     </nav>
     <div class="actions">
+      <button id="up-badge" class="up-badge" hidden title="有新版本可用，点击查看并升级"></button>
       <button id="btn-build" class="ghost" title="点一次即在后台增量更新：补新增题录与检索质量（已入库的跳过；深索仍手动）。想定时自动更新？到 ⚙ 设置 → 自动更新知识库里开。">⟳ 手动更新知识库</button>
       <button id="btn-settings" class="ghost">⚙ 设置</button>
     </div>
@@ -734,6 +735,11 @@
           <button id="up-check" class="ghost">🔍 检查更新</button>
           <span id="up-msg" class="hint"></span>
         </div>
+        <label class="sac-toggle">
+          <input type="checkbox" id="up-autocheck" />
+          启动时自动检查新版本（有新版会在右上角提示）。关掉后只在这里手动检查。
+          <span class="hint">——每次启动会静默连一次 GitHub 查版本；不想让它联网就关掉。</span>
+        </label>
         <details class="up-mirror-wrap">
           <summary class="hint">国内下载慢/超时？填个镜像地址兜底</summary>
           <p class="hint">检查更新走 GitHub API（小、通常能连）；只有下载增量包（约 1MB）会用镜像兜底。

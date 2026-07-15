@@ -227,6 +227,12 @@
   }
   poll(); setInterval(poll, 4000);
 
+  // 启动时静默检查新版本（默认开，可在 设置→应用更新 关闭）。延后 2.5s 让首屏先加载完；
+  // 服务端 10 分钟缓存 + updater 自带重试；失败静默（不弹错），只在有新版时点亮右上角徽标。
+  if (localStorage.getItem("localkb.autoUpdateCheck") !== "0") {
+    setTimeout(() => { try { checkUpdate(true); } catch (e) {} }, 2500);
+  }
+
   // ── 深索摘要（SAC）覆盖：在每个「深索进度」旁并显「其中 M 篇有检索摘要」+ 补生成入口 ──
   // st 需含 deep_done / sac_done / sac_backfill（/index/status 与 /index/queue 都有）。
   // 摘要只对已深索的篇有意义：deep=0 时不显示；补生成中显示进度；有缺口给「🧬 补生成摘要」按钮。
@@ -3466,6 +3472,19 @@
 
   // ── 应用更新（版本升级）────────────────────────────────
   // 只换 app\，数据不动（server /update/* + launcher 桥 apply_update）。
+  // 顶栏右上角「有新版」徽标：有更新且未按该版本忽略时显示。按版本记忆——发更新版本时自动重现。
+  function renderUpdateBadge(r) {
+    const b = $("#up-badge"); if (!b) return;
+    const dismissed = localStorage.getItem("localkb.updateDismissed");
+    if (r && r.ok && r.has_update && r.latest && dismissed !== r.latest) {
+      b.textContent = "🎁 有新版 " + r.latest;
+      b.dataset.latest = r.latest;
+      b.hidden = false;
+    } else {
+      b.hidden = true;
+    }
+  }
+
   async function checkUpdate(quiet) {
     const msg = $("#up-msg"), panel = $("#up-panel");
     if (!msg) return null;
@@ -3474,6 +3493,7 @@
       const r = await jget("/update/check" + (quiet ? "" : "?force=1"));
       if (!r.ok || r.error) {
         if (!quiet) msg.textContent = "检查失败：" + (r.error || "未知") + "（多半是网络问题）";
+        renderUpdateBadge(null);   // 检查失败不亮徽标
         return r;
       }
       if (r.has_update) {
@@ -3485,8 +3505,9 @@
         if (!quiet) msg.textContent = `已是最新版（${r.current}）。`;
         panel.hidden = true;
       }
+      renderUpdateBadge(r);        // 顶栏徽标随每次检查刷新（设置页打开 / 手动检查 / 启动静默检查都会走到）
       return r;
-    } catch (e) { if (!quiet) msg.textContent = "❌ " + e; return null; }
+    } catch (e) { if (!quiet) msg.textContent = "❌ " + e; renderUpdateBadge(null); return null; }
   }
 
   async function doUpdate() {
@@ -3535,7 +3556,27 @@
 
   { const c = $("#up-check"); if (c) c.addEventListener("click", () => checkUpdate(false));
     const a = $("#up-apply"); if (a) a.addEventListener("click", doUpdate);
-    const m = $("#up-mirror"); if (m) m.addEventListener("change", saveMirror); }
+    const m = $("#up-mirror"); if (m) m.addEventListener("change", saveMirror);
+    // 顶栏「有新版」徽标：左键→进设置更新区一步升级；右键→忽略此版本（发更新版本时自动重现）
+    const ub = $("#up-badge");
+    if (ub) {
+      ub.addEventListener("click", openSettings);
+      ub.addEventListener("contextmenu", (e) => {
+        e.preventDefault();
+        if (ub.dataset.latest) localStorage.setItem("localkb.updateDismissed", ub.dataset.latest);
+        ub.hidden = true;
+      });
+    }
+    // 「启动时自动检查新版本」开关（纯客户端偏好，存 localStorage；默认开）
+    const ac = $("#up-autocheck");
+    if (ac) {
+      ac.checked = localStorage.getItem("localkb.autoUpdateCheck") !== "0";
+      ac.addEventListener("change", () => {
+        localStorage.setItem("localkb.autoUpdateCheck", ac.checked ? "1" : "0");
+        if (!ac.checked) { const b = $("#up-badge"); if (b) b.hidden = true; }  // 关掉即隐藏当前徽标
+      });
+    }
+  }
 
   // ── 对话页「模型设置」折叠区（原设置弹窗的 LLM 服务商块内联到此，onChange 即存）──
   // 冷启动即回填对话页模型设置（原逻辑只在打开设置弹窗时回填）
