@@ -162,6 +162,7 @@
   let wasDeepBusy = false;
   let wasBackfilling = false;   // 追踪「生成检索摘要」后台任务，结束时刷新列表/徽标
   let lastDeepDone = -1, lastNoText = -1;   // 深索/扫描件计数变化 → 非破坏式刷新浏览徽标
+  let lastRev = null;   // 库修订号（/health.rev，分域 lib/wiki/agent）：某域变了=该域有改动，静默刷当前可见页（连点都不用）
   async function poll() {
     const s = $("#status");
     let h = null, st = null;
@@ -169,6 +170,27 @@
     try { st = await jget("/index/status"); } catch (e) {}
     // BF14：/health 失败早退时清掉 wasDeepBusy，防止后端重启后误弹一次「深索完成」
     if (!h) { s.textContent = "服务未连接"; s.className = "status err"; hideProgress(); wasDeepBusy = false; return; }
+    // 库修订感知（连点都不用）：库/综述/交付物任一变化 → 静默刷「真变了的那一域对应的可见页」，
+    // 捕捉「外部 MCP agent 改库/写综述、纯新增入库」这类 /index/status 无信号、原本要手点🔄或重开才见的变化。
+    // 分域比对：只刷真变了的那一域的可见页，避免跨域误刷（如浏览页看列表时 agent 写综述把列表刷跳）。
+    const rev = h.rev;
+    if (rev) {
+      if (lastRev) {
+        if (rev.lib !== lastRev.lib) {          // 入库 / 去重 → 库总览、浏览、Agent 深索卡
+          if (dashLoaded && !$("#panel-dashboard").hidden) loadDashboard("silent");
+          if (browseLoaded && !$("#panel-browse").hidden) refreshBrowse();
+          if (agentLoaded && !$("#panel-agent").hidden) loadAgentDeep();
+        }
+        if (rev.wiki !== lastRev.wiki) {        // 综述写回（agent/用户）→ 综述库、库总览体检角标
+          if (wikiLoaded && !$("#panel-wiki").hidden) loadWikiList("silent");
+          if (dashLoaded && !$("#panel-dashboard").hidden) loadDashboard("silent");
+        }
+        if (rev.agent !== lastRev.agent) {      // 交付物 / 定时任务新增 → Agent 页两张卡
+          if (agentLoaded && !$("#panel-agent").hidden) { loadAgentTasks(); loadAgentOutputs(); }
+        }
+      }
+      lastRev = rev;
+    }
     // 顶栏状态统一用「已深索 x/y 篇」口径（F47）：y=有PDF可深索的篇数，x=已深索数。
     // 全应用只保留「已深索/未深索」一套说法，去掉「词法就绪/全文就绪」等黑话。
     const papers = h.papers != null ? h.papers : h.n;
@@ -229,6 +251,27 @@
     } else { hideProgress(); wasDeepBusy = false; wasBackfilling = false; }   // BF14：status 拉不到时清标记，恢复后不凭旧标记补发迟到 toast
   }
   poll(); setInterval(poll, 4000);
+
+  // 启动遮罩看门狗：冷启动后端要把全库 20 万+ 段读进内存（大库 1~2 分钟），此前窗口秒开但无数据 = 白屏。
+  // 盖住 #boot 直到 /health.loading 变 false（后端加载完 / 或本就空库快速返回），再淡出。每 1s 查一次（比 4s 主轮询灵敏）。
+  function bootWatch() {
+    const el = document.getElementById("boot"); if (!el) return;
+    const t0 = Date.now();
+    const done = () => { el.classList.add("gone"); setTimeout(() => { el.hidden = true; }, 500); };
+    const tick = async () => {
+      let h = null;
+      try { h = await jget("/health"); } catch (e) {}
+      if (h && !h.loading) { done(); return; }   // 加载完（loading=false，含未建库/空库快速返回）→ 撤遮罩
+      const sec = Math.round((Date.now() - t0) / 1000);
+      const msg = document.getElementById("boot-msg");
+      if (msg) msg.textContent = h
+        ? `正在把知识库读进内存（约 20 万段全文）… 已 ${sec}s，大库需 1~2 分钟`
+        : `正在连接本地服务… 已 ${sec}s`;
+      setTimeout(tick, 1000);
+    };
+    tick();
+  }
+  bootWatch();
 
   // 启动时静默检查新版本（默认开，可在 设置→应用更新 关闭）。延后 2.5s 让首屏先加载完；
   // 服务端 10 分钟缓存 + updater 自带重试；失败静默（不弹错），只在有新版时点亮右上角徽标。

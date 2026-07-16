@@ -8,6 +8,17 @@
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
+  <!-- 启动遮罩：冷启动要把全库 20 万+ 段读进内存（大库 1~2 分钟），此前窗口秒开但无数据=白屏。
+       盖住整屏直到 /health.loading 变 false（后端加载完），再淡出。见 app.js bootWatch()。 -->
+  <div id="boot" class="boot">
+    <div class="boot-box">
+      <div class="boot-pig">🐷</div>
+      <div class="boot-spin" aria-hidden="true"></div>
+      <div class="boot-h">正在启动 PaperPiggy…</div>
+      <div id="boot-msg" class="boot-msg">正在连接本地服务…</div>
+      <div class="boot-hint">首次打开会把整个知识库读进内存（大库约 1~2 分钟），之后就快了。</div>
+    </div>
+  </div>
   <header class="topbar">
     <div class="brand"><img src="/static/PaperPiggy.png" class="brand-logo" alt="" />PaperPiggy <span id="status" class="status">连接中…</span></div>
     <nav class="tabs">

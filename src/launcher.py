@@ -283,6 +283,28 @@ class _JsApi:
             return {"ok": False, "error": str(e)}
 
 
+def _stop_server(pid, proc):
+    """关窗 → 彻底停掉后端及其子进程树，根治「关掉应用后后端没关掉」的 orphan 堆积。
+       此前只有 `if proc: proc.terminate()`——① 连上已有 server（proc=None）时根本不杀；② terminate 只杀直接
+       子进程、不杀子孙。现在按 server /health 回传的 pid 杀整棵树（Windows taskkill /T /F，与 server.py 同款），
+       无论本次是否亲自起的 server 都杀。失败/非 Windows 退回 terminate。"""
+    if pid:
+        try:
+            if sys.platform == "win32":
+                subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
+                               creationflags=0x08000000,   # CREATE_NO_WINDOW：不弹黑窗（§0.5②）
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=8)
+            else:
+                os.kill(int(pid), 15)   # SIGTERM（mac 未打包，best-effort）
+        except Exception as e:
+            _logline(f"关窗停后端失败（taskkill pid={pid}）：{repr(e)}")
+    if proc is not None:   # 兜底：本次亲起的 proc 再 terminate 一次（pid 拿不到时的后备）
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+
+
 def main():
     _check_path_ascii()
     proc = None
@@ -344,6 +366,17 @@ def main():
                 pass
         return
 
+    # 关窗时按 pid 杀掉整棵 server 进程树（含子进程），无论本次是否亲自起的 server —— 根治 orphan 堆积。
+    # server /health 现在回传自己的 pid；拿不到就退回本次 Popen 的 proc.pid。
+    srv_pid = None
+    try:
+        j = _health()
+        srv_pid = (j or {}).get("pid")
+    except Exception:
+        pass
+    if srv_pid is None and proc is not None:
+        srv_pid = proc.pid
+
     try:
         import webview
         # text_select=True：允许在原生窗口里选中/复制文本（pywebview 默认整窗禁选，
@@ -353,11 +386,7 @@ def main():
                               text_select=True, js_api=_JsApi())   # 原生目录选择器桥（pick_folder）
         _tint_titlebar_async()   # #1：标题栏跟随系统浅/深色，别再是突兀的黑条
         webview.start()   # 阻塞直到窗口关闭
-        if proc:          # 关窗口 → 停掉本次启动的 server（关窗即退出应用）
-            try:
-                proc.terminate()
-            except Exception:
-                pass
+        _stop_server(srv_pid, proc)   # 关窗即彻底停掉后端及其子进程树（含「连上已有 server」的情形），不再留 orphan
         if logf:
             try:
                 logf.close()

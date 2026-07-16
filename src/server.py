@@ -347,6 +347,8 @@ def purge_deleted():
             "msg": f"已清理 {len(gone)} 篇 Zotero 中已删除的文献。建议随后点一次「手动更新知识库」刷新题录层。"}
 
 # ── 启动加载 ──────────────────────────────────────────────
+_LOADING = True   # 冷启动把全库 20 万+ 段读进内存（大库 1~2 分钟）期间为 True；/health 暴露给前端显示「加载中」遮罩，
+#                   读完置 False。此前窗口在 uvicorn 一应答就打开、但数据还没进内存 → 白屏「过好一会才显示」的根因。
 @app.on_event("startup")
 def _startup():
     try:
@@ -370,11 +372,13 @@ def _startup():
     threading.Thread(target=_auto_update_loop, daemon=True).start()
 
 def _safe_load():
+    global _LOADING
     try:
         R.load_all()
     except Exception as e:
         log_error("startup load_all", repr(e), traceback.format_exc())
         print("[server] 索引加载失败：", e, flush=True)
+    _LOADING = False   # ★ 全库进内存阶段结束（成败都撤）——前端据 /health.loading 淡出遮罩；失败则露出空/错误态而非永久遮罩。
     # F38-B：启动后台预热当前学科的期刊分级缓存（首次冷算 20+s，异步不阻塞；之后落盘永久快）
     try:
         import grading_svc as GS
@@ -388,6 +392,27 @@ def _safe_load():
         log_error("startup deep queue boot", repr(e))
 
 # ── 状态 ──────────────────────────────────────────────────
+def _lib_rev():
+    """便宜的「库修订号」（分域），供前端 4s 轮询感知、外部/后台改动后自动刷新当前可见页而无需手点或重开。
+       只 stat 少数几个「一改就重写 / 一增就变」的规范落点，不读内容、不递归 —— 每次 /health 调用即算，<1ms。
+       ★ 有意不含 index_manifest.json：深索时它每批都被重写，含进来会让前端每 4s 过刷。深索进度另有专门扳机。
+       分域（lib/wiki/agent）是为了让前端只刷「真变了的那一域对应的可见页」，避免跨域误刷（如浏览页看列表时
+       agent 写了综述，不该把浏览列表也刷得跳一下）。"""
+    def _mt(p):
+        try:
+            return int(p.stat().st_mtime)
+        except Exception:
+            return 0
+    lib = _mt(C.PAPERS_JSONL)                       # 题录（入库/去重后重写）
+    wiki = _mt(C.DATA / "wiki" / "index.json")      # 综述层权威事实源（save/update/mark_stale 都重写）
+    agent = 0
+    try:
+        import agent_ws as AW
+        agent = _mt(AW.output_dir()) + _mt(AW.tasks_dir())   # 交付物主题夹 / 定时任务夹（新增即变）
+    except Exception:
+        pass
+    return {"lib": lib, "wiki": wiki, "agent": agent}
+
 @app.get("/health")
 def health():
     mode = R.STATE.get("mode")
@@ -396,7 +421,10 @@ def health():
     n = blocks if mode == "full" else papers     # 兼容旧字段
     return {"ready": R.STATE.get("ready", False), "mode": mode,
             "n": n, "papers": papers, "blocks": blocks, "building": BUILD["running"],
-            "deep": len(_deep_keys())}          # F10：「全部文献」显示 已深索/总数
+            "deep": len(_deep_keys()),          # F10：「全部文献」显示 已深索/总数
+            "rev": _lib_rev(),                  # 库修订号（分域）：前端据此在库/综述/交付物变动后自动刷可见页
+            "loading": _LOADING,                # 冷启动全库进内存期间为 True → 前端显示「加载中」遮罩，读完淡出
+            "pid": os.getpid()}                 # 本 server 进程 pid → launcher 关窗时按 pid taskkill /T 杀整棵树，根治 orphan 堆积
 
 # ── Agent / MCP 接入信息（给应用内 Agent 页，吐出本机真实可用的接入命令）──
 @app.get("/agent/mcp-config")
