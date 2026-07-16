@@ -207,6 +207,7 @@
         <div class="bl-bar">
           <div class="bl-title"><span id="bl-name">全部</span><span id="bl-count" class="bl-count"></span></div>
           <div class="bl-tools">
+            <button class="ag-refresh" data-act="refresh-browse" title="重新扫描：文献列表 / 收藏夹树计数 / 分类 / 总数（新入库或后台深索后，点这里就能看到，不用重开应用）">🔄 刷新</button>
             <label class="bl-sel-all"><input type="checkbox" id="bl-selall" /> 全选</label>
             <select id="bl-deep-filter" title="深索状态">
               <option value="">全部</option>
@@ -257,6 +258,7 @@
           </select>
           <label class="wk-agent-only"><input type="checkbox" id="wk-agent" /> 只看 🤖 未核验</label>
           <span class="wk-tools-sp"></span>
+          <button class="ag-refresh" data-act="refresh-wiki" title="重新加载综述列表 + 建议横幅（外部 AI 助手新建/改写综述后，点这里就能看到，不用重开应用）">🔄 刷新</button>
           <button id="wk-lint" class="ghost" title="体检：孤儿页 / 过时页 / 断链 / 无来源页">🩺 体检</button>
           <!-- EN-F3：时间线——谁在什么时候建/改了哪页（git log 优先，退快照记录） -->
           <button id="wk-timeline" class="ghost" title="综述库演化时间线：每一页在什么时候被谁（🤖/👤）建立或修改">🕘 时间线</button>

@@ -200,6 +200,7 @@
         if (dashLoaded) loadDashboard("silent");
         // B4：若正在「浏览」页且已加载，静默刷新列表与分类，否则卡片仍显示「未深索」误导重复触发
         if (browseLoaded && !$("#panel-browse").hidden) { loadPapers(); loadKbCats(); }
+        if (agentLoaded && !$("#panel-agent").hidden) loadAgentDeep();   // Agent 页深索卡同步（与 dashboard/browse 对称）
         // BF14+：结束≠成功。**只有拿到 rc===0 的阳性证据才报完成**；rc 非0/未知(null)一律按「中断」。
         // （深索失败后 rc 会被紧接着的其它构建重置成 null/0——后端已加排空守卫防覆写，这里再兜一层：
         //   宁可提示用户去核验，也绝不谎报「已入库」。）
@@ -212,6 +213,7 @@
       const _dn = st.deep_done || 0, _nt = st.deep_no_text || 0;
       if (_dn !== lastDeepDone || _nt !== lastNoText) {
         if (browseLoaded && !$("#panel-browse").hidden) refreshBrowseDeepState();
+        if (agentLoaded && !$("#panel-agent").hidden) loadAgentDeep();   // Agent 页深索/摘要计数同步
       }
       lastDeepDone = _dn; lastNoText = _nt;
       // 「生成检索摘要」（第②步）后台任务结束→刷新库总览与浏览列表，让 sac 数字/徽标更新
@@ -219,6 +221,7 @@
       if (wasBackfilling && !bfNow) {
         if (dashLoaded) loadDashboard("silent");
         if (browseLoaded && !$("#panel-browse").hidden) { loadPapers(); loadKbCats(); }
+        if (agentLoaded && !$("#panel-agent").hidden) loadAgentDeep();   // Agent 页检索摘要计数同步
         const bmsg = st.sac_backfill && st.sac_backfill.msg;
         if (bmsg) flashToast(bmsg);
       }
@@ -286,6 +289,22 @@
   document.addEventListener("click", (e) => {
     const b = e.target.closest && e.target.closest('[data-act="sac-backfill"]');
     if (b) { e.preventDefault(); startSacBackfill(); }
+  });
+  // 🔄 手动刷新（委托）：库总览 / 综述库 / 浏览页的整体刷新按钮 —— 不用重开应用即可看到后台或外部 agent 的改动。
+  //   （深索/SAC 进度已由 4s 轮询自动走字；这里给「轮询看不见」的变化——纯新增入库、agent 写综述——一个手动出口。）
+  document.addEventListener("click", async (e) => {
+    const b = e.target.closest && e.target.closest('[data-act^="refresh-"]');
+    if (!b) return;
+    e.preventDefault();
+    if (b.dataset.busy) return;
+    const fn = { "refresh-dash": () => loadDashboard("silent"),
+                 "refresh-wiki": () => loadWikiList("silent"),
+                 "refresh-browse": () => refreshBrowse() }[b.dataset.act];
+    if (!fn) return;
+    b.dataset.busy = "1"; const lbl = b.textContent; b.textContent = "刷新中…";
+    try { await fn(); b.textContent = "已刷新 ✓"; }
+    catch (_) { b.textContent = "刷新失败"; }
+    setTimeout(() => { b.textContent = lbl; delete b.dataset.busy; }, 1200);
   });
 
   // 只读查看某篇的检索摘要（点卡上「🧬 有摘要」）
@@ -1374,6 +1393,7 @@
       <div class="dh-left">
         <div class="dh-title">${esc(health.one_liner || "知识库总览")}</div>
         <div class="dh-sub">题录 ${num(cov.meta_indexed)} 篇 · 有 PDF ${num(cov.with_pdf)} 篇 · 已深索 ${num(cov.deep_indexed)} 篇</div>
+        <button class="dash-refresh" data-act="refresh-dash" title="重新扫描进度与最近入库（后台深索/生成摘要在跑、或外部 AI 助手改了库，点这里就能看到最新，不用重开应用）">🔄 刷新</button>
       </div>
       <div class="dh-deep">
         <div class="dh-step">
@@ -1605,6 +1625,31 @@
       $("#bt-tree").innerHTML = `<div class="bt-loading">收藏夹加载失败：${esc(e.message)}</div>`;
     }
     loadPapers(); // 默认加载全库推荐
+  }
+
+  // 🔄 浏览页整体刷新（供 .bl-tools 的刷新按钮用）：重取左树/总数/主题/知识库分类 + 按当前范围重拉列表。
+  //   覆盖「纯新增入库 / 外部 agent 建库」这类后台轮询扳机（深索/SAC 计数）照不到、原本要切页或重开才刷的场景。
+  //   刻意不置 browseLoaded=false（不整页重建，保留当前范围/选择），只重取会 stale 的那几块。
+  async function refreshBrowse() {
+    loadTopics();
+    loadKbCats();
+    jget("/health").then((h) => {
+      const n = h && (h.papers != null ? h.papers : h.n);
+      $("#bt-all-cnt").textContent = n != null ? (num(h.deep || 0) + "/" + num(n) + " 篇") : "";
+    }).catch(() => {});
+    try {
+      const src = await ensureSource();
+      if (src !== "folder") {
+        const d = await jget("/categories");
+        const box = $("#bt-tree");
+        if (box) {
+          box.innerHTML = "";
+          (d.tree || []).forEach((n) => box.appendChild(treeNodeEl(n, 0)));
+          if (!(d.tree || []).length) box.innerHTML = `<div class="bt-loading">（无收藏夹）</div>`;
+        }
+      }
+    } catch (e) { /* 左树刷新失败不阻断列表刷新 */ }
+    await loadPapers();   // 按当前 BR.scope 重拉列表
   }
 
   // ── F10：知识库分类（自建）左树区渲染 + CRUD + 右键加入 ──

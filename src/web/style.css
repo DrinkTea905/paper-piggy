@@ -725,6 +725,12 @@ button:disabled { opacity: .6; cursor: default; }
 .ag-refresh:disabled { opacity: .6; cursor: default; }
 :root[data-theme="dark"] .ag-refresh:hover:not(:disabled) { background: rgba(110,168,254,.12); }
 
+/* 🔄 库总览深色概览条上的刷新按钮（.dash-hero 是深色，需浅色描边/文字，不走 --muted/--line） */
+.dash-refresh { display: inline-block; margin-top: 10px; font-size: 11.5px; font-weight: 600;
+  color: rgba(255,255,255,.80); background: transparent; border: 1px solid rgba(255,255,255,.28);
+  border-radius: 8px; padding: 3px 10px; cursor: pointer; white-space: nowrap; transition: all .15s; }
+.dash-refresh:hover { color: #fff; border-color: rgba(255,255,255,.55); background: rgba(255,255,255,.12); }
+
 /* 📦 最近的交付物主题——卡片网格（每个主题一张卡：📁 名称 + 日期·文件数·含说明） */
 .ag-recent h3 { margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
 .ag-outputs { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
