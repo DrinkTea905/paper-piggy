@@ -17,6 +17,14 @@ src/logs/
 src/0_Agent交付物/
 src/0_Agent资料库/
 
+# ── Claude Code 的本地记忆与个人设置（本机绝对路径 + 项目内情，绝不进仓库）──
+# .claude/memory/               auto memory（MEMORY.md + 主题页），由 autoMemoryDirectory 指到这里
+# .claude/settings.local.json   含本机绝对路径（autoMemoryDirectory），personal-only
+# 注意：.claude/launch.json 是团队共享的 dev-server 配置，故意不忽略、要留在仓库里，
+#       所以这里只精确忽略下面两项，绝不写成整目录 .claude/
+.claude/memory/
+.claude/settings.local.json
+
 # ── 构建资产（大二进制，不进仓库；重建方法见 docs/RELEASE.md）──
 # build/py312   嵌入式 Python 运行时 + 全部依赖（约 800MB）
 # build/assets  MinGit 等随包分发的第三方二进制（约 90MB）
