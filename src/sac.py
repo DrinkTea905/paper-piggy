@@ -156,6 +156,24 @@ def write_summaries(items):
     return {"written": len(prepared), "accepted_keys": [k for k, _ in prepared], "errors": []}
 
 
+def snapshot(keys):
+    """保存指定摘要写前状态，供 Agent 摘要重嵌入失败时恢复。"""
+    import textutil as T
+    sums = _load()
+    return {T.safe_name(k): sums.get(T.safe_name(k)) for k in (keys or []) if k}
+
+
+def restore(snap):
+    """恢复 ``snapshot`` 生成的局部快照；None 表示写前不存在。"""
+    sums = _load()
+    for key, value in (snap or {}).items():
+        if value is None:
+            sums.pop(key, None)
+        else:
+            sums[key] = value
+    _save(sums)
+
+
 def summary_keys():
     """通过质量闸门的检索摘要 stem 集合（键同 embedded_keys.txt 的 safe_name(stem)）。
        供 server 统计「已深索里多少篇有摘要」= deep ∩ summary。"""

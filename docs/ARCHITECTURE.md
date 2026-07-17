@@ -291,9 +291,10 @@ light 模式走 `search_light`（`retriever.py:547`）：只有 bm25_meta + `_ap
 
 ### 6.1 `agent_ws.py`——两个人类可读的文件夹
 
-`ensure_scaffold()`（`agent_ws.py:382`，server startup 调用于 `server.py:358-360`）幂等创建，**绝不覆盖已有文件**（`_write_if_absent`，`:341`）：
+`ensure_scaffold()` 在 server 启动时幂等创建并升级出厂模板。未改过的历史出厂版静默升级；用户改过的文件原样保留并生成 `.new.md` 旁本；合并写回前会留 `user-backup`，不会无提示覆盖用户定制：
 
 ```
+AGENTS.md / CLAUDE.md          # Agent 根入口：强制先读匹配工作流
 0_Agent交付物/          # AGENT_OUTPUT_NAME，config.py:83
   README.md
   定时任务/
@@ -311,8 +312,9 @@ light 模式走 `search_light`（`retriever.py:547`）：只有 bm25_meta + `_ap
 若 folder 模式的受管文件夹里已有非空的 `0_Agent资料库`，就跟着它走（避免老用户记忆孤儿化）。
 历史坑：落点曾随 folder/zotero 模式漂移，表现为「记忆凭空清零」。
 
-**内置工作流常量**：`_WF_PAPER`（`agent_ws.py:197`，写论文/综述）、`_WF_WIKI`（`:228`，维护综述库）、`_WF_DIVERGENCE`（`:253`，跨学科发散与补文献）。
+**内置工作流常量**：`_WF_PAPER`（写论文/综述）、`_WF_WIKI`（维护知识库与综述库）、`_WF_DIVERGENCE`（跨学科发散与补文献）。
 一个工作流一个 `.md`，agent 中立（Claude Code / Codex 都是读文件夹）。
+三份工作流都有“触发条件 / 开工前检查 / 用户决策点 / 完成标准 / 最终报告”强制契约；根入口与 MCP 初始化指令要求 Agent 在命中工作流时先读后做。“维护”会进入统一全量审查，不能把只列待办当作完成。
 旧版单文件 `技能/工作流.md` 由 `_migrate_legacy_workflow()`（`:359`）拆分迁移。
 
 **定时任务**：应用**不执行**任务（`_TASKS_README`，`agent_ws.py:152` 明说「本应用不执行任务」）——只登记/展示，定时触发由 agent 自己的调度器（如 Claude Code 的 scheduled-tasks）负责。
@@ -322,7 +324,10 @@ server 侧 `GET /agent/tasks`（`server.py:649`）解析 `任务.md` 的 frontma
 
 零第三方依赖（纯 stdlib + requests，不装 `mcp` 包，`mcp_server.py:4`）。stdio + newline-delimited JSON-RPC 2.0。
 
-- **32 个 TOOLS**（`mcp_server.py:224`，实测 `len(TOOLS)==32`）。分派在 `do_tool()`（`:700`），绝大多数是对 server HTTP 端点的薄封装：
+- **39 个 TOOLS**（以 `len(TOOLS)` 为准）。分派在 `do_tool()`，绝大多数是对 server HTTP 端点的薄封装；除原有检索、索引、Wiki、研究和记忆工具外，还包括：
+  `list_workflows / read_workflow`（强制工作流入口）、`maintenance_audit`（统一全量体检）、
+  `get_template_upgrade_diff / merge_template_upgrade`（安全合并模板）、`submit_agent_summaries`（Agent 摘要质量检查与重嵌入）、`resolve_wiki_suggestion`（建议处理留痕）。
+  原有主要工具包括：
   检索类 `search_localkb / list_kb_categories / similar_sources / whats_new / list_sources / get_source_meta / read_source`；
   索引类 `localkb_status / deep_status / deep_index / localkb_build / add_source`；
   wiki 类 `save_synthesis / list_wiki / get_wiki_page / update_wiki_page / mark_stale / set_wiki_links / get_backlinks / lint_wiki / propose_wiki_updates / pending_wiki_updates`；
@@ -336,7 +341,7 @@ server 侧 `GET /agent/tasks`（`server.py:649`）解析 `任务.md` 的 frontma
 - 前端 Agent 页的接入命令由 `GET /agent/mcp-config`（`server.py:396`）动态吐出（`claude mcp add localkb -- <python> <mcp_server.py>` / mcp.json / codex.toml），**工具数是运行时 `len(MCP.TOOLS)` 读出来的，不写死**（`server.py:416-420`）。
 - 文档 `MCP接入说明.md` 的工具表由 `gen_mcp_doc.py` 从 `TOOLS` 生成——**改了 TOOLS 要跑一次**（`gen_mcp_doc.py --check` 可在提交前校验）。
 
-> 注意：`localkb.py:7-8` 的 docstring 还写着「28 个工具」，已过期（实为 32）。
+工具清单与数量不得在散文里另建事实源；面向用户的完整表由 `gen_mcp_doc.py` 从 `TOOLS` 自动生成。
 
 ### 6.3 技能包 `skills/localkb-paper/`（**已删除**）
 

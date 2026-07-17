@@ -62,6 +62,8 @@ def main():
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--batch", type=int, default=32)
     ap.add_argument("--skip-bm25", action="store_true")
+    ap.add_argument("--only-stem", action="append", default=[],
+                    help="只嵌入指定 stem；可重复传入，用于摘要维护的精确重嵌入")
     args = ap.parse_args()
 
     db = lancedb.connect(str(C.LANCEDB_DIR))
@@ -105,6 +107,9 @@ def main():
                   f"（这些篇已重新提取切块成功，将补入深索）", flush=True)
 
     files = sorted(C.CHUNKS.glob("*.json"))
+    if args.only_stem:
+        wanted = set(args.only_stem)
+        files = [f for f in files if f.stem in wanted]
     if args.limit:
         files = files[:args.limit]
     # missing/invalid 是附件问题而非扫描件；ocr_failed 已真实跑过 OCR，等用户显式重试。

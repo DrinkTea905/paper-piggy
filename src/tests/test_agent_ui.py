@@ -16,6 +16,22 @@ from fastapi import HTTPException  # noqa: E402
 
 
 class AgentOutputTests(unittest.TestCase):
+    def test_all_factory_workflows_have_mandatory_contract_sections(self):
+        required = ("## 触发条件", "## 开工前检查", "## 用户决策点", "## 完成标准", "## 最终报告")
+        for body in (AW._WF_PAPER, AW._WF_WIKI, AW._WF_DIVERGENCE):
+            for heading in required:
+                self.assertIn(heading, body)
+        self.assertIn("全量审查", AW._WF_WIKI)
+        self.assertIn("简单事项直接处理", AW._WF_WIKI)
+
+    def test_scaffold_creates_codex_and_claude_workflow_entry_files(self):
+        with tempfile.TemporaryDirectory() as td, mock.patch.object(AW, "base_dir", return_value=Path(td)):
+            AW.ensure_scaffold()
+            agents = Path(td) / "AGENTS.md"; claude = Path(td) / "CLAUDE.md"
+            self.assertTrue(agents.exists()); self.assertTrue(claude.exists())
+            self.assertIn("工作流闸门", agents.read_text(encoding="utf-8"))
+            self.assertIn("用户只要提到“维护”", claude.read_text(encoding="utf-8"))
+
     def test_recursive_output_stats_include_nested_files(self):
         with tempfile.TemporaryDirectory() as td:
             topic = Path(td) / "定时任务"

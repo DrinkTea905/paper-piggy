@@ -19,7 +19,9 @@ END = "<!-- TOOLS:END -->"
 WRITE_TOOLS = {"save_synthesis", "build_digest", "research_outline",
                "localkb_build", "deep_index", "mark_stale",
                "update_wiki_page", "set_wiki_links",
-               "add_source"}   # EN-M1：收单篇 PDF 进库（只加不删，仍属写）
+               "add_source", "merge_template_upgrade",
+               "submit_agent_summaries", "resolve_wiki_suggestion",
+               "append_project_memory"}
 
 
 def _sig(t):
@@ -49,7 +51,7 @@ def render():
         kind = "写" if t["name"] in WRITE_TOOLS else "读"
         rows.append(f"| {_sig(t)} | {kind} | {_desc(t)} |")
     n_w = sum(1 for t in M.TOOLS if t["name"] in WRITE_TOOLS)
-    head = f"共 **{len(M.TOOLS)} 个工具**（{len(M.TOOLS) - n_w} 读 / {n_w} 写）。本表由 `gen_mcp_doc.py` 从代码生成，不会与实现漂移。\n"
+    head = f"共 **{len(M.TOOLS)} 个工具**（{len(M.TOOLS) - n_w} 读 / {n_w} 写）。工具清单与读写分类由 `gen_mcp_doc.py` 从代码生成。\n"
     return BEGIN + "\n" + head + "\n" + "\n".join(rows) + "\n" + END
 
 
@@ -72,7 +74,7 @@ def main():
         print(f"过期：工具表与代码不一致（代码里有 {len(M.TOOLS)} 个工具）。跑 `python gen_mcp_doc.py` 更新。",
               file=sys.stderr)
         return 1
-    DOC.write_text(new, encoding="utf-8")
+    DOC.write_text(new, encoding="utf-8", newline="\n")
     print(f"已更新 {DOC.name}（{len(M.TOOLS)} 个工具）。")
     return 0
 

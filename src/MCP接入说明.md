@@ -10,7 +10,7 @@
 ## 提供的工具
 
 <!-- TOOLS:BEGIN 由 gen_mcp_doc.py 生成，勿手改 -->
-共 **32 个工具**（23 读 / 9 写）。本表由 `gen_mcp_doc.py` 从代码生成，不会与实现漂移。
+共 **39 个工具**（26 读 / 13 写）。工具清单与读写分类由 `gen_mcp_doc.py` 从代码生成。
 
 | 工具 | 类型 | 作用 |
 |---|---|---|
@@ -22,6 +22,13 @@
 | `suggest_new_sources(topic)` | 读 | 半自动研究助手·能力三：给主题，返回『建议新增文献（脚注引文挖掘库内缺失、按被引频次）+ 库内错配（有PDF未深索）+ 覆盖评估』。只读、不写库。 |
 | `export_disclosure(page_ids)` | 读 | 半自动研究助手·G4：按所选综合页(digest/outline 等的 id)生成《生成式 AI 使用声明》文本（规则拼装、零 LLM），用于论文投稿的 AIGC 合规披露。传入相关 wiki 页 id 列表即可。 |
 | `localkb_status()` | 读 | 查看本地知识库索引状态（词法/语义/全文各档就绪情况、已索引篇数）。查【深索】进度请用 deep_status。 |
+| `list_workflows()` | 读 | 列出用户本机现有工作流及路径。请求命中工作流时必须先调用，再用 read_workflow 读取全文。 |
+| `read_workflow(name)` | 读 | 读取指定工作流全文。开始写作、维护或跨学科发散前必须先读匹配工作流并照完成标准执行。 |
+| `maintenance_audit()` | 读 | 全量维护统一入口：一次盘点模板、索引、深索/PDF/OCR、检索摘要、wiki 待办和体检，并区分自动处理/需决策/外部阻塞。用户只要提到维护就先调用。 |
+| `get_template_upgrade_diff(key)` | 读 | 读取某条 Agent 模板/工作流升级的差异与并发校验 hash，供 Agent 保留用户定制后完成语义合并。 |
+| `merge_template_upgrade(key, current_hash, main_hash, merged_text)` | 写 | 提交 Agent 合并后的模板正文；写前校验文件未变化并自动留 user-backup。只有真实语义冲突才应先问用户。 |
+| `submit_agent_summaries(summaries)` | 写 | 在设置选择“交给 Agent 生成”时，提交你根据 read_source 原文写好的检索摘要；整批质量检查后只重嵌入指定文献。 |
+| `resolve_wiki_suggestion(key, status, reason?, related_page_ids?)` | 写 | 记录一条 wiki 建议的真实处理结果。更新/建页后标 updated/created；无需写入或阻塞时必须写理由。 |
 | `deep_status()` | 读 | 查看本地库【深索】进度：已深索篇数 / 有PDF总数 / 队列真实状态 / 摘要有效、异常与缺失数 / 预计剩余时间（ETA）/ 当前在深索或队首的篇。深索前后可随时查，了解深到哪了。 |
 | `deep_index(summaries?, batch=15)` | 写 | 深索用户的本地文献库——切块→你自己写检索摘要→带摘要嵌入，一趟完成，不用「先深索再单独补摘要」。用法（循环）：第一次【不带 summaries】调用我 → 我返回 to_summarize（若干篇的 key、标题、正文节选 excerpt）；你为每篇写一段【约150字的中文检索摘要】（概括核心主题/研究方法/主要结论，供语义检索用）；再【带 summaries=[{key, summary}]】调用我 → 我把上一批带着你的摘要嵌入入库、并返回下一批待写摘要；摘要会先过质量检查：过短、乱码、无限重复或失控长文会让整批拒绝写入，并返回具体 key 与原因；修正后重交。如此循环，直到我返回 finished=true 表示全部深索完成。每批默认 15 篇（可用 batch 调整）。若返回 busy=true 说明有其它构建在跑，稍后再调。 |
 | `localkb_build(stage=light)` | 写 | 触发本地知识库建库/更新。stage: light(即时词法,秒级) / semantic(语义,分钟级) / deep(全文深索)。加了新文献后用来增量更新。注意：deep 深索大库很慢，且服务端摘要需 API Key——推荐改用 deep_index 让你（Agent）自己写检索摘要，一趟把深索+摘要都做完（无需 API Key、质量可控）。 |
@@ -43,9 +50,9 @@
 | `locate_quote(quote, key?, fuzzy=True)` | 读 | **引注核对地基**：给一句引文，核对它是否真的在原文里、在第几页（PDF 页号 + 期刊印刷页码）。写脚注前、以及核查既有文稿的引注时逐条过一遍。默认模糊匹配（容忍 OCR/标点差异），exact=false 的命中请人工比对 context。给 key 则只在该篇内找，不给则全库找。 |
 | `verify_claim(claim, keys?, topk=8)` | 读 | 核验一个**实质论断**是否有库内文献支撑。返回三态：supported=有证据支持 / mismatch=库内证据与论断相左（可能记错或过度概括）/not_in_lib=库里找不到依据。注意 not_in_lib **不等于论断为假**——只说明本库无证据，该论断要么删、要么明确标注「作者观点/库外知识」。写完每一节后逐条过实质论断。 |
 | `add_source(path, note?)` | 写 | 把本机一个 PDF 文件收进知识库（只加不删）。用户在对话里给了本地 PDF 路径、想让它进库时用。题录由 AI 自动抽取、**待人工核对**（应用里会标「待确认」）。收录后建库在后台跑，稍后可用 localkb_status / deep_status 查进度。仅 folder（文件夹）模式可用：Zotero 模式会拒绝并提示把 PDF 附到 Zotero 条目上。 |
-| `pending_wiki_updates()` | 读 | 拉取服务器已算好的「待处理综合页更新」清单——最近深索/新增的文献可能影响哪些既有 wiki 页。深索一批文献后、或想主动维护 wiki 时**先调它**，直接拿到受影响页清单（无需自己对每篇跑 propose_wiki_updates），再逐页 get_wiki_page 判断是否 mark_stale / update_wiki_page。无待办则返回空。 |
+| `pending_wiki_updates(offset=0, limit=30)` | 读 | 拉取服务器已算好的「待处理综合页更新」清单——最近深索/新增的文献可能影响哪些既有 wiki 页。深索一批文献后、或想主动维护 wiki 时**先调它**，直接拿到受影响页清单（无需自己对每篇跑 propose_wiki_updates），再逐页处理；有 next_offset 时必须继续翻页，直到全部清零。 |
 | `read_project_memory()` | 读 | 读用户的**项目记忆**（当前真相：用户是谁/偏好/已定决策/当前在做）。这是换任何 AI 助手都共享的本地文件——开工前先读它接上之前的工作。initialize 已内联一份，但内容可能已被更新，动手前可再读一次拿最新。 |
-| `append_project_memory(text)` | 读 | 把一条**已定决策/偏好/进度**追加进项目记忆（保持它是「当前真相」，供之后任何 AI 助手接上）。只写实质结论、保持简短；历史流水账不要写这里。默认追加到文件末尾；不覆盖已有内容。 |
+| `append_project_memory(text)` | 写 | 把一条**已定决策/偏好/进度**追加进项目记忆（保持它是「当前真相」，供之后任何 AI 助手接上）。只写实质结论、保持简短；历史流水账不要写这里。默认追加到文件末尾；不覆盖已有内容。 |
 <!-- TOOLS:END -->
 
 > **信任模型（读—综合—写回闭环）**：agent 能**写**（建页、改页、建互链、标过时），**不能删**。
@@ -91,7 +98,7 @@
 | 文件 | 做什么 |
 |---|---|
 | `写论文与综述.md` | 意图澄清 → 迭代检索 → grounded 提纲（经你确认）→ 分节起草 → `verify_claim` 逐条核验 → `format_citation` 排脚注 → 沉淀回 wiki → 披露提醒。每个论断强制绑定库内来源 key + 页码 |
-| `维护综述库.md` | 体检并修复 wiki：孤儿页补互链、过时页重写、断链清理 |
+| `维护综述库.md` | 用户提到维护就全量审查模板、索引、深索、摘要和 Wiki；简单事项直接处理，真实决策再询问，复核后全面总结 |
 | `跨学科发散与补文献.md` | 打开理论视野、推荐库外该补的外文文献 |
 
 MCP 一接上，agent 在 `initialize` 时就会收到这个技能目录的路径，自己去读——**你不用复制任何文件夹，

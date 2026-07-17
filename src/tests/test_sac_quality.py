@@ -13,6 +13,7 @@ sys.path.insert(0, str(SRC))
 import embed_index as E  # noqa: E402
 import sac as SAC  # noqa: E402
 import server  # noqa: E402
+import settings as S  # noqa: E402
 
 
 GOOD = ("本文研究程序正义如何影响当事人对裁判的接受，采用案例比较与访谈材料，"
@@ -65,6 +66,36 @@ class SacQualityTests(unittest.TestCase):
                 self.assertEqual(SAC.summary_keys(), {"GOOD"})
                 self.assertIn("BAD", SAC.summary_issues())
                 self.assertEqual(set(E.load_summaries()), {"GOOD"})
+
+    def test_summary_snapshot_can_restore_replaced_and_new_items(self):
+        with tempfile.TemporaryDirectory() as td:
+            target = Path(td) / "summaries.json"
+            target.write_text(json.dumps({"OLD": GOOD}, ensure_ascii=False), encoding="utf-8")
+            with mock.patch.object(SAC, "SUM_FILE", target):
+                snap = SAC.snapshot(["OLD", "NEW"])
+                SAC.write_summaries([{"key": "OLD", "summary": GOOD + "补充"},
+                                     {"key": "NEW", "summary": GOOD}])
+                SAC.restore(snap)
+                restored = json.loads(target.read_text(encoding="utf-8"))
+            self.assertEqual(restored, {"OLD": GOOD})
+
+    def test_agent_maintenance_repair_writes_and_verifies_selected_summary(self):
+        with tempfile.TemporaryDirectory() as td:
+            target = Path(td) / "summaries.json"
+            q = server.AgentSummaryRepairQ(summaries=[server.AgentSummaryItem(key="KEY", summary=GOOD)])
+            with mock.patch.object(SAC, "SUM_FILE", target), \
+                    mock.patch.object(S, "sac_conf", return_value={"generator": "agent"}), \
+                    mock.patch.object(server, "_run_stage_blocking", return_value=0) as run_stage, \
+                    mock.patch.object(server, "_unmark_deep"), \
+                    mock.patch.object(server, "_deep_keys", return_value={"KEY"}), \
+                    mock.patch.object(server.R, "load_all"), \
+                    mock.patch.object(server, "_wiki_suggest_async"), \
+                    mock.patch.object(server, "_drain_deep_queue"):
+                result = server.maintenance_agent_summaries(q)
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["written"], 1)
+            self.assertIn("KEY", json.loads(target.read_text(encoding="utf-8")))
+            run_stage.assert_called_once_with("deep_embed", ["--only-stem", "KEY"])
 
 
 if __name__ == "__main__":

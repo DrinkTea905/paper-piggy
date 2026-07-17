@@ -34,6 +34,13 @@ class McpDeepStatusTests(unittest.TestCase):
         self.assertIn("异常 2", text)
         self.assertIn("PDF损坏 1", text)
 
+    def test_maintenance_and_workflow_tools_are_exposed(self):
+        names = {x["name"] for x in MCP.TOOLS}
+        self.assertTrue({"list_workflows", "read_workflow", "maintenance_audit",
+                         "get_template_upgrade_diff", "merge_template_upgrade",
+                         "submit_agent_summaries", "resolve_wiki_suggestion"} <= names)
+        self.assertIn("用户只要提到“维护”", MCP.instructions())
+
 
 if __name__ == "__main__":
     unittest.main()

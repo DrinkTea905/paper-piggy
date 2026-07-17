@@ -1188,6 +1188,7 @@ def propose_updates(source_key, topk=12):
                 related.append({
                     "id": pid, "title": p.get("title", ""), "kind": p.get("kind", ""),
                     "relation": "same_topic_not_cited",
+                    "score": h.get("score"),
                     "stale": bool(p.get("stale")),
                     "action": ("这页讲同一主题却没引用这篇。read_source 读完这篇后，"
                                "若它补充或挑战了页内论点，用 update_wiki_page(mode='append') 并入并加引注。"),
@@ -1309,8 +1310,8 @@ def _lint_suggestions(issues):
         s.append(f"{len(issues['body_broken_link'])} 处正文互链 [[…]] 指向不存在的页："
                  f"改成真实存在的页 id，或先把目标页建出来（update_wiki_page）。")
     if issues["no_sources"]:
-        s.append(f"{len(issues['no_sources'])} 个页没有来源论文——没有 provenance 的综合不可信，"
-                 f"补 sources 或删掉。")
+        s.append(f"{len(issues['no_sources'])} 个页没有来源论文——先补来源或标为待核验；"
+                 f"无来源只表示可追溯性不足，**不等于结论已过时**，不得据此 mark_stale。")
     if issues["degraded"]:
         s.append(f"{len(issues['degraded'])} 个降级页（未配 AI 模型时生成的片段清单）："
                  f"配好模型后重新生成。")

@@ -23,9 +23,11 @@ def main():
     ap.add_argument("--scope", default="all")
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--only-stem", action="append", default=[])
     ap.add_argument("--log", default="")
     args = ap.parse_args()
     lim = ["--limit", str(args.limit)] if args.limit else []
+    only = [arg for stem in args.only_stem for arg in ("--only-stem", stem)]
 
     LIGHT = ("即时词法", [PY, str(C.APP / "index_light.py")])
     SEM = ("快速语义", [PY, str(C.APP / "index_semantic.py")])
@@ -34,7 +36,7 @@ def main():
     FOLDER_PREP = ("题录抽取", [PY, str(C.APP / "folder_ingest.py"), "--workers", str(args.workers)])  # folder 模式先补 meta_cache
     EXTRACT = ("提取 PDF", [PY, str(C.APP / "extract.py"), "--scope", args.scope, "--workers", str(args.workers)] + lim)
     CHUNK   = ("结构切块", [PY, str(C.APP / "chunk.py")] + lim)
-    EMBED   = ("嵌入+索引", [PY, str(C.APP / "embed_index.py"), "--batch", "32"] + lim)
+    EMBED   = ("嵌入+索引", [PY, str(C.APP / "embed_index.py"), "--batch", "32"] + only + lim)
     PAGEMAP = ("印刷页码映射", [PY, str(C.APP / "page_map.py"), "--all"])   # 研究助手地基：PDF页→期刊印刷页
     DEEP = [EXTRACT, CHUNK, EMBED, PAGEMAP]
     # #7 Agent 驱动深索：拆两段，让「写摘要」插在 chunk 之后、embed 之前，一趟完成。

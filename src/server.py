@@ -560,6 +560,14 @@ class UpgradeActionQ(BaseModel):
     confirm: str = ""
 
 
+class UpgradeMergeQ(BaseModel):
+    kind: str
+    key: str
+    current_hash: str
+    main_hash: str
+    merged_text: str
+
+
 @app.post("/upgrade/ack")
 def upgrade_ack(q: UpgradeActionQ):
     import upgrade_health as UH
@@ -577,6 +585,17 @@ def upgrade_replace(q: UpgradeActionQ):
     import upgrade_health as UH
     try:
         backup = UH.replace(q.kind, q.key, q.current_hash)
+        return {"ok": True, "backup": backup}
+    except (KeyError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/upgrade/merge")
+def upgrade_merge(q: UpgradeMergeQ):
+    """Agent 对照新版完成语义合并；保留用户备份并防止并发覆盖。"""
+    import upgrade_health as UH
+    try:
+        backup = UH.merge(q.kind, q.key, q.current_hash, q.main_hash, q.merged_text)
         return {"ok": True, "backup": backup}
     except (KeyError, ValueError) as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -1313,6 +1332,13 @@ def index_status():
         "auto_last": AUTO.get("last_result"),   # 上次自动增量更新的结果（成功/失败/无），前端可展示
     }
 
+
+@app.get("/maintenance/audit")
+def maintenance_audit():
+    """Agent 全量维护的统一只读入口。"""
+    import maintenance as MT
+    return MT.audit_all(index_status())
+
 @app.get("/stats")
 def stats_ep():
     if not C.STATS_CACHE.exists():
@@ -1707,10 +1733,8 @@ def _on_deep_done(rc=0):
 # 结果落 data/state/wiki_suggestions.json，前端/agent 拿去逐条处理或 dismiss。
 _WIKI_SUGG_FILE = C.STATE / "wiki_suggestions.json"
 _WIKI_SUGG_LOCK = threading.Lock()      # 读-改-写串行：深索回调与 dismiss 端点可能并发
-_WIKI_SUGG_MAX = 50                     # 只保留最近 50 条（旧建议早该被处理或已过时）
-_WIKI_SUGG_BATCH_CAP = 20               # 单批最多算 20 篇：整库深索后一批可能几百篇，每篇要跑
-                                        # 一次检索（propose_updates 内含 R.search），全算会把
-                                        # 后台线程拖住几十分钟——挑批次前 20 篇，其余等下批
+_WIKI_SUGG_RESOLVED_MAX = 200            # 未处理项永不截断；仅已解决历史限制体积
+_WIKI_SUGG_BATCH_LOG_EVERY = 20          # 长批次持续处理，只按此间隔留进度日志
 
 def _wiki_sugg_load():
     """读建议清单（items 列表）。文件缺失/损坏退空表——建议是提示件，不值得为它报错。"""
@@ -1725,25 +1749,22 @@ def _wiki_sugg_load():
 
 def _wiki_sugg_save(items):
     """调用方须持 _WIKI_SUGG_LOCK。原子写（契约2 数据源）。"""
+    pending = [x for x in items if x.get("status", "pending") == "pending"]
+    resolved = [x for x in items if x.get("status", "pending") != "pending"][:_WIKI_SUGG_RESOLVED_MAX]
     _atomic_json_write(_WIKI_SUGG_FILE, {
-        "items": items[:_WIKI_SUGG_MAX],
+        "items": pending + resolved,
         "updated_at": time.strftime("%Y-%m-%d %H:%M:%S")}, indent=1)
 
 def _wiki_suggest_batch(keys):
     """对一批新深索的 raw key 逐篇跑 propose_updates，pages 非空的追加进建议文件。
        每篇失败单独吞并记日志——一篇坏文献（题录缺失/检索异常）不能毁掉整批。"""
-    _all = [k for k in dict.fromkeys(keys or []) if k]
-    keys = _all[:_WIKI_SUGG_BATCH_CAP]
-    if len(_all) > len(keys):
-        # bulk 整库深索没有"下一批"来补算——如实留痕，别让注释谎称"其余等下批"
-        BUILD["log"].append(f"[wiki建议] 本批仅分析前 {len(keys)} 篇，其余 {len(_all)-len(keys)} 篇未算建议"
-                            f"（可对个别文献用 propose_wiki_updates 单独补算）。")
+    keys = [k for k in dict.fromkeys(keys or []) if k]
     if not keys:
         return
     papers = _load_papers()
     updates, newpages = [], []
     ts = time.strftime("%Y-%m-%d %H:%M:%S")
-    for k in keys:
+    for pos, k in enumerate(keys, 1):
         try:
             r = W.propose_updates(k)
             title = (papers.get(k) or {}).get("title", "")
@@ -1751,7 +1772,7 @@ def _wiki_suggest_batch(keys):
                      for a in (r.get("affected") or []) if a.get("id")]
             if pages:
                 updates.append({"key": k, "title": title, "pages": pages,
-                                "kind": "update", "created_at": ts})
+                                "kind": "update", "status": "pending", "created_at": ts})
             else:
                 # A2/A3：没命中既有页 ≠ 没事做——这是「该为它新建 concept/entity 页」（wiki 空时=建首页）
                 # 的信号。propose_updates 已算出提示（note=冷启动 / hints=新主题），此前被 `if pages` 丢弃，
@@ -1759,10 +1780,14 @@ def _wiki_suggest_batch(keys):
                 hint = (r.get("note") or (r.get("hints") or [""])[0]
                         or "库里还没有讲这篇主题的综述页，考虑为它新建 concept / entity 页。")
                 newpages.append({"key": k, "title": title, "pages": [],
-                                 "kind": "new_page", "hint": hint, "created_at": ts})
+                                 "kind": "new_page", "status": "pending",
+                                 "hint": hint, "created_at": ts})
         except Exception as e:
             log_error(f"wiki suggest {k}", repr(e))     # 单篇失败不毁整批
-    found = updates + newpages          # 「更新既有页」优先在前、「新建页」其次，同享 50 条上限不被挤掉
+        if pos % _WIKI_SUGG_BATCH_LOG_EVERY == 0:
+            BUILD["log"].append(f"[wiki建议] 已分析 {pos}/{len(keys)} 篇")
+            BUILD["log"] = BUILD["log"][-300:]
+    found = updates + newpages          # 「更新既有页」优先在前；未处理项永不因条数上限丢失
     if not found:
         return
     with _WIKI_SUGG_LOCK:
@@ -2125,20 +2150,61 @@ def wiki_timeline(limit: int = 100):
 
 # ── EN-W2：wiki 更新建议（Ingest 扳机的消费端，契约2）──────────────
 @app.get("/wiki/suggestions")
-def wiki_suggestions():
-    """深索扳机算出的「新文献 → 受影响综述页」建议清单（新的在前，最多 50 条）。"""
-    return {"items": _wiki_sugg_load()}
+def wiki_suggestions(status: str = "pending", offset: int = 0, limit: int = 50):
+    """深索扳机建议清单；未处理项支持分页且永不截断。status=all 可看解决历史。"""
+    items = _wiki_sugg_load()
+    if status != "all":
+        items = [x for x in items if x.get("status", "pending") == status]
+    offset = max(0, int(offset or 0)); limit = max(1, min(int(limit or 50), 200))
+    page = items[offset:offset + limit]
+    nxt = offset + len(page)
+    return {"items": page, "total": len(items),
+            "next_offset": nxt if nxt < len(items) else None}
 
 class WikiSuggDismissQ(BaseModel):
     key: str
 
 @app.post("/wiki/suggestions/dismiss")
 def wiki_suggestions_dismiss(q: WikiSuggDismissQ):
-    """忽略某条建议（按 key 从文件剔除）。幂等：key 不在清单里也返回 ok。"""
+    """兼容旧前端：把建议记录为用户忽略，不再静默删除审计记录。"""
     with _WIKI_SUGG_LOCK:
-        items = [x for x in _wiki_sugg_load() if x.get("key") != q.key]
+        items = _wiki_sugg_load()
+        for x in items:
+            if x.get("key") == q.key and x.get("status", "pending") == "pending":
+                x.update({"status": "not_needed", "resolution": "用户在应用中忽略",
+                          "reason": "用户在应用中忽略", "resolved_at": time.strftime("%Y-%m-%d %H:%M:%S")})
         _wiki_sugg_save(items)
     return {"ok": True}
+
+
+class WikiSuggResolveQ(BaseModel):
+    key: str
+    status: str
+    reason: str = ""
+    related_page_ids: Optional[List[str]] = None
+
+
+@app.post("/wiki/suggestions/resolve")
+def wiki_suggestions_resolve(q: WikiSuggResolveQ):
+    """记录 Agent 对建议的真实处理结果，不用“从队列删除”冒充完成。"""
+    allowed = {"updated", "created", "not_needed", "blocked"}
+    if q.status not in allowed:
+        raise HTTPException(status_code=400, detail="status 必须是 updated/created/not_needed/blocked")
+    if q.status in {"not_needed", "blocked"} and not q.reason.strip():
+        raise HTTPException(status_code=400, detail="无需写入或阻塞时必须写明理由")
+    found = False
+    with _WIKI_SUGG_LOCK:
+        items = _wiki_sugg_load()
+        for x in items:
+            if x.get("key") == q.key and x.get("status", "pending") == "pending":
+                x.update({"status": q.status, "resolution": q.status,
+                          "reason": q.reason.strip(),
+                          "related_page_ids": list(dict.fromkeys(q.related_page_ids or [])),
+                          "resolved_at": time.strftime("%Y-%m-%d %H:%M:%S")})
+                found = True
+                break
+        _wiki_sugg_save(items)
+    return {"ok": True, "found": found}
 
 @app.get("/wiki/page/{page_id}")
 def wiki_page(page_id: str):
@@ -3496,6 +3562,74 @@ def _sac_backfill_worker(gap):
 
 class SacBackfillQ(BaseModel):
     keys: Optional[List[str]] = None   # 原始 key 列表；给定则只为这几篇生成（单篇/指定范围），空=全部缺摘要的篇
+
+
+class AgentSummaryItem(BaseModel):
+    key: str
+    summary: str
+
+
+class AgentSummaryRepairQ(BaseModel):
+    summaries: List[AgentSummaryItem]
+
+
+@app.post("/maintenance/summaries/agent")
+def maintenance_agent_summaries(q: AgentSummaryRepairQ):
+    """接收 Agent 编写的摘要，并只重嵌入指定文献。
+
+    该入口严格尊重 generator=agent；质量检查整批原子拒绝。重嵌入失败时恢复摘要，
+    并保留这些 key 的“待深索”状态，避免摘要文件与索引假装一致。
+    """
+    import sac as SAC
+    import settings as S
+    if S.sac_conf().get("generator") != "agent":
+        return {"ok": False, "wrong_generator": True,
+                "msg": "当前检索摘要未选择“交给 Agent 生成”，未写入。"}
+    items = [{"key": x.key, "summary": x.summary} for x in q.summaries]
+    if not items:
+        return {"ok": False, "msg": "没有提交摘要。"}
+    snap = SAC.snapshot([x["key"] for x in items])
+    with _BUILD_LOCK:
+        if BUILD["running"]:
+            return {"ok": False, "busy": True, "msg": "已有建库/深索任务在运行，请稍后重试。"}
+        BUILD["running"] = True; BUILD["stage"] = "agent_summary_repair"
+        BUILD["started"] = time.time(); BUILD["rc"] = None; BUILD["cancelled"] = False
+    try:
+        result = SAC.write_summaries(items)
+        if result["errors"]:
+            return {"ok": False, "summary_errors": result["errors"],
+                    "msg": "摘要质量检查未通过，整批未写入。"}
+        stems = result["accepted_keys"]
+        _unmark_deep(stems)
+        only_args = [arg for stem in stems for arg in ("--only-stem", stem)]
+        rc = _run_stage_blocking("deep_embed", only_args)
+        BUILD["rc"] = rc
+        if rc != 0:
+            SAC.restore(snap)
+            return {"ok": False, "stage": "deep_embed", "rc": rc,
+                    "msg": "重嵌入失败；已恢复写前摘要，相关文献保留为待重嵌入状态，可安全重试。"}
+        try:
+            R.STATE["ready"] = False; R.load_all()
+        except Exception as e:
+            log_error("agent summary reload", repr(e))
+        valid, deep = SAC.summary_keys(), _deep_keys()
+        missing = [s for s in stems if s not in valid or s not in deep]
+        if missing:
+            return {"ok": False, "stage": "verify", "missing": missing,
+                    "msg": "摘要已写入，但复核未通过，请重试维护。"}
+        try:
+            _wiki_suggest_async([x["key"] for x in items])
+        except Exception as e:
+            log_error("agent summary wiki suggest", repr(e))
+        return {"ok": True, "written": result["written"], "keys": stems,
+                "msg": f"已写入并重嵌入 {result['written']} 篇 Agent 检索摘要。"}
+    finally:
+        with _BUILD_LOCK:
+            BUILD["running"] = False; BUILD["stage"] = ""
+        try:
+            _drain_deep_queue()
+        except Exception as e:
+            log_error("agent summary drain", repr(e))
 
 @app.post("/index/sac_backfill")
 def index_sac_backfill(q: SacBackfillQ = None):

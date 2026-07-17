@@ -31,13 +31,14 @@
 | `mcp_server.TOOLS`（:224）增删工具或改 description | 跑 `python gen_mcp_doc.py` 重新生成 `MCP接入说明.md` 的工具表 | ✅ `gen_mcp_doc.py --check`（过期时退出码 1） |
 | `mcp_server.RESOURCES`（:610） | **手改** `MCP接入说明.md` 的 Resources 表 —— ⚠️ `gen_mcp_doc.py` **不管这张表**，`localkb://memory` 就是这么漏掉的 | ✅ check_guides ② |
 | `mcp_server.PROMPTS`（:635） | 同上，手改 Prompts 表 | ✅ check_guides ② |
-| `mcp_server._INSTRUCTIONS_HEAD`（:69）/ `_workspace_text()`（:130） | `index.html` `#ag-guide` 的「成果去哪」「权限与安全」两章；`agent_ws._README_RELY`（:58）、`_rules_summary_text()`（:315） | ❌ 人肉 |
+| `mcp_server._INSTRUCTIONS_HEAD` / `_workspace_text()` | `index.html` `#ag-guide` 的「成果去哪」「权限与安全」两章；`agent_ws._README_RELY`、`_ROOT_AGENTS`、`_ROOT_CLAUDE` 与 `_rules_summary_text()` | ❌ 人肉 |
 
 ### 1.2 Agent 工作区（`agent_ws.py`）
 
 | 你改了 | 必须同步 | 校验 |
 |---|---|---|
-| `_WF_PAPER`(:197) / `_WF_WIKI`(:228) / `_WF_DIVERGENCE`(:253) —— 三个内置工作流 | ① 改完模板必须跑 `python agent_ws.py --print-hashes`，把新 hash 追加进 `_FACTORY_HASHES`（升级器已建成，见 §2.1）② `index.html` 第 3 章的工作流卡 ③ `_SKILLS_README`(:178) 里列出的工作流清单 | ✅ check_guides ③ + ④b |
+| `_WF_PAPER` / `_WF_WIKI` / `_WF_DIVERGENCE` —— 三个内置工作流 | ① 改完模板必须跑 `python agent_ws.py --print-hashes`，把新 hash 追加进 `_FACTORY_HASHES`（升级器已建成，见 §2.1）② 保留每份工作流的“触发条件 / 开工前检查 / 用户决策点 / 完成标准 / 最终报告”五段强制契约 ③ `index.html` 第 3 章的工作流卡 ④ `_SKILLS_README` 里列出的工作流清单 | ✅ check_guides ③ + ④b |
+| `_ROOT_AGENTS` / `_ROOT_CLAUDE` —— Agent 工作区根入口 | 两份内容都要保持“先读取匹配工作流、维护即全量审查、完成后复核总结”的同一口径；同步追加模板 hash；新增 home 级文件要落入 `backup.CORE_IN_HOME` | ✅ check_guides ④b；备份归类仍需人读 |
 | `_README_RELY`(:58) / `_README_OUTPUT`(:81) | 同样要追加 hash（否则老用户凭空多出 `.new.md`）；`#ag-guide` 对应章节 | ✅ check_guides ④b（散文正文仍需人读） |
 | 新增一条工作流 | `index.html` 里「三条开箱即用的工作流」的**硬编码列表**会静默变错 —— 这是**正确性问题**，不是文案洁癖 | ✅ check_guides ③ |
 
@@ -132,7 +133,7 @@ const n = (AG.cfg && AG.cfg.tool_count) || AG_TOOLS.length;   // 后端真值优
 
 1. ① 调 `gen_mcp_doc.main(--check)`（工具表 ↔ `mcp_server.TOOLS`）
 2. ② `RESOURCES` + `RESOURCE_TEMPLATES` ↔ `MCP接入说明.md` 的 Resources 表（双向集合比对）；`PROMPTS` ↔ Prompts 表
-3. ③ `_WF_*` 数 == `ensure_scaffold` 落盘数 == `_SKILLS_README` 列出数 == `index.html` 第 3 章卡片数 == 正文里的中文数字，且逐个文件名比对
+3. ③ `_WF_*` 数 == `ensure_scaffold` 落盘数 == `_SKILLS_README` 列出数 == `index.html` 第 3 章卡片数 == 正文里的中文数字，且逐个文件名比对；每份工作流都必须有五段强制契约，维护工作流还必须包含“全量审查 / 简单事项直接处理 / 复核 / 全面总结”及统一体检工具
 4. ④ `WIKI_MD_SEED` 里写的 `schema vN` == `SCHEMA_VERSION`，且当前 seed hash 已登记
 5. ④b `agent_ws._template_specs()` 每一份当前模板 hash 都已登记（不再只保护三条工作流）
 6. ⑤ 全源码（.py/.js/.html）只有一处版本字面量（`config.APP_VERSION`）
@@ -156,6 +157,8 @@ const n = (AG.cfg && AG.cfg.tool_count) || AG_TOOLS.length;   // 后端真值优
 - [ ] 这个功能，**用户**需要知道吗？→ 改 `#home-guide`(:87) / `#ag-guide`(:350) / 向导
 - [ ] 这个功能，**AI agent** 需要知道吗？→ 改 `mcp_server` 工具或 `agent_ws` 工作流模板
 - [ ] 我改了 agent 模板吗？→ **老用户能收到新版吗？**（§2.1）
+- [ ] 我改了工作流吗？→ 五段强制契约还在吗？根入口、MCP 初始化指令和应用内 Agent 教程口径一致吗？
+- [ ] 我改了维护链路吗？→ `maintenance.audit_all()`、MCP 工具、HTTP 接口、UI 提示和最终复核是否仍覆盖同一批项目？
 - [ ] 我改了 wiki 规约吗？→ **bump SCHEMA_VERSION 了吗？**（§1.3）
 - [ ] 我改了 MCP 工具吗？→ 跑 `gen_mcp_doc.py` 了吗？
 - [ ] UI 里有没有**硬编码的数量/清单**会因为这次改动而变错？（§2.2）

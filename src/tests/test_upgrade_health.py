@@ -47,6 +47,31 @@ class AgentTemplateUpgradeTests(unittest.TestCase):
             item = next(x for x in AW.upgrade_status()["items"] if x["key"] == key)
             self.assertTrue(item["new_path"].endswith(".new.2.md"))
 
+    def test_agent_merge_keeps_user_text_backs_up_and_clears_current_notice(self):
+        with tempfile.TemporaryDirectory() as td, mock.patch.object(AW, "base_dir", return_value=Path(td)):
+            AW.ensure_scaffold()
+            key, path, current, _mask, _seed = next(
+                x for x in AW._template_specs() if x[0] == "rely/参考格式/说明.md")
+            path.write_text("用户自己的格式清单\n", encoding="utf-8")
+            AW.ensure_scaffold()
+            item = next(x for x in AW.upgrade_status()["items"] if x["key"] == key)
+            merged = current + "\n## 我的格式\n用户自己的格式清单\n"
+            backup = Path(AW.merge_template(key, item["current_hash"], item["main_hash"], merged))
+            self.assertIn("用户自己的格式清单", backup.read_text(encoding="utf-8"))
+            self.assertEqual(path.read_text(encoding="utf-8"), merged)
+            self.assertFalse(any(x["key"] == key for x in AW.upgrade_status()["items"]))
+
+    def test_agent_merge_rejects_concurrent_change(self):
+        with tempfile.TemporaryDirectory() as td, mock.patch.object(AW, "base_dir", return_value=Path(td)):
+            AW.ensure_scaffold()
+            key, path, current, _mask, _seed = next(
+                x for x in AW._template_specs() if x[0] == "rely/参考格式/说明.md")
+            path.write_text("用户版", encoding="utf-8"); AW.ensure_scaffold()
+            item = next(x for x in AW.upgrade_status()["items"] if x["key"] == key)
+            path.write_text("用户刚刚又改了", encoding="utf-8")
+            with self.assertRaises(ValueError):
+                AW.merge_template(key, item["current_hash"], item["main_hash"], current)
+
 
 class WikiTemplateUpgradeTests(unittest.TestCase):
     def test_custom_old_wiki_gets_sidecar_and_backup_before_replace(self):

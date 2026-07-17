@@ -188,3 +188,10 @@ def replace(kind, key, current_hash):
         import wiki_store as W
         return W.replace_with_factory(current_hash)
     raise KeyError("不支持的升级项")
+
+
+def merge(kind, key, current_hash, main_hash, merged_text):
+    if kind == "agent":
+        import agent_ws as AW
+        return AW.merge_template(key, current_hash, main_hash, merged_text)
+    raise KeyError("这一类规约不能由 Agent 自动合并")

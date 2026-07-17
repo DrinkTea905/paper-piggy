@@ -16,6 +16,8 @@ src/logs/
 # ── Agent 工作区（运行时由 agent_ws.ensure_scaffold() 从代码里的模板常量生成）──
 src/0_Agent交付物/
 src/0_Agent资料库/
+src/AGENTS.md
+src/CLAUDE.md
 
 # ── Claude Code 的本地记忆与个人设置（本机绝对路径 + 项目内情，绝不进仓库）──
 # .claude/memory/               auto memory（MEMORY.md + 主题页），由 autoMemoryDirectory 指到这里

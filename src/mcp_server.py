@@ -37,7 +37,8 @@ def _wiki_todo_counts():
         f = C.STATE / "wiki_suggestions.json"
         if f.exists():
             d = json.loads(f.read_text(encoding="utf-8"))
-            n_sugg = len(d.get("items", []) if isinstance(d, dict) else [])
+            n_sugg = sum(x.get("status", "pending") == "pending"
+                         for x in (d.get("items", []) if isinstance(d, dict) else []))
     except Exception:
         pass
     try:
@@ -67,6 +68,11 @@ def _wiki_todo_note(prefix="\n\n"):
 #   此前 agent 连上只能从 localkb_status 拿到一个 WIKI.md **路径字符串**，永远读不到内容。
 #   MCP 的 initialize 支持 instructions 字段——把规约直接下发，是整个接入里投入产出比最高的一改。
 _INSTRUCTIONS_HEAD = """你连接的是用户的**本地文献知识库**（PaperPiggy · 论文小猪）。
+
+工作流闸门（最高优先级）：
+- 用户请求命中已有工作流时，必须先调 list_workflows / read_workflow，明确声明采用哪一份；未读取不得开始执行或宣布完成。
+- 用户只要提到“维护”，一律先读《维护综述库》并调 maintenance_audit 做全量审查。简单事项直接处理；只把付费、删除/重建、外部修复或真实内容取舍交给用户决定。
+- 看到待办却只解释原因不算完成。结束前必须重新审查，并给出全面的前后对照总结。
 
 它不只是搜索引擎。它有一个**综合层（wiki）**：把对文献的理解持久化成带引用、可累积、互链的页面。
 你的角色是这个 wiki 的**维护者**。
@@ -309,6 +315,56 @@ TOOLS = [
         "name": "localkb_status",
         "description": "查看本地知识库索引状态（词法/语义/全文各档就绪情况、已索引篇数）。查【深索】进度请用 deep_status。",
         "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "list_workflows",
+        "description": "列出用户本机现有工作流及路径。请求命中工作流时必须先调用，再用 read_workflow 读取全文。",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "read_workflow",
+        "description": "读取指定工作流全文。开始写作、维护或跨学科发散前必须先读匹配工作流并照完成标准执行。",
+        "inputSchema": {"type": "object", "properties": {
+            "name": {"type": "string", "description": "工作流文件名或名称，如 维护综述库 / 写论文与综述"}},
+            "required": ["name"]},
+    },
+    {
+        "name": "maintenance_audit",
+        "description": "全量维护统一入口：一次盘点模板、索引、深索/PDF/OCR、检索摘要、wiki 待办和体检，并区分自动处理/需决策/外部阻塞。用户只要提到维护就先调用。",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "get_template_upgrade_diff",
+        "description": "读取某条 Agent 模板/工作流升级的差异与并发校验 hash，供 Agent 保留用户定制后完成语义合并。",
+        "inputSchema": {"type": "object", "properties": {
+            "key": {"type": "string", "description": "maintenance_audit 返回的模板 key"}},
+            "required": ["key"]},
+    },
+    {
+        "name": "merge_template_upgrade",
+        "description": "提交 Agent 合并后的模板正文；写前校验文件未变化并自动留 user-backup。只有真实语义冲突才应先问用户。",
+        "inputSchema": {"type": "object", "properties": {
+            "key": {"type": "string"}, "current_hash": {"type": "string"},
+            "main_hash": {"type": "string"}, "merged_text": {"type": "string"}},
+            "required": ["key", "current_hash", "main_hash", "merged_text"]},
+    },
+    {
+        "name": "submit_agent_summaries",
+        "description": "在设置选择“交给 Agent 生成”时，提交你根据 read_source 原文写好的检索摘要；整批质量检查后只重嵌入指定文献。",
+        "inputSchema": {"type": "object", "properties": {
+            "summaries": {"type": "array", "items": {"type": "object", "properties": {
+                "key": {"type": "string"}, "summary": {"type": "string"}},
+                "required": ["key", "summary"]}}}, "required": ["summaries"]},
+    },
+    {
+        "name": "resolve_wiki_suggestion",
+        "description": "记录一条 wiki 建议的真实处理结果。更新/建页后标 updated/created；无需写入或阻塞时必须写理由。",
+        "inputSchema": {"type": "object", "properties": {
+            "key": {"type": "string"},
+            "status": {"type": "string", "enum": ["updated", "created", "not_needed", "blocked"]},
+            "reason": {"type": "string"},
+            "related_page_ids": {"type": "array", "items": {"type": "string"}}},
+            "required": ["key", "status"]},
     },
     {
         "name": "deep_status",
@@ -606,8 +662,10 @@ TOOLS = [
         "name": "pending_wiki_updates",
         "description": "拉取服务器已算好的「待处理综合页更新」清单——最近深索/新增的文献可能影响哪些既有 wiki 页。"
                        "深索一批文献后、或想主动维护 wiki 时**先调它**，直接拿到受影响页清单（无需自己对每篇跑 "
-                       "propose_wiki_updates），再逐页 get_wiki_page 判断是否 mark_stale / update_wiki_page。无待办则返回空。",
-        "inputSchema": {"type": "object", "properties": {}},
+                       "propose_wiki_updates），再逐页处理；有 next_offset 时必须继续翻页，直到全部清零。",
+        "inputSchema": {"type": "object", "properties": {
+            "offset": {"type": "integer", "default": 0, "description": "分页偏移"},
+            "limit": {"type": "integer", "default": 30, "description": "每页数量（1-100）"}}},
     },
     # ── 跨 agent 无缝衔接：项目记忆读/写（不依赖 agent 恰好有本地文件读写习惯）──
     {
@@ -834,6 +892,77 @@ def do_tool(name, args):
         if not r.get("text"):
             return f"生成 AI 使用声明失败：{r.get('detail', '未知')}"
         return r["text"]
+    if name == "list_workflows":
+        import agent_ws as AW
+        AW.ensure_scaffold()
+        files = [p for p in sorted(AW.skills_dir().glob("*.md"))
+                 if p.stem not in {"说明"} and ".new" not in p.stem and ".user-backup-" not in p.stem]
+        if not files:
+            return "当前没有工作流文件。"
+        return "现有工作流（请求命中时必须先用 read_workflow 读取）：\n" + "\n".join(
+            f"- {p.stem}：{p}" for p in files)
+    if name == "read_workflow":
+        import agent_ws as AW
+        AW.ensure_scaffold()
+        wanted = Path(str(args.get("name") or "")).stem.strip()
+        files = [p for p in AW.skills_dir().glob("*.md")
+                 if ".new" not in p.stem and ".user-backup-" not in p.stem]
+        hits = [p for p in files if p.stem == wanted]
+        if not hits:
+            hits = [p for p in files if wanted and wanted in p.stem]
+        if len(hits) != 1:
+            return "未找到唯一匹配的工作流；请先调 list_workflows。"
+        return f"工作流文件：{hits[0]}\n\n" + hits[0].read_text(encoding="utf-8")
+    if name == "maintenance_audit":
+        if not ensure_up():
+            return "错误：知识库服务启动失败。"
+        r = requests.get(URL + "/maintenance/audit", timeout=120).json()
+        return json.dumps(r, ensure_ascii=False, indent=2)
+    if name == "get_template_upgrade_diff":
+        if not ensure_up():
+            return "错误：知识库服务启动失败。"
+        key = str(args.get("key") or "")
+        h = requests.get(URL + "/upgrade/health", params={"include_ignored": "true"}, timeout=30).json()
+        item = next((x for x in h.get("template_items", []) if x.get("kind") == "agent" and x.get("key") == key), None)
+        if not item:
+            return "没有找到这条待合并模板；请重新调 maintenance_audit。"
+        d = requests.get(URL + "/upgrade/diff", params={"kind": "agent", "key": key}, timeout=30).json()
+        return json.dumps({"key": key, "label": item.get("label"),
+                           "current_hash": item.get("current_hash"), "main_hash": item.get("main_hash"),
+                           "main_path": item.get("main_path"), "new_path": item.get("new_path"),
+                           "diff": d.get("diff", "")}, ensure_ascii=False, indent=2)
+    if name == "merge_template_upgrade":
+        if not ensure_up():
+            return "错误：知识库服务启动失败。"
+        body = {k: args.get(k, "") for k in ("key", "current_hash", "main_hash", "merged_text")}
+        body["kind"] = "agent"
+        resp = requests.post(URL + "/upgrade/merge", json=body, timeout=60)
+        if resp.status_code != 200:
+            return "合并失败：" + _err_of(resp)
+        r = resp.json()
+        return f"合并完成，用户原文件备份：{r.get('backup') or '（原文件不存在）'}"
+    if name == "submit_agent_summaries":
+        if not ensure_up():
+            return "错误：知识库服务启动失败。"
+        body = {"summaries": args.get("summaries") or []}
+        r = requests.post(URL + "/maintenance/summaries/agent", json=body, timeout=1800).json()
+        if not r.get("ok"):
+            if r.get("summary_errors"):
+                return "摘要质量检查未通过，整批未写入：\n" + "\n".join(
+                    f"- {x.get('key')}: {x.get('reason')}" for x in r["summary_errors"])
+            return "Agent 摘要修复失败：" + str(r.get("msg") or r)
+        return r.get("msg") or json.dumps(r, ensure_ascii=False)
+    if name == "resolve_wiki_suggestion":
+        if not ensure_up():
+            return "错误：知识库服务启动失败。"
+        body = {"key": args.get("key", ""), "status": args.get("status", ""),
+                "reason": args.get("reason", ""),
+                "related_page_ids": args.get("related_page_ids") or []}
+        resp = requests.post(URL + "/wiki/suggestions/resolve", json=body, timeout=30)
+        if resp.status_code != 200:
+            return "记录处理结果失败：" + _err_of(resp)
+        r = resp.json()
+        return "已记录处理结果。" if r.get("found") else "该建议已处理或不存在；无需重复记录。"
     if name == "localkb_status":
         h = health() or {"status": "down"}
         try:
@@ -1186,29 +1315,35 @@ def do_tool(name, args):
     if name == "pending_wiki_updates":
         if not ensure_up():
             return "错误：知识库服务启动失败。"
-        resp = requests.get(URL + "/wiki/suggestions", timeout=30)
+        offset = max(0, int(args.get("offset", 0) or 0))
+        limit = max(1, min(int(args.get("limit", 30) or 30), 100))
+        resp = requests.get(URL + "/wiki/suggestions",
+                            params={"status": "pending", "offset": offset, "limit": limit}, timeout=30)
         if resp.status_code != 200:
             return "读取待办失败：" + _err_of(resp)
-        items = (resp.json() or {}).get("items") or []
+        data = resp.json() or {}; items = data.get("items") or []
         if not items:
             return "当前没有待处理的 wiki 更新建议（最近没有新深索的文献，或都已处理）。"
         n_new = sum(1 for it in items if it.get("kind") == "new_page")
         n_upd = len(items) - n_new
         parts = []
         if n_upd: parts.append(f"{n_upd} 篇影响既有综述页")
-        if n_new: parts.append(f"{n_new} 篇是新主题、建议新建页")
-        out = [f"有 {len(items)} 篇新文献待处理" + ("（" + "、".join(parts) + "）" if parts else "") + "，请逐一处理：\n"]
-        for it in items[:30]:
+        if n_new: parts.append(f"{n_new} 篇是新主题候选")
+        total = int(data.get("total") or len(items))
+        out = [f"待处理共 {total} 篇；本页 {offset + 1}-{offset + len(items)}" +
+               ("（" + "、".join(parts) + "）" if parts else "") + "，请逐一处理：\n"]
+        for it in items:
             title = it.get("title") or it.get("key") or "?"
             if it.get("kind") == "new_page":
-                out.append(f"■ {title}（key={it.get('key','')}）\n   🆕 {it.get('hint','') or '建议为它新建 concept/entity 页'}")
+                out.append(f"■ {title}（key={it.get('key','')}）\n   🆕 新主题候选：{it.get('hint','') or '读原文后判断建页、并入已有页或无需写入'}")
             else:
                 pages = it.get("pages") or []
                 plist = "、".join(f"[{p.get('id','')}] {p.get('title','')}" for p in pages) or "（无具体页，深索后自查）"
                 out.append(f"■ {title}（key={it.get('key','')}）\n   可能影响：{plist}")
         out.append("\n处理：影响既有页的 → get_wiki_page 看结论是否仍成立，被推翻→mark_stale + update_wiki_page、仍成立→跳过；"
-                   "新主题的 → read_source 读原文后 update_wiki_page 建 concept/entity 页、set_wiki_links 接进图。"
-                   "处理完可用 /wiki/suggestions/dismiss（或在应用里）清掉该条。")
+                   "新主题候选 → read_source 后决定建页、并入或无需写入；每条最后调 resolve_wiki_suggestion 记录结果。")
+        if data.get("next_offset") is not None:
+            out.append(f"\n还有下一页：继续调 pending_wiki_updates(offset={data['next_offset']}, limit={limit})，不得在此提前结束。")
         return "\n".join(out)
 
     # ── 项目记忆读/写（同机直接读写文件，无需 server 端点；换 agent 无缝衔接的核心载体）──

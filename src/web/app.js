@@ -2400,10 +2400,10 @@
     if (!items.length) { box.hidden = true; box.innerHTML = ""; return; }
     const row = (it) => {
       // 受影响页 chips：点击直接打开该综述页复核；「忽略」= dismiss 后端记录，之后不再提示这篇
-      // A3：new_page 类（无既有页命中、是新主题）没有 chips，改显「🆕 建议新建页」+ 提示，供人手动去综述库新建
+      // new_page 只是新主题候选：维护 Agent 读原文后可建页、并入已有页或记录无需写入。
       let mid;
       if (it.kind === "new_page") {
-        mid = `<span class="wsg-newpage" title="${esc(it.hint || "建议为它新建一页综述")}">🆕 新主题 · 建议新建综述页</span>`;
+        mid = `<span class="wsg-newpage" title="${esc(it.hint || "维护 Agent 会读原文后判断建页、并入或无需写入")}">🆕 新主题候选</span>`;
       } else {
         const chips = (it.pages || []).map((p) =>
           `<button class="wl-chip wsg-pg" data-id="${esc(p.id)}" title="打开这页综述复核">${esc(p.title || p.id)}</button>`).join("");
@@ -2416,7 +2416,7 @@
       </div>`;
     };
     box.innerHTML =
-      `<div class="wsg-head" role="button" tabindex="0">📬 <b>${num(items.length)}</b> 篇新深索文献待处理（更新旧综述 / 建新综述页）` +
+      `<div class="wsg-head" role="button" tabindex="0">📬 <b>${num(items.length)}</b> 篇新深索文献待审阅（可让 Agent 全量维护并逐条清零）` +
         `<span class="wsg-caret">${WSUG.open ? "收起 ▴" : "展开看看 ▾"}</span></div>` +
       `<div class="wsg-body"${WSUG.open ? "" : " hidden"}>${items.map(row).join("")}</div>`;
     box.hidden = false;
@@ -4198,7 +4198,7 @@
     if (gen === "off") {
       el.className = "sac-status hint"; el.textContent = "已关闭：深索时不生成摘要。";
     } else if (gen === "agent") {
-      el.className = "sac-status hint ok"; el.textContent = "✓ 交给 Agent：深索时由 Claude Code / Codex 生成摘要，不耗你的 API 额度。";
+      el.className = "sac-status hint ok"; el.textContent = "✓ 交给 Agent：深索或维护知识库时，由 Claude Code / Codex 生成并修复摘要，不调用服务端摘要生成 API。";
     } else if (effectiveReady) {
       el.className = "sac-status hint ok"; el.textContent = "✓ 服务端自动：深索时会自动生成摘要前缀（用你配的 API key）。";
     } else {

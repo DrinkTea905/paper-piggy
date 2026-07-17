@@ -141,6 +141,16 @@ def check_workflows():
     for f in files:
         if f[:-3] not in ch3:
             errs.append(f"index.html 第3章没提到「{f[:-3]}」")
+    required = ("## 触发条件", "## 开工前检查", "## 用户决策点", "## 完成标准", "## 最终报告")
+    for const in consts:
+        body = getattr(agent_ws, const, "")
+        miss = [h for h in required if h not in body]
+        if miss:
+            errs.append(f"{const} 缺工作流强制章节：{miss}")
+    maintenance = getattr(agent_ws, "_WF_WIKI", "")
+    for phrase in ("全量审查", "简单事项直接处理", "maintenance_audit", "复核", "全面总结"):
+        if phrase not in maintenance:
+            errs.append(f"维护工作流缺关键闭环语义「{phrase}」")
     bad(name, "；".join(errs)) if errs else ok(name, f"{n} 条：{', '.join(files)}")
 
 
