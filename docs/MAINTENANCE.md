@@ -37,15 +37,15 @@
 
 | 你改了 | 必须同步 | 校验 |
 |---|---|---|
-| `_WF_PAPER`(:197) / `_WF_WIKI`(:228) / `_WF_DIVERGENCE`(:253) —— 三个内置工作流 | ① 改完模板必须跑 `python agent_ws.py --print-hashes`，把新 hash 追加进 `_FACTORY_HASHES`（升级器已建成，见 §2.1）② `index.html` 第 3 章的工作流卡 ③ `_SKILLS_README`(:178) 里列出的工作流清单 | ✅ check_guides ③ |
-| `_README_RELY`(:58) / `_README_OUTPUT`(:81) | 同样要追加 hash（否则老用户凭空多出 `.new.md`）；`#ag-guide` 对应章节 | ❌ 人肉（check_guides ③ 只覆盖三条工作流文件，不查这两份散文体 README） |
+| `_WF_PAPER`(:197) / `_WF_WIKI`(:228) / `_WF_DIVERGENCE`(:253) —— 三个内置工作流 | ① 改完模板必须跑 `python agent_ws.py --print-hashes`，把新 hash 追加进 `_FACTORY_HASHES`（升级器已建成，见 §2.1）② `index.html` 第 3 章的工作流卡 ③ `_SKILLS_README`(:178) 里列出的工作流清单 | ✅ check_guides ③ + ④b |
+| `_README_RELY`(:58) / `_README_OUTPUT`(:81) | 同样要追加 hash（否则老用户凭空多出 `.new.md`）；`#ag-guide` 对应章节 | ✅ check_guides ④b（散文正文仍需人读） |
 | 新增一条工作流 | `index.html` 里「三条开箱即用的工作流」的**硬编码列表**会静默变错 —— 这是**正确性问题**，不是文案洁癖 | ✅ check_guides ③ |
 
 ### 1.3 wiki 综合层（`wiki_store.py`）
 
 | 你改了 | 必须同步 | 校验 |
 |---|---|---|
-| `WIKI_MD_SEED`(:33) —— wiki 页面规约种子 | ① **必须 bump `SCHEMA_VERSION`**(:31，现在是 `"v2"`) ② 把旧版的 normalized-sha1 加进 `_FACTORY_HASHES`(:172) ③ `MCP接入说明.md` 的「信任模型」段 | ✅ check_guides ④（只断言 seed 里的 `schema vN` == `SCHEMA_VERSION`；②③ 仍靠人） |
+| `WIKI_MD_SEED`(:33) —— wiki 页面规约种子 | ① **必须 bump `SCHEMA_VERSION`**(:31，现在是 `"v2"`) ② 把当前版和所有旧版 normalized-sha1 留在 `_FACTORY_HASHES`(:172) ③ `MCP接入说明.md` 的「信任模型」段 | ✅ check_guides ④（schema + 当前 hash；③仍靠人） |
 
 > ⚠️ **忘了 bump `SCHEMA_VERSION` 会静默让老库永远收到过期规约。** 这是本项目最阴的一个坑：
 > 不报错、不告警，只是所有老用户的 wiki 规约永远停在旧版。
@@ -82,7 +82,7 @@
 
 ## 2. 必须补的机制
 
-### 2.1 模板升级器（✅ 2026-07-14 已建成）
+### 2.1 模板升级器与可见合并（✅ 2026-07-17 已闭环）
 
 **曾经的病**：`agent_ws._write_if_absent()` **只在文件不存在时才写**。
 后果：你改了 `_WF_PAPER` 的文本，**所有已经跑过一次的机器（包括开发机自己）永远收不到新版**——
@@ -96,6 +96,11 @@
 - 命中**历史**出厂版 → 用户没动过 → `upgraded`（静默换成新版）
 - 谁都不像 → 用户改过 → `forked`：**保留用户的文件**，旁边写一份 `<名>.new.md` 供合并
 - 「项目记忆.md / 变更日志.md」这类**用户数据种子**被写过 → `kept`（不塞 .new.md）
+
+此前 `forked` 只有终端日志，用户看不到。现在 `upgrade_health.py` 把 Agent 模板与 `WIKI.md` 汇总到 Agent 页：
+可查看统一差异、复制一份带路径与保护规则的合并任务给 Agent、对当前版本停止提醒，或在自动留
+`user-backup` 后直接采用新版。MCP 初始化也会把待合并项告诉外部 Agent，禁止它擅自覆盖。
+旁本若被用户写过，继续用 `.new.2.md` 递增，绝不覆盖合并笔记。
 
 > ⚠️ **维护 SOP（改模板必做）**：改完任何模板文本后跑
 > `build\py312\python.exe src\agent_ws.py --print-hashes`，
@@ -128,10 +133,11 @@ const n = (AG.cfg && AG.cfg.tool_count) || AG_TOOLS.length;   // 后端真值优
 1. ① 调 `gen_mcp_doc.main(--check)`（工具表 ↔ `mcp_server.TOOLS`）
 2. ② `RESOURCES` + `RESOURCE_TEMPLATES` ↔ `MCP接入说明.md` 的 Resources 表（双向集合比对）；`PROMPTS` ↔ Prompts 表
 3. ③ `_WF_*` 数 == `ensure_scaffold` 落盘数 == `_SKILLS_README` 列出数 == `index.html` 第 3 章卡片数 == 正文里的中文数字，且逐个文件名比对
-4. ④ `WIKI_MD_SEED` 里写的 `schema vN` == `SCHEMA_VERSION`
-5. ⑤ 全源码（.py/.js/.html）只有一处版本字面量（`config.APP_VERSION`）
-6. ⑥ 所有 `C.DATA / "xxx"` 落点都在 `backup.py` 的备份分类清单中
-7. ⑦ 前端 JS 不得调用浏览器原生 `confirm()` / `alert()`，统一使用应用内对话框
+4. ④ `WIKI_MD_SEED` 里写的 `schema vN` == `SCHEMA_VERSION`，且当前 seed hash 已登记
+5. ④b `agent_ws._template_specs()` 每一份当前模板 hash 都已登记（不再只保护三条工作流）
+6. ⑤ 全源码（.py/.js/.html）只有一处版本字面量（`config.APP_VERSION`）
+7. ⑥ 所有 `C.DATA / "xxx"` 落点都在 `backup.py` 的备份分类清单中
+8. ⑦ 前端 JS 不得调用浏览器原生 `confirm()` / `alert()`，统一使用应用内对话框
 
 **仍未机器化（靠人）**：`ensure_scaffold()` 写的其余文件名（项目记忆.md / 变更日志.md / 交付说明书模板.md……）
 是否都在 `_README_RELY` / `_README_OUTPUT` 里被提到——那两份是散文体，正则误报率高，硬凑不如不做。

@@ -11,7 +11,7 @@
 provenance 命脉：每页带 sources(论文 key + 页级引用) + generated_by(模型) + generated_at(时间戳)
 + stale(是否过时)。index.json 是元数据的权威事实来源；.md 是给人/Obsidian 读的渲染件。
 """
-import sys, os, json, time, hashlib, re, threading
+import sys, os, json, time, hashlib, re, threading, difflib
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import config as C
@@ -161,8 +161,10 @@ def ensure_scaffold():
         except Exception:
             pass
     else:
-        print("[wiki] WIKI.md 似乎被手工改过，保留你的版本（schema v2 新增的「新建页 vs 原地编辑」"
-              "判定规则与正文 [[互链]] 约定需要你自行补进规约）", file=sys.stderr, flush=True)
+        newp = _ensure_wiki_sidecar()
+        print("[wiki] WIKI.md 似乎被手工改过，已保留你的版本；新版规约另存为 "
+              f"{newp.name if newp else 'WIKI.new.md'}，可在应用里查看差异并交给 Agent 合并",
+              file=sys.stderr, flush=True)
 
 
 # 各历史版本出厂 WIKI.md 的 normalized（去所有空白）sha1。
@@ -172,6 +174,11 @@ def ensure_scaffold():
 _FACTORY_HASHES = {
     "2d7c7749b165d5640772d62791c6f9e569aa5e47",   # schema v0
     "21793476a7a6538582a3d14eb0651f426d4b45a6",   # schema v1（EN-W6：升 v2 时对 v1 出厂原样放行自动升级）
+    "ae231356c6227b1fa88b02982a29611b1ae3f52b",   # schema v2（当前出厂版；未来升级时不得删除）
+}
+# 一个 schema 版本只能对应一份出厂正文。只改 seed 却忘记 bump 版本时，check_guides 必须挡住发布。
+_SCHEMA_HASHES = {
+    "v2": "ae231356c6227b1fa88b02982a29611b1ae3f52b",
 }
 
 
@@ -182,6 +189,113 @@ def _norm_hash(text):
 def _looks_untouched(text):
     """WIKI.md 是否仍是某个出厂原样（没被用户改过一个字）。"""
     return _norm_hash(text) in _FACTORY_HASHES
+
+
+_UPDATE_STATE = ".paperpiggy-template-updates.json"
+
+
+def _wiki_state_path():
+    return C.WIKI_DIR / _UPDATE_STATE
+
+
+def _load_wiki_state():
+    try:
+        d = json.loads(_wiki_state_path().read_text(encoding="utf-8"))
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_wiki_state(d):
+    p = _wiki_state_path()
+    _atomic_write(p, json.dumps(d, ensure_ascii=False, indent=2))
+
+
+def _current_wiki_sidecar():
+    wanted = _norm_hash(WIKI_MD_SEED)
+    for p in [C.WIKI_DIR / "WIKI.new.md"] + [C.WIKI_DIR / f"WIKI.new.{i}.md" for i in range(2, 100)]:
+        try:
+            if p.exists() and _norm_hash(p.read_text(encoding="utf-8")) == wanted:
+                return p
+        except Exception:
+            continue
+    return None
+
+
+def _ensure_wiki_sidecar():
+    """写当前规约旁本；任何被用户改过的旧旁本都保留并换新编号。"""
+    hit = _current_wiki_sidecar()
+    if hit:
+        return hit
+    p = C.WIKI_DIR / "WIKI.new.md"
+    if p.exists():
+        try:
+            if _norm_hash(p.read_text(encoding="utf-8")) not in _FACTORY_HASHES:
+                for i in range(2, 100):
+                    alt = C.WIKI_DIR / f"WIKI.new.{i}.md"
+                    if not alt.exists():
+                        p = alt
+                        break
+        except Exception:
+            return None
+    _atomic_write(p, WIKI_MD_SEED)
+    return p
+
+
+def upgrade_status(include_ignored=False):
+    ensure_scaffold()
+    try:
+        cur = C.WIKI_SCHEMA_MD.read_text(encoding="utf-8")
+    except Exception:
+        cur = ""
+    wanted = _norm_hash(WIKI_MD_SEED)
+    if _norm_hash(cur) == wanted or f"schema {SCHEMA_VERSION}" in cur:
+        return {"pending_count": 0, "items": []}
+    sidecar = _ensure_wiki_sidecar()
+    status = "pending" if sidecar else "customized"
+    if _load_wiki_state().get("wiki/WIKI.md") == wanted:
+        status = "ignored"
+    if status == "ignored" and not include_ignored:
+        return {"pending_count": 0, "items": []}
+    item = {"kind": "wiki", "key": "wiki/WIKI.md", "label": "综述库写回规约",
+            "status": status, "main_path": str(C.WIKI_SCHEMA_MD),
+            "new_path": str(sidecar or ""), "current_hash": wanted}
+    return {"pending_count": int(status == "pending"), "items": [item]}
+
+
+def template_diff():
+    old = C.WIKI_SCHEMA_MD.read_text(encoding="utf-8") if C.WIKI_SCHEMA_MD.exists() else ""
+    return "".join(difflib.unified_diff(
+        old.splitlines(True), WIKI_MD_SEED.splitlines(True),
+        fromfile="你的版本/WIKI.md", tofile="新版出厂/WIKI.md", n=3)) or "（只有空白差异）"
+
+
+def acknowledge_update(current_hash):
+    if current_hash != _norm_hash(WIKI_MD_SEED):
+        raise ValueError("这条升级提醒已经过期，请刷新后再试")
+    d = _load_wiki_state()
+    d["wiki/WIKI.md"] = current_hash
+    _save_wiki_state(d)
+
+
+def replace_with_factory(current_hash):
+    if current_hash != _norm_hash(WIKI_MD_SEED):
+        raise ValueError("新版已变化，请刷新后再试")
+    C.WIKI_DIR.mkdir(parents=True, exist_ok=True)
+    backup = None
+    if C.WIKI_SCHEMA_MD.exists():
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        backup = C.WIKI_DIR / f"WIKI.user-backup-{stamp}.md"
+        i = 2
+        while backup.exists():
+            backup = C.WIKI_DIR / f"WIKI.user-backup-{stamp}-{i}.md"
+            i += 1
+        _atomic_write(backup, C.WIKI_SCHEMA_MD.read_text(encoding="utf-8"))
+    _atomic_write(C.WIKI_SCHEMA_MD, WIKI_MD_SEED)
+    d = _load_wiki_state()
+    d.pop("wiki/WIKI.md", None)
+    _save_wiki_state(d)
+    return str(backup or "")
 
 
 # ═══ index.json（页元数据缓存；.md 的 frontmatter 才是可重建的事实来源）════════

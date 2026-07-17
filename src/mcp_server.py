@@ -151,9 +151,21 @@ def _workspace_text():
         mem_block = (f"· 项目记忆：{mem_file}\n"
                      "  —— 现在还是空模板。开工时把「用户是谁/偏好/已定决策/当前在做」补进去（直接写该文件，"
                      "或用 append_project_memory 工具）；历史流水账写同目录「变更日志.md」。这是换 agent 无缝衔接的关键。\n")
+    try:
+        pending = AW.upgrade_status().get("items", [])
+        if pending:
+            names = "、".join(x.get("label", x.get("key", "")) for x in pending)
+            upgrade_block = ("\n⚠ 专属资料库有新版待合并：" + names + "。\n"
+                             "用户原文件已保留，新版在对应 .new.md 旁本。不要擅自覆盖；开始相关工作前先比较两版，"
+                             "保留用户个性化规则，把新版新增要求合并进去；冲突处先问用户。\n")
+        else:
+            upgrade_block = ""
+    except Exception:
+        upgrade_block = ""
     return (
         "\n\n══ 你的专属工作区（都在用户本机、人类可读；换任何 AI 助手都读这套，务必先看）══\n"
         + mem_block
+        + upgrade_block
         + f"· 技能/工作流：{p.get('skills_dir','')}（**一个工作流一个文件**：写论文与综述.md / 维护综述库.md / 跨学科发散与补文献.md……"
         "动手写作或系统性维护 wiki 前，先读相关那份照着做。用户要你建一条新工作流时，**新建一个 .md 文件**写清"
         "「何时用/分几步/注意事项」，别往已有文件里塞。）\n"
@@ -174,6 +186,13 @@ def _workspace_text():
 def instructions():
     s = _wiki_schema_text()
     body = _INSTRUCTIONS_HEAD + (s or "（WIKI.md 尚未生成；首次写回综合页时会自动创建。）")
+    try:
+        pending = W.upgrade_status().get("items", [])
+        if pending:
+            body += ("\n\n⚠ 当前 WIKI.md 是用户改过的旧规约，新版已另存 WIKI.new.md。"
+                     "不得擅自覆盖；维护综述库前先提醒用户，并按用户选择比较合并。")
+    except Exception:
+        pass
     return body + _workspace_text()
 
 

@@ -444,6 +444,24 @@ def apply(zip_path, pid=None, relaunch=True):
         shutil.rmtree(staging, ignore_errors=True)
         return {"ok": False, "error": f"更新包解压失败，未改动应用：{e}"}
 
+    # app 增量包不会更新同级 python/。新版若需要不同运行环境，必须在碰 live app 前挡住，
+    # 否则会出现「代码更新成功、启动才发现缺依赖」的半升级状态。
+    try:
+        target_meta = json.loads((staging / "version.json").read_text(encoding="utf-8"))
+        expected_runtime = str(target_meta.get("runtime_fingerprint") or "").strip()
+    except Exception:
+        expected_runtime = ""              # 兼容旧更新包：没有指纹时仍走既有 import 验证
+    runtime_file = parent / "python" / ".paperpiggy-runtime.sha256"
+    try:
+        actual_runtime = runtime_file.read_text(encoding="utf-8").strip()
+    except Exception:
+        actual_runtime = ""
+    if expected_runtime and expected_runtime != actual_runtime:
+        shutil.rmtree(staging, ignore_errors=True)
+        return {"ok": False,
+                "error": "新版需要同步更新运行环境，应用内增量更新已安全停止、未改动应用。"
+                         "请下载最新版完整安装器覆盖安装（你的数据和 Agent 资料库不会被删除）。"}
+
     # ② 在暂存区就把关：新版能不能 import 起来。**这一步在碰 live app\ 之前**，
     #    所以「新版需要装新依赖 / 代码有语法错」都会在这里被挡下、应用毫发无伤。
     try:

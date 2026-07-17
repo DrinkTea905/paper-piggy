@@ -312,10 +312,17 @@ def main():
     # light 绝不覆写它——否则切换后端后一次轻量重建/自动增量就把「原引擎」证据抹掉，
     # 新旧两套向量混用无从检测。保留 manifest 里已有的 backend。
     try:
+        _old = {}
         if C.INDEX_MANIFEST.exists():
             _old = json.loads(C.INDEX_MANIFEST.read_text(encoding="utf-8"))
             if _old.get("backend"):
                 _man["backend"] = _old["backend"]
+        # 轻量更新只证明 light 规则已重跑；deep/semantic 的旧指纹必须保留，不能假装也更新过。
+        import upgrade_health as UH
+        current_fp = UH.pipeline_fingerprints()
+        old_fp = _old.get("pipeline_fingerprints") if isinstance(_old, dict) else None
+        _man["pipeline_fingerprints"] = dict(old_fp) if isinstance(old_fp, dict) else current_fp
+        _man["pipeline_fingerprints"]["light"] = current_fp["light"]
     except Exception:
         pass
     _atomic_write_text(C.INDEX_MANIFEST, json.dumps(_man, ensure_ascii=False, indent=2))

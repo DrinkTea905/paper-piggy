@@ -2714,6 +2714,74 @@
       if (g) g.addEventListener("click", () => switchTab("browse"));
     } catch (e) { $("#ag-deep").textContent = "读取深索进度失败：" + e.message; }
   }
+  function renderUpgradeHealth(h) {
+    const box = $("#ag-upgrade"), list = $("#ag-upgrade-items"), health = $("#ag-upgrade-health");
+    if (!box || !list || !health) return;
+    AG.upgrade = h || { template_items: [] };
+    const items = AG.upgrade.template_items || [];
+    const system = [["索引", AG.upgrade.index], ["运行环境", AG.upgrade.runtime], ["本地模型", AG.upgrade.models]];
+    const warnings = system.filter(([, x]) => x && ["stale", "missing", "unknown"].includes(x.state));
+    box.hidden = !items.length && !warnings.length;
+    if (box.hidden) return;
+    const n = items.filter((x) => x.status === "pending" || x.status === "customized").length;
+    $("#ag-upgrade-title").textContent = n ? `${n} 项用户内容有新版待合并` : "应用更新后有项目需要留意";
+    $("#ag-upgrade-sub").textContent = n
+      ? "你的版本没有被覆盖。先看差异，推荐复制给 Agent 合并；也可带备份直接采用新版。"
+      : "应用已更新，但下面的配套内容仍需人工处理。";
+    list.innerHTML = items.map((x, i) =>
+      `<div class="ag-upgrade-item" data-upgrade-i="${i}">` +
+      `<div class="agu-name">${esc(x.label)}${x.status === "customized" ? "（新版旁本写入失败）" : ""}</div>` +
+      `<div class="agu-actions">` +
+      `<button data-uact="diff">查看差异</button><button data-uact="agent">复制给 Agent 合并</button>` +
+      `<button data-uact="ack">本版不再提醒</button><button class="agu-use" data-uact="replace">备份后采用新版</button>` +
+      `</div><div class="agu-path">你的文件：${esc(x.main_path)}${x.new_path ? `<br>新版旁本：${esc(x.new_path)}` : ""}</div></div>`
+    ).join("");
+    health.innerHTML = system.map(([name, x]) => {
+      if (!x) return "";
+      const warn = ["stale", "missing", "unknown"].includes(x.state);
+      const tip = x.action ? `；建议：${x.action}` : "";
+      return `<span class="agu-health${warn ? " warn" : ""}" title="${esc((x.label || "") + tip)}">${esc(name)}：${esc(x.label || "未知")}</span>`;
+    }).join("");
+  }
+  async function refreshUpgradeHealth() {
+    const h = await jget("/upgrade/health");
+    renderUpgradeHealth(h);
+    return h;
+  }
+  function mergePrompt(x) {
+    return `请帮我安全合并 PaperPiggy 的一项出厂内容升级。\n\n` +
+      `我的版本：${x.main_path}\n新版旁本：${x.new_path || "（请以应用当前出厂版为准）"}\n\n` +
+      `要求：1. 先读取并比较两个文件；2. 保留我的个性化规则、措辞和项目习惯；` +
+      `3. 把新版新增且不冲突的要求合并进我的版本；4. 不删除任何备份或旁本；` +
+      `5. 遇到冲突先用大白话告诉我并让我决定；6. 完成后说明保留了什么、新增了什么。`;
+  }
+  async function handleUpgradeAction(btn) {
+    const row = btn.closest("[data-upgrade-i]");
+    const x = AG.upgrade && (AG.upgrade.template_items || [])[Number(row && row.dataset.upgradeI)];
+    if (!x) return;
+    const act = btn.dataset.uact;
+    if (act === "diff") {
+      const d = await jget(`/upgrade/diff?kind=${encodeURIComponent(x.kind)}&key=${encodeURIComponent(x.key)}`);
+      $("#upgrade-diff-title").textContent = `${x.label} · 版本差异`;
+      $("#upgrade-diff-body").textContent = d.diff || "没有文字差异";
+      $("#upgrade-diff-modal").hidden = false;
+      return;
+    }
+    if (act === "agent") { await copyText(mergePrompt(x), btn); return; }
+    if (act === "ack") {
+      if (!(await uiConfirm("这不会改动或删除任何文件；只对当前这个新版停止提醒。以后出厂内容再次更新，还会重新提醒。",
+        { title: `本版不再提醒「${x.label}」？`, okText: "不再提醒" }))) return;
+      await jpost("/upgrade/ack", { kind:x.kind, key:x.key, current_hash:x.current_hash });
+      await refreshUpgradeHealth(); return;
+    }
+    if (act === "replace") {
+      if (!(await uiConfirm("你的当前文件会先在同一目录保存为 user-backup 备份，然后主文件改成最新版。新版旁本和备份都不会删除。",
+        { title: `采用新版「${x.label}」？`, okText: "备份后采用新版", danger:true }))) return;
+      const r = await jpost("/upgrade/replace", { kind:x.kind, key:x.key, current_hash:x.current_hash, confirm:"replace_with_factory" });
+      await uiNotice(r.backup ? `已采用新版。你的原版本备份在：\n${r.backup}` : "已采用新版。", { title:"处理完成" });
+      await refreshUpgradeHealth();
+    }
+  }
   async function loadAgentConfig() {
     try {
       const d = await jget("/agent/mcp-config");
@@ -2727,6 +2795,7 @@
       // Agent 专属文件夹路径（📦 交付物 / 📚 资料库）——后端算好本机绝对路径直接展示
       const op = $("#ag-output-path"); if (op) op.textContent = d.agent_output_dir || "（首次接入后生成）";
       const rp = $("#ag-rely-path"); if (rp) rp.textContent = d.agent_rely_dir || "（首次接入后生成）";
+      renderUpgradeHealth(d.upgrade_health || {});
       agentLoaded = true;   // 成功才置位
     } catch (e) {
       $("#ag-run-txt").textContent = "读取接入信息失败：" + e.message;
@@ -2892,6 +2961,17 @@
     }
     wireRefresh("ag-tasks-refresh", loadAgentTasks);
     wireRefresh("ag-outputs-refresh", loadAgentOutputs);
+    wireRefresh("ag-upgrade-refresh", refreshUpgradeHealth);
+    const upbox = $("#ag-upgrade");
+    if (upbox) upbox.addEventListener("click", (e) => {
+      const b = e.target.closest("button[data-uact]");
+      if (b) handleUpgradeAction(b).catch((err) => uiNotice("处理失败：" + (err.message || err), { title:"升级处理失败" }));
+    });
+    const diffm = $("#upgrade-diff-modal"), diffc = $("#upgrade-diff-close");
+    const closeDiff = () => { if (diffm) diffm.hidden = true; };
+    if (diffc) diffc.addEventListener("click", closeDiff);
+    if (diffm) diffm.addEventListener("mousedown", (e) => { if (e.target === diffm) closeDiff(); });
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape" && diffm && !diffm.hidden) closeDiff(); });
     // 🧭 全屏教程浮层：开 / 关（Esc 也可关）
     const guide = $("#ag-guide"), gopen = $("#ag-guide-open"), gclose = $("#ag-guide-close");
     const showGuide = (v) => { if (guide) { guide.hidden = !v; if (v) guide.querySelector(".ag-guide-body").scrollTop = 0; } };

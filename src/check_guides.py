@@ -155,8 +155,31 @@ def check_wiki_schema():
     m = re.search(r"schema\s+(v\d+)", W.WIKI_MD_SEED)
     if not m:
         return bad(name, "WIKI_MD_SEED 标题里找不到 `schema vN` 字样")
-    ok(name, f"都是 {m.group(1)}") if m.group(1) == W.SCHEMA_VERSION else \
-        bad(name, f"种子写 {m.group(1)}，SCHEMA_VERSION 是 {W.SCHEMA_VERSION} —— 忘了同步会让老库永远收不到新规约")
+    if m.group(1) != W.SCHEMA_VERSION:
+        return bad(name, f"种子写 {m.group(1)}，SCHEMA_VERSION 是 {W.SCHEMA_VERSION} —— 忘了同步会让老库永远收不到新规约")
+    h = W._norm_hash(W.WIKI_MD_SEED)
+    if W._SCHEMA_HASHES.get(W.SCHEMA_VERSION) != h:
+        return bad(name, f"schema {W.SCHEMA_VERSION} 已登记正文 hash 为 {W._SCHEMA_HASHES.get(W.SCHEMA_VERSION)}，"
+                         f"当前 seed 是 {h}；修改规约正文必须 bump SCHEMA_VERSION")
+    if h not in W._FACTORY_HASHES:
+        return bad(name, f"当前 WIKI_MD_SEED hash {h} 未追加进 _FACTORY_HASHES；下版会误判成用户改过")
+    ok(name, f"都是 {m.group(1)}，当前出厂 hash 已登记")
+
+
+def check_template_factory_hashes():
+    name = "④b Agent 出厂模板当前 hash 全部已登记"
+    try:
+        import agent_ws as A
+    except Exception as e:
+        return skip(name, f"import agent_ws 失败：{e}")
+    missing = []
+    for key, _path, text, mask, _seed in A._template_specs():
+        h = A._norm_hash(text, mask)
+        if h not in A._FACTORY_HASHES.get(key, set()):
+            missing.append(f"{key}={h}")
+    if missing:
+        return bad(name, "请运行 agent_ws.py --print-hashes，并把新版 hash 追加进 _FACTORY_HASHES：" + "；".join(missing))
+    ok(name, f"{len(A._template_specs())} 份模板全部已登记")
 
 
 # ── ⑤ 版本号只能有一处字面量：config.APP_VERSION ──────────────────────────────────────
@@ -268,6 +291,7 @@ def main():
         skip("② Resources/Prompts 表", "MCP接入说明.md 不存在")
     check_workflows()
     check_wiki_schema()
+    check_template_factory_hashes()
     check_single_version()
     check_backup_coverage()
     check_native_browser_dialogs()

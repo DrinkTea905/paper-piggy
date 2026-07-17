@@ -350,6 +350,16 @@
         <div class="ag-run" id="ag-run"><span class="ag-dot"></span><span id="ag-run-txt">检查服务状态…</span></div>
       </section>
 
+      <!-- 应用更新不会覆盖用户改过的工作流/规约：有新版旁本时在这里显式要求处理。 -->
+      <section class="ag-upgrade ag-full" id="ag-upgrade" hidden>
+        <div class="ag-upgrade-head">
+          <div><b id="ag-upgrade-title">有内容升级待处理</b><small id="ag-upgrade-sub"></small></div>
+          <button class="ag-refresh" id="ag-upgrade-refresh" type="button">🔄 重新检查</button>
+        </div>
+        <div id="ag-upgrade-items" class="ag-upgrade-items"></div>
+        <div id="ag-upgrade-health" class="ag-upgrade-health"></div>
+      </section>
+
       <!-- 📦 交付物 -->
       <section class="ag-card ag-folder">
         <h3>📦 你的交付物</h3>
@@ -461,7 +471,7 @@
               <div class="ag-trio-i"><b>🔭 跨学科发散与补文献</b><span>写作前打开理论视野：把窄题接到邻近学科、政治学 / 心理学等，理出该补的（尤其外文）文献。说「帮我把…这个题发散一下、看该补哪些文献」。</span></div>
               <div class="ag-trio-i"><b>📖 维护综述库</b><span>把读过的文献沉淀成带页码引用、可复用的综述页，越用越厚。说「把我最近读的文献更新进综述库」。</span></div>
             </div>
-            <p class="ag-note">这三条就是「📚 专属资料库 › 技能」里的 .md 文件——<b>一个工作流一个文件、人类可读</b>。你随时能和 AI 助手一起<b>把它们改成自己的习惯，或新建一条属于你的工作流</b>（编辑 / 新增那个 .md 就行）。<a class="ag-link" id="ag-open-skills">打开技能文件夹</a></p>
+            <p class="ag-note">这三条就是「📚 专属资料库 › 技能」里的 .md 文件——<b>一个工作流一个文件、人类可读</b>。你随时能和 AI 助手一起<b>把它们改成自己的习惯，或新建一条属于你的工作流</b>（编辑 / 新增那个 .md 就行）。应用更新时，没改过的出厂工作流会自动升级；你改过的会原样保留，并在 Agent 页显示“待合并”，可查看差异或复制任务给 Agent 合并。<a class="ag-link" id="ag-open-skills">打开技能文件夹</a></p>
             <p class="ag-note">当然，直接说需求也行，比如：</p>
             <ul class="ag-prompts" id="ag-prompts"></ul>
           </div>
@@ -924,6 +934,15 @@
   </div>
 
   <!-- 通用应用内确认框（替代浏览器原生 confirm 灰框；uiConfirm() 用它） -->
+  <div id="upgrade-diff-modal" class="modal" hidden>
+    <div class="modal-box upgrade-diff-box">
+      <h3 id="upgrade-diff-title">版本差异</h3>
+      <p class="hint">“－”是你的版本中有、新版没有的内容；“＋”是新版新增的内容。不会在这里自动改你的文件。</p>
+      <pre id="upgrade-diff-body" class="upgrade-diff-body"></pre>
+      <div class="modal-actions"><button id="upgrade-diff-close">关闭</button></div>
+    </div>
+  </div>
+
   <div id="confirm-modal" class="modal" hidden>
     <div class="modal-box confirm-box">
       <h3 id="confirm-title">请确认</h3>

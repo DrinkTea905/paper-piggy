@@ -159,6 +159,13 @@ def main(batch=64):
             import settings as S
             man = json.loads(C.INDEX_MANIFEST.read_text(encoding="utf-8")) if C.INDEX_MANIFEST.exists() else {}
             man["backend"] = S.backend()
+            # 这里只证明语义向量已按当前规则生成；不要顺手替 deep/light 洗成“已更新”。
+            import upgrade_health as UH
+            fps = man.get("pipeline_fingerprints")
+            if not isinstance(fps, dict):
+                fps = UH.pipeline_fingerprints()
+            fps["semantic"] = UH.pipeline_fingerprints()["semantic"]
+            man["pipeline_fingerprints"] = fps
             C.INDEX_MANIFEST.write_text(json.dumps(man, ensure_ascii=False, indent=2), encoding="utf-8")
         except Exception as e:
             print(f"[semantic] 写 manifest.backend 失败：{e}", flush=True)

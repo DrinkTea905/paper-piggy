@@ -514,6 +514,12 @@ def agent_mcp_config():
         ag = AW.paths_info()
     except Exception as e:
         log_error("agent mcp-config paths", repr(e))
+    try:
+        import upgrade_health as UH
+        upgrade = UH.health()
+    except Exception as e:
+        log_error("agent upgrade health", repr(e))
+        upgrade = {"pending_count": 0, "template_items": [], "error": str(e)}
     return {
         "python": py, "mcp_server": mcp,
         "daemon_url": C.DAEMON_URL, "server_running": True,
@@ -528,7 +534,52 @@ def agent_mcp_config():
         "agent_output_dir": ag.get("output_dir", ""),
         "agent_rely_dir": ag.get("rely_dir", ""),
         "agent_memory_file": ag.get("memory_file", ""),
+        "upgrade_health": upgrade,
     }
+
+
+@app.get("/upgrade/health")
+def upgrade_health_status(include_ignored: bool = False):
+    import upgrade_health as UH
+    return UH.health(include_ignored=include_ignored)
+
+
+@app.get("/upgrade/diff")
+def upgrade_diff(kind: str, key: str):
+    import upgrade_health as UH
+    try:
+        return {"ok": True, "diff": UH.diff(kind, key)}
+    except (KeyError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+class UpgradeActionQ(BaseModel):
+    kind: str
+    key: str
+    current_hash: str
+    confirm: str = ""
+
+
+@app.post("/upgrade/ack")
+def upgrade_ack(q: UpgradeActionQ):
+    import upgrade_health as UH
+    try:
+        UH.acknowledge(q.kind, q.key, q.current_hash)
+        return {"ok": True}
+    except (KeyError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/upgrade/replace")
+def upgrade_replace(q: UpgradeActionQ):
+    if q.confirm != "replace_with_factory":
+        raise HTTPException(status_code=400, detail="需要明确确认采用新版")
+    import upgrade_health as UH
+    try:
+        backup = UH.replace(q.kind, q.key, q.current_hash)
+        return {"ok": True, "backup": backup}
+    except (KeyError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 @app.get("/setup/detect")
 def setup_detect():

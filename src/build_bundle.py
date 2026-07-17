@@ -116,9 +116,13 @@ def write_version_json():
             for blk in iter(lambda: f.read(1 << 20), b""):
                 h.update(blk)
         files[p.relative_to(APP_OUT).as_posix()] = h.hexdigest()
+    runtime_fp_file = BUNDLE / "python" / ".paperpiggy-runtime.sha256"
+    runtime_fp = runtime_fp_file.read_text(encoding="utf-8").strip() if runtime_fp_file.exists() else ""
     (APP_OUT / "version.json").write_text(json.dumps({
         "version": C.APP_VERSION,
         "built":   datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        # 应用内增量更新只换 app/；若新版依赖的 Python 运行环境不同，updater 必须拒绝并引导完整安装器。
+        "runtime_fingerprint": runtime_fp,
         "files":   files,
     }, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"[bundle] version.json 就绪：v{C.APP_VERSION}，{len(files)} 个文件的 sha256")
