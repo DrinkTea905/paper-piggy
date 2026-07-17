@@ -6,17 +6,37 @@
   <title>PaperPiggy · 本地文献知识库</title>
   <link rel="icon" href="/static/PaperPiggy.png" />
   <link rel="stylesheet" href="/static/style.css" />
+  <style>
+    /* 启动遮罩·关键样式内联（★别删）：后端或静态资源较慢时，遮罩若只靠外链样式可能先短暂白屏。
+       这份内联样式让遮罩在
+       index.html 一解析就正确铺满整屏，不依赖 style.css。配色对齐 :root（浅）与 :root[data-theme="dark"]（深）；
+       与 style.css 里的 .boot* 同值，#boot 前缀 id 优先级更高，二者并存不打架。keyframes 同名 boot-spin 也同值。 */
+    #boot { position: fixed; inset: 0; z-index: 9999; display: flex; align-items: center; justify-content: center;
+      background: #f7f4f6; color: #2a2230; transition: opacity .45s ease;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif; }
+    #boot.gone { opacity: 0; pointer-events: none; }
+    #boot .boot-box { text-align: center; max-width: 400px; padding: 24px; }
+    #boot .boot-pig { font-size: 40px; line-height: 1; }
+    #boot .boot-spin { width: 32px; height: 32px; margin: 18px auto 14px; border: 3px solid #ece7ea;
+      border-top-color: #2563eb; border-radius: 50%; animation: boot-spin .8s linear infinite; }
+    @keyframes boot-spin { to { transform: rotate(360deg); } }
+    #boot .boot-h { font-size: 16px; font-weight: 600; margin: 2px 0 6px; }
+    #boot .boot-msg { font-size: 13px; color: #6b7280; line-height: 1.6; }
+    #boot .boot-hint { font-size: 12px; color: #6b7280; line-height: 1.6; margin-top: 16px; }
+    :root[data-theme="dark"] #boot { background: #16121b; color: #e8e2ec; }
+    :root[data-theme="dark"] #boot .boot-spin { border-color: #322a3a; border-top-color: #6ea8fe; }
+    :root[data-theme="dark"] #boot .boot-msg, :root[data-theme="dark"] #boot .boot-hint { color: #9a93a3; }
+  </style>
 </head>
 <body>
-  <!-- 启动遮罩：冷启动要把全库 20 万+ 段读进内存（大库 1~2 分钟），此前窗口秒开但无数据=白屏。
-       盖住整屏直到 /health.loading 变 false（后端加载完），再淡出。见 app.js bootWatch()。 -->
+  <!-- 启动遮罩：盖住整屏直到 /health.loading 变 false（库目录读取完成），再淡出。见 app.js bootWatch()。 -->
   <div id="boot" class="boot">
     <div class="boot-box">
       <div class="boot-pig">🐷</div>
       <div class="boot-spin" aria-hidden="true"></div>
       <div class="boot-h">正在启动 PaperPiggy…</div>
       <div id="boot-msg" class="boot-msg">正在连接本地服务…</div>
-      <div class="boot-hint">首次打开会把整个知识库读进内存（大库约 1~2 分钟），之后就快了。</div>
+      <div class="boot-hint">正文与向量保留在本地索引中；检索组件会在第一次搜索时自动准备。</div>
     </div>
   </div>
   <header class="topbar">
@@ -162,7 +182,7 @@
           <div class="ag-ch-n">7</div>
           <div class="ag-ch-c">
             <h3>自动更新、备份与隐私</h3>
-            <p class="ag-note">· <b>自动更新知识库</b>：在「⚙ 设置 → 自动更新知识库」可设按天定时增量入库（默认每天 7:00）；也能随时点顶栏「⟳ 手动更新知识库」。<br>· <b>应用出新版</b>（和上面的"更新知识库"不是一回事）：顶栏右上角会亮「🎁 有新版」，点它去设置一键升级；不想每次启动联网检查，可在「⚙ 设置 → ⬆️ 应用更新」关掉「启动时自动检查」。<br>· <b>备份</b>：「⚙ 设置 → 备份与恢复」把<b>丢了就再也没有的东西</b>（综述、Agent 写的论文与记忆、收藏夹、期刊分级）打成一个 zip。<b>想要云备份</b>：把备份位置指到 OneDrive / 坚果云的文件夹里——同步一个静态 zip 是安全的。⛔ 但<b>别把整个数据目录丢进云盘</b>：向量索引是持续读写的数据库，云盘同步它早晚会把索引搞坏。<br>· <b>隐私</b>：<b>全程本地</b>，文献不出你的电脑；大模型 Key 只存本机浏览器与本地服务内存，不上传第三方（除你自己选的模型服务商）。备份包<b>默认不含</b> API 密钥（要含得自己勾选）。</p>
+            <p class="ag-note">· <b>自动更新知识库</b>：在「⚙ 设置 → 自动更新知识库」可设按天定时增量入库（默认每天 7:00）；也能随时点顶栏「⟳ 手动更新知识库」。<br>· <b>应用出新版</b>（和上面的"更新知识库"不是一回事）：顶栏右上角会亮「🎁 有新版」，点它去设置一键升级；不想每次启动联网检查，可在「⚙ 设置 → ⬆️ 应用更新」关掉「启动时自动检查」。<br>· <b>检索内存</b>：检索模型和倒排索引只在用到时加载，默认连续 10 分钟没检索就自动释放；可在「⚙ 设置 → 检索内存」改成 5 分钟、1 小时或不自动释放。释放只腾内存，不删任何数据。<br>· <b>备份</b>：「⚙ 设置 → 备份与恢复」把<b>丢了就再也没有的东西</b>（综述、Agent 写的论文与记忆、收藏夹、期刊分级）打成一个 zip。<b>想要云备份</b>：把备份位置指到 OneDrive / 坚果云的文件夹里——同步一个静态 zip 是安全的。⛔ 但<b>别把整个数据目录丢进云盘</b>：向量索引是持续读写的数据库，云盘同步它早晚会把索引搞坏。<br>· <b>隐私</b>：<b>全程本地</b>，文献不出你的电脑；大模型 Key 只存本机浏览器与本地服务内存，不上传第三方（除你自己选的模型服务商）。备份包<b>默认不含</b> API 密钥（要含得自己勾选）。</p>
           </div>
         </section>
 
@@ -584,6 +604,27 @@
           </div>
         </div>
         <p class="hint">💬 对话用的 LLM 在「💬 对话」页的「⚙ 模型设置」里设置；填了上面的 SiliconFlow Key 后对话页会自动带出。</p>
+      </div>
+
+      <div class="set-section" id="sec-retrieval-memory">
+        <h4>🧠 检索内存</h4>
+        <p class="hint">PaperPiggy 平时只保留轻量的库目录；第一次检索时才加载检索模型和倒排索引。
+          连续一段时间没有检索后，会自动释放它们，给其他软件腾内存。<b>默认 10 分钟</b>，正在进行的
+          界面检索、对话检索或 Agent 检索绝不会被中途释放。</p>
+        <label>内存策略
+          <select id="ret-idle-min">
+            <option value="5">空闲 5 分钟后释放</option>
+            <option value="10">空闲 10 分钟后释放（推荐）</option>
+            <option value="20">空闲 20 分钟后释放</option>
+            <option value="30">空闲 30 分钟后释放</option>
+            <option value="60">空闲 1 小时后释放</option>
+            <option value="120">空闲 2 小时后释放</option>
+            <option value="0">不自动释放（下次检索最快）</option>
+          </select>
+        </label>
+        <p class="hint" id="ret-mem-msg">释放只影响临时内存，不会删除文献、索引或设置；下次检索会自动重新加载。</p>
+        <p class="hint">怎么选：内存紧张建议 5–10 分钟；经常连续检索建议 30–60 分钟；选“不自动释放”会减少等待，
+          但本地模型和索引会持续占用更多内存。释放后第一次检索需要重新准备，本地模型通常比 API 模式等得更久。</p>
       </div>
 
       <div class="set-section">

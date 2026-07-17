@@ -262,6 +262,21 @@ def _auto_update_loop():
             log_error("auto_update loop", repr(e))
             time.sleep(60)
 
+
+def _retrieval_idle_loop():
+    """按用户设置释放检索组件；R 内部的活动计数保证不会打断正在进行的 Agent/界面检索。"""
+    import settings as S
+    while True:
+        time.sleep(5)
+        try:
+            mins = int(S.retrieval_conf().get("idle_unload_min", 10))
+            if mins > 0:
+                R.release_retrieval_if_idle(mins * 60)
+        except Exception as e:
+            log_error("retrieval idle unload", repr(e))
+            time.sleep(10)
+
+
 class AutoUpdateQ(BaseModel):
     enabled: Optional[bool] = None
     interval_days: Optional[int] = None
@@ -302,6 +317,37 @@ def set_auto_update(q: AutoUpdateQ):
     if q.interval_min is not None: patch["interval_min"] = max(5, int(q.interval_min))
     S.save({"auto_update": patch})
     return {"ok": True, **_auto_update_view()}
+
+
+class RetrievalMemoryQ(BaseModel):
+    idle_unload_min: int
+
+
+def _retrieval_memory_view():
+    import settings as S
+    mins = int(S.retrieval_conf().get("idle_unload_min", 10))
+    st = R.retrieval_status()
+    remaining = None
+    if mins > 0 and st["loaded"] and not st["loading"]:
+        remaining = max(0, mins * 60 - int(st["idle_s"]))
+    return {"idle_unload_min": mins, "remaining_s": remaining, **st}
+
+
+@app.get("/setup/retrieval_memory")
+def get_retrieval_memory():
+    return _retrieval_memory_view()
+
+
+@app.post("/setup/retrieval_memory")
+def set_retrieval_memory(q: RetrievalMemoryQ):
+    import settings as S
+    mins = int(q.idle_unload_min)
+    if mins != 0 and not 1 <= mins <= 1440:
+        raise HTTPException(status_code=400, detail="空闲释放时间请设为 1–1440 分钟；0 表示不自动释放")
+    S.save({"retrieval": {"idle_unload_min": mins}})
+    if mins > 0:
+        R.release_retrieval_if_idle(mins * 60)
+    return {"ok": True, **_retrieval_memory_view()}
 
 @app.post("/setup/purge_deleted")
 def purge_deleted():
@@ -347,8 +393,7 @@ def purge_deleted():
             "msg": f"已清理 {len(gone)} 篇 Zotero 中已删除的文献。建议随后点一次「手动更新知识库」刷新题录层。"}
 
 # ── 启动加载 ──────────────────────────────────────────────
-_LOADING = True   # 冷启动把全库 20 万+ 段读进内存（大库 1~2 分钟）期间为 True；/health 暴露给前端显示「加载中」遮罩，
-#                   读完置 False。此前窗口在 uvicorn 一应答就打开、但数据还没进内存 → 白屏「过好一会才显示」的根因。
+_LOADING = True   # 冷启动读取库目录与轻量句柄期间为 True；/health 暴露给前端显示启动遮罩，完成后置 False。
 @app.on_event("startup")
 def _startup():
     try:
@@ -370,6 +415,7 @@ def _startup():
         log_error("startup agent workspace scaffold", repr(e))
     threading.Thread(target=_safe_load, daemon=True).start()
     threading.Thread(target=_auto_update_loop, daemon=True).start()
+    threading.Thread(target=_retrieval_idle_loop, daemon=True).start()
 
 def _safe_load():
     global _LOADING
@@ -378,7 +424,7 @@ def _safe_load():
     except Exception as e:
         log_error("startup load_all", repr(e), traceback.format_exc())
         print("[server] 索引加载失败：", e, flush=True)
-    _LOADING = False   # ★ 全库进内存阶段结束（成败都撤）——前端据 /health.loading 淡出遮罩；失败则露出空/错误态而非永久遮罩。
+    _LOADING = False   # 准备阶段结束（成败都撤）——失败时露出空/错误态，而不是永久遮罩。
     # F38-B：启动后台预热当前学科的期刊分级缓存（首次冷算 20+s，异步不阻塞；之后落盘永久快）
     try:
         import grading_svc as GS
@@ -417,13 +463,14 @@ def _lib_rev():
 def health():
     mode = R.STATE.get("mode")
     papers = len(R.M.get("papers", {}))          # 去重篇数（题录数，L/F 档都在内存）
-    blocks = len(R.M.get("records", {})) if mode == "full" else 0  # 正文块数（段）
+    blocks = int(R.M.get("row_count", 0)) if mode == "full" else 0  # LanceDB 总行数；正文/向量不常驻 Python
     n = blocks if mode == "full" else papers     # 兼容旧字段
     return {"ready": R.STATE.get("ready", False), "mode": mode,
             "n": n, "papers": papers, "blocks": blocks, "building": BUILD["running"],
             "deep": len(_deep_keys()),          # F10：「全部文献」显示 已深索/总数
             "rev": _lib_rev(),                  # 库修订号（分域）：前端据此在库/综述/交付物变动后自动刷可见页
-            "loading": _LOADING,                # 冷启动全库进内存期间为 True → 前端显示「加载中」遮罩，读完淡出
+            "loading": _LOADING,                # 冷启动读取库目录期间为 True → 前端显示遮罩，完成后淡出
+            "retrieval": R.retrieval_status(),  # 检索组件冷/热态；设置页据此解释内存策略
             "pid": os.getpid()}                 # 本 server 进程 pid → launcher 关窗时按 pid taskkill /T 杀整棵树，根治 orphan 堆积
 
 # ── Agent / MCP 接入信息（给应用内 Agent 页，吐出本机真实可用的接入命令）──
@@ -812,7 +859,7 @@ def _reset_index_full():
     stash = home / f"_reset_index_backup_{stamp}"
     # 先置未就绪 + 释放内存里的索引句柄，免得 Windows 下移动/删除被占用（bm25 可能 mmap、表句柄占 lancedb）
     R.STATE["ready"] = False
-    for k in ("tbl", "records", "bm25", "bm25_ids", "meta_bm25", "meta_ids"):
+    for k in ("tbl", "row_count", "records", "bm25", "bm25_ids", "meta_bm25", "meta_ids"):
         R.M.pop(k, None)
     try:
         import gc; gc.collect()
@@ -1015,10 +1062,12 @@ def setup_discipline(q: DiscQ):
 
 @app.post("/setup/reset")
 def setup_reset():
-    """设置页「恢复默认」：settings.json 覆盖为默认（清 API/SAC key、学科回标准法学、后端回本地）。
+    """设置页「恢复默认」：settings.json 覆盖为默认（清 API/SAC key、学科回标准法学、后端回本地、
+       检索组件空闲释放回到 10 分钟）。
        浏览器里的对话 LLM key 存 localStorage，由前端另清。"""
     import settings as S
     st = S.reset()
+    R.release_retrieval_if_idle(0, force=True)
     return {"ok": True, "backend": st.get("backend"), "discipline": st.get("journal_discipline")}
 
 @app.get("/setup/models_status")
@@ -2237,10 +2286,7 @@ def cite_paper(key: str, page: Optional[int] = None, style: str = "footnote", he
     head = (heading or "").strip()
     if not head and page is not None and (p.get("itemtype") or "").strip() == "statute":
         try:
-            for r in (R.M.get("records") or {}).values():
-                if r.get("key") == key and r.get("page") == page and "条" in (r.get("heading") or ""):
-                    head = r.get("heading") or ""
-                    break
+            head = R.find_statute_heading(key, page)
         except Exception as e:
             log_error("cite heading lookup", repr(e))
     formatted = CF.footnote(hit, heading=head) if style == "footnote" else CF.compact(hit, heading=head)
@@ -2685,7 +2731,7 @@ def _run_build(stage, extra=None, on_done=None):
         finally:
             BUILD["rc"] = rc
             BUILD["proc"] = None
-            # B2：重载期非原子——大库重载数秒内 tbl 已换新表而 records 仍旧，search_full 会拿空结果。
+            # B2：重载期间表句柄、BM25 与题录状态并非原子切换。
             # 重载全程保持 running=True（锁未释放前不接受新 build）+ 短暂 ready=False（检索先返回未就绪，
             # 而非错误的空命中）；load_all 成功后自会把 ready 置回 True。
             try:

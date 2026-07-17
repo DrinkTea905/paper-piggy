@@ -4,8 +4,8 @@
 
 - Phase 0：把一次 /chat 问答存成 answer 页（markdown + YAML frontmatter）→ 更新 index.json
   → 嵌入进 LanceDB（chunk_id 以 "::wiki" 结尾，row_type="wiki"）从此可被检索。
-- 复用 sac.py 的"LLM→幂等 JSON→原子写"写回模式；嵌入/入表委托 retriever（它持有
-  M["tbl"]/M["embed"]，保证**进程内即时可搜**，无需重启/重建索引）。
+- 复用 sac.py 的"LLM→幂等 JSON→原子写"写回模式；嵌入/入表委托 retriever。检索组件热态时
+  **进程内即时可搜**；冷态时不为一次写回单独唤醒模型，下一次检索会自动回灌，仍无需重启/重建。
 - 只写 DATA/wiki/，随便删不影响文献库/Zotero（config §0 独立性保证）。
 
 provenance 命脉：每页带 sources(论文 key + 页级引用) + generated_by(模型) + generated_at(时间戳)
@@ -287,12 +287,13 @@ def index_map():
 
 
 def is_indexed(page_id):
-    """该 wiki 页是否**真的**在检索内存表里（full 模式入表成功才算）。
+    """该 wiki 页是否**真的**在 LanceDB 检索表里（full 模式入表成功才算）。
        wiki-cached-indexed-true：命中缓存时据此按实回填 indexed，
        避免 light 模式/入表失败时仍谎报 indexed=True。"""
     try:
         import retriever as R
-        return f"{page_id}::wiki" in (R.M.get("records") or {})
+        cid = f"{page_id}::wiki"
+        return cid in R.existing_chunk_ids([cid])
     except Exception:
         return False
 
@@ -764,13 +765,15 @@ def reindex_missing_pages():
         import retriever as R
     except Exception:
         return 0
-    if "tbl" not in R.M or R.M.get("records") is None:
+    if "tbl" not in R.M:
         return 0
+    pages = list(index_map().items())
+    present = R.existing_chunk_ids([f"{pid}::wiki" for pid, _ in pages])
     n = 0
-    for pid, meta in list(index_map().items()):
+    for pid, meta in pages:
         if is_degraded(meta.get("generated_by", "")):
             continue                                   # 降级页按设计不入表
-        if f"{pid}::wiki" in R.M["records"]:
+        if f"{pid}::wiki" in present:
             continue                                   # 已在表内
         try:
             pg = get_page(pid)

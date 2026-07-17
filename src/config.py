@@ -21,7 +21,7 @@ SUBPROC_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0   # CREATE_NO_W
 # 全项目**只有这一处**版本字面量：发版改版本号只改这里，其余地方一律 `C.APP_VERSION` 引用
 # （踩过的坑：版本号散落在 mcp_server 的 serverInfo、打包脚本、页脚里，改一处漏三处，
 #  用户报 bug 时报的版本对不上代码）。1.0.0 = 首个公开发布版（Apache-2.0 开源）。
-APP_VERSION = "1.0.14"
+APP_VERSION = "1.0.16"
 
 APP = Path(__file__).parent                 # 源码目录；分发版 = bundle/app
 RAG = APP                                    # 兼容：引擎脚本都在项目根
@@ -222,7 +222,6 @@ MAX_PER_KEY = 2     # 每篇文献最多几块进入最终 topk（按 key 去重
 # ---- daemon（端口 8770，避开知识库的 8765）----
 DAEMON_HOST  = "127.0.0.1"
 DAEMON_PORT  = 8770
-IDLE_TIMEOUT = 1800
 DAEMON_URL   = f"http://{DAEMON_HOST}:{DAEMON_PORT}"
 
 # ---- 期刊分级 ----

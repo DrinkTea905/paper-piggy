@@ -5,8 +5,7 @@ r"""
   ① 安装器   dist-installer\PaperPiggy-<ver>-win64.exe    （Inno Setup）
   ② 更新包   dist-installer\paper-piggy-app-<ver>.zip      （只含 app\，供 updater.py 用）
              + 同名 .sha256
-             ⚠️ updater.py 目前是**死代码**（没有任何地方调用它），这个包暂时没人消费。
-                见 CLAUDE.md §7。
+             设置页「应用更新」会下载并校验它，再由 launcher 拉起独立 updater.py 完成替换与重启。
 
 前置：先跑 build_bundle.py 生成 src\dist\LocalKB\。
 
@@ -238,15 +237,15 @@ def main():
     print(f"[installer] 版本 {ver}（源：config.APP_VERSION）")
     check_bundle()
 
-    if a.app_only:
-        build_app_package(ver)
-    else:
-        build_app_package(ver)
-        build_setup(ver)
+    app_zip = build_app_package(ver)
+    setup_exe = None if a.app_only else build_setup(ver)
 
     print(f"\n[installer] 产物都在 {OUT}")
     print("[installer] 下一步：把安装器 + 更新包 + sha256 传到 GitHub Release")
-    print(f"    gh release create v{ver} dist-installer\\* --repo DrinkTea905/paper-piggy")
+    # ⛔ 不用 dist-installer\*：目录里可能残留上一版产物，通配符会把旧安装器一起传上去。
+    assets = ([str(setup_exe)] if setup_exe else []) + [str(app_zip), str(app_zip) + ".sha256"]
+    quoted = " ".join(f'"{p}"' for p in assets)
+    print(f"    gh release create v{ver} {quoted} --repo DrinkTea905/paper-piggy")
 
 
 if __name__ == "__main__":

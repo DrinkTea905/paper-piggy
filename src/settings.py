@@ -16,6 +16,11 @@ _CACHE = {"data": None, "mtime": -1}
 
 DEFAULT = {
     "backend": "local",
+    # 检索组件按需驻留：首次检索才载入本地 ONNX / BM25；连续空闲后释放。
+    # 0 = 始终保留（下一次检索最快，但会持续占用更多内存）。
+    "retrieval": {
+        "idle_unload_min": 10,
+    },
     # 数据源：zotero（读 zotero.sqlite）| folder（受管文件夹 + LLM 抽题录）。缺省 zotero，老用户零影响。
     "source": "zotero",
     "folder_dir": "",            # source=folder 时的受管库文件夹绝对路径
@@ -198,6 +203,17 @@ def folder_meta_conf():
 
 def api_conf():
     return load().get("api", DEFAULT["api"])
+
+
+def retrieval_conf():
+    """检索组件内存策略；idle_unload_min=0 表示不自动释放。"""
+    c = dict(load().get("retrieval", DEFAULT["retrieval"]))
+    try:
+        mins = int(c.get("idle_unload_min", DEFAULT["retrieval"]["idle_unload_min"]))
+    except (TypeError, ValueError):
+        mins = DEFAULT["retrieval"]["idle_unload_min"]
+    c["idle_unload_min"] = 0 if mins == 0 else min(1440, max(1, mins))
+    return c
 
 
 def sac_conf():

@@ -25,17 +25,23 @@ def main():
     t0 = time.time()
 
     t = lancedb.connect(str(C.LANCEDB_DIR)).open_table(C.TABLE_NAME)
-    d = t.to_arrow()
-    cids = d.column("chunk_id").to_pylist()
-    keys = d.column("key").to_pylist()
-    vecs = d.column("vector").to_pylist()
     # 每篇代表向量 = 该 key 所有行向量的均值。
     # 综合层 wiki 行（chunk_id 以 "::wiki" 结尾）不参与文献聚类，否则会污染主题簇、且它不在 papers.jsonl。
     acc = defaultdict(lambda: [np.zeros(C.EMBED_DIM, np.float32), 0])
-    for cid, k, v in zip(cids, keys, vecs):
-        if str(cid).endswith("::wiki"):
-            continue
-        acc[k][0] += np.asarray(v, np.float32); acc[k][1] += 1
+    # 分批扫描三列，vector 保持 Arrow/NumPy 的紧凑 float32；绝不 to_pylist() 成 2 亿多个
+    # Python float。这样峰值约为一批向量 + 每篇一个累加向量，而非整表 6GB+ 对象。
+    reader = (t.search(None).select(["chunk_id", "key", "vector"])
+              .to_batches(batch_size=2048))
+    for batch in reader:
+        cids = batch.column(batch.schema.get_field_index("chunk_id")).to_pylist()
+        keys = batch.column(batch.schema.get_field_index("key")).to_pylist()
+        va = batch.column(batch.schema.get_field_index("vector"))
+        flat = np.asarray(va.values.to_numpy(zero_copy_only=False), dtype=np.float32)
+        vecs = flat.reshape(len(batch), C.EMBED_DIM)
+        for cid, k, v in zip(cids, keys, vecs):
+            if str(cid).endswith("::wiki"):
+                continue
+            acc[k][0] += v; acc[k][1] += 1
     K = list(acc.keys())
     X = np.vstack([acc[k][0] / max(1, acc[k][1]) for k in K]).astype(np.float32)
     # 簇数自适应：小库少切、大库封顶 24，避免小库切出一堆碎主题（F9）。--k>0 时用指定值。

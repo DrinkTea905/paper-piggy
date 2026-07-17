@@ -26,16 +26,49 @@ from pydantic import BaseModel
 from typing import Optional
 import uvicorn
 
-STATE = {"last_active": time.time(), "ready": False, "mode": None}
+STATE = {
+    "last_active": time.time(), "ready": False, "mode": None,
+    "retrieval_loaded": False, "retrieval_loading": False, "active_retrievals": 0,
+}
 M = {}  # 模型与索引句柄
 _DICT_MTIME = 0   # 上次载入时 jieba 法律词典的 mtime；变化才热重载（见 load_all）
+_RETRIEVAL_CV = threading.Condition(threading.RLock())
+_RETRIEVAL_KEYS = ("embed", "rerank", "bm25", "bm25_ids", "meta_bm25", "meta_ids")
 
 def log(*a): print("[retriever]", *a, flush=True)
 
 # ═══ 加载 ════════════════════════════════════════════════════════
 def load_all():
+    """刷新库目录与轻量句柄；检索模型/BM25 留到首次检索再加载。"""
+    victims = []
+    try:
+        with _RETRIEVAL_CV:
+            # 建库收尾可能与上一条慢查询相撞；等它退出后再换目录/表句柄，避免半新半旧。
+            while STATE.get("active_retrievals", 0) > 0:
+                _RETRIEVAL_CV.wait(timeout=0.5)
+            victims = _drop_retrieval_locked()
+            STATE["ready"] = False
+            try:
+                _load_catalog_locked()
+            finally:
+                _RETRIEVAL_CV.notify_all()
+    finally:
+        # ONNX Session / BM25 数组在锁外析构，避免下一条请求长时间卡在生命周期锁上。
+        victims.clear()
+        try:
+            import gc; gc.collect()
+        except Exception:
+            pass
+
+
+def _load_catalog_locked():
     t0 = time.time()
+    STATE["mode"] = None
     _WEIGHT_MEMO.clear()   # 换库/改档/重载后清权重缓存，避免串旧值
+    # 重载前先丢掉旧目录/句柄。最重要的是清掉历史版本留下的 records：它曾把 LanceDB
+    # 全表（含 1024 维向量）物化成 Python dict/list/float，20 万行会膨胀到约 10GB。
+    for _k in ("tbl", "row_count", "records", "papers", "statute_status", "wiki"):
+        M.pop(_k, None)
     # 词典/分级热重载：build 子进程重写了 jieba 法律词典与 journal_tiers.json 后，server 进程若不重载，
     # 查询侧分词/期刊分级会一直用旧数据、新入典术语搜不到（#48/#49）。按 mtime 变化才重载，避免每次重建 FREQ。
     try:
@@ -61,31 +94,17 @@ def load_all():
         return
 
     if not tbl_exists and meta_ready:
-        _load_light()
+        _load_light_catalog()
         _load_wiki_index()
         STATE["mode"] = "light"; STATE["ready"] = True
-        log(f"L档就绪(词法)：{len(M['papers'])} 篇，用时 {time.time()-t0:.1f}s")
+        log(f"L档目录就绪：{len(M['papers'])} 篇；词法索引将在首次检索时加载，用时 {time.time()-t0:.1f}s")
         return
 
-    # full 模式：加载嵌入/重排后端（本地 ONNX 或 API）+ 全表 + bm25
-    from embedder import get_embedder
-    from reranker import get_reranker
-    import settings as S
-    _api = S.is_api()
-    log("加载嵌入器（" + ("API" if _api else "本地 ONNX-INT8") + "）..."); M["embed"] = get_embedder()
-    log("加载重排器（" + ("API" if _api else "本地 ONNX") + "）..."); M["rerank"] = get_reranker()
+    # full 模式启动只开轻量表句柄、读题录；ONNX/API 客户端与 BM25 首次检索才加载。
     M["tbl"] = db.open_table(C.TABLE_NAME)
-    log("载入全表到内存 ...")
-    M["records"] = {r["chunk_id"]: r for r in M["tbl"].to_arrow().to_pylist()}
-    M["bm25"] = bm25s.BM25.load(str(C.BM25_DIR), load_corpus=False)
-    M["bm25_ids"] = json.loads((C.BM25_DIR / "bm25_ids.json").read_text(encoding="utf-8"))
-    # meta 词法索引若在，也载入（L 兜底：full 下极少用，但保留统一）
-    if meta_ready:
-        try:
-            M["meta_bm25"] = bm25s.BM25.load(str(C.BM25_META_DIR), load_corpus=False)
-            M["meta_ids"] = json.loads((C.BM25_META_DIR / "bm25_meta_ids.json").read_text(encoding="utf-8"))
-        except Exception:
-            pass
+    # ★ 绝不再 tbl.to_arrow().to_pylist() 全表物化。向量留在 LanceDB；每次检索只取
+    # RRF 后的几十/百余条候选，且候选详情明确不读取 vector 列。
+    M["row_count"] = M["tbl"].count_rows()
     # full 模式也载入题录字典：① 顶栏正确篇数（否则显示 0） ② 非深索篇的 meta 兜底展示
     if C.PAPERS_JSONL.exists():
         pp = {}
@@ -97,10 +116,10 @@ def load_all():
     _build_statute_map()   # EN-L5：full 模式同样要有 key→statute_status（输出徽标+已废止降权）
     _load_wiki_index()
     STATE["mode"] = "full"; STATE["ready"] = True
-    log(f"full 就绪：{len(M['records'])} 块 / {len(M.get('papers', {}))} 篇"
-        f" / {len(M.get('wiki', {}))} 综合页，用时 {time.time()-t0:.0f}s")
+    log(f"full 目录就绪（检索组件按需加载）：{M['row_count']} 块 / {len(M.get('papers', {}))} 篇"
+        f" / {len(M.get('wiki', {}))} 综合页，用时 {time.time()-t0:.1f}s")
 
-def _load_light():
+def _load_light_catalog():
     papers = {}
     if C.PAPERS_JSONL.exists():
         with open(C.PAPERS_JSONL, encoding="utf-8") as f:
@@ -110,8 +129,118 @@ def _load_light():
                     papers[p["key"]] = p
     M["papers"] = papers
     _build_statute_map()
-    M["meta_bm25"] = bm25s.BM25.load(str(C.BM25_META_DIR), load_corpus=False)
-    M["meta_ids"] = json.loads((C.BM25_META_DIR / "bm25_meta_ids.json").read_text(encoding="utf-8"))
+
+
+def _drop_retrieval_locked():
+    """在 _RETRIEVAL_CV 内移走重组件，返回旧对象以便锁外析构。LanceDB 表句柄刻意保留。"""
+    victims = [M.pop(k) for k in _RETRIEVAL_KEYS if k in M]
+    STATE["retrieval_loaded"] = False
+    STATE["retrieval_loading"] = False
+    return victims
+
+
+def _load_retrieval_locked():
+    """首次使用时加载当前模式所需组件。调用者必须持有 _RETRIEVAL_CV。"""
+    if STATE.get("retrieval_loaded"):
+        return
+    if not STATE.get("ready") or STATE.get("mode") not in ("light", "full"):
+        raise RuntimeError("检索索引尚未就绪")
+    STATE["retrieval_loading"] = True
+    t0 = time.time()
+    new = {}
+    try:
+        if STATE.get("mode") == "light":
+            new["meta_bm25"] = bm25s.BM25.load(str(C.BM25_META_DIR), load_corpus=False)
+            new["meta_ids"] = json.loads(
+                (C.BM25_META_DIR / "bm25_meta_ids.json").read_text(encoding="utf-8"))
+        else:
+            from embedder import get_embedder
+            from reranker import get_reranker
+            import settings as S
+            api = S.is_api()
+            log("按需加载嵌入器（" + ("API" if api else "本地 ONNX-INT8") + "）...")
+            new["embed"] = get_embedder()
+            log("按需加载重排器（" + ("API" if api else "本地 ONNX") + "）...")
+            new["rerank"] = get_reranker()
+            new["bm25"] = bm25s.BM25.load(str(C.BM25_DIR), load_corpus=False)
+            new["bm25_ids"] = json.loads(
+                (C.BM25_DIR / "bm25_ids.json").read_text(encoding="utf-8"))
+        M.update(new)
+        STATE["retrieval_loaded"] = True
+        STATE["last_active"] = time.time()
+        log(f"检索组件已按需加载（{STATE.get('mode')}），用时 {time.time()-t0:.1f}s")
+        # 冷启动时缺失的 wiki 检索行在组件真正可用后补嵌；失败不影响本次检索。
+        if STATE.get("mode") == "full":
+            try:
+                import wiki_store as W
+                W.reindex_missing_pages()
+            except Exception as e:
+                log("wiki 检索行按需回灌跳过：", e)
+    except Exception:
+        for k in _RETRIEVAL_KEYS:
+            M.pop(k, None)
+        STATE["retrieval_loaded"] = False
+        raise
+    finally:
+        STATE["retrieval_loading"] = False
+        _RETRIEVAL_CV.notify_all()
+
+
+def _begin_retrieval(load_if_cold=True):
+    """登记一次检索使用；活动计数保证空闲线程不会在请求中途释放组件。"""
+    with _RETRIEVAL_CV:
+        if not STATE.get("retrieval_loaded"):
+            if not load_if_cold:
+                return False
+            _load_retrieval_locked()
+        STATE["active_retrievals"] = int(STATE.get("active_retrievals", 0)) + 1
+        STATE["last_active"] = time.time()
+        return True
+
+
+def _end_retrieval():
+    with _RETRIEVAL_CV:
+        STATE["active_retrievals"] = max(0, int(STATE.get("active_retrievals", 0)) - 1)
+        STATE["last_active"] = time.time()  # 从最后一次检索完成开始计空闲时间
+        _RETRIEVAL_CV.notify_all()
+
+
+def release_retrieval_if_idle(timeout_s, force=False):
+    """达到空闲阈值后释放 ONNX/API 客户端与 BM25；活动检索期间绝不释放。"""
+    victims = []
+    with _RETRIEVAL_CV:
+        if not STATE.get("retrieval_loaded") or STATE.get("active_retrievals", 0) > 0:
+            return False
+        idle_s = max(0.0, time.time() - float(STATE.get("last_active", time.time())))
+        if not force and (float(timeout_s or 0) <= 0 or idle_s < float(timeout_s)):
+            return False
+        victims = _drop_retrieval_locked()
+        _RETRIEVAL_CV.notify_all()
+    victims.clear()
+    try:
+        import gc; gc.collect()
+    except Exception:
+        pass
+    log("检索组件已释放：下次检索会自动重新加载")
+    return True
+
+
+def retrieval_status():
+    def _snapshot():
+        return {
+            "loaded": bool(STATE.get("retrieval_loaded")),
+            "loading": bool(STATE.get("retrieval_loading")),
+            "active": int(STATE.get("active_retrievals", 0)),
+            "idle_s": max(0, round(time.time() - float(STATE.get("last_active", time.time())))),
+        }
+
+    # 首次加载模型时 _load_retrieval_locked 会持有生命周期锁，避免别的请求看到半套组件。
+    # 状态查询只读几个原子标量；若已明确处于 loading，就直接快照返回，设置页才能及时显示
+    # “正在加载”，而不是跟着首条检索一起等到模型全载完。
+    if STATE.get("retrieval_loading"):
+        return _snapshot()
+    with _RETRIEVAL_CV:
+        return _snapshot()
 
 def _build_statute_map():
     """EN-L5：从已载入的题录建 key→statute_status 映射（契约11）。只存非空值——
@@ -122,6 +251,86 @@ def _build_statute_map():
 def _statute_status_of(key):
     """EN-L5：取一篇的时效标识（""｜"已修订"｜"已废止"），无映射/非法条 → ""。"""
     return (M.get("statute_status") or {}).get(key or "", "")
+
+
+# 检索输出/重排实际需要的列。故意不含 vector：1024 维向量只有 dense 检索和“找相似”的
+# 查询向量需要，候选详情若把它一并 to_list()，仍会制造大量 Python float。
+_RESULT_COLUMNS = (
+    "chunk_id", "key", "page", "heading", "text", "parent_text", "title", "author",
+    "year", "journal", "issn", "doi", "langid", "journal_tier", "row_type", "itemtype",
+    "official_pages", "has_pdf", "ingested_at",
+)
+
+
+def _existing_columns(columns):
+    """按真实表 schema 裁列，兼容没有 row_type/issn 等字段的历史表。"""
+    names = set(M["tbl"].schema.names)
+    return [c for c in columns if c in names]
+
+
+def _sql_str(value):
+    """Lance SQL 字符串字面量；chunk_id/key 虽由程序生成，仍完整转义单引号。"""
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def _scan_where(predicate, columns, limit=None):
+    """LanceDB 纯过滤查询；只读取指定列，绝不隐式带回 vector。"""
+    if "tbl" not in M:
+        return []
+    cols = _existing_columns(columns)
+    if not cols:
+        return []
+    q = M["tbl"].search(None).where(predicate)
+    q = q.select(cols)
+    if limit is not None:
+        q = q.limit(max(1, int(limit)))
+    return q.to_list()
+
+
+def fetch_records(chunk_ids):
+    """按 chunk_id 批量取候选详情，返回 id→row；向量始终留在 LanceDB。"""
+    ids = list(dict.fromkeys(str(x) for x in (chunk_ids or []) if x))
+    if not ids or "tbl" not in M:
+        return {}
+    pred = "chunk_id IN (" + ",".join(_sql_str(x) for x in ids) + ")"
+    rows = _scan_where(pred, _RESULT_COLUMNS, limit=len(ids))
+    return {r.get("chunk_id"): r for r in rows if r.get("chunk_id")}
+
+
+def existing_chunk_ids(chunk_ids):
+    """返回确实存在于表内的 chunk_id 集合（wiki 回灌/删除使用）。"""
+    ids = list(dict.fromkeys(str(x) for x in (chunk_ids or []) if x))
+    if not ids or "tbl" not in M:
+        return set()
+    pred = "chunk_id IN (" + ",".join(_sql_str(x) for x in ids) + ")"
+    return {r.get("chunk_id") for r in _scan_where(pred, ("chunk_id",), limit=len(ids))
+            if r.get("chunk_id")}
+
+
+def _rows_for_key(key, columns, row_type=None, limit=64, page=None):
+    if not key or "tbl" not in M:
+        return []
+    from dbutil import key_predicate
+    use_type = row_type if row_type and "row_type" in M["tbl"].schema.names else None
+    pred = key_predicate([key], row_type=use_type)
+    if page is not None and "page" in M["tbl"].schema.names:
+        try:
+            # page 是 LanceDB 的整数列；把过滤下推，避免一部长法典超过 512 块时漏掉后面的条文。
+            pred = f"({pred}) AND page = {int(page)}"
+        except (TypeError, ValueError):
+            pass
+    return _scan_where(pred, columns, limit=limit) if pred else []
+
+
+def find_statute_heading(key, page):
+    """按 (key,page) 查法条 heading；代替遍历全表内存字典。"""
+    if not key or page is None:
+        return ""
+    rows = _rows_for_key(key, ("page", "heading"), row_type="chunk", limit=8, page=page)
+    for r in rows:
+        if r.get("page") == page and "条" in (r.get("heading") or ""):
+            return r.get("heading") or ""
+    return ""
 
 def _load_wiki_index():
     """载入综合层页元数据 index.json → M["wiki"]（id→meta），供检索期标注/降权/展示。
@@ -135,10 +344,11 @@ def _load_wiki_index():
         M["wiki"] = {}
         log("wiki index 载入失败（视为空）：", e)
         return
-    if "tbl" not in M or not M.get("records"):
+    if "tbl" not in M:
         return
+    present = existing_chunk_ids([f"{pid}::wiki" for pid in M["wiki"]])
     stale_rows = [pid for pid, meta in M["wiki"].items()
-                  if W.is_degraded(meta.get("generated_by", "")) and f"{pid}::wiki" in M["records"]]
+                  if W.is_degraded(meta.get("generated_by", "")) and f"{pid}::wiki" in present]
     for pid in stale_rows:
         try:
             delete_wiki_page(pid)      # 删表行 + 内存登记（幂等）；页面仍可在综述库阅读
@@ -147,17 +357,19 @@ def _load_wiki_index():
             log(f"清理降级页 {pid} 失败：", e)
     if stale_rows:
         M["wiki"] = W.index_map()      # delete_wiki_page 会 pop 掉条目，重载回其余页的 meta
-    # 存量回灌：非降级、却不在检索表里的综合页（light 保存 / 嵌入曾失败 / 全量重建冲掉）补嵌回表——
-    # 否则前端/MCP 承诺的「重建索引后可检索」永远兑现不了。放在建表后调用（此处 M["tbl"]/records 已就绪）。
-    try:
-        W.reindex_missing_pages()
-    except Exception as e:
-        log("综合页回灌失败（不影响其余检索）：", e)
+    # 存量回灌需要嵌入器。冷启动故意不加载检索组件，等首次检索的
+    # _load_retrieval_locked() 再补；重载发生在组件已加载态时仍可立即补。
+    if STATE.get("retrieval_loaded"):
+        try:
+            W.reindex_missing_pages()
+        except Exception as e:
+            log("综合页回灌失败（不影响其余检索）：", e)
 
 # ═══ 检索：full 模式 ════════════════════════════════════════════
 def dense_search(q, k):
     qv = M["embed"].encode([q], max_length=256)[0]
-    hits = M["tbl"].search(qv.tolist()).metric("cosine").limit(k).to_list()
+    hits = (M["tbl"].search(qv.tolist()).metric("cosine")
+            .select(_existing_columns(("chunk_id",)) + ["_distance"]).limit(k).to_list())
     return [h["chunk_id"] for h in hits]
 
 # EN-L3：同义词命中判定里的"含中文"检查（英文缩写组员如 ai/dpa 只走 token 全等通道，
@@ -320,22 +532,23 @@ def search_full(query, topk, sort, keys=None):
     # BF6：F11 的白名单过滤必须在截池**之前**——先截 64 再过滤，限定的小分类可能一条都不剩；
     # 对 RRF 全量融合结果先过滤再截池，keys=None 时行为与旧版一致。
     fused = rrf(di, bi)
+    records = fetch_records(fused)
     cand = [cid for cid in fused
-            if cid in M["records"]
-            and (keys is None or M["records"][cid].get("key") in keys)][:pool]
+            if cid in records
+            and (keys is None or records[cid].get("key") in keys)][:pool]
     if not cand:
         return []
-    scores = M["rerank"].scores(query, [M["records"][cid]["text"] for cid in cand])
+    scores = M["rerank"].scores(query, [records[cid].get("text") or "" for cid in cand])
     ranked = sorted(zip(cand, scores), key=lambda x: -x[1])
     # 同 key 去重（chunk 行优先于 meta 行：更具体）+ MAX_PER_KEY
     per_key, picked, overflow = {}, [], []
     meta_idx = {}   # key -> 已入选 meta 行在 picked 中的下标，供随后到达的同篇 chunk 顶替
     for cid, sc in ranked:
-        r = M["records"][cid]
+        r = records[cid]
         k = r.get("key", cid)
         rtype = r.get("row_type")
         # 若该 key 已有 chunk 行入选，跳过它的 meta 行（避免同篇既出摘要又出正文、前端深索徽章自相矛盾）
-        if rtype == "meta" and any(M["records"][c].get("key") == k and M["records"][c].get("row_type") == "chunk"
+        if rtype == "meta" and any(records[c].get("key") == k and records[c].get("row_type") == "chunk"
                                    for c, _ in picked):
             continue
         # meta 先入选、随后到了同篇更具体的 chunk：用 chunk 顶替那条 meta（名额不变，不新造共存）
@@ -352,11 +565,12 @@ def search_full(query, topk, sort, keys=None):
             break
     if len(picked) < topk:
         picked.extend(overflow[:topk - len(picked)])
-    top = [(cid, float(sc), _tier_of(M["records"][cid]), _weight_res(M["records"][cid])) for cid, sc in picked]
+    top = [(records[cid], float(sc), _tier_of(records[cid]), _weight_res(records[cid]))
+           for cid, sc in picked]
     _apply_sort(top, sort)
     out = []
-    for cid, sc, tier, wr in top:
-        r = M["records"][cid]
+    for r, sc, tier, wr in top:
+        cid = r.get("chunk_id", "")
         deep = (r.get("row_type") != "meta")
         d = {
             "chunk_id": cid, "score": round(sc, 4),
@@ -395,25 +609,24 @@ def search_full(query, topk, sort, keys=None):
     return out
 
 # ═══ C4/F6：向量「找相似」——用已存向量取近邻 ═══════════════════
-def neighbors(key, topk=8):
+def _neighbors_loaded(key, topk=8):
     """给一篇 key 返回向量近邻（cosine），排除自身、剔除 wiki 行、按 key 聚合去重。
        优先复用该 key 已入表的向量（chunk 行优先于 meta 行）；都取不到则现场 encode 其标题。
        返回 list（每条结构与 search_full 输出一致，前端复用 resultCard）；
        light 模式 / 无表 / 取不到向量 / 无标题 → None（上层回 {ok:false}，前端回退抽词法）。"""
     if STATE.get("mode") != "full" or "tbl" not in M:
         return None
-    recs = M.get("records", {})
     qv, title = None, ""
-    for r in recs.values():                       # 找该 key 的一条已存向量（chunk 优先）
-        if r.get("key") != key:
-            continue
-        title = r.get("title", "") or title
-        v = r.get("vector")
-        if v is not None:
-            if r.get("row_type") != "meta":       # chunk 行向量最贴近全文，命中即用
-                qv = v; break
-            if qv is None:                         # 暂存 meta 行向量作兜底
-                qv = v
+    # 只为这一篇读取一条向量：优先 chunk，退回 meta；不再遍历 20 万行 records。
+    source_cols = ("vector", "title", "row_type")
+    src_rows = _rows_for_key(key, source_cols, row_type="chunk", limit=1)
+    if not src_rows:
+        src_rows = _rows_for_key(key, source_cols, row_type="meta", limit=1)
+    if not src_rows:                               # 旧表无 row_type 时裸 key 兜底
+        src_rows = _rows_for_key(key, source_cols, limit=1)
+    if src_rows:
+        title = src_rows[0].get("title", "") or ""
+        qv = src_rows[0].get("vector")
     if qv is None:                                # 无已存向量 → 现场 encode 标题
         if not title:
             p = (M.get("papers") or {}).get(key)
@@ -425,7 +638,9 @@ def neighbors(key, topk=8):
         except Exception:
             return None
     try:
-        hits = M["tbl"].search(list(qv)).metric("cosine").limit(max(topk * 5, 40)).to_list()
+        hits = (M["tbl"].search(list(qv)).metric("cosine")
+                .select(_existing_columns(_RESULT_COLUMNS) + ["_distance"])
+                .limit(max(topk * 5, 40)).to_list())
     except Exception:
         return None
     seen, out = set(), []
@@ -434,7 +649,7 @@ def neighbors(key, topk=8):
         if not k or k == key or k in seen or _is_wiki(h):
             continue
         seen.add(k)
-        r = recs.get(h.get("chunk_id")) or h
+        r = h
         sim = round(1.0 - float(h.get("_distance", 0.0)), 4)   # cosine 距离→相似度
         tier = _tier_of(r)
         deep = (r.get("row_type") != "meta")
@@ -462,7 +677,18 @@ def neighbors(key, topk=8):
     return out
 
 
-# ═══ 综合层：wiki 页嵌入入表（进程内即时可搜）════════════════════
+def neighbors(key, topk=8):
+    """公开的相似文献入口；与普通检索共用按需加载和活动计数。"""
+    if STATE.get("mode") != "full" or "tbl" not in M:
+        return None
+    _begin_retrieval(load_if_cold=True)
+    try:
+        return _neighbors_loaded(key, topk)
+    finally:
+        _end_retrieval()
+
+
+# ═══ 综合层：wiki 页嵌入入表（组件热态即时；冷态下次检索回灌）══════
 def _fit_row_to_schema(full, vec):
     """按当前表 schema 逐列取值：旧表无 row_type/ingested_at 等列时自动省略，
        表有而 full 无的列填安全默认。复用 embed_index.py:54 的"按现表 schema 决定列"思路，
@@ -483,10 +709,11 @@ def _fit_row_to_schema(full, vec):
             row[name] = ""            # string/其它 → 空串（覆盖 not-null 的 journal_tier）
     return row
 
-def index_wiki_page(page_id, title, body, meta):
+def _index_wiki_page_loaded(page_id, title, body, meta):
     """把一个 wiki 页嵌入并写进同一张 LanceDB 表（chunk_id="{id}::wiki"），
-       并即时登记进内存（M["records"]/M["wiki"]），使**本进程内立刻可检索**。
-       仅 full 模式（有表 + 嵌入器）能入表；否则返回 False（页面已存盘，重建索引后可搜）。
+       并即时登记进 M["wiki"]，使**本进程内立刻可检索**。正文行无需常驻内存，
+       下一次 dense/候选查询会直接从 LanceDB 读到。
+       仅 full 模式且检索组件热态时调用；冷态由公开包装器推迟到下一次检索回灌。
 
        已知限制（C5，minor·自愈）：这里只即时进【稠密向量】通道，不更新进程内 BM25 倒排
        （M["bm25"]/M["bm25_ids"] 是建库期从表整体构建的，增量维护要重算 IDF/文档长度，
@@ -510,15 +737,31 @@ def index_wiki_page(page_id, title, body, meta):
         "has_pdf": False, "ingested_at": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
     try:
+        existed = cid in existing_chunk_ids([cid])
         try:
             M["tbl"].delete(f"chunk_id = '{cid}'")   # 幂等：重生/覆盖先删同 id 旧行
         except Exception:
             pass
         M["tbl"].add([_fit_row_to_schema(full, vec)])
-        M["records"][cid] = full
+        if not existed:
+            M["row_count"] = int(M.get("row_count", 0)) + 1
         return True
     except Exception as e:
         log("wiki 入表失败：", e); return False
+
+
+def index_wiki_page(page_id, title, body, meta):
+    """保存 wiki 元数据；检索组件已驻留时即时嵌入，冷态则留待下一次检索自动回灌。"""
+    M.setdefault("wiki", {})[page_id] = meta
+    if STATE.get("mode") != "full" or "tbl" not in M:
+        return False
+    if not _begin_retrieval(load_if_cold=False):
+        return False
+    try:
+        return _index_wiki_page_loaded(page_id, title, body, meta)
+    finally:
+        _end_retrieval()
+
 
 def delete_wiki_page(page_id):
     """一键"不保存"的表侧：删该 wiki 页的表行 + 内存登记（幂等）。仅 full 模式有表。
@@ -526,12 +769,12 @@ def delete_wiki_page(page_id):
        返回该页此前是否存在（用于上层判定 deleted，保证重复删不误报）。
 
        按 M["tbl"] 而非 STATE["mode"] 判断有无表：_load_wiki_index 的存量清理在
-       STATE["mode"] 被置为 "full" **之前**就调本函数，用 mode 判断会静默跳过删表行
-       —— 内存清了、表行残留，日志却报成功。"""
+    STATE["mode"] 被置为 "full" **之前**就调本函数，用 mode 判断会静默跳过删表行
+    —— 内存清了、表行残留，日志却报成功。"""
     cid = f"{page_id}::wiki"
-    existed = (page_id in (M.get("wiki") or {})) or (cid in (M.get("records") or {}))
+    row_existed = cid in existing_chunk_ids([cid])
+    existed = (page_id in (M.get("wiki") or {})) or row_existed
     (M.get("wiki") or {}).pop(page_id, None)
-    (M.get("records") or {}).pop(cid, None)
     if "tbl" not in M:
         return existed
     try:
@@ -539,6 +782,8 @@ def delete_wiki_page(page_id):
         pred = key_predicate([page_id])
         if pred:
             M["tbl"].delete(pred)
+            if row_existed:
+                M["row_count"] = max(0, int(M.get("row_count", 0)) - 1)
         return existed
     except Exception as e:
         log("wiki 删表行失败：", e); return False
@@ -582,7 +827,7 @@ def search_light(query, topk, sort, keys=None):
     return out
 
 def _wiki_effective(score, obj):
-    """wiki 行的**有效排序分**（仅 full 模式，obj 为 chunk_id 字符串）。
+    """wiki 行的**有效排序分**（full 模式 obj 为候选行 dict）。
 
     - 新鲜综合页：减一个小常数，只在同分时让位于原始文献（provenance 居中）。
     - 过时(stale)综合页：**乘性**重罚。必须是乘法：reranker 分尺度 0~10+，而 answer 页的标题
@@ -590,10 +835,8 @@ def _wiki_effective(score, obj):
       真论文才 4.34）。减 0.5 拉不动它——被新文献推翻的旧综合会继续霸占第一，
       agent 下次又把它当事实引用。这是幻觉复利的引擎，只有乘法能真正把它压到真论文之下。
 
-    light 模式 obj 是题录 dict → 原分返回（wiki 本就不在 light 模式召回）。"""
-    if not isinstance(obj, str):
-        return score
-    r = (M.get("records") or {}).get(obj)
+    light 模式 obj 也是题录 dict，但不会满足 _is_wiki，故原分返回。"""
+    r = obj if isinstance(obj, dict) else None
     if not r or not _is_wiki(r):
         return score
     wm = _wiki_meta(r)
@@ -622,11 +865,9 @@ def _statute_eff(score, obj):
     """EN-L5：已废止法条的排序降权（已修订不降权、只出徽标）。
        写法沿用 BF5 的负分安全式：正分乘 factor、负分**除** factor——reranker 分可为负，
        负分×0.5 反而更靠近 0 = 反向提权（wiki 降权踩过的同一个坑，别再踩）。
-       obj：full 模式是 chunk_id 字符串（查 M["records"] 拿 key），light 模式是题录 dict。"""
+       obj：full/light 模式都直接传候选行 dict，不依赖全表内存字典。"""
     key = ""
-    if isinstance(obj, str):
-        key = ((M.get("records") or {}).get(obj) or {}).get("key", "")
-    elif isinstance(obj, dict):
+    if isinstance(obj, dict):
         key = obj.get("key", "")
     if key and _statute_status_of(key) == "已废止":
         f = getattr(C, "STATUTE_REPEALED_FACTOR", 0.5)
@@ -670,7 +911,7 @@ def _apply_sort(items, sort, lex=False):
         items.sort(key=lambda x: -(_effective(x[1], x[0]) + _blend_bonus(x, lex)))
 
 # ═══ 统一入口 ════════════════════════════════════════════════════
-def search(query, topk, sort=None, min_weight=0.0, keys=None):
+def _search_loaded(query, topk, sort=None, min_weight=0.0, keys=None):
     sort = sort if sort in ("relevance", "tier", "blend") else C.DEFAULT_SORT
     topk = max(1, int(topk))
     try:
@@ -694,6 +935,15 @@ def search(query, topk, sort=None, min_weight=0.0, keys=None):
                if d.get("journal_weight") is None or d.get("journal_weight", 0) >= min_weight]
     return out[:topk]
 
+
+def search(query, topk, sort=None, min_weight=0.0, keys=None):
+    """统一公开入口：首次调用自动加载组件，结束后重新开始计算空闲时间。"""
+    _begin_retrieval(load_if_cold=True)
+    try:
+        return _search_loaded(query, topk, sort, min_weight, keys)
+    finally:
+        _end_retrieval()
+
 # ═══ standalone（备用）═══════════════════════════════════════════
 app = FastAPI()
 
@@ -704,7 +954,7 @@ class Q(BaseModel):
 
 @app.get("/health")
 def health():
-    n = len(M.get("records", {})) if STATE.get("mode") == "full" else len(M.get("papers", {}))
+    n = int(M.get("row_count", 0)) if STATE.get("mode") == "full" else len(M.get("papers", {}))
     return {"ready": STATE["ready"], "mode": STATE.get("mode"), "n": n,
             "idle_s": round(time.time() - STATE["last_active"])}
 

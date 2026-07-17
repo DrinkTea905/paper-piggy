@@ -54,7 +54,10 @@ def _purge_deleted(papers, tbl):
     try:
         import folder_ingest as FI
         live = {p["key"] for p in papers}
-        tbl_keys = set(k for k in tbl.to_arrow().to_pydict().get("key", []) if k)
+        # 这里只需 key。旧写法 tbl.to_arrow() 会把 1024 维 vector 和全文列一并读进来，
+        # 随后 to_pydict 又把向量膨胀成海量 Python float。
+        key_col = tbl.search(None).select(["key"]).to_arrow().column("key")
+        tbl_keys = set(k for k in key_col.to_pylist() if k)
         gone = [k for k in tbl_keys if k not in live]
         if not gone:
             return
@@ -140,7 +143,8 @@ def main(batch=64):
     # 重建主 bm25（覆盖全表 text = meta + 将来的 chunk 行）
     if tbl is not None:
         import bm25s
-        d = tbl.to_arrow().to_pydict()
+        # BM25 只消费 id+text；明确选列，绝不把向量/父块/题录字段物化进 Python。
+        d = tbl.search(None).select(["chunk_id", "text"]).to_arrow().to_pydict()
         ids, texts = d["chunk_id"], d["text"]
         print(f"[semantic] 重建 bm25（{len(texts)} 行）...", flush=True)
         r = bm25s.BM25()

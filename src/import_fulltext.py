@@ -70,7 +70,7 @@ def main():
     ltbl = ldb.open_table(C.TABLE_NAME) if C.TABLE_NAME in ldb.table_names() else None
     existing_deep = set()
     if ltbl is not None:
-        d0 = ltbl.to_arrow()
+        d0 = ltbl.search(None).select(["key", "row_type"]).to_arrow()
         for k, rt in zip(d0.column("key").to_pylist(), d0.column("row_type").to_pylist()):
             if rt == "chunk":
                 existing_deep.add(k)
@@ -88,7 +88,9 @@ def main():
             ltbl.add(buf)
         n_in += len(buf); buf = []
 
-    for batch in rtbl.to_arrow().to_batches(max_chunksize=8000):
+    # 旧库可能很大；直接从 Lance scanner 分批读，避免先 rtbl.to_arrow() 把整张原始向量表
+    # 物化成一个 Arrow Table。这里仍需迁移 vector，但峰值被限制在单批 8000 行。
+    for batch in rtbl.search(None).to_batches(batch_size=8000):
         for r in batch.to_pylist():
             done_rag += 1
             ik = None
@@ -134,7 +136,7 @@ def main():
 
     import bm25s
     from textutil import tokenize
-    d = ltbl.to_arrow().to_pydict()
+    d = ltbl.search(None).select(["chunk_id", "text"]).to_arrow().to_pydict()
     ids, texts = d["chunk_id"], d["text"]
     print(f"[import] 重建 bm25（{len(texts)} 行）...", flush=True)
     rr = bm25s.BM25(); rr.index([tokenize(t) for t in texts]); rr.save(str(C.BM25_DIR))

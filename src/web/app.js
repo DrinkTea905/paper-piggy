@@ -252,21 +252,26 @@
   }
   poll(); setInterval(poll, 4000);
 
-  // 启动遮罩看门狗：冷启动后端要把全库 20 万+ 段读进内存（大库 1~2 分钟），此前窗口秒开但无数据 = 白屏。
+  // 启动遮罩看门狗：后端读取库目录与轻量句柄期间盖住尚不可用的主界面。
   // 盖住 #boot 直到 /health.loading 变 false（后端加载完 / 或本就空库快速返回），再淡出。每 1s 查一次（比 4s 主轮询灵敏）。
   function bootWatch() {
     const el = document.getElementById("boot"); if (!el) return;
     const t0 = Date.now();
-    const done = () => { el.classList.add("gone"); setTimeout(() => { el.hidden = true; }, 500); };
-    const tick = async () => {
-      let h = null;
-      try { h = await jget("/health"); } catch (e) {}
-      if (h && !h.loading) { done(); return; }   // 加载完（loading=false，含未建库/空库快速返回）→ 撤遮罩
+    let serverSeen = false;   // /health 至少应答过一次 = 已连上后端
+    // 秒数计时独立走客户端 setInterval；即使模型初始化期间 /health 暂时未应答，计时也不会停住。
+    const timer = setInterval(() => {
       const sec = Math.round((Date.now() - t0) / 1000);
       const msg = document.getElementById("boot-msg");
-      if (msg) msg.textContent = h
-        ? `正在把知识库读进内存（约 20 万段全文）… 已 ${sec}s，大库需 1~2 分钟`
+      if (msg) msg.textContent = serverSeen
+        ? `正在读取知识库目录… 已 ${sec}s`
         : `正在连接本地服务… 已 ${sec}s`;
+    }, 1000);
+    const done = () => { clearInterval(timer); el.classList.add("gone"); setTimeout(() => { el.hidden = true; }, 500); };
+    const tick = async () => {   // 只负责探测「加载完没」，与上面的计时解耦
+      let h = null;
+      try { h = await jget("/health"); } catch (e) {}
+      if (h) serverSeen = true;
+      if (h && !h.loading) { done(); return; }   // 加载完（loading=false，含未建库/空库快速返回）→ 撤遮罩
       setTimeout(tick, 1000);
     };
     tick();
@@ -3209,6 +3214,7 @@
     loadEngine(); // 同时回填检索引擎当前后端/是否已设 key
     loadDiscipline(); // 回填期刊分级学科下拉
     loadAutoUpdate(); // 回填自动更新开关/间隔
+    loadRetrievalMemory(); // 回填检索组件的空闲释放时间与当前状态
     loadOnlyPdf();    // 回填「只导入有 PDF」开关
     loadBackup();     // 回填备份位置/自动备份，并列出已有备份包
     checkUpdate(true); // 静默查一次新版（用缓存、失败不吭声），有新版才显示升级面板
@@ -3269,6 +3275,46 @@
         if (note) note.textContent = (r && r.msg) || "已清理。";
       } catch (e) { if (note) note.textContent = "清理失败：" + (e.message || e); }
       pb.disabled = false; pb.textContent = lbl;
+    });
+  })();
+
+  // ── 检索内存：首次检索加载，空闲 N 分钟后释放（0=始终保留）──
+  function renderRetrievalMemory(s, saved = false) {
+    const msg = $("#ret-mem-msg"); if (!msg || !s) return;
+    const mins = Number(s.idle_unload_min || 0);
+    let state = "";
+    if (s.loading) state = "正在为这次检索加载组件…";
+    else if (s.active > 0) state = `当前有 ${s.active} 个检索正在进行，不会中途释放。`;
+    else if (!s.loaded) state = "当前已释放，内存占用较低；下次检索会自动重新加载。";
+    else if (mins === 0) state = "当前已加载，并会一直保留；下次检索无需重新准备。";
+    else {
+      const remain = Math.max(0, Number(s.remaining_s || 0));
+      const wait = remain >= 60 ? `约 ${Math.max(1, Math.ceil(remain / 60))} 分钟` : "不到 1 分钟";
+      state = `当前已加载；如果不再检索，${wait}后释放。`;
+    }
+    msg.className = "hint";
+    msg.textContent = (saved ? "✓ 已保存。" : "") + state + " 释放不会删除文献或索引。";
+  }
+  async function loadRetrievalMemory() {
+    const sel = $("#ret-idle-min"); if (!sel) return;
+    try {
+      const s = await jget("/setup/retrieval_memory");
+      const val = String(Number(s.idle_unload_min || 0));
+      if (![...sel.options].some(o => o.value === val)) sel.add(new Option(`${val} 分钟`, val));
+      sel.value = val;
+      renderRetrievalMemory(s);
+    } catch (e) {
+      const msg = $("#ret-mem-msg"); if (msg) msg.textContent = "读取内存设置失败：" + e.message;
+    }
+  }
+  (function wireRetrievalMemory() {
+    const sel = $("#ret-idle-min"); if (!sel) return;
+    sel.addEventListener("change", async () => {
+      const msg = $("#ret-mem-msg"); if (msg) msg.textContent = "保存中…";
+      try {
+        const s = await jpost("/setup/retrieval_memory", { idle_unload_min: Number(sel.value) });
+        renderRetrievalMemory(s, true);
+      } catch (e) { if (msg) msg.textContent = "保存失败：" + e.message; }
     });
   })();
 
@@ -3750,13 +3796,13 @@
   // 恢复默认设置：清后端 settings + 本机对话 key，回填面板
   const _reset = $("#set-reset");
   if (_reset) _reset.addEventListener("click", async () => {
-    if (!(await uiConfirm("会清空：检索引擎回本地、期刊学科回标准法学、API/摘要 key、以及本机保存的对话模型 Key。文献索引不受影响。",
+    if (!(await uiConfirm("会清空：检索引擎回本地、期刊学科回标准法学、检索内存回默认 10 分钟、API/摘要 key、以及本机保存的对话模型 Key。文献索引不受影响。",
           { title: "恢复默认设置？", okText: "恢复默认", danger: true }))) return;
     try {
       await jpost("/setup/reset", {});
       localStorage.removeItem("localkb.cfg");   // 清对话 LLM 配置（存 localStorage）
       initChatModel();                          // 对话页模型设置回默认
-      loadEngine(); loadSac(); loadDiscipline();
+      loadEngine(); loadSac(); loadDiscipline(); loadRetrievalMemory();
       poll();
       flashToast("已恢复默认设置。");   // UX10：成功/失败都走应用内浮层
     } catch (e) { flashToast("恢复默认失败：" + (e.message || e)); }

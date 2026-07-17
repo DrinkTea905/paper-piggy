@@ -230,8 +230,10 @@ def main():
     # ---- bm25s 重建：仅当有新增或索引缺失 ----
     if not args.skip_bm25 and tbl is not None and (n_chunks > 0 or not bm25_covers):
         import bm25s
-        print("[bm25] 读取全表 ...", flush=True)
-        d = tbl.to_arrow().to_pydict()
+        print("[bm25] 读取 id+正文列 ...", flush=True)
+        # BM25 不需要 vector。旧写法 to_arrow() 读取全部列，再 to_pydict() 把 20 万×1024
+        # 个向量值变成 Python float，建库收尾也会瞬间吃掉数 GB。
+        d = tbl.search(None).select(["chunk_id", "text"]).to_arrow().to_pydict()
         ids, texts = d["chunk_id"], d["text"]
         print(f"[bm25] 分词 {len(texts)} 块 ...", flush=True)
         t1 = time.time()
