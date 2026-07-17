@@ -18,11 +18,12 @@ r"""
 
 【便携 zip 已于 1.0.0 下线】
   数据与程序同目录之后，「删掉旧文件夹、解压新版」会把用户的索引和论文一次性删光。
-  只发安装器。详见 paperpiggy.iss §为什么砍掉便携 zip。
+  面向用户只提供安装器，不提供便携 zip；每版仍生成应用内更新专用的 app.zip。
+  详见 paperpiggy.iss §为什么砍掉便携 zip。
 
 用法：
     python installer\build_installer.py              # 全出
-    python installer\build_installer.py --app-only   # 只出 ②（发小版本更新时用）
+    python installer\build_installer.py --app-only   # 仅纯 app 代码变化且安装器/依赖均未变化时使用
 """
 import sys, os, json, shutil, hashlib, zipfile, argparse, subprocess
 from pathlib import Path
@@ -226,7 +227,11 @@ def build_app_package(ver):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--app-only", action="store_true", help="只出 updater 用的 app 增量包")
+    ap.add_argument(
+        "--app-only",
+        action="store_true",
+        help="只出 updater 用的 app 增量包（仅限安装器与运行依赖均未变化）",
+    )
     a = ap.parse_args()
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")

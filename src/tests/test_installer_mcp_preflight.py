@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -24,6 +25,10 @@ class InstallerMcpPreflightTests(unittest.TestCase):
         self.assertIn('#include "mcp_preflight.iss"', iss)
         self.assertIn("function NextButtonClick(CurPageID: Integer): Boolean;", iss)
         self.assertIn("function PrepareToInstall(var NeedsRestart: Boolean): String;", iss)
+        self.assertIsNone(
+            re.search(r"(?m)^\s*#\d", iss),
+            "以 #13/#10 开头的续行会被 Inno 预处理器误判为指令",
+        )
         self.assertIn("python.exe", preflight)
         self.assertIn("pythonw.exe", preflight)
         self.assertIn("app\\mcp_server.py", preflight)

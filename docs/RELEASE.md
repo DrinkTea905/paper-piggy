@@ -37,9 +37,10 @@
 正常产出 `PaperPiggy-<ver>-win64.exe`。要确认它到底找没找到，直接跑 build_installer 看日志那行
 `编译安装器：<ISCC 路径>` 即可，不要凭 `where` 的空结果臆断。
 
-真没装时才需要装：`winget install JRSoftware.InnoSetup`（默认也落用户级）。**没装也不致命**：
-build_installer 会打印「没找到 ISCC.exe，跳过安装器」、不报错、仍产出 `paper-piggy-app-<ver>.zip`
-更新包（存量用户能一键升级，只是新用户装机缺 `.exe`）。
+真没装时才需要装：`winget install JRSoftware.InnoSetup`（默认也落用户级）。构建脚本在找不到
+ISCC 时仍会产出 `paper-piggy-app-<ver>.zip`，但这不代表一定可以发布：**只要本版改了
+`installer/`、新增运行依赖，或需要照顾尚未补齐依赖的旧用户，缺少完整安装器就是发布 blocker，
+禁止创建 Release。** 只有纯 `app/` 代码变化、安装器和依赖均未变化时，才可明确选择 app-only。
 
 ### 0.2 重建 `build/py312`（唯一不可自动重建的环节）
 
@@ -96,6 +97,8 @@ build\py312\python.exe -c "import onnxruntime, lancedb, pypdfium2, rapidocr, cv2
 - [ ] 安装器是**用户级**的（`PrivilegesRequired=lowest`）—— 与上一条是一套，只改一个必崩
 - [ ] `python -m unittest src.tests.test_installer_mcp_preflight -v` 通过：升级前能识别
       Codex / Claude 等客户端持有的 PaperPiggy MCP，且安装器不会自动结束任何进程
+- [ ] 若 `installer/` 或运行依赖有改动，**禁止** `--app-only`；必须确认完整安装器实际生成，
+      否则本版核心修复没有进入发布资产
 
 **干净机验收**（没装 VC++ 2015-2022、没装 WebView2 的全新 Windows）
 - [ ] `bundle\python\python.exe -c "import onnxruntime"` 不报 WinError 1114
@@ -148,9 +151,10 @@ build\py312\python.exe -c "import onnxruntime, lancedb, pypdfium2, rapidocr, cv2
 ### 2b. ~~便携 zip~~ ⛔ 已于 1.0.0 砍掉
 数据既然与程序同目录，「删掉旧文件夹、解压新版」—— 便携软件最常规的升级姿势 ——
 就会把用户的索引、wiki、API key、写好的论文一次性删光。走安装器升级则不会
-（Inno 只覆盖 `app\` 和 `python\`，不碰 `data\`）。所以只发安装器。
+（Inno 只覆盖 `app\` 和 `python\`，不碰 `data\`）。所以不再提供供用户解压运行的便携 zip。
 `config.py` 里的 `portable.txt` 分支保留（它现在的语义是「数据同目录」，安装器正是靠它），
-但打包链路不再产出任何 zip。详见 `installer/paperpiggy.iss` 文件头。
+每版仍会产出只含 `app/` 的 updater 增量包；它只供应用内更新使用，不是便携版。
+详见 `installer/paperpiggy.iss` 文件头。
 
 ### 2c. 代码签名（决定 SmartScreen 体验）
 | 选项 | 2026 现状 | 结论 |

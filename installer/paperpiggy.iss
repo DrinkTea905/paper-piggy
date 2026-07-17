@@ -32,7 +32,8 @@
 ; §为什么砍掉便携 zip：数据既然与程序同目录，「删掉旧文件夹、解压新版」——便携软件最常规的
 ;          升级姿势——就会把用户的索引、wiki、API key、写好的论文一次性删光。
 ;          走安装器升级则不会：Inno 只覆盖 app\ 和 python\，不碰 data\ 和 0_Agent*。
-;          所以只发安装器，不发 zip。
+;          所以面向用户只提供安装器，不提供可解压运行的便携 zip。GitHub Release 仍附带
+;          应用内更新专用的 app.zip；它只含 app\，不是便携版。
 ;
 ; §卸载：Inno 只删它自己装进去的文件。用户的 data\ / 0_Agent* 会**原样留在安装目录**
 ;        （卸载器提示「目录非空，未删除」）。这是有意的：卸载后重装可以直接接着用。
@@ -214,6 +215,15 @@ begin
     '现有程序和数据不会改变。';
 end;
 
+function FinalBlockingProcessMessage(const Details: String): String;
+begin
+  Result :=
+    '检测到客户端刚刚重新启动了 PaperPiggy 后台连接：' + #13#10 + #13#10 + Details +
+    '' + #13#10 + #13#10 +
+    '安装尚未写入任何文件。请返回上一步，完全退出相关客户端后重新点击“安装”。' +
+    '' + #13#10 + '现有程序和数据没有改变。';
+end;
+
 // Ready 页主检查：Retry 立即重新扫描；Cancel 留在向导，不写任何安装文件。
 function NextButtonClick(CurPageID: Integer): Boolean;
 var
@@ -259,8 +269,7 @@ begin
   ScanResult := ScanPaperPiggyProcesses(ExpandConstant('{app}'), Details, ErrorText);
   if ScanResult = PaperPiggyScanBlocked then
   begin
-    Result := BlockingProcessMessage(Details) + #13#10 + #13#10 +
-      '请返回上一步，退出相关客户端后重新点击“安装”。';
+    Result := FinalBlockingProcessMessage(Details);
   end
   else if ScanResult = PaperPiggyScanError then
     Result := ErrorText;
