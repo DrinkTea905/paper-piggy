@@ -1355,9 +1355,40 @@ def _deep_extract_counts(items=None):
         return {}
 
 
-def _extract_record(stem, items=None):
+def _extract_record(stem, items=None, legacy_deep=False):
+    """返回一篇的有效提取状态，并兼容 OCR 状态文件出现前的深索记录。
+
+    旧版提取器还没有本地 OCR：能成功进入 ``embedded_keys.txt`` 的正文只能来自
+    PDF 原生文字层。因此，已深索但 sidecar 无记录的旧文献应视为 ``ok_native``，
+    不能在“原生文字层”筛选中凭空消失。
+    """
     rec = (items if items is not None else _deep_extract_items()).get(str(stem), {})
-    return dict(rec) if isinstance(rec, dict) else {}
+    if isinstance(rec, dict) and rec.get("status"):
+        return dict(rec)
+    if legacy_deep:
+        return {"status": "ok_native", "legacy_inferred": True}
+    return {}
+
+
+def _browse_filter_matches(name, isdeep, extract_rec, has_summary, summary_invalid):
+    """浏览页状态筛选的单一口径；下拉计数和实际过滤必须共用。"""
+    if not name:
+        return True
+    if name == "yes":
+        return isdeep
+    if name == "no":
+        return not isdeep
+    if name == "ocr":
+        return extract_rec.get("status") == "ok_ocr"
+    if name == "native":
+        return extract_rec.get("status") == "ok_native"
+    if name == "summary_yes":
+        return has_summary
+    if name == "summary_invalid":
+        return summary_invalid
+    if name == "summary_no":
+        return isdeep and not has_summary and not summary_invalid
+    return True
 
 
 def _deep_no_text_keys():
@@ -2420,7 +2451,8 @@ def paper_detail(key: str):
     except Exception as e:
         log_error("paper detail backlinks", repr(e))   # 反查失败不拦题录主体
     stem = p.get("stem") or T.safe_name(key)
-    extract_status = _extract_record(stem)
+    _isdeep = is_deep(key)
+    extract_status = _extract_record(stem, legacy_deep=_isdeep)
     return {
         "key": key, "title": p.get("title", ""), "author": p.get("author", ""),
         "year": p.get("year", ""), "journal": p.get("journal", ""),
@@ -2429,7 +2461,7 @@ def paper_detail(key: str):
         "collections": p.get("collections", []),
         "official_pages": p.get("official_pages", ""),
         "has_pdf": bool(p.get("has_pdf", False)),
-        "deep": is_deep(key),
+        "deep": _isdeep,
         "no_text": stem in _deep_no_text_keys(),
         "extract_status": extract_status,
         "abstract": p.get("abstract", ""),
@@ -2648,29 +2680,27 @@ def papers(collection: Optional[str] = None, topic: Optional[int] = None,
         items = list(papers.values())
     import grading_svc as GS
     out = []
+    filter_counts = {name: 0 for name in (
+        "all", "yes", "no", "ocr", "native",
+        "summary_yes", "summary_invalid", "summary_no",
+    )}
     for p in items:
         _isdeep = is_deep(p["key"], deepk)
         stem = p.get("stem") or T.safe_name(p["key"])
         summary_stem = T.safe_name(stem)
-        extract_rec = _extract_record(stem, extract_items)
+        extract_rec = _extract_record(stem, extract_items, legacy_deep=_isdeep)
         has_summary = summary_stem in sumk
         summary_invalid = summary_stem in sum_issues
-        if deep == "yes" and not _isdeep:
-            continue
-        if deep == "no" and _isdeep:
-            continue
-        if deep == "ocr" and extract_rec.get("status") != "ok_ocr":
-            continue
-        if deep == "native" and extract_rec.get("status") != "ok_native":
-            continue
-        if deep == "summary_yes" and not has_summary:
-            continue
-        if deep == "summary_invalid" and not summary_invalid:
-            continue
-        # 检索摘要只对已深索文献有意义；异常摘要另列，不混进“缺失”。
-        if deep == "summary_no" and (not _isdeep or has_summary or summary_invalid):
-            continue
         if since and (p.get("ingested_at") or "") < since:   # EN-A7：早于 since（或无入库时间）的滤掉
+            continue
+        filter_counts["all"] += 1
+        for filter_name in ("yes", "no", "ocr", "native",
+                            "summary_yes", "summary_invalid", "summary_no"):
+            if _browse_filter_matches(filter_name, _isdeep, extract_rec,
+                                      has_summary, summary_invalid):
+                filter_counts[filter_name] += 1
+        if deep and not _browse_filter_matches(deep, _isdeep, extract_rec,
+                                               has_summary, summary_invalid):
             continue
         # F38-B：按当前学科取分级（快路径 compute=False，只用已预热 memo；未预热则回退旧 journal_tier）
         # 手动改档/法源报告规则在 grade_paper 里优先命中（不走 memo，即改即显）。
@@ -2709,6 +2739,7 @@ def papers(collection: Optional[str] = None, topic: Optional[int] = None,
     # W1：分页出口——大库此前只能看到前 limit 篇，其余永远翻不到；total=过滤后总数供前端算页数
     off = max(0, int(offset or 0))
     return {"papers": out[off:off + limit], "total": len(out),
+            "filter_counts": filter_counts,
             "collection": collection, "topic": topic, "category": category, "deep": deep,
             "sort": sort, "since": since}
 
@@ -3423,7 +3454,7 @@ def index_sac_backfill(q: SacBackfillQ = None):
     import sac as SAC
     if not SAC.key_available():
         return {"ok": False, "need_key": True,
-                "msg": "生成检索摘要需要 API key：请到 设置 → 检索引擎 填一个 SiliconFlow 免费 Key（或在 检索摘要 → 高级 单独填），再来生成。"}
+                "msg": "生成检索摘要需要 API key：请到 设置 → 检索 → 检索引擎 填一个 SiliconFlow 免费 Key（或在 设置 → 建库 → 检索摘要 → 高级 单独填），再来生成。"}
     only = None
     if q and q.keys:
         only = {T.safe_name(k) for k in q.keys if k}
@@ -3467,7 +3498,7 @@ def search(q: SearchQ):
         # UX8：两态文案——建过库只是重建/重载窗口（稍等即可），从未建库才需要走向导；
         # 此前一律"先建立即时索引"，害老用户在重载的几秒里被误导去重建。
         msg = ("索引正在重建或加载，请稍候几秒再搜" if C.INDEX_MANIFEST.exists()
-               else "还没建立索引——请到 设置 → 重新查看引导 完成首次建库")
+               else "还没建立索引——请到 设置 → 应用 → 重新查看引导 完成首次建库")
         return JSONResponse({"error": msg, "ready": False}, status_code=503)
     t0 = time.time()
     keys = _resolve_category_keys(q.category)
@@ -3490,7 +3521,8 @@ def search(q: SearchQ):
                 p = papers.get(k) or {}
                 stem = p.get("stem") or T.safe_name(k)
                 x["no_text"] = stem in notext
-                x["extract_status"] = _extract_record(stem, extract_items)
+                x["extract_status"] = _extract_record(
+                    stem, extract_items, legacy_deep=is_deep(k))
     except Exception as e:
         log_error("search no_text tag", repr(e))
     return {"query": q.query, "mode": R.STATE.get("mode"), "category": q.category,

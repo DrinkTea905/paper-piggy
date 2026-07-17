@@ -206,6 +206,29 @@ button:disabled { opacity: .6; cursor: default; }
 .set-section h4 { margin: 0 0 6px; font-size: 14px; }
 .set-section > .hint { margin: 0 0 8px; }               /* 说明文字与控件间距统一 */
 .set-section .sac-toggle { margin: 10px 0 0; }          /* 勾选项统一间距（替代散落的 inline style） */
+
+/* 设置页：五类左侧导航。一次只看一类，避免 11 个小节挤在一条超长窄列里。 */
+.modal-box.settings-box { width: min(900px, 94vw); height: min(88vh, 780px); overflow: hidden; display: flex; flex-direction: column; }
+.settings-shell { min-height: 0; display: grid; grid-template-columns: 168px minmax(0, 1fr); gap: 20px; flex: 1; }
+.settings-nav { border-right: 1px solid var(--line); padding: 4px 14px 4px 0; display: flex; flex-direction: column; gap: 6px; }
+.settings-nav-btn { border: 1px solid transparent; background: transparent; color: var(--muted); border-radius: 9px;
+  padding: 10px 12px; text-align: left; font-size: 13px; cursor: pointer; }
+.settings-nav-btn:hover { background: var(--bg); color: var(--fg); }
+.settings-nav-btn.active { background: color-mix(in srgb, var(--accent) 10%, var(--card)); border-color: color-mix(in srgb, var(--accent) 28%, transparent);
+  color: var(--accent-d); font-weight: 700; }
+.settings-pane-wrap { min-width: 0; min-height: 0; max-height: calc(88vh - 112px); overflow-y: auto; padding: 0 8px 4px 0; }
+.settings-pane[hidden] { display: none !important; }
+.settings-pane .set-section:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
+.settings-pane-wrap > .modal-actions { position: sticky; bottom: 0; background: linear-gradient(transparent 0, var(--card) 18px);
+  padding-top: 24px; padding-bottom: 2px; z-index: 2; }
+
+@media (max-width: 700px) {
+  .modal-box.settings-box { width: 94vw; }
+  .settings-shell { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); gap: 12px; }
+  .settings-nav { border-right: 0; border-bottom: 1px solid var(--line); padding: 0 0 10px; flex-direction: row; overflow-x: auto; }
+  .settings-nav-btn { flex: 0 0 auto; white-space: nowrap; }
+  .settings-pane-wrap { max-height: calc(88vh - 170px); }
+}
 .au-sched { margin: 6px 0 2px; }
 .au-del { margin-top: 8px; }
 .rb-confirm { margin-top: 10px; padding: 10px 12px; border: 1px solid #b91c1c; border-radius: 8px; background: rgba(185,28,28,.06); }
@@ -765,9 +788,10 @@ button:disabled { opacity: .6; cursor: default; }
 .ag-output-item .ag-output-name { display: flex; align-items: flex-start; gap: 7px;
   font-weight: 650; color: var(--fg); font-size: 13.5px; line-height: 1.35; word-break: break-word; }
 .ag-output-item .ag-output-ico { flex: 0 0 auto; font-size: 15px; line-height: 1.3; }
-.ag-output-item .ag-output-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
-  font-size: 11.5px; color: var(--muted); }
-.ag-output-item .ag-output-meta .ag-sep { color: var(--line); font-style: normal; }
+.ag-output-item .ag-output-meta { font-size: 11.5px; color: var(--muted); line-height: 1.4; }
+.ag-output-item .ag-output-stats { display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+  min-height: 1.4em; font-size: 11.5px; color: var(--muted); line-height: 1.4; }
+.ag-output-item .ag-sep { color: var(--line); font-style: normal; }
 .ag-outputs-empty { font-size: 12.5px; color: var(--muted); line-height: 1.7; }
 /* A3：建议横幅里「新主题·建议新建页」标记 */
 .wk-suggest .wsg-newpage { font-size: 12px; color: #b45309; background: rgba(180,83,9,.10); padding: 2px 8px; border-radius: 999px; }

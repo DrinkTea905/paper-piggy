@@ -328,7 +328,7 @@
   }
   bootWatch();
 
-  // 启动时静默检查新版本（默认开，可在 设置→应用更新 关闭）。延后 2.5s 让首屏先加载完；
+  // 启动时静默检查新版本（默认开，可在 设置→应用→应用更新 关闭）。延后 2.5s 让首屏先加载完；
   // 服务端 10 分钟缓存 + updater 自带重试；失败静默（不弹错），只在有新版时点亮右上角徽标。
   if (localStorage.getItem("localkb.autoUpdateCheck") !== "0") {
     setTimeout(() => { try { checkUpdate(true); } catch (e) {} }, 2500);
@@ -409,7 +409,7 @@
     setTimeout(() => { b.textContent = lbl; delete b.dataset.busy; }, 1200);
   });
 
-  // 只读查看某篇的检索摘要（点卡上「🧬 有摘要」）
+  // 只读查看某篇的检索摘要（点卡上「🧬 摘要有效」）
   async function openSummaryView(key, title) {
     const m = $("#summary-modal"); if (!m) return;
     $("#summary-title").textContent = title || "检索摘要";
@@ -418,7 +418,7 @@
     try {
       const r = await jget("/summary?key=" + encodeURIComponent(key));
       $("#summary-body").textContent = (r && r.has_summary) ? r.summary
-        : (r && r.summary_invalid ? `（这篇摘要未通过质量检查：${r.summary_error || "内容异常"}。请在卡上点「⚠ 摘要异常」修复。）`
+        : (r && r.summary_invalid ? `（这篇摘要未通过质量检查：${r.summary_error || "内容异常"}。请在卡上点「🟠 摘要异常」修复。）`
           : "（这篇还没有检索摘要——可在卡上点「⚪ 无摘要」为它生成）");
     } catch (e) { $("#summary-body").textContent = "读取失败：" + (e.message || e); }
   }
@@ -914,7 +914,7 @@
     if (r.is_wiki) return "";                       // wiki 行用专属徽标（wikiBadge），不显示深度标
     const failure = extractFailureBadge(r);
     if (extractBlocked(r)) return failure;
-    if (r.depth === "full") return `<span class="tag full">📄 已深索</span>` + failure + (r.has_summary ? `<span class="tag sac" title="已生成 AI 检索摘要，检索更容易命中这篇">🧬 有摘要</span>` : "");
+    if (r.depth === "full") return `<span class="tag full">📄 已深索</span>` + failure + (r.has_summary ? `<span class="tag sac" title="已生成并通过质量检查，检索更容易命中这篇">🧬 摘要有效</span>` : "");
     // F12：有 PDF 的未深索命中→可点击深索；无 PDF 的纯题录不给深索入口（避免点了无效）
     if (r.has_pdf) {
       const pending = extractState(r) === "ocr_pending";
@@ -1438,7 +1438,7 @@
         <button class="primary-btn ht-cta" id="dg-go">怎么接入 AI 助手 →</button>
       </div>
       <div class="flow">
-        ${step("s1", "1", "📥", "喂饱小猪 · 深索", "在「浏览」里挑文献<b>深索</b>，建议慢慢把全库喂完 —— 只有深索过的才能被精读、页级引用、跨篇综合。")}
+        ${step("s1", "1", "📥", "喂饱小猪 · 深索＋摘要", "先把 PDF <b>深索</b>成可读小段，再配<b>检索摘要</b>帮助准确命中文献；都能按需筛选、放后台慢慢完成。")}
         ${arrow}
         ${step("s2", "2", "🔍", "秒级检索", "抛一个研究问题，全库<b>秒找</b>相关文献与原文段落，按期刊权威度排序、精确到印刷页码。")}
         ${arrow}
@@ -1595,7 +1595,7 @@
       dlint.addEventListener("click", goLint);
       dlint.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); goLint(); } });
     }
-    const chD = $("#ov-change-disc"); if (chD) chD.addEventListener("click", (e) => { e.preventDefault(); openSettings(); });  // F3：修改学科
+    const chD = $("#ov-change-disc"); if (chD) chD.addEventListener("click", (e) => { e.preventDefault(); openSettings("sec-discipline"); });  // F3：修改学科
     const exp = $("#rc-expand"); if (exp) exp.addEventListener("click", _goBrowseRecent);
     // R10：库总览「最近入库」的深索按钮自己 try/finally 恢复文字并用浮层反馈（不写进隐藏的浏览页 #bl-msg）
     $$(".rc-deep").forEach((b) => b.addEventListener("click", async () => {
@@ -1709,8 +1709,8 @@
         box.innerHTML = hasVec
           ? `<div class="bt-hint">还没有 AI 主题。点上方「🔄 生成主题」，让 AI 把所有文献自动归类。</div>`
           : `<div class="bt-hint">AI 主题按向量把所有文献自动归类，需先建语义/深索索引。
-             <a class="ag-link" id="bt-topics-goengine">去「设置 → 检索引擎」</a></div>`;
-        const g = $("#bt-topics-goengine"); if (g) g.addEventListener("click", openSettings);
+             <a class="ag-link" id="bt-topics-goengine">去「设置 → 检索 → 检索引擎」</a></div>`;
+        const g = $("#bt-topics-goengine"); if (g) g.addEventListener("click", () => openSettings("sec-engine"));
         return;
       }
       topics.forEach((t) => {
@@ -1987,8 +1987,7 @@
       const det = $("#chat-model"); if (det) det.open = true;
       setTimeout(() => { const k = $("#set-key"); if (k) k.focus(); }, 0);
     } else {
-      openSettings();
-      setTimeout(() => { const sec = $("#sec-engine"); if (sec) sec.scrollIntoView({ behavior: "smooth" }); }, 100);
+      openSettings("sec-engine");
     }
   }
   function needKey() {   // 非硅基流动且没填 key → 先去配置（硅基流动可复用检索引擎 key，服务端兜底）
@@ -2780,12 +2779,12 @@
           ? [`${subdirCount} 个任务文件夹`, `${fileCount} 个成果文件（含子文件夹）`]
           : [`${fileCount} 个文件${subdirCount ? "（含子文件夹）" : ""}`,
              subdirCount ? `${subdirCount} 个子文件夹` : null];
-        const meta = [o.mtime ? esc(o.mtime) : null, ...counts,
-                      o.has_readme ? "含说明" : null]
+        const stats = [...counts, o.has_readme ? "含说明" : null]
           .filter(Boolean).map((x) => `<span>${x}</span>`).join(`<i class="ag-sep">·</i>`);
         return `<div class="ag-output-item" role="button" tabindex="0" data-output="${esc(o.name)}" title="打开这个交付物主题">`
           + `<div class="ag-output-name"><span class="ag-output-ico">📁</span><span>${esc(o.name)}</span></div>`
-          + `<div class="ag-output-meta">${meta}</div></div>`;
+          + `<div class="ag-output-meta"><span>${o.mtime ? esc(o.mtime) : "日期未知"}</span></div>`
+          + `<div class="ag-output-stats">${stats}</div></div>`;
       }).join("");
       box.querySelectorAll(".ag-output-item").forEach((card) => {
         const open = () => openAgentOutput(card.dataset.output, card);
@@ -2907,15 +2906,15 @@
     if (s == null || s < 12) return "";
     return `<span class="brec" title="按期刊层级/年份/有无全文综合推荐，值得优先深读">建议深读</span>`;
   }
-  // 已深索的卡：有效→🧬；异常→⚠；缺失→⚪。异常与缺失都由用户点后才生成。
+  // 已深索的卡：有效→🧬；异常→🟠；缺失→⚪。异常与缺失都由用户点后才生成。
   function sacBadge(p) {
     if (!p.deep) return "";
     if (p.summary_invalid) {
-      return `<span class="tag sac none invalid" role="button" tabindex="0" title="摘要未通过质量检查：${esc(p.summary_error || "内容异常")}。点此修复并重嵌入这一篇">⚠ 摘要异常</span>`;
+      return `<span class="tag sac none invalid" role="button" tabindex="0" title="摘要未通过质量检查：${esc(p.summary_error || "内容异常")}。点此修复并重嵌入这一篇">🟠 摘要异常</span>`;
     }
     return p.has_summary
-      ? `<span class="tag sac has" role="button" tabindex="0" title="点开查看这篇的 AI 检索摘要">🧬 有摘要</span>`
-      : `<span class="tag sac none" role="button" tabindex="0" title="点此为这篇生成 AI 检索摘要（知识库建设第②步；让检索更容易命中，需 API key，会重嵌入这一篇，可后台跑）">⚪ 无摘要</span>`;
+      ? `<span class="tag sac has" role="button" tabindex="0" title="点开查看这篇的 AI 检索摘要">🧬 摘要有效</span>`
+      : `<span class="tag sac none" role="button" tabindex="0" title="点此为这篇生成 AI 检索摘要（知识库建设第②步；让检索更容易命中，需 API key，会重嵌入这一篇，可后台跑）">⚪ 摘要缺失</span>`;
   }
   function deepBadge(p) {
     const failure = extractFailureBadge(p);
@@ -2960,7 +2959,7 @@
       bdb.addEventListener("click", fire);
       bdb.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fire(e); } });
     }
-    // 检索摘要徽标：🧬有摘要→点开只读查看；⚪无摘要→点→为这篇生成（第②步）
+    // 检索摘要徽标：🧬摘要有效→点开只读查看；⚪摘要缺失→点→为这篇生成（第②步）
     const sacHas = div.querySelector(".tag.sac.has");
     if (sacHas) {
       const fire = (e) => { e.stopPropagation(); openSummaryView(p.key, p.title || ""); };
@@ -3018,6 +3017,16 @@
     box.indeterminate = n > 0 && !allSel;
   }
 
+  function renderBrowseFilterCounts(counts) {
+    const sel = $("#bl-deep-filter"); if (!sel || !counts) return;
+    Array.from(sel.options).forEach((opt) => {
+      const base = opt.dataset.label || opt.textContent.replace(/（[\d,]+）$/, "");
+      const key = opt.value || "all";
+      opt.dataset.label = base;
+      opt.textContent = counts[key] == null ? base : `${base}（${num(counts[key])}）`;
+    });
+  }
+
   async function loadPapers() {
     const myseq = ++BR.reqSeq;   // B5：请求序号守卫，防止快速切换时旧响应覆盖新选择
     $("#bl-name").textContent = BR.scope.name;
@@ -3027,7 +3036,7 @@
     // T6：长解释收进点击浮层（.tip-i 已有 ctx 展开习惯）；title 精简为一句
     $("#bl-tip").innerHTML = isRec
       ? `⭐ 已按「值得先读」排序：优先高等级期刊（权威/核心）、近年、有全文可深读的
-         <span class="tip-i" title="推荐分＝期刊权威度×10＋近年加成＋有全文可深读；随「设置→期刊分级学科」变化。">ⓘ 怎么算的</span>`
+         <span class="tip-i" title="推荐分＝期刊权威度×10＋近年加成＋有全文可深读；随「设置→检索→期刊分级学科」变化。">ⓘ 怎么算的</span>`
       : "";
     $("#bl-tip").style.display = isRec ? "" : "none";
     const om = $("#bl-more"); if (om) om.remove();   // W1：换范围/重载时清掉旧「加载更多」按钮
@@ -3041,6 +3050,7 @@
       if (BR.deepFilter) params.set("deep", BR.deepFilter);
       const d = await jget("/papers?" + params.toString());
       if (myseq !== BR.reqSeq) return;   // B5：已有更新的请求发出，丢弃这次陈旧响应
+      renderBrowseFilterCounts(d.filter_counts || {});
       BR.papers = d.papers || [];
       // W1：「（显示前 300）」这种死数字标签取消——分页由底部「加载更多」承担
       BR.total = d.total != null ? d.total : BR.papers.length;
@@ -3358,9 +3368,37 @@
     $("#set-key").placeholder = "该服务商尚未配置 Key";
     saveChatModel({ resetKey: true });
   });
-  function openSettings() {
+  const SETTINGS_PANE_KEY = "localkb.settingsPane";
+  function showSettingsPane(name, targetId) {
+    const panes = $$(".settings-pane"), buttons = $$(".settings-nav-btn");
+    if (!Array.from(panes).some((p) => p.dataset.settingsPane === name)) name = "search";
+    panes.forEach((p) => (p.hidden = p.dataset.settingsPane !== name));
+    buttons.forEach((b) => {
+      const active = b.dataset.settingsPane === name;
+      b.classList.toggle("active", active);
+      b.setAttribute("aria-current", active ? "page" : "false");
+    });
+    try { localStorage.setItem(SETTINGS_PANE_KEY, name); } catch (_) {}
+    const wrap = $(".settings-pane-wrap"); if (wrap) wrap.scrollTop = 0;
+    if (targetId) requestAnimationFrame(() => {
+      const target = $("#" + targetId);
+      if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }
+  function settingsPaneForTarget(targetId) {
+    const target = targetId && $("#" + targetId);
+    const pane = target && target.closest(".settings-pane");
+    return pane ? pane.dataset.settingsPane : "";
+  }
+  $$(".settings-nav-btn").forEach((b) => b.addEventListener("click", () => showSettingsPane(b.dataset.settingsPane)));
+
+  function openSettings(targetId) {
+    if (typeof targetId !== "string") targetId = "";  // 允许直接作为 click 监听器使用
     // LLM 服务商字段已搬到对话页折叠区，设置弹窗不再回填它们（避免覆盖对话页已填的 key）
     $("#settings-modal").hidden = false;
+    let pane = settingsPaneForTarget(targetId);
+    if (!pane) { try { pane = localStorage.getItem(SETTINGS_PANE_KEY) || "search"; } catch (_) { pane = "search"; } }
+    showSettingsPane(pane, targetId);
     loadSac();    // 进入设置面板即拉取 SAC 当前状态并回填
     loadEngine(); // 同时回填检索引擎当前后端/是否已设 key
     loadDiscipline(); // 回填期刊分级学科下拉
@@ -3911,7 +3949,7 @@
     // 顶栏「有新版」徽标：左键→进设置更新区一步升级；右键→忽略此版本（发更新版本时自动重现）
     const ub = $("#up-badge");
     if (ub) {
-      ub.addEventListener("click", openSettings);
+      ub.addEventListener("click", () => openSettings("sec-update"));
       ub.addEventListener("contextmenu", (e) => {
         e.preventDefault();
         if (ub.dataset.latest) localStorage.setItem("localkb.updateDismissed", ub.dataset.latest);
@@ -4909,9 +4947,8 @@
   //  文件夹模式：拖入 / 选择 PDF 入库
   // ══════════════════════════════════════════
   function openMetaKeyHelp() {
-    openSettings();
-    // UX9：滚到「检索引擎」小节锚点（Key 就填在这）——原先滚到第一节（期刊学科），用户找不到该填哪
-    setTimeout(() => { const e = $("#sec-engine"); if (e) e.scrollIntoView({ behavior: "smooth" }); }, 100);
+    // UX9：直达「检索 → 检索引擎」（Key 就填在这）。
+    openSettings("sec-engine");
   }
   function fileToB64(file) {
     return new Promise((resolve, reject) => {

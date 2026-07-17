@@ -43,6 +43,7 @@ class ExtractStatusApiTests(unittest.TestCase):
             "NATIVE": {"key": "NATIVE", "stem": "NATIVE", "title": "文字层", "has_pdf": True},
             "INVALID": {"key": "INVALID", "stem": "INVALID", "title": "异常摘要", "has_pdf": True},
             "MISSING": {"key": "MISSING", "stem": "MISSING", "title": "缺失摘要", "has_pdf": True},
+            "LEGACY": {"key": "LEGACY", "stem": "LEGACY", "title": "旧版文字层", "has_pdf": True},
             "UNDEEP": {"key": "UNDEEP", "stem": "UNDEEP", "title": "未深索", "has_pdf": True},
         }
         extract = {
@@ -51,7 +52,7 @@ class ExtractStatusApiTests(unittest.TestCase):
             "INVALID": {"status": "ok_native"},
             "MISSING": {"status": "ok_native"},
         }
-        deep = {"OCR", "NATIVE", "INVALID", "MISSING"}
+        deep = {"OCR", "NATIVE", "INVALID", "MISSING", "LEGACY"}
         patches = (
             mock.patch.object(server, "_load_papers", return_value=papers),
             mock.patch.object(server, "_load_cats", return_value={}),
@@ -65,17 +66,23 @@ class ExtractStatusApiTests(unittest.TestCase):
         with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7]:
             cases = {
                 "ocr": {"OCR"},
-                "native": {"NATIVE", "INVALID", "MISSING"},
+                "native": {"NATIVE", "INVALID", "MISSING", "LEGACY"},
                 "summary_yes": {"OCR", "NATIVE"},
                 "summary_invalid": {"INVALID"},
                 # 未深索文献不应混进摘要缺失；异常摘要也有自己的单独入口。
-                "summary_no": {"MISSING"},
+                "summary_no": {"MISSING", "LEGACY"},
             }
             for browse_filter, expected in cases.items():
                 with self.subTest(browse_filter=browse_filter):
                     result = server.papers(deep=browse_filter)
                     self.assertEqual({p["key"] for p in result["papers"]}, expected)
                     self.assertEqual(result["total"], len(expected))
+
+            counts = server.papers()["filter_counts"]
+            self.assertEqual(counts, {
+                "all": 6, "yes": 5, "no": 1, "ocr": 1, "native": 4,
+                "summary_yes": 2, "summary_invalid": 1, "summary_no": 2,
+            })
 
     def test_read_source_keeps_late_page_after_an_unrecognized_gap(self):
         with tempfile.TemporaryDirectory() as td:
