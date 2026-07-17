@@ -37,6 +37,46 @@ class ExtractStatusApiTests(unittest.TestCase):
         self.assertEqual(counts["invalid_pdf"], 0)
         self.assertEqual(counts["ok_native"], 1)
 
+    def test_browse_filters_ocr_and_summary_statuses(self):
+        papers = {
+            "OCR": {"key": "OCR", "stem": "OCR", "title": "扫描件", "has_pdf": True},
+            "NATIVE": {"key": "NATIVE", "stem": "NATIVE", "title": "文字层", "has_pdf": True},
+            "INVALID": {"key": "INVALID", "stem": "INVALID", "title": "异常摘要", "has_pdf": True},
+            "MISSING": {"key": "MISSING", "stem": "MISSING", "title": "缺失摘要", "has_pdf": True},
+            "UNDEEP": {"key": "UNDEEP", "stem": "UNDEEP", "title": "未深索", "has_pdf": True},
+        }
+        extract = {
+            "OCR": {"status": "ok_ocr"},
+            "NATIVE": {"status": "ok_native"},
+            "INVALID": {"status": "ok_native"},
+            "MISSING": {"status": "ok_native"},
+        }
+        deep = {"OCR", "NATIVE", "INVALID", "MISSING"}
+        patches = (
+            mock.patch.object(server, "_load_papers", return_value=papers),
+            mock.patch.object(server, "_load_cats", return_value={}),
+            mock.patch.object(server, "_deep_keys", return_value=deep),
+            mock.patch.object(server, "_deep_no_text_keys", return_value=set()),
+            mock.patch.object(server, "_deep_extract_items", return_value=extract),
+            mock.patch.object(server, "_summary_keys", return_value={"OCR", "NATIVE"}),
+            mock.patch.object(server, "_summary_issues", return_value={"INVALID": "连续重复"}),
+            mock.patch("grading_svc.grade_paper", return_value=None),
+        )
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7]:
+            cases = {
+                "ocr": {"OCR"},
+                "native": {"NATIVE", "INVALID", "MISSING"},
+                "summary_yes": {"OCR", "NATIVE"},
+                "summary_invalid": {"INVALID"},
+                # 未深索文献不应混进摘要缺失；异常摘要也有自己的单独入口。
+                "summary_no": {"MISSING"},
+            }
+            for browse_filter, expected in cases.items():
+                with self.subTest(browse_filter=browse_filter):
+                    result = server.papers(deep=browse_filter)
+                    self.assertEqual({p["key"] for p in result["papers"]}, expected)
+                    self.assertEqual(result["total"], len(expected))
+
     def test_read_source_keeps_late_page_after_an_unrecognized_gap(self):
         with tempfile.TemporaryDirectory() as td:
             extracted = Path(td)
@@ -56,6 +96,22 @@ class ExtractStatusApiTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual([p["pdf_page"] for p in result["pages"]], [1, 3])
         self.assertEqual(result["n_pages_total"], 3)
+
+    def test_read_source_range_does_not_shrink_reported_total_pages(self):
+        with tempfile.TemporaryDirectory() as td:
+            extracted = Path(td)
+            # 兼容旧提取记录：没有 total_pages，但页数组本身能证明全文至少到第 3 页。
+            (extracted / "K.json").write_text(json.dumps({"pages": [
+                {"page": 1, "text": "第一页"}, {"page": 3, "text": "第三页"},
+            ]}, ensure_ascii=False), encoding="utf-8")
+            papers = {"K": {"key": "K", "stem": "K", "title": "旧记录", "has_pdf": True}}
+            with mock.patch.object(server.C, "EXTRACTED", extracted), \
+                    mock.patch.object(server, "_load_papers", return_value=papers), \
+                    mock.patch("page_map.printed", return_value={}):
+                result = server.read_source("K", from_page=1, to_page=1)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["n_pages_total"], 3)
+        self.assertEqual([p["pdf_page"] for p in result["pages"]], [1])
 
 
 class UpdateInstallerEndpointTests(unittest.TestCase):

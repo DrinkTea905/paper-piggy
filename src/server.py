@@ -1226,7 +1226,11 @@ def index_status():
     deep_set = set(ek.read_text(encoding="utf-8").split()) if ek.exists() else set()
     deep = len(deep_set)
     # 深索摘要（SAC）覆盖：已深索里多少篇有检索摘要（同 safe_name(stem) 口径）
-    sac_done = len(deep_set & _summary_keys())
+    summary_keys = _summary_keys()
+    summary_issues = _summary_issues()
+    sac_done = len(deep_set & summary_keys)
+    sac_invalid = len(deep_set & set(summary_issues))
+    sac_missing = max(0, deep - sac_done - sac_invalid)
     # 去重计数（与 deep/_deep_keys() 同口径）：标记文件出现重复行时 len(split()) 会虚高，
     # 前端据 meta_done<papers 判断语义层是否待完成，虚高到 ≥papers 会误隐藏「正在提升检索质量」提示。
     meta_done = len(set(C.META_EMBEDDED.read_text(encoding="utf-8").split())) if C.META_EMBEDDED.exists() else 0
@@ -1248,7 +1252,8 @@ def index_status():
         "invalid_pdf": extract_counts.get("invalid_pdf", 0),
         # 深索摘要（SAC）：sac_done=已深索且有摘要的篇数；sac_generator=生成方(off/agent/server)；
         # sac_backfill=补生成摘要后台任务的实时进度（前端据此显示进度/禁用重复触发）。
-        "sac_done": sac_done, "sac_generator": _sac_generator(), "sac_backfill": dict(BACKFILL),
+        "sac_done": sac_done, "sac_invalid": sac_invalid, "sac_missing": sac_missing,
+        "sac_generator": _sac_generator(), "sac_backfill": dict(BACKFILL),
         "building": BUILD["running"], "stage": BUILD["stage"], "log": BUILD["log"][-40:],
         "queue_pending": q_pending, "queue_in_flight": q_inflight,
         # BF14：cancelled=本次构建是否被 /build/cancel 取消；rc=上次构建子进程退出码（未结束为 null）。
@@ -1370,13 +1375,21 @@ def _deep_no_text_keys():
     return blocked
 
 def _summary_keys():
-    """已生成检索摘要（SAC）的 safe_name(stem) 集合，与 embedded_keys.txt 同口径。
+    """已生成且通过质量检查的检索摘要 stem 集合，与 embedded_keys.txt 同口径。
        用来统计「已深索里多少篇有检索摘要」= deep ∩ summary。"""
     try:
         import sac as _SAC
         return _SAC.summary_keys()
     except Exception:
         return set()
+
+def _summary_issues():
+    """异常检索摘要 {stem: reason}。只读，不在后台擅自重生成。"""
+    try:
+        import sac as _SAC
+        return _SAC.summary_issues()
+    except Exception:
+        return {}
 
 def _sac_generator():
     """当前深索摘要生成方（off / agent / server），供前端措辞与补生成入口判断。"""
@@ -1687,7 +1700,11 @@ def deep_queue_status():
     papers = _load_papers()
     deep_set = _deep_keys()
     deep_done = len(deep_set)
-    sac_done = len(deep_set & _summary_keys())   # 已深索里有检索摘要的篇数
+    summary_keys = _summary_keys()
+    summary_issues = _summary_issues()
+    sac_done = len(deep_set & summary_keys)   # 已深索里有有效检索摘要的篇数
+    sac_invalid = len(deep_set & set(summary_issues))
+    sac_missing = max(0, deep_done - sac_done - sac_invalid)
     manifest = json.loads(C.INDEX_MANIFEST.read_text(encoding="utf-8")) if C.INDEX_MANIFEST.exists() else {}
     with _Q_LOCK:
         pending = len(QUEUE["pending"]); in_flight = len(QUEUE["in_flight"])
@@ -1700,7 +1717,8 @@ def deep_queue_status():
     extract_counts = _deep_extract_counts()
     return {"pending": pending, "in_flight": in_flight, "paused": paused,
             "deep_done": deep_done, "with_pdf": manifest.get("with_pdf", 0),
-            "sac_done": sac_done, "sac_backfill": dict(BACKFILL),   # 深索摘要覆盖 + 补生成进度
+            "sac_done": sac_done, "sac_invalid": sac_invalid, "sac_missing": sac_missing,
+            "sac_backfill": dict(BACKFILL),   # 深索摘要覆盖 + 补生成进度
             "deep_no_text": len(_deep_no_text_keys()),   # 旧前端兼容：当前不可继续的提取终态数
             "extract_status_counts": extract_counts,
             "ocr_pending": extract_counts.get("ocr_pending", 0),
@@ -2613,7 +2631,8 @@ def papers(collection: Optional[str] = None, topic: Optional[int] = None,
     papers = _load_papers(); cats = _load_cats(); deepk = _deep_keys()
     notextk = _deep_no_text_keys()   # 兼容旧字段：当前不可继续深索的终态
     extract_items = _deep_extract_items()
-    sumk = _summary_keys()           # 有检索摘要（SAC）的 safe_name(stem) 集合
+    sumk = _summary_keys()           # 有效检索摘要（SAC）的 safe_name(stem) 集合
+    sum_issues = _summary_issues()
     if category:
         # 统一走 _resolve_category_keys（与 /search 同一条路）：kbc_/topic:/zotero: 都能过滤；
         # 旧写法只认 kbc_ 前缀，topic:/zotero: 会静默落到全库，list_sources 聚焦失效。
@@ -2631,16 +2650,31 @@ def papers(collection: Optional[str] = None, topic: Optional[int] = None,
     out = []
     for p in items:
         _isdeep = is_deep(p["key"], deepk)
+        stem = p.get("stem") or T.safe_name(p["key"])
+        summary_stem = T.safe_name(stem)
+        extract_rec = _extract_record(stem, extract_items)
+        has_summary = summary_stem in sumk
+        summary_invalid = summary_stem in sum_issues
         if deep == "yes" and not _isdeep:
             continue
         if deep == "no" and _isdeep:
+            continue
+        if deep == "ocr" and extract_rec.get("status") != "ok_ocr":
+            continue
+        if deep == "native" and extract_rec.get("status") != "ok_native":
+            continue
+        if deep == "summary_yes" and not has_summary:
+            continue
+        if deep == "summary_invalid" and not summary_invalid:
+            continue
+        # 检索摘要只对已深索文献有意义；异常摘要另列，不混进“缺失”。
+        if deep == "summary_no" and (not _isdeep or has_summary or summary_invalid):
             continue
         if since and (p.get("ingested_at") or "") < since:   # EN-A7：早于 since（或无入库时间）的滤掉
             continue
         # F38-B：按当前学科取分级（快路径 compute=False，只用已预热 memo；未预热则回退旧 journal_tier）
         # 手动改档/法源报告规则在 grade_paper 里优先命中（不走 memo，即改即显）。
         g = GS.grade_paper(p, compute=False)
-        stem = p.get("stem") or T.safe_name(p["key"])
         out.append({
             "key": p["key"], "title": p.get("title", ""), "author": p.get("author", ""),
             "year": p.get("year", ""), "journal": p.get("journal", ""),
@@ -2654,12 +2688,14 @@ def papers(collection: Optional[str] = None, topic: Optional[int] = None,
             "collections": p.get("collections", []),
             "needs_review": bool(p.get("needs_review", False)),   # folder 模式：AI 抽的题录待核对
             "no_text": stem in notextk,
-            "extract_status": _extract_record(stem, extract_items),
+            "extract_status": extract_rec,
             "ingested_at": p.get("ingested_at", ""),               # 供「最新入库」排序
             "itemtype": p.get("itemtype", ""),
             "statute_status": p.get("statute_status", ""),         # EN-L5：法条时效徽标（浏览卡 statuteBadge 读它）
             "score": _rec_score(p, g), "deep": _isdeep,
-            "has_summary": T.safe_name(p["key"]) in sumk,          # 该篇是否已有 AI 检索摘要（SAC）
+            "has_summary": has_summary,
+            "summary_invalid": summary_invalid,
+            "summary_error": sum_issues.get(summary_stem, ""),
         })
     if sort == "recommend":
         out.sort(key=lambda x: -x["score"])
@@ -2782,8 +2818,9 @@ def read_source(key: str, from_page: int = 1, to_page: int = 0, max_chars: int =
     lo = max(1, int(from_page or 1))
     # pages 只保存有文字的页；混合 PDF 若有一页 OCR 仍失败，页码会有空洞。
     # 不能用 len(pages) 当末页，否则 [1, 3] 会把真实第 3 页误裁掉。
-    hi = int(to_page) if to_page else max(
-        [int(pg.get("page", 0) or 0) for pg in pages] + [int(rec.get("total_pages", 0) or 0)])
+    last_page = max([int(pg.get("page", 0) or 0) for pg in pages]
+                    + [int(rec.get("total_pages", 0) or 0)])
+    hi = int(to_page) if to_page else last_page
     try:
         import page_map as PM
     except Exception:
@@ -2807,7 +2844,7 @@ def read_source(key: str, from_page: int = 1, to_page: int = 0, max_chars: int =
 
     return {"ok": True, "key": key, "title": title,
             "author": p.get("author", ""), "year": p.get("year", ""), "journal": p.get("journal", ""),
-            "n_pages_total": int(rec.get("total_pages", 0) or hi), "returned_pages": len(out),
+            "n_pages_total": last_page, "returned_pages": len(out),
             "chars": used, "truncated": truncated, "next_page": next_page,
             "pages": out}
 
@@ -3208,7 +3245,12 @@ def _deep_agent_run(q: DeepAgentQ):
     wrote = 0
     # ① 带 summaries：写进 summaries.json，再阻塞跑 deep_embed 把上一批带摘要嵌入（标记已深索）
     if q.summaries:
-        wrote = SAC.write_summaries([{"key": s.key, "summary": s.summary} for s in q.summaries])
+        result = SAC.write_summaries([{"key": s.key, "summary": s.summary} for s in q.summaries])
+        if result["errors"]:
+            return {"ok": False, "stage": "summary_validation", "wrote": 0,
+                    "summary_errors": result["errors"],
+                    "error": "本批摘要未通过质量检查，整批未写入；请修正后重新提交"}
+        wrote = result["written"]
         # BF16：接住子阶段退出码——此前 rc≠0（余额不足/网络断）也照样返回 ok:true，
         # agent 会向用户误报「已嵌入入库」，实际一篇都没进。
         rc = _run_stage_blocking("deep_embed")
@@ -3281,7 +3323,7 @@ def index_deep_agent(q: DeepAgentQ):
 # 撤销其深索标记 → 跑 deep_embed 重嵌入（带摘要前缀）。摘要只有重嵌入后才对检索生效，
 # 所以这一步必然要重嵌入；切块/提取产物保留不删，embed_index add 前按 key 删旧行、无重复。
 def _backfill_gap_stems(only=None):
-    """可补生成的候选 stem：已深索、无摘要、且非扫描件。
+    """可补生成的候选 stem：已深索、摘要缺失或异常、且正文可用。
        only 给定（stem 集合）时只取其中的，用于「为某一篇/某几篇生成」。"""
     deep = _deep_keys(); sumk = _summary_keys(); notext = _deep_no_text_keys()
     gap = [s for s in deep if s not in sumk and s not in notext]
@@ -3406,9 +3448,10 @@ def get_summary(key: str):
        返回 has_summary / summary / deep（该篇是否已深索——未深索无法生成摘要）。"""
     stem = T.safe_name(key)
     import sac as SAC
-    txt = SAC.get(stem)
+    info = SAC.inspect(stem)
     return {"key": key, "deep": stem in _deep_keys(),
-            "has_summary": bool(txt), "summary": txt}
+            "has_summary": info["valid"], "summary": info["summary"],
+            "summary_invalid": bool(info["reason"]), "summary_error": info["reason"]}
 
 # ── 检索 ──────────────────────────────────────────────────
 class SearchQ(BaseModel):

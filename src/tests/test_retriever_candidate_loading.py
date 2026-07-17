@@ -60,6 +60,26 @@ class CandidateLoadingTests(unittest.TestCase):
     def test_result_columns_never_include_vector(self):
         self.assertNotIn("vector", R._RESULT_COLUMNS)
 
+    def test_discovery_does_not_refill_with_duplicate_source_overflow(self):
+        rows = {
+            "a": {"chunk_id": "a", "key": "K1", "text": "a", "row_type": "chunk", "title": "一", "journal_tier": "普通"},
+            "b": {"chunk_id": "b", "key": "K1", "text": "b", "row_type": "chunk", "title": "一", "journal_tier": "普通"},
+            "c": {"chunk_id": "c", "key": "K1", "text": "c", "row_type": "chunk", "title": "一", "journal_tier": "普通"},
+            "d": {"chunk_id": "d", "key": "K1", "text": "d", "row_type": "chunk", "title": "一", "journal_tier": "普通"},
+            "e": {"chunk_id": "e", "key": "K2", "text": "e", "row_type": "chunk", "title": "二", "journal_tier": "普通"},
+        }
+        R.M["rerank"] = _Reranker({"a": 5, "b": 4, "c": 3, "d": 2, "e": 1})
+        fetch = lambda ids: {cid: rows[cid] for cid in ids}
+        with (mock.patch.object(R, "dense_search", return_value=list(rows)),
+              mock.patch.object(R, "bm25_search", return_value=list(rows)),
+              mock.patch.object(R, "fetch_records", side_effect=fetch),
+              mock.patch.object(R, "_weight_res", return_value=None)):
+            broad = R.search_full("测试", 5, "relevance")
+            directed = R.search_full("测试", 5, "relevance", keys={"K1", "K2"}, max_per_key=5)
+
+        self.assertEqual([x["chunk_id"] for x in broad], ["a", "b", "e"])
+        self.assertEqual([x["chunk_id"] for x in directed], ["a", "b", "c", "d", "e"])
+
     def test_wiki_and_repealed_penalties_accept_candidate_dicts(self):
         R.M["wiki"] = {"W": {"stale": True}}
         R.M["statute_status"] = {"LAW": "已废止"}

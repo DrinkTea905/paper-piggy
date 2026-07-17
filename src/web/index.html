@@ -146,7 +146,7 @@
           <div class="ag-ch-c">
             <h3>第二步 · 让文献可深读（① 深索 → ② 检索摘要）</h3>
             <p class="ag-note"><b>① 深索</b>＝把 PDF 全文拆成可检索的小段。<b>只有深索过的文献</b>才能被精读、页级引用、跨篇综合；未深索的只有题录 + 摘要。在「📚 浏览」里挑文献深索，建议慢慢把常用的喂完——<b>可放后台跑，不影响使用</b>。遇到没有文字层的扫描页时，PaperPiggy 会自动在本机 OCR，只把识别文字存入索引，不改原 PDF。</p>
-            <p class="ag-note"><b>② 检索摘要</b>（深索之后的一步）——再给每篇深索文献配一段 ~150 字 AI 摘要（⚙ 设置 → 检索摘要），<b>让检索更容易找准这篇</b>。可让 Agent 跑深索时顺带生成（省 API 额度），或在「📚 浏览」对单篇点「⚪ 无摘要」现生成、或在库总览点「🧬 生成检索摘要」批量补。</p>
+            <p class="ag-note"><b>② 检索摘要</b>（深索之后的一步）——再给每篇深索文献配一段 ~150 字 AI 摘要（⚙ 设置 → 检索摘要），<b>让检索更容易找准这篇</b>。摘要会先过质量检查；乱码、重复失控或过期占位摘要不算完成。可让 Agent 跑深索时顺带生成（省 API 额度），或在「📚 浏览」对单篇修复 / 生成、或在库总览批量处理。</p>
           </div>
         </section>
 
@@ -240,10 +240,21 @@
           <div class="bl-tools">
             <button class="ag-refresh" data-act="refresh-browse" title="重新扫描：文献列表 / 收藏夹树计数 / 分类 / 总数（新入库或后台深索后，点这里就能看到，不用重开应用）">🔄 刷新</button>
             <label class="bl-sel-all"><input type="checkbox" id="bl-selall" /> 全选</label>
-            <select id="bl-deep-filter" title="深索状态">
+            <select id="bl-deep-filter" title="筛选文献">
               <option value="">全部</option>
-              <option value="yes">📄 已深索</option>
-              <option value="no">📋 未深索</option>
+              <optgroup label="深索状态">
+                <option value="yes">📄 已深索</option>
+                <option value="no">📋 未深索</option>
+              </optgroup>
+              <optgroup label="正文来源">
+                <option value="ocr">🔎 本地 OCR</option>
+                <option value="native">📃 原生文字层</option>
+              </optgroup>
+              <optgroup label="检索摘要">
+                <option value="summary_yes">🧬 有有效摘要</option>
+                <option value="summary_invalid">⚠ 摘要异常</option>
+                <option value="summary_no">◯ 摘要缺失</option>
+              </optgroup>
             </select>
             <select id="bl-sort" title="排序">
               <option value="recommend">推荐优先</option>
@@ -485,7 +496,7 @@
           <div class="ag-ch-c">
             <h3>深索：让回答精确到页码</h3>
             <p class="ag-note"><b>已深索</b>的文献 AI 能读到精确页码的正文；<b>未深索</b>的只有题录 + 摘要。想某方向问答更扎实，先去「📚 浏览」深索它（拆成可检索的小段，可后台慢慢跑，不影响使用）。没有文字层的页面会自动做<b>本地 OCR</b>；不上传文献、不修改原 PDF。附件丢失或 PDF 损坏会分开提示。</p>
-            <p class="ag-note">💡 <b>第②步：检索摘要</b>——深索完，让 AI 给每篇写一段检索摘要（⚙ 设置 → 检索摘要），<b>检索更容易命中这篇</b>。可让 Agent 跑深索时顺带生成、或在「📚 浏览」对单篇点「⚪ 无摘要」、或在库总览「🧬 生成检索摘要」批量补。</p>
+            <p class="ag-note">💡 <b>第②步：检索摘要</b>——深索完，让 AI 给每篇写一段检索摘要（⚙ 设置 → 检索摘要），<b>检索更容易命中这篇</b>。摘要必须通过质量检查才算完成；异常会明确标出，只有你主动点修复 / 补生成时才会重写和重嵌入。</p>
             <div id="ag-deep" class="ag-deep">读取深索进度…</div>
           </div>
         </section>
@@ -642,7 +653,7 @@
       <div class="set-section">
         <!-- UX11：去掉「检索前缀/召回」黑话，说人话 -->
         <h4>🧬 检索摘要（知识库建设第②步·让检索更容易找准每篇）</h4>
-        <p class="hint">深索（第①步）把 PDF 拆成小段可检索；<b>检索摘要（第②步）</b>再给每篇深索文献配一段 ~150 字 AI 摘要当检索前缀，更易被搜到。这里选<b>由谁来生成</b>（一点即存）；也可在「📚 浏览」里对单篇点「⚪ 无摘要」现生成：</p>
+        <p class="hint">深索（第①步）把 PDF 拆成小段可检索；<b>检索摘要（第②步）</b>再给每篇深索文献配一段 ~150 字 AI 摘要当检索前缀，更易被搜到。只有通过质量检查的摘要才计为完成；异常项会提示修复，不会自动改写。这里选<b>由谁来生成</b>（一点即存）：</p>
         <div class="sac-gen">
           <label class="sac-gen-opt"><input type="radio" name="sac-gen" value="agent" />
             <span><b>交给 Agent 生成</b>（推荐）<br><small>在对话里让 Claude Code / Codex 跑深索时，它边深索边自己写摘要——省 API 额度、质量更好。注意：摘要只在用 Agent 跑深索时生成；在应用内直接点「深索」不会补摘要。</small></span></label>

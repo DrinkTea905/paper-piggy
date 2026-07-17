@@ -6,7 +6,7 @@
 - 只对"缺摘要"的篇生成，幂等；每篇 1 次 LLM 调用（非每块）。
 - settings.sac.enabled=False 或 key 空 → 跳过（退化为纯文本嵌入，不报错）。
 """
-import sys, json, os, time
+import sys, json, os, re, time
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import config as C
@@ -16,12 +16,16 @@ import settings as S
 SUM_FILE = C.DATA / "summaries" / "summaries.json"
 SYS_PROMPT = ("你是学术文献摘要助手。用一段**约150字的中文**，概括这篇文献的核心主题、研究方法与主要结论，"
               "以便语义检索。只输出这段摘要本身，不要任何前缀、标题或解释。")
+MIN_SUMMARY_CHARS = 60
+MAX_SUMMARY_CHARS = 500
+_NO_BODY_MARKERS = ("无摘要和正文", "没有摘要和正文", "无正文内容", "未提供正文")
 
 
 def _load():
     if SUM_FILE.exists():
         try:
-            return json.loads(SUM_FILE.read_text(encoding="utf-8"))
+            data = json.loads(SUM_FILE.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
         except Exception:
             return {}
     return {}
@@ -34,13 +38,67 @@ def _save(d):
     os.replace(tmp, SUM_FILE)
 
 
+def validate_summary(summary):
+    """返回 ``(是否合格, 原因)``。只挡住明显损坏或已经过期的检索摘要。
+
+    阈值刻意宽松：简洁但有信息的摘要可以通过；问号乱码、无限重复、失控长文，
+    以及声称“没有正文”的旧占位摘要不能再冒充已完成。
+    """
+    if not isinstance(summary, str):
+        return False, "摘要格式错误（应为文本）"
+    s = summary.strip()
+    if not s:
+        return False, "摘要为空"
+    if len(s) < MIN_SUMMARY_CHARS:
+        return False, f"摘要过短（{len(s)} 字）"
+    if len(s) > MAX_SUMMARY_CHARS:
+        return False, f"摘要过长（{len(s)} 字，疑似生成失控）"
+    if "\ufffd" in s:
+        return False, "含有损坏字符"
+    if any(marker in s for marker in _NO_BODY_MARKERS):
+        return False, "摘要仍声称没有正文，可能早于 OCR 结果"
+
+    visible = [ch for ch in s if not ch.isspace()]
+    useful = sum(ch.isalnum() or "\u3400" <= ch <= "\u9fff" for ch in visible)
+    question_marks = sum(ch in "?？" for ch in visible)
+    if useful < 30 or (visible and question_marks / len(visible) > 0.20):
+        return False, "有效文字过少，疑似乱码"
+
+    words = re.findall(r"[A-Za-z]+|\d+", s.lower())
+    run = 1
+    for idx in range(1, len(words)):
+        run = run + 1 if words[idx] == words[idx - 1] else 1
+        if run >= 8:
+            return False, f"词语“{words[idx]}”连续重复，疑似生成失控"
+    return True, ""
+
+
+def audit(summaries=None):
+    """审计摘要库；不会改文件。返回有效键、异常原因及总数。"""
+    sums = _load() if summaries is None else summaries
+    valid, invalid = set(), {}
+    for key, summary in sums.items():
+        ok, reason = validate_summary(summary)
+        if ok:
+            valid.add(key)
+        else:
+            invalid[key] = reason
+    return {"valid": valid, "invalid": invalid, "total": len(sums)}
+
+
+def load_valid():
+    """只返回通过质量闸门的摘要，供嵌入前缀使用。"""
+    sums = _load()
+    return {key: value for key, value in sums.items() if validate_summary(value)[0]}
+
+
 def summarize_one(title, abstract, body, conf):
     src = f"标题：{title}\n"
     if abstract:
         src += f"原摘要：{abstract}\n"
     src += f"正文节选：{(body or '')[:1500]}"
     msgs = [{"role": "system", "content": SYS_PROMPT}, {"role": "user", "content": src}]
-    return L.chat_once(msgs, conf.get("base"), conf.get("key"), conf.get("model"))
+    return L.chat_once(msgs, conf.get("base"), conf.get("key"), conf.get("model"), max_tokens=320)
 
 
 def _conf():
@@ -70,33 +128,55 @@ def enabled():
 
 def write_summaries(items):
     """#7：把 Agent 写好的检索摘要合并进 summaries.json（键用 safe_name(stem)，与 embed_index 一致）。
-       items：可迭代 {"key":..,"summary":..} 或 (key, summary)。幂等 merge、原子写。返回写入条数。"""
+       items：可迭代 {"key":..,"summary":..} 或 (key, summary)。幂等 merge、原子写。
+       整批先校验：只要有一篇异常就一篇不写，避免后续把坏摘要标成“深索完成”。"""
     import textutil as T
-    sums = _load()
-    n = 0
+    prepared, errors = [], []
     for it in (items or []):
         if isinstance(it, dict):
             key = it.get("key"); summ = (it.get("summary") or "").strip()
         else:
             key, summ = it[0], (it[1] or "").strip()
-        if not key or not summ:
+        if not key:
+            errors.append({"key": "", "reason": "缺少文献 key"})
             continue
-        sums[T.safe_name(key)] = summ
-        n += 1
-    if n:
+        safe_key = T.safe_name(key)
+        ok, reason = validate_summary(summ)
+        if not ok:
+            errors.append({"key": key, "reason": reason})
+        else:
+            prepared.append((safe_key, summ))
+    if errors:
+        return {"written": 0, "accepted_keys": [], "errors": errors}
+    sums = _load()
+    for key, summ in prepared:
+        sums[key] = summ
+    if prepared:
         _save(sums)
-    return n
+    return {"written": len(prepared), "accepted_keys": [k for k, _ in prepared], "errors": []}
 
 
 def summary_keys():
-    """已生成检索摘要的 stem 集合（键同 embedded_keys.txt 的 safe_name(stem)）。
+    """通过质量闸门的检索摘要 stem 集合（键同 embedded_keys.txt 的 safe_name(stem)）。
        供 server 统计「已深索里多少篇有摘要」= deep ∩ summary。"""
-    return set(_load().keys())
+    return audit()["valid"]
+
+
+def summary_issues():
+    """返回 {stem: 异常原因}；只读，不会自动重生成。"""
+    return audit()["invalid"]
 
 
 def get(stem):
     """按 safe_name(stem) 取该篇检索摘要文本；无则空串。供「点开查看摘要」只读展示。"""
     return _load().get(stem, "") or ""
+
+
+def inspect(stem):
+    """取得摘要文本及质量状态，供 API/UI 把异常与缺失区分开。"""
+    summary = get(stem)
+    ok, reason = validate_summary(summary)
+    return {"summary": summary if ok else "", "valid": ok, "reason": reason if summary else ""}
 
 
 def key_available():
@@ -115,11 +195,12 @@ def gen_missing(items, log=print, on_progress=None):
     sums = _load()
     n, fail, run_fail = 0, 0, 0
     for stem, title, abstract, body in items:
-        if sums.get(stem, "").strip():
+        if validate_summary(sums.get(stem, ""))[0]:
             continue
         try:
             s = summarize_one(title, abstract, body, conf)
-            if s:
+            ok, reason = validate_summary(s)
+            if ok:
                 sums[stem] = s
                 n += 1
                 run_fail = 0
@@ -127,6 +208,12 @@ def gen_missing(items, log=print, on_progress=None):
                     _save(sums)
                 if on_progress:
                     on_progress(n, fail)
+            else:
+                fail += 1; run_fail += 1
+                log(f"[sac] {stem} 生成结果未通过质量检查：{reason}")
+                if run_fail >= 5:
+                    log("[sac] 连续生成异常摘要，停止本轮补生成（请检查模型与提示词）")
+                    break
         except Exception as e:
             fail += 1; run_fail += 1
             log(f"[sac] {stem} 生成失败：{e}")
@@ -148,16 +235,23 @@ def ensure_for(items, log=print):
     sums = _load()
     n, fail = 0, 0
     for stem, title, abstract, body in items:
-        if sums.get(stem, "").strip():
+        if validate_summary(sums.get(stem, ""))[0]:
             continue
         try:
             s = summarize_one(title, abstract, body, conf)
-            if s:
+            ok, reason = validate_summary(s)
+            if ok:
                 sums[stem] = s
                 n += 1
                 if n % 5 == 0:
                     _save(sums)
                     log(f"[sac] 已生成 {n} 篇摘要 …")
+            else:
+                fail += 1
+                log(f"[sac] {stem} 生成结果未通过质量检查：{reason}")
+                if fail >= 5:
+                    log("[sac] 生成异常摘要过多，停止本轮（请检查模型与提示词）")
+                    break
         except Exception as e:
             fail += 1
             log(f"[sac] {stem} 生成失败：{e}")

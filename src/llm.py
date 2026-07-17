@@ -43,12 +43,14 @@ def _payload(model, messages, temperature, stream):
         body["enable_thinking"] = False
     return body
 
-def chat_once(messages, base_url, api_key, model, temperature=0.3, timeout=120):
+def chat_once(messages, base_url, api_key, model, temperature=0.3, timeout=120, max_tokens=None):
     """非流式：返回完整回复文本（供 SAC 摘要等后台批量调用）。"""
     if not base_url or not api_key or not model:
         raise ValueError("尚未配置 LLM（base/key/model）")
     url = base_url.rstrip("/") + "/chat/completions"
     payload = _payload(model, messages, temperature, False)
+    if max_tokens is not None:
+        payload["max_tokens"] = int(max_tokens)
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
     try:
         r = requests.post(url, json=payload, headers=headers, timeout=timeout)

@@ -518,7 +518,7 @@ def _page_cite(r):
     if pg: s += f"，第{pg}页"
     return s.strip()
 
-def search_full(query, topk, sort, keys=None):
+def search_full(query, topk, sort, keys=None, max_per_key=None):
     # BF6：白名单场景源头召回放大到 150（见 config.FILTER_SRC_TOPK）——限定分类后
     # 50 条粗召回被过滤剩不下几条，池子先天不足；常规检索维持 50 不拖慢。
     src_k = C.FILTER_SRC_TOPK if keys is not None else 0
@@ -540,8 +540,10 @@ def search_full(query, topk, sort, keys=None):
         return []
     scores = M["rerank"].scores(query, [records[cid].get("text") or "" for cid in cand])
     ranked = sorted(zip(cand, scores), key=lambda x: -x[1])
-    # 同 key 去重（chunk 行优先于 meta 行：更具体）+ MAX_PER_KEY
-    per_key, picked, overflow = {}, [], []
+    # 发现型检索默认每篇最多 C.MAX_PER_KEY 段；不拿同一篇的溢出段硬凑 topk。
+    # 只有 verify_claim/read-source 这类明确的定向核验才会传入更高的 max_per_key。
+    per_key_limit = max(1, int(max_per_key or C.MAX_PER_KEY))
+    per_key, picked = {}, []
     meta_idx = {}   # key -> 已入选 meta 行在 picked 中的下标，供随后到达的同篇 chunk 顶替
     for cid, sc in ranked:
         r = records[cid]
@@ -555,16 +557,14 @@ def search_full(query, topk, sort, keys=None):
         if rtype == "chunk" and k in meta_idx:
             picked[meta_idx.pop(k)] = (cid, sc)
             continue
-        if per_key.get(k, 0) >= C.MAX_PER_KEY:
-            overflow.append((cid, sc)); continue
+        if per_key.get(k, 0) >= per_key_limit:
+            continue
         per_key[k] = per_key.get(k, 0) + 1
         picked.append((cid, sc))
         if rtype == "meta":
             meta_idx[k] = len(picked) - 1
         if len(picked) >= topk:
             break
-    if len(picked) < topk:
-        picked.extend(overflow[:topk - len(picked)])
     top = [(records[cid], float(sc), _tier_of(records[cid]), _weight_res(records[cid]))
            for cid, sc in picked]
     _apply_sort(top, sort)
@@ -911,7 +911,7 @@ def _apply_sort(items, sort, lex=False):
         items.sort(key=lambda x: -(_effective(x[1], x[0]) + _blend_bonus(x, lex)))
 
 # ═══ 统一入口 ════════════════════════════════════════════════════
-def _search_loaded(query, topk, sort=None, min_weight=0.0, keys=None):
+def _search_loaded(query, topk, sort=None, min_weight=0.0, keys=None, max_per_key=None):
     sort = sort if sort in ("relevance", "tier", "blend") else C.DEFAULT_SORT
     topk = max(1, int(topk))
     try:
@@ -929,18 +929,22 @@ def _search_loaded(query, topk, sort=None, min_weight=0.0, keys=None):
     if STATE.get("mode") == "light":
         out = search_light(query, fetch, sort, keys=keys)
     else:
-        out = search_full(query, fetch, sort, keys=keys)
+        out = search_full(query, fetch, sort, keys=keys, max_per_key=max_per_key)
     if min_weight > 0:
         out = [d for d in out
                if d.get("journal_weight") is None or d.get("journal_weight", 0) >= min_weight]
     return out[:topk]
 
 
-def search(query, topk, sort=None, min_weight=0.0, keys=None):
-    """统一公开入口：首次调用自动加载组件，结束后重新开始计算空闲时间。"""
+def search(query, topk, sort=None, min_weight=0.0, keys=None, max_per_key=None):
+    """统一公开入口。
+
+    默认每篇最多返回 C.MAX_PER_KEY 段，保证发现型检索的文献覆盖面；定向核验可显式提高
+    ``max_per_key``，在已经选中的文献内寻找更多相互印证的段落。
+    """
     _begin_retrieval(load_if_cold=True)
     try:
-        return _search_loaded(query, topk, sort, min_weight, keys)
+        return _search_loaded(query, topk, sort, min_weight, keys, max_per_key)
     finally:
         _end_retrieval()
 

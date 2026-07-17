@@ -224,7 +224,7 @@ def ensure_up(wait=120):
 TOOLS = [
     {
         "name": "search_localkb",
-        "description": "检索本地文献知识库（用户自己的 Zotero 库或导入的 PDF 文件夹）。返回带期刊等级、官方页码、可回溯引用的结果，用于查找某主题的相关文献、论点或原文段落。可先用 localkb_status 了解库内篇数与学科。",
+        "description": "检索本地文献知识库（用户自己的 Zotero 库或导入的 PDF 文件夹）。返回带期刊等级、官方页码、可回溯引用的结果，用于查找某主题的相关文献、论点或原文段落。发现型检索默认同一篇最多返回2段，不用重复弱段凑满条数，适合先广泛找文献；定向深读请再用 read_source / verify_claim。可先用 localkb_status 了解库内篇数与学科。",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -293,8 +293,8 @@ TOOLS = [
     },
     {
         "name": "deep_status",
-        "description": "查看本地库【深索】进度：已深索篇数 / 有PDF总数 / 队列剩余 / 是否暂停 / 预计剩余时间（ETA）"
-                       "/ 当前在深索或队首的篇。深索前后可随时查，了解深到哪了。",
+        "description": "查看本地库【深索】进度：已深索篇数 / 有PDF总数 / 队列真实状态 / 摘要有效、异常与缺失数 /"
+                       " 预计剩余时间（ETA）/ 当前在深索或队首的篇。深索前后可随时查，了解深到哪了。",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
@@ -303,6 +303,7 @@ TOOLS = [
                        "用法（循环）：第一次【不带 summaries】调用我 → 我返回 to_summarize（若干篇的 key、标题、正文节选 excerpt）；"
                        "你为每篇写一段【约150字的中文检索摘要】（概括核心主题/研究方法/主要结论，供语义检索用）；"
                        "再【带 summaries=[{key, summary}]】调用我 → 我把上一批带着你的摘要嵌入入库、并返回下一批待写摘要；"
+                       "摘要会先过质量检查：过短、乱码、无限重复或失控长文会让整批拒绝写入，并返回具体 key 与原因；修正后重交。"
                        "如此循环，直到我返回 finished=true 表示全部深索完成。每批默认 15 篇（可用 batch 调整）。"
                        "若返回 busy=true 说明有其它构建在跑，稍后再调。",
         "inputSchema": {
@@ -835,11 +836,19 @@ def do_tool(name, args):
             return "错误：知识库服务启动失败。"
         s = requests.get(URL + "/index/queue", timeout=15).json()
         eta = s.get("eta_seconds")
-        eta_s = f"约剩 {max(1, int(eta // 60))} 分钟" if eta else "未知"
+        active = bool(s.get("pending") or s.get("in_flight") or s.get("building"))
+        state = "⏸ 已暂停" if s.get("paused") else ("运行中" if active else "空闲（队列已清空）")
+        eta_s = f"约剩 {max(1, int(eta // 60))} 分钟" if eta else ("无需等待" if not active else "未知")
         out = [f"深索进度：已深索 {s.get('deep_done')}/{s.get('with_pdf')} 篇（有PDF）。",
                f"队列：待处理 {s.get('pending')}、在跑 {s.get('in_flight')}、"
-               f"{'⏸ 已暂停' if s.get('paused') else '运行中'}。",
+               f"{state}。",
+               f"检索摘要：有效 {s.get('sac_done', 0)}、异常 {s.get('sac_invalid', 0)}、缺失 {s.get('sac_missing', 0)}。",
                f"预计剩余：{eta_s}。"]
+        blocked = [("PDF缺失", s.get("missing_pdf", 0)), ("PDF损坏", s.get("invalid_pdf", 0)),
+                   ("OCR失败", s.get("ocr_failed", 0)), ("等待OCR", s.get("ocr_pending", 0))]
+        blocked = [f"{label} {n}" for label, n in blocked if n]
+        if blocked:
+            out.append("提取异常：" + "、".join(blocked) + "。")
         items = s.get("items") or []
         if items:
             out.append("当前在深索/队首：")
@@ -860,6 +869,10 @@ def do_tool(name, args):
         if not r.get("ok"):
             # BF16：后端子阶段失败返回 {ok:false,error,stage}——把人话透传给 agent，
             # 否则 agent 拿不到真因会向用户误报「已嵌入入库」。
+            if r.get("summary_errors"):
+                details = "\n".join(f"- {x.get('key')}: {x.get('reason')}"
+                                     for x in r["summary_errors"])
+                return "摘要质量检查未通过，本批一篇也没有写入。请修正后原批重交：\n" + details
             return "深索失败：" + str(r.get("error") or r.get("detail") or r)
         done, wp, rem = r.get("done"), r.get("with_pdf"), r.get("remaining")
         ts = r.get("to_summarize") or []

@@ -18,19 +18,17 @@ from dbutil import key_predicate
 
 KEYS_FILE = C.STATE / "embedded_keys.txt"
 NO_TEXT_FILE = C.STATE / "deep_no_text.txt"   # C1/A2: 扫描件/无可抽文本的 stem（需 OCR，非真深索）
-SUM_FILE  = C.DATA / "summaries" / "summaries.json"   # M2: {stem: 文档级摘要}
 
 def load_summaries():
-    """M2 文档摘要前缀。返回 {stem(safe_name): summary}；不存在则空字典（退化为纯文本嵌入）。"""
-    if SUM_FILE.exists():
-        try:
-            return json.loads(SUM_FILE.read_text(encoding="utf-8"))
-        except Exception as e:
-            import sys
-            print(f"[embed] 警告：summaries.json 解析失败，本轮按纯文本嵌入(无 SAC 前缀)："
-                  f"{e}", file=sys.stderr, flush=True)
-            return {}
-    return {}
+    """M2 文档摘要前缀。异常摘要不参与嵌入，退化为纯正文。"""
+    try:
+        import sac
+        return sac.load_valid()
+    except Exception as e:
+        import sys
+        print(f"[embed] 警告：检索摘要读取/校验失败，本轮按纯文本嵌入(无 SAC 前缀)："
+              f"{e}", file=sys.stderr, flush=True)
+        return {}
 
 def load_done():
     if KEYS_FILE.exists():

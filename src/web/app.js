@@ -335,11 +335,12 @@
   }
 
   // ── 深索摘要（SAC）覆盖：在每个「深索进度」旁并显「其中 M 篇有检索摘要」+ 补生成入口 ──
-  // st 需含 deep_done / sac_done / sac_backfill（/index/status 与 /index/queue 都有）。
-  // 摘要只对已深索的篇有意义：deep=0 时不显示；补生成中显示进度；有缺口给「🧬 补生成摘要」按钮。
+  // st 需含 deep_done / sac_done / sac_invalid / sac_missing / sac_backfill。
+  // 异常摘要不计完成；只在用户点修复/补生成时才重写并重嵌入。
   function sacFrag(st) {
     if (!st) return "";
     const deep = st.deep_done || 0, sac = st.sac_done || 0;
+    const invalid = st.sac_invalid || 0, missing = st.sac_missing == null ? Math.max(0, deep - sac - invalid) : st.sac_missing;
     if (deep <= 0) return "";
     const bf = st.sac_backfill || {};
     const gap = Math.max(0, deep - sac);
@@ -347,8 +348,9 @@
     if (bf.running) {
       s += ` <span class="sac-bf-run">🧬 ${esc(bf.phase || "生成中")} ${num(bf.done || 0)}/${num(bf.total || 0)}…</span>`;
     } else if (gap > 0) {
-      s += ` <span class="sac-gap">（还有 ${num(gap)} 篇没配，检索更难命中）</span>`
-        + ` <a class="sac-bf-btn" data-act="sac-backfill" role="button" tabindex="0" title="第②步：给已深索但缺摘要的篇生成 ~150 字 AI 检索摘要并重嵌入，让检索更容易找准它们。需 API key，只重嵌入这些篇，可后台跑。">🧬 生成检索摘要</a>`;
+      const detail = [invalid ? `${num(invalid)} 篇摘要异常` : "", missing ? `${num(missing)} 篇缺失` : ""].filter(Boolean).join("，");
+      s += ` <span class="sac-gap">（${detail}，不计完成）</span>`
+        + ` <a class="sac-bf-btn" data-act="sac-backfill" role="button" tabindex="0" title="第②步：修复异常摘要、补生成缺失摘要并重嵌入。需 API key，只处理这些篇，可后台跑。">🧬 修复 / 补生成摘要</a>`;
     } else {
       s += ` ✓`;
     }
@@ -357,17 +359,19 @@
   // 纯文本版（供顶栏 tooltip 等不能放 HTML 的地方）
   function sacText(st) {
     if (!st) return "";
-    const deep = st.deep_done || 0, sac = st.sac_done || 0;
+    const deep = st.deep_done || 0, sac = st.sac_done || 0, invalid = st.sac_invalid || 0;
     if (deep <= 0) return "";
     const gap = Math.max(0, deep - sac);
-    return `；② 检索摘要已配 ${num(sac)}/${num(deep)} 篇` + (gap > 0 ? `，${num(gap)} 篇还没配` : "");
+    return `；② 检索摘要有效 ${num(sac)}/${num(deep)} 篇`
+      + (invalid > 0 ? `，${num(invalid)} 篇异常` : "")
+      + (gap - invalid > 0 ? `，${num(gap - invalid)} 篇缺失` : "");
   }
   let _sacBfBusy = false;
   async function startSacBackfill() {
     if (_sacBfBusy) return;
     const ok = await uiConfirm(
-      "将为「已深索但还没有检索摘要」的文献生成 AI 检索摘要，并重新嵌入这些篇（摘要只有重嵌入后才对检索生效）。用你配的 API key 生成（SiliconFlow 免费额度即可）；只重嵌入这些篇，其它文献不受影响；可放后台跑，不影响继续使用。",
-      { title: "补生成检索摘要？", okText: "开始补生成" });
+      "将修复质量检查未通过的摘要，并为缺失摘要的已深索文献补生成摘要，再重新嵌入这些篇（摘要只有重嵌入后才对检索生效）。用你配的 API key 生成；只处理这些篇，其它文献不受影响；可放后台跑。",
+      { title: "修复 / 补生成检索摘要？", okText: "开始处理" });
     if (!ok) return;
     _sacBfBusy = true;
     try {
@@ -413,7 +417,9 @@
     m.hidden = false;
     try {
       const r = await jget("/summary?key=" + encodeURIComponent(key));
-      $("#summary-body").textContent = (r && r.has_summary) ? r.summary : "（这篇还没有检索摘要——可在卡上点「⚪ 无摘要」为它生成）";
+      $("#summary-body").textContent = (r && r.has_summary) ? r.summary
+        : (r && r.summary_invalid ? `（这篇摘要未通过质量检查：${r.summary_error || "内容异常"}。请在卡上点「⚠ 摘要异常」修复。）`
+          : "（这篇还没有检索摘要——可在卡上点「⚪ 无摘要」为它生成）");
     } catch (e) { $("#summary-body").textContent = "读取失败：" + (e.message || e); }
   }
   { // 摘要弹窗关闭：按钮 / 点遮罩 / Esc
@@ -425,11 +431,13 @@
   }
   // 为某一篇生成检索摘要（点卡上「⚪ 无摘要」）——第②步的单篇版
   async function genSummaryOne(key, badge) {
+    const repairing = !!(badge && badge.classList.contains("invalid"));
     const ok = await uiConfirm(
-      "为这篇生成 AI 检索摘要（知识库建设第②步）：用你的 API key 生成 ~150 字摘要并重嵌入这一篇，让语义检索更容易命中它。可放后台跑。",
-      { title: "为这篇生成检索摘要？", okText: "生成" });
+      `${repairing ? "重新生成" : "生成"}这篇的 AI 检索摘要（知识库建设第②步）：用你的 API key 生成 ~150 字摘要并重嵌入这一篇，让语义检索更容易命中它。可放后台跑。`,
+      { title: repairing ? "修复这篇的异常摘要？" : "为这篇生成检索摘要？", okText: repairing ? "修复" : "生成" });
     if (!ok) return;
-    const restore = () => { if (badge) { badge.textContent = "⚪ 无摘要"; badge.style.pointerEvents = ""; } };
+    const original = badge ? badge.textContent : "⚪ 无摘要";
+    const restore = () => { if (badge) { badge.textContent = original; badge.style.pointerEvents = ""; } };
     if (badge) { badge.textContent = "⏳ 生成中…"; badge.style.pointerEvents = "none"; }
     try {
       const r = await jpost("/index/sac_backfill", { keys: [key] });
@@ -1515,6 +1523,8 @@
     const pctLabel = withPdf === 0 ? "—" : (processed > 0 && rawPct < 1 ? "<1%" : Math.round(rawPct) + "%");
     // 第②步 检索摘要 的进度（分母＝已深索数，摘要只对已深索的篇有意义）
     const sac = st.sac_done || 0;
+    const sacInvalid = st.sac_invalid || 0;
+    const sacMissing = st.sac_missing == null ? Math.max(0, deep - sac - sacInvalid) : st.sac_missing;
     const sacRawPct = deep > 0 ? (sac / deep) * 100 : 0;
     const sacBarPct = sac > 0 ? Math.max(3, Math.round(sacRawPct)) : 0;
     const sacPctLabel = deep === 0 ? "—" : (sac > 0 && sacRawPct < 1 ? "<1%" : Math.round(sacRawPct) + "%");
@@ -1548,8 +1558,8 @@
               : (bf.running
                   ? `<span class="sac-bf-run">🧬 ${esc(bf.phase || "生成中")} ${num(bf.done || 0)}/${num(bf.total || 0)}…</span>`
                   : (sacGap > 0
-                      ? `给每篇深索文献配一段 ~150 字 AI 摘要，让检索更易命中。已配 <b>${num(sac)}</b>/${num(deep)} 篇，还有 ${num(sacGap)} 篇没配。 <a class="sac-bf-btn" data-act="sac-backfill" role="button" tabindex="0" title="为已深索但缺摘要的篇生成 AI 检索摘要并重嵌入，需 API key，只重嵌入这些篇，可后台跑。">🧬 生成检索摘要</a>`
-                      : `已全部配好检索摘要 ✓`))}</div>
+                       ? `有效摘要 <b>${num(sac)}</b>/${num(deep)} 篇；${[sacInvalid ? `<b>${num(sacInvalid)}</b> 篇异常` : "", sacMissing ? `<b>${num(sacMissing)}</b> 篇缺失` : ""].filter(Boolean).join("，")}。异常摘要不计完成；修复并重嵌入后才会替换旧前缀。 <a class="sac-bf-btn" data-act="sac-backfill" role="button" tabindex="0" title="修复异常摘要、补生成缺失摘要并重嵌入，需 API key，只处理这些篇，可后台跑。">🧬 修复 / 补生成摘要</a>`
+                       : `全部摘要已通过质量检查 ✓`))}</div>
         </div>
         ${(remain > 0 || sacGap > 0) ? `<div class="dh-deep-note">① 深索＝把 PDF 拆成可检索小段（能精读、引页码、跨篇综合）；② 检索摘要＝再给每篇配段 AI 摘要当检索前缀（更易被命中）。都可放后台慢慢跑，不影响使用。</div>` : ""}
       </div></div>`;
@@ -1661,8 +1671,8 @@
     return wrap;
   }
 
-  // 换收藏夹/主题时默认把「深索状态」筛选清回「全部」，否则上次的「已深索」会把列表掐成只剩深索篇，
-  // 让人误以为该收藏夹/主题只有深索的那几篇。库总览的「查看已深索/去深索」入口用 keepFilter 保留筛选。
+  // 换收藏夹/主题时默认把文献筛选清回「全部」，否则上次的 OCR/摘要等筛选会继续收窄新范围，
+  // 让人误以为该收藏夹/主题只有那几篇。库总览的「查看已深索/去深索」入口用 keepFilter 保留筛选。
   function resetDeepFilter() {
     BR.deepFilter = "";
     const df = $("#bl-deep-filter"); if (df) df.value = "";
@@ -2897,9 +2907,12 @@
     if (s == null || s < 12) return "";
     return `<span class="brec" title="按期刊层级/年份/有无全文综合推荐，值得优先深读">建议深读</span>`;
   }
-  // 已深索的卡：有摘要→🧬(点开只读查看)；无摘要→⚪(点→为这篇生成第②步)。未深索不谈摘要。
+  // 已深索的卡：有效→🧬；异常→⚠；缺失→⚪。异常与缺失都由用户点后才生成。
   function sacBadge(p) {
     if (!p.deep) return "";
+    if (p.summary_invalid) {
+      return `<span class="tag sac none invalid" role="button" tabindex="0" title="摘要未通过质量检查：${esc(p.summary_error || "内容异常")}。点此修复并重嵌入这一篇">⚠ 摘要异常</span>`;
+    }
     return p.has_summary
       ? `<span class="tag sac has" role="button" tabindex="0" title="点开查看这篇的 AI 检索摘要">🧬 有摘要</span>`
       : `<span class="tag sac none" role="button" tabindex="0" title="点此为这篇生成 AI 检索摘要（知识库建设第②步；让检索更容易命中，需 API key，会重嵌入这一篇，可后台跑）">⚪ 无摘要</span>`;
@@ -3024,7 +3037,7 @@
       if (s.type === "topic") params.set("topic", s.id);
       else if (s.type === "zotero") params.set("collection", s.id);
       else if (s.type === "kbcat") params.set("category", s.id);
-      // 深索状态筛选（与范围叠加）
+      // 文献状态筛选（深索 / OCR / 检索摘要，与左侧范围叠加）
       if (BR.deepFilter) params.set("deep", BR.deepFilter);
       const d = await jget("/papers?" + params.toString());
       if (myseq !== BR.reqSeq) return;   // B5：已有更新的请求发出，丢弃这次陈旧响应
@@ -3038,6 +3051,9 @@
         // empty-cat-hint-deadlock：给出可操作路径 + 跳转按钮，而非死胡同
         $("#bl-msg").innerHTML = `该分类暂无文献。去「⭐ 全部文献」勾选后点「＋ 加入分类」，或右键文献卡 / 拖到左侧分类上归类。 <a class="ag-link" id="bl-go-all">→ 去全部文献</a>`;
         const g = $("#bl-go-all"); if (g) g.addEventListener("click", () => selectCollection(null, "全部", null));
+      } else if (BR.deepFilter) {
+        const opt = $("#bl-deep-filter").selectedOptions[0];
+        $("#bl-msg").textContent = `（没有符合“${(opt && opt.textContent.trim()) || "当前筛选"}”的文献）`;
       } else { $("#bl-msg").textContent = "（该分类暂无文献）"; }
       const frag = document.createDocumentFragment();
       BR.papers.forEach((p) => frag.appendChild(paperCard(p)));
@@ -3070,8 +3086,10 @@
         const f = fresh.get(p.key);
         if (!f) return;
         if (p.no_text === f.no_text && p.deep === f.deep && p.has_summary === f.has_summary
+            && p.summary_invalid === f.summary_invalid && p.summary_error === f.summary_error
             && JSON.stringify(p.extract_status || {}) === JSON.stringify(f.extract_status || {})) return;
         p.no_text = f.no_text; p.deep = f.deep; p.has_summary = f.has_summary;
+        p.summary_invalid = f.summary_invalid; p.summary_error = f.summary_error;
         p.extract_status = f.extract_status || {};
         const old = $(`#bl-list .bcard[data-key="${CSS.escape(p.key)}"]`);
         if (old) old.replaceWith(paperCard(p));    // 整卡重建：勾选态按 BR.selected 重算、事件重绑

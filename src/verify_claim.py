@@ -143,7 +143,10 @@ def verify(claim, keys=None, topk=8):
     try:
         # sort=relevance：核验只关心语义相关，不掺期刊层级加成（blend 的 tier bonus 会
         # 让高档期刊的弱相关块顶掉低档期刊的强支撑句，核验场景是反效果）
-        hits = R.search(claim, topk, "relevance", keys=kset)
+        # 已明确给出 keys 时属于定向核验：允许在选定文献内多取证据段；未给 keys 仍按
+        # 发现型检索的每篇上限，避免一篇文献淹没整个候选集。
+        hits = R.search(claim, topk, "relevance", keys=kset,
+                        max_per_key=topk if kset else None)
     except Exception as e:
         return {"verdict": "not_in_lib", "confidence": 0.0, "evidence": [],
                 "note": f"检索后端异常（{e.__class__.__name__}），本次未能核验。" + FIXED_NOTE}
@@ -151,12 +154,12 @@ def verify(claim, keys=None, topk=8):
 
     claim_grams = _bigrams(TL.norm_text(claim, fuzzy=True))
     import page_map as PM
-    evidence = []
+    evidence, seen = [], set()
     for h in hits:
         text = h.get("context") or h.get("text") or ""
         quote, r = _best_sentence(claim_grams, text)
         if r < _OVERLAP_THR:
-            quote = ""                     # 重叠不足：诚实给空，不硬凑"看着像"的句子
+            continue                         # 空引文不是证据，不再返回给 agent 凑数
         pn = h.get("page")
         pr = ""
         if pn is not None and h.get("key"):
@@ -164,11 +167,22 @@ def verify(claim, keys=None, topk=8):
                 pr = (PM.printed(h["key"], pn) or {}).get("display") or ""
             except Exception:
                 pr = ""
+        sig = (h.get("key", ""), pn, TL.norm_text(quote, fuzzy=True))
+        if sig in seen:
+            continue
+        seen.add(sig)
         evidence.append({"key": h.get("key", ""), "title": h.get("title", ""),   # title 供人读（前端/agent 显示）
                          "pdf_page": pn, "printed_page": pr,
                          "quote": quote, "score": h.get("score", 0.0)})
 
     if not evidence:
+        if hits:
+            try:
+                weak_conf = _norm_conf(hits[0].get("score", 0.0), api) * 0.5
+            except Exception:
+                weak_conf = 0.0
+            return {"verdict": "not_in_lib", "confidence": round(weak_conf, 3), "evidence": [],
+                    "note": "有主题相关命中，但未找到与论断高重叠的支撑句；空引文不作为证据返回。" + FIXED_NOTE}
         return {"verdict": "not_in_lib", "confidence": 0.0, "evidence": [],
                 "note": "库内没有主题相关命中。" + FIXED_NOTE}
 
@@ -199,9 +213,6 @@ def verify(claim, keys=None, topk=8):
         if mode != "full":
             note = "当前为轻量索引（仅题录，无正文），无法做支撑句核验，保守判为未覆盖。"
             conf = 0.0
-        elif not top["quote"]:
-            note = "有主题相关命中，但未找到与论断高重叠的支撑句——机器无法判定语义支持与否，保守判为未覆盖。"
-            conf = _norm_conf(top_score, api) * 0.5   # 有相关命中但无支撑句：置信打对折
         else:
             note = "找到候选支撑句但检索相关度未达显著阈值，保守判为未覆盖。"
             conf = _norm_conf(top_score, api)
