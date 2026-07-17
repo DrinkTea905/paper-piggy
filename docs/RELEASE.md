@@ -94,6 +94,8 @@ build\py312\python.exe -c "import onnxruntime, lancedb, pypdfium2, rapidocr, cv2
       会中止出包并报警，别手贱跳过）
 - [ ] 安装器**带** `portable.txt`（由 .iss 从 `installer\portable.txt` 装入 = 数据同目录开关）
 - [ ] 安装器是**用户级**的（`PrivilegesRequired=lowest`）—— 与上一条是一套，只改一个必崩
+- [ ] `python -m unittest src.tests.test_installer_mcp_preflight -v` 通过：升级前能识别
+      Codex / Claude 等客户端持有的 PaperPiggy MCP，且安装器不会自动结束任何进程
 
 **干净机验收**（没装 VC++ 2015-2022、没装 WebView2 的全新 Windows）
 - [ ] `bundle\python\python.exe -c "import onnxruntime"` 不报 WinError 1114
@@ -139,7 +141,9 @@ build\py312\python.exe -c "import onnxruntime, lancedb, pypdfium2, rapidocr, cv2
   兜底：万一用户把它装进 `Program Files`（不可写），`config._writable()` 探测到就回退
   `%LOCALAPPDATA%\PaperPiggy`，不崩。
 - 注意事项：安装器**不要命名为 setup.exe**（加重 Defender 盯梢），填全 Publisher/ProductName/版本元数据；加一段检测注册表无 WebView2 时运行 Evergreen Bootstrapper（约 2MB，随包携带）的脚本 —— Win11 出厂预装，Win10 绝大多数已推送但仍有漏网。
-- Inno Setup 支持中文向导，脚本 100 行以内。
+- Inno Setup 支持中文向导；MCP/主程序占用检查集中在 `installer/mcp_preflight.iss`，
+  `paperpiggy.iss` 只负责安装流程与提示。升级时发现 Codex、Claude 等客户端仍在使用
+  PaperPiggy MCP，会在写文件前明确列出占用者并允许重试；安装器不自动结束进程。
 
 ### 2b. ~~便携 zip~~ ⛔ 已于 1.0.0 砍掉
 数据既然与程序同目录，「删掉旧文件夹、解压新版」—— 便携软件最常规的升级姿势 ——

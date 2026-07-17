@@ -39,6 +39,12 @@
 ;        ⛔ 绝不要在 [UninstallDelete] 里写 {app}\data 或 {app}\0_Agent* ——
 ;           那是用户的索引、综述和论文，删了就是灾难。
 ;
+; §进程占用：Codex / Claude 等客户端会各自拉起 app\mcp_server.py；关闭 PaperPiggy 窗口
+;           不会结束这些 MCP 进程。安装器必须在 Ready 页用 mcp_preflight.iss 只读扫描
+;           {app}\python\python(w).exe，并明确显示占用者，允许用户退出后重试。
+;           ⛔ CloseApplications / RestartApplications 必须保持 no：绝不替用户强杀 Agent 任务，
+;           也不允许在文件仍被占用时“忽略并继续”造成新旧程序混装。
+;
 ; §WebView2：pywebview 靠它渲染窗口。缺了会退化成弹系统浏览器（体验崩坏）。
 ;           安装器检测注册表，缺失时静默装 Evergreen Bootstrapper（约 2MB，随包带）。
 ;
@@ -101,6 +107,9 @@ ArchitecturesInstallIn64BitMode=x64compatible
 ;   用户想整个装到 D:\PaperPiggy 就该让他装。
 PrivilegesRequired=lowest
 MinVersion=10.0
+; PaperPiggy / MCP 进程由自定义预检明确提示，绝不让 Restart Manager 自动结束用户任务。
+CloseApplications=no
+RestartApplications=no
 
 [Languages]
 Name: "chinese"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
@@ -191,8 +200,68 @@ begin
         Result := True;
 end;
 
-// 升级安装时的预留钩子（如需检测应用是否在跑，在这里加）
-function InitializeSetup: Boolean;
+// 共享的只读 WMI 扫描器；不结束进程、不输出完整命令行。
+#include "mcp_preflight.iss"
+
+function BlockingProcessMessage(const Details: String): String;
+begin
+  Result :=
+    '检测到以下程序仍在使用 PaperPiggy：' + #13#10 + #13#10 + Details +
+    '' + #13#10 + #13#10 +
+    '请先保存正在进行的任务，并完全退出这些客户端（仅关闭 PaperPiggy 窗口不够）。' +
+    '' + #13#10 + #13#10 +
+    '安装器不会替你结束任何进程。退出后点击“重试”；点击“取消”只返回安装向导，' +
+    '现有程序和数据不会改变。';
+end;
+
+// Ready 页主检查：Retry 立即重新扫描；Cancel 留在向导，不写任何安装文件。
+function NextButtonClick(CurPageID: Integer): Boolean;
+var
+  Details, ErrorText, MessageText: String;
+  ScanResult, Choice: Integer;
 begin
   Result := True;
+  if CurPageID <> wpReady then
+    Exit;
+
+  repeat
+    ScanResult := ScanPaperPiggyProcesses(ExpandConstant('{app}'), Details, ErrorText);
+    if ScanResult = PaperPiggyScanClear then
+      Exit;
+    if ScanResult = PaperPiggyScanBlocked then
+      MessageText := BlockingProcessMessage(Details)
+    else
+      MessageText := ErrorText;
+
+    if WizardSilent then
+    begin
+      Log('PaperPiggy process preflight blocked a silent installation.');
+      Result := False;
+      Exit;
+    end;
+
+    Choice := MsgBox(MessageText, mbError, MB_RETRYCANCEL);
+    if Choice <> IDRETRY then
+    begin
+      Result := False;
+      Exit;
+    end;
+  until False;
+end;
+
+// 最后一刻复查，防止第一次通过后客户端又自动拉起 MCP。
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  Details, ErrorText: String;
+  ScanResult: Integer;
+begin
+  Result := '';
+  ScanResult := ScanPaperPiggyProcesses(ExpandConstant('{app}'), Details, ErrorText);
+  if ScanResult = PaperPiggyScanBlocked then
+  begin
+    Result := BlockingProcessMessage(Details) + #13#10 + #13#10 +
+      '请返回上一步，退出相关客户端后重新点击“安装”。';
+  end
+  else if ScanResult = PaperPiggyScanError then
+    Result := ErrorText;
 end;
