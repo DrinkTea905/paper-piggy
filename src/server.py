@@ -408,6 +408,13 @@ def _startup():
     except Exception as e:
         log_error("startup dedup deep marks", repr(e))
     try:
+        # 旧版把附件缺失、坏 PDF、真扫描件混在 deep_no_text.txt。启动即迁移，
+        # 用户不必先手动跑一次深索，浏览页也能看到真实原因。
+        import deep_extract_status as DES
+        DES.reconcile_legacy()
+    except Exception as e:
+        log_error("startup reconcile deep extract status", repr(e))
+    try:
         # Agent 专属文件夹（0_Agent交付物 / 0_Agent资料库）幂等脚手架，人类可读、换 agent 可续。
         import agent_ws as AW
         AW.ensure_scaffold()
@@ -687,25 +694,77 @@ def setup_open_folder():
 class AgentOpenQ(BaseModel):
     which: str = "rely"                          # output | rely | skills
 
+
+def _open_system_dir(d: Path):
+    """用系统文件管理器打开既有目录；调用方负责限定目录范围。"""
+    target = str(d)
+    if sys.platform == "win32":
+        os.startfile(target)  # noqa
+    elif sys.platform == "darwin":
+        subprocess.Popen(["open", target])
+    else:
+        subprocess.Popen(["xdg-open", target])
+
+
 @app.post("/agent/open_folder")
 def agent_open_folder(q: AgentOpenQ):
-    """在系统文件管理器里打开 Agent 专属文件夹（交付物 / 资料库 / 技能）。which 由前端固定传，
+    """在系统文件管理器里打开 Agent 专属文件夹（交付物 / 资料库 / 技能 / 定时任务）。which 由前端固定传，
        不接受任意路径——避免把打开任意目录的能力暴露给前端。"""
     import agent_ws as AW
     try:
         AW.ensure_scaffold()
-        which = q.which if q.which in ("output", "rely", "skills") else "rely"
+        roots = {"output": AW.output_dir, "rely": AW.rely_dir,
+                 "skills": AW.skills_dir, "tasks": AW.tasks_dir}
+        if q.which not in roots:
+            raise HTTPException(status_code=400, detail="不支持的 Agent 文件夹")
         # 技能统一落点=「0_Agent资料库/技能」（含 agent 中立的 工作流.md）；不再打开 app/skills，
         # 也不再往 .claude/skills 自动装——技能只此一处，任何助手读它即可。
-        d = str(AW.resolve(which))
-        Path(d).mkdir(parents=True, exist_ok=True)
-        if sys.platform == "win32":
-            os.startfile(d)  # noqa
-        elif sys.platform == "darwin":
-            subprocess.Popen(["open", d])
-        else:
-            subprocess.Popen(["xdg-open", d])
-        return {"ok": True, "dir": d}
+        d = Path(roots[q.which]())
+        d.mkdir(parents=True, exist_ok=True)
+        _open_system_dir(d)
+        return {"ok": True, "dir": str(d)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        return JSONResponse({"ok": False, "msg": str(e)}, status_code=400)
+
+
+class AgentOpenOutputQ(BaseModel):
+    name: str
+
+
+def _is_link_or_junction(p: Path) -> bool:
+    """目录扫描/打开时不跟随软链接或 Windows junction。探测失败也按不安全处理。"""
+    try:
+        if p.is_symlink():
+            return True
+        isjunction = getattr(os.path, "isjunction", None)
+        return bool(isjunction and isjunction(p))
+    except OSError:
+        return True
+
+
+@app.post("/agent/open_output")
+def agent_open_output(q: AgentOpenOutputQ):
+    """打开一个既有交付物主题。只接受交付物根目录下的真实一级目录，不创建目录、不跟随链接。"""
+    import agent_ws as AW
+    try:
+        AW.ensure_scaffold()
+        base = Path(AW.output_dir()).resolve(strict=True)
+        # 不直接用 base / 用户输入作为最终目标：只从真实一级目录中做精确名称匹配，
+        # 因而绝对路径、..、混合分隔符都不可能越过交付物根目录。
+        target = next((p for p in base.iterdir() if p.name == q.name), None)
+        if target is None:
+            raise HTTPException(status_code=404, detail="交付物主题不存在")
+        if _is_link_or_junction(target) or not target.is_dir():
+            raise HTTPException(status_code=400, detail="只能打开交付物内的真实主题目录")
+        resolved = target.resolve(strict=True)
+        if resolved.parent != base:
+            raise HTTPException(status_code=400, detail="交付物主题不在允许范围内")
+        _open_system_dir(resolved)
+        return {"ok": True, "dir": str(resolved)}
+    except HTTPException:
+        raise
     except Exception as e:
         return JSONResponse({"ok": False, "msg": str(e)}, status_code=400)
 
@@ -732,19 +791,21 @@ def agent_tasks():
     """扫「资料库/定时任务/*/任务.md」，解析 front-matter 展示定时任务列表。
        本端只登记/展示——定时执行由用户的 AI 助手在它自己的日程里负责（应用不联网、无大模型）。"""
     import agent_ws as AW
-    out = []
+    out, unrecognized = [], []
     try:
         AW.ensure_scaffold()
         tdir = Path(AW.tasks_dir())
         for sub in sorted(tdir.iterdir()):
-            if not sub.is_dir():
+            if _is_link_or_junction(sub) or not sub.is_dir():
                 continue
             f = sub / "任务.md"
             if not f.exists():
+                unrecognized.append({"name": sub.name, "reason": "missing_task_file"})
                 continue
             try:
                 meta, bodytext = _parse_frontmatter(f.read_text(encoding="utf-8"))
-            except Exception:
+            except Exception as e:
+                unrecognized.append({"name": sub.name, "reason": "read_error", "detail": str(e)})
                 continue
             name = meta.get("名称") or meta.get("name") or sub.name
             freq = meta.get("频率") or meta.get("freq") or meta.get("frequency") or ""
@@ -768,28 +829,75 @@ def agent_tasks():
                         "last_run": last_run, "scheduler": scheduler,
                         "desc": desc[:160], "dir": str(sub)})
     except Exception as e:
-        return {"tasks": out, "error": str(e)}
-    return {"tasks": out}
+        return {"tasks": out, "unrecognized": unrecognized,
+                "unrecognized_count": len(unrecognized), "error": str(e)}
+    return {"tasks": out, "unrecognized": unrecognized,
+            "unrecognized_count": len(unrecognized)}
+
+
+def _scan_agent_output_tree(root: Path):
+    """递归统计真实目录中的文件/子目录与最新 mtime；逐目录容错且绝不跟随链接。"""
+    file_count = subdir_count = scan_errors = 0
+    try:
+        latest_mtime = root.stat().st_mtime
+    except OSError:
+        latest_mtime = 0.0
+        scan_errors += 1
+    pending = [root]
+    while pending:
+        current = pending.pop()
+        try:
+            entries = list(current.iterdir())
+        except OSError:
+            scan_errors += 1
+            continue
+        for entry in entries:
+            try:
+                if _is_link_or_junction(entry):
+                    continue
+                stat = entry.stat(follow_symlinks=False)
+                latest_mtime = max(latest_mtime, stat.st_mtime)
+                if entry.is_dir():
+                    subdir_count += 1
+                    pending.append(entry)
+                elif entry.is_file():
+                    file_count += 1
+            except OSError:
+                scan_errors += 1
+    return {"file_count": file_count, "subdir_count": subdir_count,
+            "latest_mtime": latest_mtime, "scan_errors": scan_errors}
 
 @app.get("/agent/outputs")
 def agent_outputs(limit: int = 8):
     """C4：列 0_Agent交付物/ 下的主题子文件夹（最近修改在前），供 Agent 页交付物卡展示「最近做了哪些主题」。
-       只列目录名 + mtime + 文件数 + 有无 README，不读内容。"""
+       递归统计文件数/子目录数/最新修改时间；逐目录容错，不读取文件内容、不跟随链接。"""
     import agent_ws as AW
     out = []
     try:
         AW.ensure_scaffold()
         odir = Path(AW.output_dir())
-        subs = [d for d in odir.iterdir() if d.is_dir()]
-        subs.sort(key=lambda d: d.stat().st_mtime, reverse=True)
-        for d in subs[:max(1, min(50, limit))]:
+        rows = []
+        for d in odir.iterdir():
             try:
-                mt = time.strftime("%Y-%m-%d", time.localtime(d.stat().st_mtime))
-            except Exception:
-                mt = ""
+                if _is_link_or_junction(d) or not d.is_dir():
+                    continue
+                stats = _scan_agent_output_tree(d)
+                rows.append((d, stats))
+            except OSError:
+                continue
+        rows.sort(key=lambda row: row[1]["latest_mtime"], reverse=True)
+        for d, stats in rows[:max(1, min(50, limit))]:
+            latest = stats["latest_mtime"]
+            mt = time.strftime("%Y-%m-%d", time.localtime(latest)) if latest else ""
             out.append({"name": d.name, "mtime": mt,
-                        "has_readme": (d / "README.md").exists(),
-                        "n_files": sum(1 for _ in d.glob("*.*")), "dir": str(d)})
+                        "latest_mtime": latest,
+                        "file_count": stats["file_count"],
+                        "subdir_count": stats["subdir_count"],
+                        "scan_errors": stats["scan_errors"],
+                        # n_files 暂留作旧前端兼容；新前端使用 file_count。
+                        "n_files": stats["file_count"],
+                        "has_readme": (d / "README.md").is_file(),
+                        "dir": str(d)})
     except Exception as e:
         return {"outputs": out, "error": str(e)}
     return {"outputs": out}
@@ -1122,9 +1230,10 @@ def index_status():
     # 去重计数（与 deep/_deep_keys() 同口径）：标记文件出现重复行时 len(split()) 会虚高，
     # 前端据 meta_done<papers 判断语义层是否待完成，虚高到 ≥papers 会误隐藏「正在提升检索质量」提示。
     meta_done = len(set(C.META_EMBEDDED.read_text(encoding="utf-8").split())) if C.META_EMBEDDED.exists() else 0
-    # C1/A2：扫描件/无文本篇数（记在 deep_no_text.txt，不算已深索）——供前端与深索汇总提示。
-    nt = C.STATE / "deep_no_text.txt"
-    deep_no_text = len(set(nt.read_text(encoding="utf-8").split())) if nt.exists() else 0
+    extract_counts = _deep_extract_counts()
+    # 旧字段保留给旧前端：语义改为“当前无法进入深索的终态”，不再谎称全是扫描件。
+    deep_no_text = sum(extract_counts.get(s, 0)
+                       for s in ("missing_pdf", "invalid_pdf", "ocr_failed"))
     with _Q_LOCK:
         q_pending = len(QUEUE["pending"]); q_inflight = len(QUEUE["in_flight"])
     return {
@@ -1132,6 +1241,11 @@ def index_status():
         "light_done": manifest.get("light_done", False), "source": manifest.get("source"),
         "papers": manifest.get("papers", 0), "with_pdf": manifest.get("with_pdf", 0),
         "meta_done": meta_done, "deep_done": deep, "deep_no_text": deep_no_text,
+        "extract_status_counts": extract_counts,
+        "ocr_pending": extract_counts.get("ocr_pending", 0),
+        "ocr_failed": extract_counts.get("ocr_failed", 0),
+        "missing_pdf": extract_counts.get("missing_pdf", 0),
+        "invalid_pdf": extract_counts.get("invalid_pdf", 0),
         # 深索摘要（SAC）：sac_done=已深索且有摘要的篇数；sac_generator=生成方(off/agent/server)；
         # sac_backfill=补生成摘要后台任务的实时进度（前端据此显示进度/禁用重复触发）。
         "sac_done": sac_done, "sac_generator": _sac_generator(), "sac_backfill": dict(BACKFILL),
@@ -1219,11 +1333,41 @@ def _deep_keys():
     ek = C.STATE / "embedded_keys.txt"
     return set(ek.read_text(encoding="utf-8").split()) if ek.exists() else set()
 
+def _deep_extract_items():
+    """逐篇 PDF 提取状态。读失败时退空，不影响检索主链。"""
+    try:
+        import deep_extract_status as DES
+        return DES.load_items()
+    except Exception:
+        return {}
+
+
+def _deep_extract_counts(items=None):
+    try:
+        import deep_extract_status as DES
+        return DES.counts(items if items is not None else _deep_extract_items())
+    except Exception:
+        return {}
+
+
+def _extract_record(stem, items=None):
+    rec = (items if items is not None else _deep_extract_items()).get(str(stem), {})
+    return dict(rec) if isinstance(rec, dict) else {}
+
+
 def _deep_no_text_keys():
-    """C1/A2：扫描件/无可抽文本的 safe_name(stem) 集合（格式同 embedded_keys.txt）。
-       这些篇不算已深索、也无法深索——前端据此标「🚫 扫描件·需OCR」而非「未深索」。"""
+    """兼容旧调用名：返回当前不可自动继续深索的提取终态。
+
+    ocr_pending 不在这里——它必须能重新进入 extract，自动执行本地 OCR。
+    """
+    items = _deep_extract_items()
+    blocked = {stem for stem, rec in items.items()
+               if rec.get("status") in ("missing_pdf", "invalid_pdf", "ocr_failed")}
+    # 尚未迁移的极端情况仍尊重旧标记；正常启动会先 reconcile_legacy。
     nt = C.STATE / "deep_no_text.txt"
-    return set(nt.read_text(encoding="utf-8").split()) if nt.exists() else set()
+    if nt.exists() and not items:
+        blocked.update(nt.read_text(encoding="utf-8").split())
+    return blocked
 
 def _summary_keys():
     """已生成检索摘要（SAC）的 safe_name(stem) 集合，与 embedded_keys.txt 同口径。
@@ -1553,10 +1697,16 @@ def deep_queue_status():
     items = [{"key": k, "title": (papers.get(k) or {}).get("title", "")} for k in shown]
     remaining = pending + in_flight
     eta_seconds = int(remaining * spp) if (spp and remaining) else None
+    extract_counts = _deep_extract_counts()
     return {"pending": pending, "in_flight": in_flight, "paused": paused,
             "deep_done": deep_done, "with_pdf": manifest.get("with_pdf", 0),
             "sac_done": sac_done, "sac_backfill": dict(BACKFILL),   # 深索摘要覆盖 + 补生成进度
-            "deep_no_text": len(_deep_no_text_keys()),   # 扫描件/无正文篇数——供前端「重试扫描件」入口
+            "deep_no_text": len(_deep_no_text_keys()),   # 旧前端兼容：当前不可继续的提取终态数
+            "extract_status_counts": extract_counts,
+            "ocr_pending": extract_counts.get("ocr_pending", 0),
+            "ocr_failed": extract_counts.get("ocr_failed", 0),
+            "missing_pdf": extract_counts.get("missing_pdf", 0),
+            "invalid_pdf": extract_counts.get("invalid_pdf", 0),
             "eta_seconds": eta_seconds, "items": items,
             # 兼容旧前端字段
             "in_flight_keys": inflight_keys,
@@ -2251,6 +2401,8 @@ def paper_detail(key: str):
                          for c in W.backlinks(key=key).get("cited_by", [])]
     except Exception as e:
         log_error("paper detail backlinks", repr(e))   # 反查失败不拦题录主体
+    stem = p.get("stem") or T.safe_name(key)
+    extract_status = _extract_record(stem)
     return {
         "key": key, "title": p.get("title", ""), "author": p.get("author", ""),
         "year": p.get("year", ""), "journal": p.get("journal", ""),
@@ -2260,7 +2412,8 @@ def paper_detail(key: str):
         "official_pages": p.get("official_pages", ""),
         "has_pdf": bool(p.get("has_pdf", False)),
         "deep": is_deep(key),
-        "no_text": T.safe_name(key) in _deep_no_text_keys(),
+        "no_text": stem in _deep_no_text_keys(),
+        "extract_status": extract_status,
         "abstract": p.get("abstract", ""),
         "ingested_at": p.get("ingested_at", ""),
         "statute_status": p.get("statute_status", "") or "",
@@ -2458,7 +2611,8 @@ def papers(collection: Optional[str] = None, topic: Optional[int] = None,
     # ingested_at 形如 "YYYY-MM-DD HH:MM:SS"，与 since 直接字典序比较即可；
     # 没有 ingested_at 的老条目（空串）在 since 模式下会被滤掉——它们本来就不是"新入库"。
     papers = _load_papers(); cats = _load_cats(); deepk = _deep_keys()
-    notextk = _deep_no_text_keys()   # C1/A2：扫描件集合
+    notextk = _deep_no_text_keys()   # 兼容旧字段：当前不可继续深索的终态
+    extract_items = _deep_extract_items()
     sumk = _summary_keys()           # 有检索摘要（SAC）的 safe_name(stem) 集合
     if category:
         # 统一走 _resolve_category_keys（与 /search 同一条路）：kbc_/topic:/zotero: 都能过滤；
@@ -2486,6 +2640,7 @@ def papers(collection: Optional[str] = None, topic: Optional[int] = None,
         # F38-B：按当前学科取分级（快路径 compute=False，只用已预热 memo；未预热则回退旧 journal_tier）
         # 手动改档/法源报告规则在 grade_paper 里优先命中（不走 memo，即改即显）。
         g = GS.grade_paper(p, compute=False)
+        stem = p.get("stem") or T.safe_name(p["key"])
         out.append({
             "key": p["key"], "title": p.get("title", ""), "author": p.get("author", ""),
             "year": p.get("year", ""), "journal": p.get("journal", ""),
@@ -2498,7 +2653,8 @@ def papers(collection: Optional[str] = None, topic: Optional[int] = None,
             "official_pages": p.get("official_pages", ""), "has_pdf": p.get("has_pdf", False),
             "collections": p.get("collections", []),
             "needs_review": bool(p.get("needs_review", False)),   # folder 模式：AI 抽的题录待核对
-            "no_text": T.safe_name(p["key"]) in notextk,          # C1/A2：扫描件（有 PDF 但无可抽文本，需 OCR，不可深索）
+            "no_text": stem in notextk,
+            "extract_status": _extract_record(stem, extract_items),
             "ingested_at": p.get("ingested_at", ""),               # 供「最新入库」排序
             "itemtype": p.get("itemtype", ""),
             "statute_status": p.get("statute_status", ""),         # EN-L5：法条时效徽标（浏览卡 statuteBadge 读它）
@@ -2613,11 +2769,21 @@ def read_source(key: str, from_page: int = 1, to_page: int = 0, max_chars: int =
 
     pages = rec.get("pages") or []
     if not any((pg.get("text") or "").strip() for pg in pages):
-        return {"ok": False, "reason": "scanned_no_text", "key": key, "title": title,
-                "detail": "该篇是扫描件（图片型 PDF），抽不到文字，需要先 OCR。"}
+        status = _extract_record(stem).get("status")
+        details = {
+            "missing_pdf": "该篇记录的 PDF 附件已不在磁盘上，请先在 Zotero 中修复附件路径。",
+            "invalid_pdf": "该 PDF 无法打开，可能已损坏、未同步完整或被其他程序占用。",
+            "ocr_pending": "该篇正在等待本地 OCR，完成深索后即可读取正文。",
+            "ocr_failed": "本地 OCR 已运行，但没有识别出有效文字；可检查 PDF 后重试。",
+        }
+        return {"ok": False, "reason": status or "no_extracted_text", "key": key,
+                "title": title, "detail": details.get(status, "该篇暂时没有可读正文。")}
 
     lo = max(1, int(from_page or 1))
-    hi = int(to_page) if to_page else len(pages)
+    # pages 只保存有文字的页；混合 PDF 若有一页 OCR 仍失败，页码会有空洞。
+    # 不能用 len(pages) 当末页，否则 [1, 3] 会把真实第 3 页误裁掉。
+    hi = int(to_page) if to_page else max(
+        [int(pg.get("page", 0) or 0) for pg in pages] + [int(rec.get("total_pages", 0) or 0)])
     try:
         import page_map as PM
     except Exception:
@@ -2641,7 +2807,7 @@ def read_source(key: str, from_page: int = 1, to_page: int = 0, max_chars: int =
 
     return {"ok": True, "key": key, "title": title,
             "author": p.get("author", ""), "year": p.get("year", ""), "journal": p.get("journal", ""),
-            "n_pages_total": len(pages), "returned_pages": len(out),
+            "n_pages_total": int(rec.get("total_pages", 0) or hi), "returned_pages": len(out),
             "chars": used, "truncated": truncated, "next_page": next_page,
             "pages": out}
 
@@ -2844,24 +3010,25 @@ def build_status():
 
 @app.post("/index/retry_no_text")
 def retry_no_text():
-    """C1/A2 重试入口：把被判「扫描件/无正文」的篇清除标记 + 删旧产物，让它们重新进入深索管线。
-       适用：PDF 曾被 OneDrive/杀软占用、链接附件路径修好、或补下载后现在可读——此前一旦被标 no_text
-       就被前端与 Agent 深索候选永久排除，无路可回。清除后重新点深索即会重抽。"""
+    """兼容旧路由名：清除 PDF 提取失败终态与旧产物，让用户修好附件后重新深索。"""
     notext = _deep_no_text_keys()   # safe_name(stem) 集合
     if not notext:
-        return {"ok": True, "cleared": 0, "msg": "当前没有被判『无正文/扫描件』的篇。"}
+        return {"ok": True, "cleared": 0, "msg": "当前没有待重试的 PDF 提取失败篇。"}
     papers = _load_papers()
-    keys = [k for k in papers if T.safe_name(k) in notext]
+    keys = [k for k, p in papers.items()
+            if (p.get("stem") or T.safe_name(k)) in notext]
     if not keys:
         return {"ok": True, "cleared": 0, "msg": "无正文标记对应的篇已不在库中。"}
     try:
         import folder_ingest as FI
-        FI._purge_key_artifacts(keys)   # 清 deep_no_text/embedded 标记 + 删 extracted/chunks/pagemap/summaries
+        FI._purge_key_artifacts(keys)   # 清深索标记 + 删 extracted/chunks/pagemap/summaries
+        import deep_extract_status as DES
+        DES.remove([(papers.get(k) or {}).get("stem") or T.safe_name(k) for k in keys])
     except Exception as e:
         log_error("retry_no_text purge", repr(e), traceback.format_exc())
         return JSONResponse({"ok": False, "detail": str(e)}, status_code=500)
     return {"ok": True, "cleared": len(keys),
-            "msg": f"已清除 {len(keys)} 篇的『无正文』标记与旧产物，现在可对它们重新深索（PDF 可读则会成功抽取）。"}
+            "msg": f"已清除 {len(keys)} 篇的提取失败状态与旧产物；修好附件后重新深索，会自动尝试本地 OCR。"}
 
 # ── 文件夹模式：建库（后台，含 N 次 LLM 抽题录）+ 拖入入库 ──
 @app.post("/index/folder_build")
@@ -3269,14 +3436,18 @@ def search(q: SearchQ):
         log_error("search", repr(e), traceback.format_exc())
         raise HTTPException(status_code=500,
                             detail=f"{e}（→ 请到 设置 检查检索引擎 API Key 或余额）")
-    # 给命中行补 no_text 标记（与 /papers 同口径）：扫描件/无正文的篇不该在前端显示「⚡深索该篇」入口，
-    # 否则用户点了只会空跑一整轮 build_all（extract 见已有产物即跳过），界面毫无变化。
+    # 给命中行补结构化提取状态；旧 no_text 字段只表示当前终态阻塞。
     try:
         notext = _deep_no_text_keys()
+        extract_items = _deep_extract_items()
+        papers = _load_papers()
         for x in res:
             k = x.get("key")
-            if k and T.safe_name(k) in notext:
-                x["no_text"] = True
+            if k:
+                p = papers.get(k) or {}
+                stem = p.get("stem") or T.safe_name(k)
+                x["no_text"] = stem in notext
+                x["extract_status"] = _extract_record(stem, extract_items)
     except Exception as e:
         log_error("search no_text tag", repr(e))
     return {"query": q.query, "mode": R.STATE.get("mode"), "category": q.category,
@@ -3593,6 +3764,28 @@ def update_check(force: int = 0):
     except Exception as e:
         log_error("update_check", repr(e))
         return {"ok": False, "error": str(e)}
+
+
+@app.post("/update/open_installer")
+def update_open_installer():
+    """在默认浏览器打开当前 Release 的完整安装器；URL 只能来自官方 GitHub Release。"""
+    import updater as UPD
+    try:
+        info = UPDATE.get("info") or UPD.check()
+        url = str(info.get("installer_url") or "")
+        prefix = f"https://github.com/{UPD.GH_OWNER}/{UPD.GH_REPO}/releases/download/"
+        if not url.startswith(prefix) or not url.lower().endswith(".exe"):
+            raise ValueError("当前 Release 没有可用的完整安装器")
+        if sys.platform == "win32":
+            os.startfile(url)  # noqa: S606 —— 固定官方 HTTPS 前缀，交给默认浏览器
+        else:
+            import webbrowser
+            if not webbrowser.open(url):
+                raise OSError("系统浏览器未接受打开请求")
+        return {"ok": True, "url": url}
+    except Exception as e:
+        log_error("update open installer", repr(e))
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
 
 
 @app.post("/update/download")

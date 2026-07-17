@@ -2,15 +2,9 @@
 r"""
 自动更新器 —— 只换 app\，绝不碰 python\ 与用户数据。
 
-⛔⛔ 这个模块目前是**死代码**：全仓 grep 过，server.py / launcher.py / 前端**没有任何地方
-     调用它**（应用里那个「自动检查更新」开关是知识库增量索引，跟版本升级无关）。
-     v1.0.0 的唯一升级路径是「重下安装器覆盖安装」，走 Inno，不走这里。
-     → 别花时间分析下面的权限模型和回滚逻辑，它一次都没跑过。要接线前先读 CLAUDE.md §7。
-     → 已知两个坑，接线之前必须先修：
-        ① 回滚用 rmtree(ignore_errors=True) + move：文件被占用时删不干净，move 会把备份塞进
-           残留目录里变成 app\app.bak-x.y.z\，而函数照样返回「已回滚成功」—— 假回滚。
-        ② 装到 Program Files 时程序目录不可写，第一步备份就 PermissionError。
-           （1.0.0 已改用户级安装 + 数据同目录，这条不再必然踩到，但要实测。）
+本模块已由设置页「应用更新」接线：server 下载增量包，launcher 用独立的无窗进程执行本文件，
+主应用退出后再替换 app\。更新结果写到数据家下的 update\update.log；失败时会尝试重启旧版并
+给出可见提示，不能把失败静默吞掉。
 
 【为什么只换 app\】
   · python\ 是 800M 的运行时，换它等于重装，且失败风险高（DLL 被占用）。
@@ -21,10 +15,8 @@ r"""
 【开源明文 .py 的特有坑 —— 用户可能改过包里的代码】
   本项目刻意以明文 .py 分发（不编译不混淆），所以用户完全可能自己改了 app\ 里的文件。
   无脑覆盖 = 把人家的修改抹掉。所以更新前会拿 app\version.json 里的 sha256 清单
-  逐文件比对：改过的文件**不会被静默覆盖**，而是备份成 <name>.bak-<旧版本> 并提示。
-  ⚠️ 但这套保护**只存在于本模块里，而本模块没被调用** —— 实际走的 Inno 覆盖安装是
-     `Flags: ignoreversion` 无条件覆盖，用户改过的 app\ 文件会**静默消失，连 .bak 都没有**。
-     这是当前的真实行为，README / release notes 要如实告知用户。
+  逐文件比对：改过的文件会复制到「你改过的旧代码-<旧版本>\」，不会静默丢失。
+  ⚠️ Inno 覆盖安装仍会以 `Flags: ignoreversion` 覆盖 app\；这项保护只适用于应用内更新。
 
 【流程】
   check()     查 GitHub Release latest → 比版本
@@ -36,7 +28,8 @@ r"""
     python updater.py --download           # 查 + 下载 + 校验（不应用）
     python updater.py --apply --pid <PID>  # 等 PID 退出后应用更新（由应用自己拉起）
 """
-import sys, os, json, time, shutil, hashlib, zipfile, argparse, tempfile, subprocess
+import sys, os, json, time, shutil, hashlib, zipfile, argparse, tempfile, subprocess, traceback
+import importlib.util
 from pathlib import Path
 from urllib.request import urlopen, Request
 from urllib.error import URLError, HTTPError
@@ -52,6 +45,30 @@ UA = {"User-Agent": f"PaperPiggy/{getattr(C, 'APP_VERSION', '0')} (+https://gith
 APP_DIR    = C.APP                       # 分发包里 = <bundle>\app
 BUNDLE_DIR = APP_DIR.parent              # <bundle>
 UPDATE_DIR = C.DATA.parent / "update"    # 数据家下的 update\（可写，且不在 app\ 里）
+UPDATE_LOG = UPDATE_DIR / "update.log"
+
+
+def _log(event, detail=None):
+    """独立 updater 没有控制台；把每次开始、结果和未捕获异常写进持久日志。"""
+    try:
+        UPDATE_DIR.mkdir(parents=True, exist_ok=True)
+        payload = detail if isinstance(detail, str) else json.dumps(detail or {}, ensure_ascii=False)
+        with open(UPDATE_LOG, "a", encoding="utf-8", errors="replace") as f:
+            f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {event}: {payload}\n")
+    except Exception:
+        pass
+
+
+def _notify(title, message):
+    """应用已经关闭时用系统消息框提示结果；非 Windows 至少保留日志。"""
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(0, str(message), str(title), 0x10 | 0x40000)
+            return
+        except Exception:
+            pass
+    _log(title, message)
 
 
 # ───────────────────────── 版本比较 ─────────────────────────
@@ -84,6 +101,19 @@ def is_newer(remote, local):
     return _ver_tuple(remote) > _ver_tuple(local)
 
 
+def missing_runtime_components():
+    """应用增量包补不了 python/site-packages；返回当前运行时缺失的必需组件。"""
+    required = (("rapidocr", "本地 OCR"), ("cv2", "OpenCV"))
+    missing = []
+    for module, label in required:
+        try:
+            if importlib.util.find_spec(module) is None:
+                missing.append(label)
+        except Exception:
+            missing.append(label)
+    return missing
+
+
 # ───────────────────────── 查新版 ─────────────────────────
 
 def check(timeout=12, tries=3):
@@ -110,13 +140,17 @@ def check(timeout=12, tries=3):
         return {"current": cur, "has_update": False, "error": "Release 没有 tag_name"}
 
     # 约定：app 更新包的资产名形如 paper-piggy-app-<version>.zip，同名 .sha256 放校验和
-    asset = sha = None
+    asset = sha = installer = None
     for a in rel.get("assets") or []:
         n = a.get("name") or ""
         if n.startswith("paper-piggy-app-") and n.endswith(".zip"):
             asset = a.get("browser_download_url")
         elif n.startswith("paper-piggy-app-") and n.endswith(".zip.sha256"):
             sha = a.get("browser_download_url")
+        elif n.startswith("PaperPiggy-") and n.endswith("-win64.exe"):
+            installer = a.get("browser_download_url")
+
+    missing_runtime = missing_runtime_components()
 
     return {
         "current":    cur,
@@ -124,6 +158,11 @@ def check(timeout=12, tries=3):
         "has_update": is_newer(latest, cur) and bool(asset),
         "url":        asset,
         "sha256_url": sha,
+        # 旧运行时即使先装了 app 增量包，也拿不到新增 wheel。新版启动后会据此
+        # 明确引导用户运行完整安装器；覆盖安装不删除任何用户数据。
+        "needs_full_installer": bool(missing_runtime),
+        "missing_runtime": missing_runtime,
+        "installer_url": installer,
         "notes":      (rel.get("body") or "")[:2000],
     }
 
@@ -334,7 +373,7 @@ def _rename_retry(src, dst, tries=20, wait=0.5):
 
 # ★ 无窗铁律（CLAUDE.md §0.5）：更新链路里的每个子进程都必须无控制台窗口，
 #   否则升级时会闪黑窗。用包内 pythonw.exe（GUI 子系统、无控制台）+ CREATE_NO_WINDOW 双保险。
-_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0   # CREATE_NO_WINDOW
+_NO_WINDOW = C.SUBPROC_NO_WINDOW   # CREATE_NO_WINDOW；与其它子进程共用 config 单一事实源
 
 
 def _pyw():
@@ -360,10 +399,14 @@ def _relaunch():
     r"""换完代码后把应用重新拉起来（分发包里 = pythonw run_localkb.py，无黑窗）。"""
     try:
         run = BUNDLE_DIR / "run_localkb.py"
-        subprocess.Popen([_pyw(), str(run)], cwd=str(BUNDLE_DIR),
-                         creationflags=_NO_WINDOW, close_fds=True)   # ★ 不闪黑窗
+        child = subprocess.Popen([_pyw(), str(run)], cwd=str(BUNDLE_DIR),
+                                 creationflags=_NO_WINDOW, close_fds=True,
+                                 stdin=subprocess.DEVNULL,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)   # ★ 不闪黑窗
+        _log("已拉起应用", {"pid": child.pid, "run": str(run)})
         return True
-    except Exception:
+    except Exception as e:
+        _log("自动重启失败", {"error": repr(e), "run": str(BUNDLE_DIR / "run_localkb.py")})
         return False
 
 
@@ -489,9 +532,36 @@ def main():
         if not z:                                        # 没给路径就找 update/ 里最新的
             cands = sorted(UPDATE_DIR.glob("app-*.zip"), key=lambda p: p.stat().st_mtime)
             if not cands:
-                print(json.dumps({"ok": False, "error": "update/ 里没有待应用的包"}, ensure_ascii=False)); return 1
-            z = cands[-1]
-        print(json.dumps(apply(z, a.pid, relaunch=not a.no_relaunch), ensure_ascii=False, indent=2))
+                result = {"ok": False, "error": "update/ 里没有待应用的包"}
+            else:
+                z = cands[-1]
+                result = None
+        else:
+            result = None
+
+        if result is None:
+            _log("开始应用更新", {"zip": str(z), "wait_pid": a.pid})
+            try:
+                result = apply(z, a.pid, relaunch=not a.no_relaunch)
+            except Exception as e:
+                result = {"ok": False, "error": f"更新器异常：{e}", "traceback": traceback.format_exc()[-4000:]}
+
+        if not result.get("ok"):
+            # apply 的所有正常失败路径都承诺未改动或已回滚；主应用已经退出，必须把旧版重新拉起。
+            if not a.no_relaunch:
+                result["old_relaunched"] = _relaunch()
+            _log("应用更新失败", result)
+            restart = "旧版已重新打开。" if result.get("old_relaunched") else "旧版自动重启失败，请手动重新打开 PaperPiggy。"
+            _notify("PaperPiggy 升级失败",
+                    f"{result.get('error') or '未知错误'}\n\n{restart}\n\n诊断日志：{UPDATE_LOG}")
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return 1
+
+        _log("应用更新完成", result)
+        if not a.no_relaunch and not result.get("relaunched"):
+            _notify("PaperPiggy 已升级，但未能自动重启",
+                    f"新版已经安装完成，请手动重新打开 PaperPiggy。\n\n诊断日志：{UPDATE_LOG}")
+        print(json.dumps(result, ensure_ascii=False, indent=2))
     else:
         ap.print_help()
     return 0

@@ -256,16 +256,26 @@ class _JsApi:
                 zp = cands[-1]
 
             updater = C.APP / "updater.py"
+            # 分发包必须用 pythonw；源码态测试时也优先找当前解释器旁的 pythonw。
             pyw = C.APP.parent / "python" / "pythonw.exe"
-            exe = str(pyw) if pyw.exists() else sys.executable
-            flags = 0x00000008 if sys.platform == "win32" else 0   # DETACHED_PROCESS：脱离本进程，
-            #                                     本应用退出后 updater 仍活着，才能完成替换+重启
-            subprocess.Popen(
-                [exe, str(updater), "--apply", str(zp), "--pid", str(os.getpid())],
-                cwd=str(C.APP.parent), creationflags=flags, close_fds=True,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            _logline(f"已拉起 updater 应用更新（pid={os.getpid()} 退出后替换），即将关闭窗口。")
+            sibling_pyw = Path(sys.executable).with_name("pythonw.exe")
+            exe = str(pyw if pyw.exists() else sibling_pyw if sibling_pyw.exists() else Path(sys.executable))
+            # CREATE_NO_WINDOW 不会把子进程绑死在父进程上；close_fds=True 后 launcher 退出，
+            # updater 仍可继续等待 PID、替换 app 并重启。不要再用 DETACHED_PROCESS：它会让
+            # CREATE_NO_WINDOW 失效，也违背项目「所有子进程统一无窗」的硬约束。
+            up_dir.mkdir(parents=True, exist_ok=True)
+            update_log = up_dir / "update.log"
+            logf = open(update_log, "ab", buffering=0)
+            try:
+                child = subprocess.Popen(
+                    [exe, str(updater), "--apply", str(zp), "--pid", str(os.getpid())],
+                    cwd=str(C.APP.parent), creationflags=C.SUBPROC_NO_WINDOW, close_fds=True,
+                    stdin=subprocess.DEVNULL,
+                    stdout=logf, stderr=subprocess.STDOUT)
+            finally:
+                logf.close()
+            _logline(f"已拉起 updater（子进程 {child.pid}，launcher {os.getpid()} 退出后替换）；"
+                     f"诊断日志：{update_log}")
 
             # 稍等一下让 updater 起来并进入「等本进程退出」的循环，再关窗口
             def _close():

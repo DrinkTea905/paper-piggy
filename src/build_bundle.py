@@ -10,7 +10,7 @@
 用法: python build_bundle.py            # 组装（假设 python/ 已 pip 装好）
       python build_bundle.py --slim-models  # 顺便把开发机模型的运行时文件 copy 进 models/（自测用）
 """
-import sys, os, shutil, argparse, stat
+import sys, os, shutil, argparse, stat, hashlib, subprocess
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import config as C
@@ -319,6 +319,31 @@ def verify_guides():
                          "逐条修完再来；确要跳过用 --skip-checks。")
 
 
+def _python_fingerprint(src):
+    """锁文件 + 实装 dist-info 的指纹；依赖变化时不能复用旧 bundle/python。"""
+    h = hashlib.sha256()
+    lock = SRC / "requirements.lock"
+    if lock.exists():
+        h.update(lock.read_bytes())
+    site = src / "Lib" / "site-packages"
+    for meta in sorted(site.glob("*.dist-info/METADATA")):
+        h.update(meta.name.encode("utf-8", errors="replace"))
+        h.update(meta.read_bytes())
+    return h.hexdigest()
+
+
+def _verify_python_runtime(dst):
+    """发布运行时必须真实带齐核心依赖；只看 requirements 文件不算验证。"""
+    code = ("import onnxruntime,lancedb,pypdfium2,rapidocr,cv2,docx;"
+            "print('runtime imports OK')")
+    r = subprocess.run([str(dst / "python.exe"), "-c", code], capture_output=True,
+                       text=True, encoding="utf-8", errors="replace",
+                       creationflags=getattr(C, "SUBPROC_NO_WINDOW", 0))
+    if r.returncode != 0:
+        raise SystemExit("[bundle] ✗ 包内 Python 依赖验证失败：\n" + r.stdout + r.stderr)
+    print("[bundle] 包内 Python 核心依赖验证通过（含 RapidOCR / OpenCV）")
+
+
 def ensure_python(src_dir=None):
     r"""把 Python 运行时拷进 bundle/python/。
 
@@ -330,11 +355,6 @@ def ensure_python(src_dir=None):
     实机验证过的那套依赖）。也可用 --python-src / 环境变量 LOCALKB_PY_SRC 指定。
     重建 build/py312 的方法见 docs/RELEASE.md §0.2。
     """
-    dst = BUNDLE / "python"
-    if (dst / "python.exe").exists():
-        print(f"[bundle] python/ 已就位：{dst}")
-        return
-
     src = Path(src_dir or os.environ.get("LOCALKB_PY_SRC") or (SRC.parent / "build" / "py312"))
     if not (src / "python.exe").exists():
         raise SystemExit(
@@ -345,9 +365,22 @@ def ensure_python(src_dir=None):
             f"      ③ 拷 msvcp140.dll + msvcp140_1.dll 进去\n"
             f"    或用 --python-src 指定一个现成的。")
 
+    dst = BUNDLE / "python"
+    marker = dst / ".paperpiggy-runtime.sha256"
+    wanted = _python_fingerprint(src)
+    current = marker.read_text(encoding="ascii").strip() if marker.exists() else ""
+    if (dst / "python.exe").exists() and current == wanted:
+        print(f"[bundle] python/ 依赖指纹未变，复用：{dst}")
+        _verify_python_runtime(dst)
+        return
+    if dst.exists():
+        print("[bundle] Python 依赖已变化，清理旧 bundle/python 后重新复制")
+        shutil.rmtree(dst, onerror=_rm_ro)
     print(f"[bundle] 拷贝 Python 运行时：{src} → {dst}（约 800MB，稍等）")
     shutil.copytree(src, dst,
                     ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pdb"))
+    marker.write_text(wanted + "\n", encoding="ascii")
+    _verify_python_runtime(dst)
     print(f"[bundle] python/ 就绪")
 
 

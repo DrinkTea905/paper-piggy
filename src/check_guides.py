@@ -233,6 +233,31 @@ def check_backup_coverage():
              f"永不 {len(BK.NEVER_IN_DATA)} / 特殊 {len(BK.SPECIAL_IN_DATA)}）")
 
 
+# ── ⑦ 浏览器原生对话框会显示本地服务地址、样式也不受应用控制，统一禁用 ─────────────────
+_NATIVE_DIALOG = re.compile(
+    r"(?<![\w$])(?:(?:window|globalThis|self)\s*\.\s*)?(confirm|alert)\s*\("
+)
+
+
+def _native_dialog_hits(txt):
+    """返回原生 confirm/alert 调用的行号与函数名；uiConfirm/uiNotice 不会命中。"""
+    return [(txt.count("\n", 0, m.start()) + 1, m.group(1)) for m in _NATIVE_DIALOG.finditer(txt)]
+
+
+def check_native_browser_dialogs():
+    name = "⑦ 前端不调用浏览器原生 confirm/alert"
+    web = SRC / "web"
+    if not web.exists():
+        return skip(name, "web/ 不存在")
+    hits = []
+    for p in sorted(web.rglob("*.js")):
+        for line, fn in _native_dialog_hits(p.read_text(encoding="utf-8", errors="ignore")):
+            hits.append(f"{p.relative_to(SRC).as_posix()}:{line} {fn}()")
+    if hits:
+        return bad(name, "请改用 uiConfirm/uiNotice：" + "；".join(hits[:12]))
+    ok(name)
+
+
 def main():
     print("=== 指引 ↔ 代码 一致性校验（只读）===")
     doc = SRC / "MCP接入说明.md"
@@ -245,6 +270,7 @@ def main():
     check_wiki_schema()
     check_single_version()
     check_backup_coverage()
+    check_native_browser_dialogs()
     print("-" * 60)
     if FAILED:
         print(f"❌ {len(FAILED)} 项不一致——改了功能忘了同步指引。逐条修完再打包。")

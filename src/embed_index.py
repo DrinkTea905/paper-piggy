@@ -9,6 +9,7 @@ import sys, json, argparse, time
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import config as C          # 先导入以设置 HF_HOME
+import deep_extract_status as DES
 import numpy as np
 import lancedb
 from textutil import tokenize
@@ -45,13 +46,13 @@ def mark_done(key):
         f.write(key + "\n")
 
 def load_no_text():
-    """C1/A2：已判定为扫描件/无文本的 stem 集合（不算深索、下次跳过、不反复重抽）。"""
+    """兼容旧 UI：仅保留 OCR 已尝试但仍失败的 stem。"""
     if NO_TEXT_FILE.exists():
         return set(NO_TEXT_FILE.read_text(encoding="utf-8").split())
     return set()
 
 def mark_no_text(key):
-    """C1/A2：把空 chunks 的 stem 记进 deep_no_text.txt（而非 embedded_keys.txt），供前端标「扫描件·需OCR」。"""
+    """兼容旧 UI：把 OCR 已失败的 stem 写进 deep_no_text.txt。"""
     # BF27 同款去重：并发/孤儿双跑会把同 stem 追加多遍、扫描件计数虚高——追加前先读现有集合防重。
     if NO_TEXT_FILE.exists() and key in set(NO_TEXT_FILE.read_text(encoding="utf-8").split()):
         return
@@ -72,8 +73,16 @@ def main():
     # 旧表加列由 migrate_journal_tier.py 完成；加列后此处自动开始写。
     want_tier = (tbl is None) or ("journal_tier" in tbl.schema.names)
 
+    # 幂等迁移旧 deep_no_text：真扫描件变 ocr_pending 并解除旧排除，附件丢失/坏 PDF
+    # 转入结构化状态；server 启动也可调用同一函数，让 UI 在深索前就拿到真实分类。
+    DES.reconcile_legacy()
     done = load_done()
-    no_text = load_no_text()   # C1/A2：已判定扫描件的跳过，避免反复重抽
+    extract_status = DES.load_items()
+    # 新结构化状态是事实源；旧文件只镜像 ocr_failed，供尚未升级的前端读取。
+    for stem, rec in extract_status.items():
+        if rec.get("status") == "ocr_failed":
+            mark_no_text(stem)
+    no_text = load_no_text()
 
     # ★ 自愈「僵尸扫描件标记」（2026-07-15 PDFium 线程不安全事故的后遗症）：
     #   当初并发崩溃导致大批 PDF 假失败 → 空 chunks → 被误标 no_text；后来 extract 修好、
@@ -100,7 +109,11 @@ def main():
     files = sorted(C.CHUNKS.glob("*.json"))
     if args.limit:
         files = files[:args.limit]
-    todo = [f for f in files if f.stem not in done and f.stem not in no_text]
+    # missing/invalid 是附件问题而非扫描件；ocr_failed 已真实跑过 OCR，等用户显式重试。
+    terminal_extract_fail = {stem for stem, rec in extract_status.items()
+                             if rec.get("status") in ("missing_pdf", "invalid_pdf", "ocr_failed")}
+    todo = [f for f in files if f.stem not in done and f.stem not in no_text
+            and f.stem not in terminal_extract_fail]
     bm25_exists = (C.BM25_DIR / "bm25_ids.json").exists()
     # bm25 是否覆盖全表：比对 bm25_ids 数量与表行数。若进程曾在「新行已入表、bm25 未重建」
     # 的窗口被杀（本机休眠会杀进程树），bm25 会陈旧且行数不符，此时**不能**走快退。
@@ -165,9 +178,17 @@ def main():
         for i, f in enumerate(todo, 1):
             chunks = json.loads(f.read_text(encoding="utf-8"))
             if not chunks:
-                # C1/A2：空 chunks = 扫描件/无可抽文本。不写 embedded_keys.txt（否则虚标已深索），
-                # 改记 deep_no_text.txt，前端标「🚫 扫描件·需OCR」；下次跳过不重抽。
-                mark_no_text(f.stem); no_text.add(f.stem); continue
+                # 空 chunks 不再等同于扫描件：它可能是附件丢失、坏 PDF、OCR 排队/失败，
+                # 真实原因由 deep_extract_status.json 决定。仅 ocr_failed 留旧标记兼容旧前端；
+                # 未知旧产物先标 ocr_pending，让下一轮 extract 有机会本地 OCR。
+                rec = extract_status.get(f.stem) or {}
+                if rec.get("status") == "ocr_failed":
+                    mark_no_text(f.stem); no_text.add(f.stem)
+                elif not rec.get("status"):
+                    DES.set_status(f.stem, "ocr_pending", error="旧空切块，等待 OCR",
+                                   total_pages=0, native_pages=0, ocr_pages=0,
+                                   empty_pages=0, ocr_confidence=None)
+                continue
             # M2：摘要只拼进"嵌入文本"，存表的 text 仍是原文（展示/重排/BM25 用）。
             summ = summaries.get(f.stem, "")
             if summ:

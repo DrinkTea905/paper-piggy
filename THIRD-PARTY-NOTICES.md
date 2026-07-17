@@ -38,6 +38,13 @@ PaperPiggy（论文小猪）本体以 **Apache License 2.0** 发布（见 [LICEN
 - 用途：桌面窗口渲染（`pywebview` 后端）。安装器在检测到系统缺失时静默安装 Evergreen Runtime。
 - 许可：依微软 WebView2 Runtime 分发条款。
 
+### OpenCV Python 二进制 —— MIT / Apache-2.0 / LGPL
+
+- 用途：RapidOCR 的图像读取与预处理依赖。
+- 许可：`opencv-python` 包装代码为 MIT，OpenCV 核心为 Apache-2.0；预编译 wheel
+  还包含 LGPL-2.1 的 FFmpeg，非 headless 构建可能包含 LGPL-3.0 的 Qt。
+- 来源：<https://github.com/opencv/opencv-python>
+
 ---
 
 ## 2. 模型（不随安装器分发，首次启动时从 GitHub Release 下载）
@@ -49,6 +56,14 @@ PaperPiggy（论文小猪）本体以 **Apache License 2.0** 发布（见 [LICEN
 
 来源：<https://huggingface.co/BAAI>。API 模式下无需下载这两个模型。
 
+### 本地 OCR 模型（随 Python 依赖分发）
+
+- **RapidOCR / PP-OCRv6 small（ONNX）**：仅在 PDF 页面没有原生文字层时做本地 OCR；
+  默认包含 PP-OCRv6 small 检测、PP-OCRv4 mobile 方向分类、PP-OCRv6 small 识别模型。
+- 许可：RapidOCR 工程代码及发行包为 **Apache-2.0**；OCR 模型版权归百度所有，
+  由 RapidOCR 项目按 Apache-2.0 发行。
+- 来源：<https://github.com/RapidAI/RapidOCR>、<https://rapidai.github.io/RapidOCRDocs/latest/model_list/>
+
 ---
 
 ## 3. Python 依赖
@@ -56,13 +71,13 @@ PaperPiggy（论文小猪）本体以 **Apache License 2.0** 发布（见 [LICEN
 按许可证归类（完整精确清单见 [`src/requirements.lock`](src/requirements.lock)）：
 
 **Apache-2.0**
-`lancedb` · `transformers` · `tokenizers` · `huggingface_hub` · `safetensors` · `requests` · `flatbuffers` · `hf-xet` · `deprecation` · `lance-namespace`
+`lancedb` · `transformers` · `tokenizers` · `huggingface_hub` · `safetensors` · `requests` · `flatbuffers` · `hf-xet` · `deprecation` · `lance-namespace` · `rapidocr`
 
 **MIT**
-`onnxruntime` · `jieba` · `bm25s` · `python-docx` · `PyYAML` · `rich` · `h11` · `filelock` · `charset-normalizer` · `six` · `proxy_tools` · `bottle` · `annotated-types`
+`onnxruntime` · `jieba` · `bm25s` · `python-docx` · `PyYAML` · `rich` · `h11` · `filelock` · `charset-normalizer` · `six` · `proxy_tools` · `bottle` · `annotated-types` · `pyclipper` · `colorlog` · `opencv-python`（包装代码；核心见上）
 
 **BSD（2/3-Clause）**
-`pypdfium2`（同时含 Apache-2.0；底层 **PDFium** 为 Google 的 BSD-3 项目）· `pywebview` · `lxml` · `httpx` · `httpcore` · `protobuf` · `colorama` · `scikit-learn` · `scipy` · `numpy` · `pandas` 系
+`pypdfium2`（同时含 Apache-2.0；底层 **PDFium** 为 Google 的 BSD-3 项目）· `pywebview` · `lxml` · `httpx` · `httpcore` · `protobuf` · `colorama` · `scikit-learn` · `scipy` · `numpy` · `pandas` 系 · `shapely` · `omegaconf` · `antlr4-python3-runtime`
 
 **MPL-2.0**（弱 copyleft，文件级；随包分发无需开放本项目源码）
 `certifi` · `tqdm`（MPL-2.0 AND MIT）
@@ -71,7 +86,7 @@ PaperPiggy（论文小猪）本体以 **Apache License 2.0** 发布（见 [LICEN
 `bibtexparser`（LGPLv3 **or** BSD）
 
 **其它宽松许可**
-`fastapi` · `starlette` · `uvicorn` · `pydantic` · `typer` · `click` · `pyarrow` · `networkx` · `pythonnet` · `clr_loader` 等（MIT/BSD/Apache 系）
+`fastapi` · `starlette` · `uvicorn` · `pydantic` · `typer` · `click` · `pyarrow` · `networkx` · `pythonnet` · `clr_loader` · `pillow`（HPND）等（MIT/BSD/Apache/HPND 系）
 
 ---
 

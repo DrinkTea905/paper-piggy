@@ -19,6 +19,7 @@ scikit-learn
 pypdfium2                  # PDF 取文本（BSD-3/Apache-2.0）。
                            # ⚠️ 不要换回 pymupdf / pymupdf4llm：AGPL + Polyform Noncommercial，
                            #    与本项目 Apache-2.0 冲突，且中文标点会错序。理由见 extract.py 顶部。
+rapidocr>=3.9,<4           # 空白 PDF 页本地 OCR；3.9+ 默认随包带 PP-OCRv6 small ONNX 模型。
 python-docx>=1.1           # 综述导出 Word（缺它则导出恒降级为 .md，且不报错）
 requests
 pywebview

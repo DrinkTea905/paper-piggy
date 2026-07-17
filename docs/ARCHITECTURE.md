@@ -131,12 +131,24 @@ DATA 之下的一切派生路径见 `config.py:56-98`：`extracted/ chunks/ lanc
 |---|---|---|---|---|
 | **L 即时档** | `index_light.py` | 直读 `zotero.sqlite`（或 folder 的 `meta_cache`）→ 题录 → jieba 分词 → bm25 | `data/meta/papers.jsonl`（`index_light.py:202`）、`data/bm25_meta/` + `bm25_meta_ids.json`（`:210-211`）、`stats_cache.json`（`:216`）、`index_manifest.json`（`:229`）、`jieba_legal_dict.txt`（`:100`） | **秒级，0 嵌入 0 token**（`index_light.py:3`） |
 | **S 语义档** | `index_semantic.py` | 对 `papers.jsonl` 中未嵌入的篇做 bge-m3 嵌入 → LanceDB 表 `row_type="meta"` 行 → 重建主 bm25 | LanceDB `chunks` 表的 meta 行（`index_semantic.py:28-45`）、`data/bm25/`（`:126-127`）、进度 `state/meta_embedded.txt` | **约 1-2 分钟**（`index_semantic.py:3`） |
-| **F 深索档** | `extract.py` → `chunk.py` → `embed_index.py` → `page_map.py` | 抽 PDF 逐页文本 → 父子块切分 → 嵌入入表（`row_type="chunk"`）+ 重建 bm25 → 印刷页码映射 | `data/extracted/*.json`、`data/chunks/*.json`、LanceDB chunk 行、`data/pagemap/*.json`、进度 `state/embedded_keys.txt`、扫描件名单 `state/deep_no_text.txt` | **数小时**；开了 SAC 还有每篇 1 次 LLM 调用 |
+| **F 深索档** | `extract.py` → `chunk.py` → `embed_index.py` → `page_map.py` | 逐页读 PDF；空白页本地 OCR → 父子块切分 → 嵌入入表（`row_type="chunk"`）+ 重建 bm25 → 印刷页码映射 | `data/extracted/*.json`、`data/chunks/*.json`、LanceDB chunk 行、`data/pagemap/*.json`、进度 `state/embedded_keys.txt`、提取状态 `state/deep_extract_status.json` | **数小时**；扫描页另耗本机 CPU，开了 SAC 还有每篇 1 次 LLM 调用 |
 
 `build_all.py:39` 定义 `DEEP = [EXTRACT, CHUNK, EMBED, PAGEMAP]`；
 `:43-44` 把深索拆成 `deep_prepare`（extract+chunk）与 `deep_embed`（embed+page_map），
 好让「Agent 写摘要」插在两者之间（见 §8）。
 `:52` 的 `SOFT = {"收藏夹树","AI 主题","印刷页码映射"}` 是非致命步骤，失败只跳过。
+
+#### PDF 文字层与本地 OCR
+
+`extract.py` 先用 PDFium 读取每一页原生文字；只有文字为空的页才在 300 DPI 下渲染并交给
+RapidOCR。PDFium 的打开、取页、渲染与关闭都在全局锁内，OCR 使用锁内复制出的**单页**像素并在锁外
+串行执行：不持有整本文档图像、不落临时图片、不联网，也不改写原 PDF。混合 PDF 会保留原生页和 OCR
+成功页；仍未识别的页数及错误写进 `deep_extract_status.json`。
+
+状态分为 `ocr_pending / ocr_failed / missing_pdf / invalid_pdf / ok_native / ok_ocr`。
+`deep_no_text.txt` 只为旧前端兼容保留 `ocr_failed`；启动和深索前会由
+`deep_extract_status.reconcile_legacy()` 幂等迁移旧名单，待 OCR 的篇会重新进入深索候选。
+文件夹模式抽题录只调用 `extract._extract_pages(max_pages=2, ocr_mode="off")`，不会为了识别题录意外 OCR 整本。
 
 ### 触发与队列（server 侧）
 
@@ -446,7 +458,8 @@ server 侧 `GET /agent/tasks`（`server.py:649`）解析 `任务.md` 的 frontma
 | `build_all.py` | 建库编排器：`--stage light/semantic/deep/all/folder/deep_prepare/deep_embed` |
 | `index_light.py` | L 档：题录 → papers.jsonl + bm25_meta + stats_cache + manifest（秒级，0 嵌入） |
 | `index_semantic.py` | S 档：题录嵌入 → LanceDB meta 行 + 重建主 bm25（1-2 分钟） |
-| `extract.py` | F 档 ①：有 PDF 的篇 → 逐页文本 `data/extracted/`（ThreadPool，断点续跑） |
+| `extract.py` | F 档 ①：有 PDF 的篇 → 原生文字 + 空页本地 OCR → `data/extracted/`（ThreadPool，断点续跑） |
+| `deep_extract_status.py` | PDF 提取状态 sidecar、旧 `deep_no_text` 迁移与分类计数 |
 | `chunk.py` | F 档 ②：逐页文本 → 父子块 `data/chunks/`（child ~500字 / parent = 整页） |
 | `embed_index.py` | F 档 ③：块嵌入（可拼 SAC 前缀）→ LanceDB chunk 行 + 重建 bm25 |
 | `build_categories.py` | 读 zotero.sqlite 收藏夹树 → `data/categories/zotero_collections.json`（零嵌入，秒级） |
@@ -471,7 +484,7 @@ server 侧 `GET /agent/tasks`（`server.py:649`）解析 `任务.md` 的 frontma
 
 ### 依赖
 
-`requirements.txt`：fastapi / uvicorn / lancedb>=0.33 / onnxruntime(<2) / transformers(仅 tokenizer) / tokenizers / bm25s / jieba / scikit-learn / pymupdf4llm / python-docx / requests / pywebview / pythonnet。
+`requirements.txt`：fastapi / uvicorn / lancedb>=0.33 / onnxruntime(<2) / transformers(仅 tokenizer) / tokenizers / bm25s / jieba / scikit-learn / pypdfium2 / rapidocr / python-docx / requests / pywebview / pythonnet（按平台分流）。
 **无 torch**（reranker 只走 onnxruntime，打包省 526MB）。`requirements.lock` 是冻结版。
 
 ---

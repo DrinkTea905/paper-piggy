@@ -4,41 +4,90 @@
   const $ = (s) => document.querySelector(s);
   const $$ = (s) => document.querySelectorAll(s);
 
-  // 应用内确认框：替代浏览器原生 confirm 灰框（那个会显示「127.0.0.1:8770 显示」很突兀）。
-  // 用法：if (!(await uiConfirm("正文", {title, okText, danger}))) return;
-  function uiConfirm(message, opts = {}) {
+  // 应用内对话框：替代浏览器原生确认/提示框（原生框会突兀地显示本地服务地址）。
+  // 多处异步任务可能同时报错，所以统一排队，避免后一条覆盖前一条；队列清空后恢复原焦点。
+  const _uiDialogQueue = [];
+  let _uiDialogActive = false, _uiDialogRestore = null;
+
+  function _drainUiDialogs() {
+    if (_uiDialogActive || !_uiDialogQueue.length) return;
+    _uiDialogActive = true;
+    const task = _uiDialogQueue.shift();
+    const { message, opts, notice, resolve } = task;
+    const m = $("#confirm-modal"), ok = $("#confirm-ok"), cancel = $("#confirm-cancel");
+    if (!m || !ok || !cancel) {
+      _uiDialogActive = false;
+      resolve(notice);
+      queueMicrotask(_drainUiDialogs);
+      return;
+    }
+    $("#confirm-title").textContent = opts.title || (notice ? "提示" : "请确认");
+    $("#confirm-msg").textContent = message || "";
+    ok.textContent = opts.okText || "确定";
+    cancel.textContent = opts.cancelText || "取消";
+    ok.className = opts.danger ? "danger-btn" : "";
+    cancel.hidden = notice;
+    m.setAttribute("role", "dialog");
+    m.setAttribute("aria-modal", "true");
+    m.hidden = false;
+    let finished = false;
+    const done = (v) => {
+      if (finished) return;
+      finished = true;
+      m.hidden = true;
+      cancel.hidden = false;
+      ok.className = "";
+      ok.removeEventListener("click", onOk);
+      cancel.removeEventListener("click", onCancel);
+      m.removeEventListener("mousedown", onBackdrop);
+      document.removeEventListener("keydown", onKey, true);
+      _uiDialogActive = false;
+      resolve(v);
+      if (_uiDialogQueue.length) {
+        queueMicrotask(_drainUiDialogs);
+      } else {
+        const target = _uiDialogRestore;
+        _uiDialogRestore = null;
+        if (target && target.isConnected && !target.disabled) setTimeout(() => target.focus(), 0);
+      }
+    };
+    const onOk = () => done(true);
+    const onCancel = () => done(false);
+    const onBackdrop = (e) => { if (e.target === m) done(notice); };
+    const onKey = (e) => {
+      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); done(notice); }
+      else if (e.key === "Enter") {
+        e.preventDefault(); e.stopPropagation();
+        if (notice) done(true);
+        else {
+          const ae = document.activeElement;
+          done(ae === cancel ? false : ae === ok ? true : !opts.danger);
+        }
+      } else if (e.key === "Tab") {
+        const focusable = notice ? [ok] : [cancel, ok];
+        const i = focusable.indexOf(document.activeElement);
+        e.preventDefault();
+        focusable[(i + (e.shiftKey ? -1 : 1) + focusable.length) % focusable.length].focus();
+      }
+    };
+    ok.addEventListener("click", onOk);
+    cancel.addEventListener("click", onCancel);
+    m.addEventListener("mousedown", onBackdrop);
+    document.addEventListener("keydown", onKey, true);
+    // 危险操作默认聚焦「取消」，防止手快连敲 Enter 误删；普通提示只有确定按钮。
+    setTimeout(() => (notice ? ok : opts.danger ? cancel : ok).focus(), 0);
+  }
+
+  function _uiDialog(message, opts, notice) {
     return new Promise((resolve) => {
-      const m = $("#confirm-modal"), ok = $("#confirm-ok"), cancel = $("#confirm-cancel");
-      $("#confirm-title").textContent = opts.title || "请确认";
-      $("#confirm-msg").textContent = message || "";
-      ok.textContent = opts.okText || "确定";
-      cancel.textContent = opts.cancelText || "取消";
-      ok.className = opts.danger ? "danger-btn" : "";
-      m.hidden = false;
-      // UX12：危险操作默认聚焦「取消」，防止手快连敲 Enter 误删
-      setTimeout(() => (opts.danger ? cancel : ok).focus(), 0);
-      const done = (v) => {
-        m.hidden = true;
-        ok.removeEventListener("click", onOk);
-        cancel.removeEventListener("click", onCancel);
-        m.removeEventListener("mousedown", onBackdrop);
-        document.removeEventListener("keydown", onKey, true);
-        resolve(v);
-      };
-      const onOk = () => done(true);
-      const onCancel = () => done(false);
-      const onBackdrop = (e) => { if (e.target === m) done(false); };   // 点遮罩=取消
-      const onKey = (e) => {
-        if (e.key === "Escape") { e.preventDefault(); done(false); }
-        // UX12：danger 时 Enter 默认落在「取消」上（除非用户已把焦点移到「确定」）
-        else if (e.key === "Enter") { e.preventDefault(); const ae = document.activeElement; done(ae === cancel ? false : ae === ok ? true : !opts.danger); }
-      };
-      ok.addEventListener("click", onOk);
-      cancel.addEventListener("click", onCancel);
-      m.addEventListener("mousedown", onBackdrop);
-      document.addEventListener("keydown", onKey, true);
+      if (!_uiDialogActive && !_uiDialogQueue.length) _uiDialogRestore = document.activeElement;
+      _uiDialogQueue.push({ message, opts: opts || {}, notice, resolve });
+      _drainUiDialogs();
     });
   }
+
+  function uiConfirm(message, opts = {}) { return _uiDialog(message, opts, false); }
+  function uiNotice(message, opts = {}) { return _uiDialog(message, opts, true); }
 
   // 前端错误自动上报到后端 logs/errors.log（方便测试时反馈问题）
   const reportErr = (msg, ctx) => {
@@ -161,7 +210,7 @@
   let lastIdxStatus = null;
   let wasDeepBusy = false;
   let wasBackfilling = false;   // 追踪「生成检索摘要」后台任务，结束时刷新列表/徽标
-  let lastDeepDone = -1, lastNoText = -1;   // 深索/扫描件计数变化 → 非破坏式刷新浏览徽标
+  let lastDeepDone = -1, lastExtractSig = "";   // 深索/提取状态变化 → 非破坏式刷新浏览徽标
   let lastRev = null;   // 库修订号（/health.rev，分域 lib/wiki/agent）：某域变了=该域有改动，静默刷当前可见页（连点都不用）
   async function poll() {
     const s = $("#status");
@@ -231,13 +280,14 @@
         else flashToast("⚠ 深索中断（原因见深索详情面板），已完成部分已保存。");
       }
       wasDeepBusy = deepBusyNow;
-      // 深索/自愈推进中：深索数或扫描件数一变，就非破坏式刷新浏览徽标——自愈清掉标记后立刻不再显示扫描件
-      const _dn = st.deep_done || 0, _nt = st.deep_no_text || 0;
-      if (_dn !== lastDeepDone || _nt !== lastNoText) {
+      // 深索或 PDF 提取分类变化时，非破坏式刷新浏览徽标。
+      const _dn = st.deep_done || 0;
+      const _extractSig = JSON.stringify(st.extract_status_counts || { legacy: st.deep_no_text || 0 });
+      if (_dn !== lastDeepDone || _extractSig !== lastExtractSig) {
         if (browseLoaded && !$("#panel-browse").hidden) refreshBrowseDeepState();
         if (agentLoaded && !$("#panel-agent").hidden) loadAgentDeep();   // Agent 页深索/摘要计数同步
       }
-      lastDeepDone = _dn; lastNoText = _nt;
+      lastDeepDone = _dn; lastExtractSig = _extractSig;
       // 「生成检索摘要」（第②步）后台任务结束→刷新库总览与浏览列表，让 sac 数字/徽标更新
       const bfNow = !!(st.sac_backfill && st.sac_backfill.running);
       if (wasBackfilling && !bfNow) {
@@ -411,6 +461,27 @@
     const min = Math.round(sec / 60);
     return min > 90 ? "约剩 " + Math.round(min / 60) + " 小时" : "约剩 " + min + " 分钟";
   }
+  function extractCounts(st) {
+    const c = (st && st.extract_status_counts) || {};
+    const hasStructured = Object.keys(c).length > 0;
+    const missing = c.missing_pdf || 0, invalid = c.invalid_pdf || 0;
+    const failed = c.ocr_failed || 0, pending = c.ocr_pending || 0;
+    return { missing, invalid, failed, pending,
+      blocked: hasStructured ? missing + invalid + failed : ((st && st.deep_no_text) || 0) };
+  }
+  function extractCountsText(st) {
+    const x = extractCounts(st), bits = [];
+    if (x.pending) bits.push(`${num(x.pending)} 篇待/正在本地 OCR`);
+    if (x.missing) bits.push(`${num(x.missing)} 篇附件缺失`);
+    if (x.invalid) bits.push(`${num(x.invalid)} 篇 PDF 无法打开`);
+    if (x.failed) bits.push(`${num(x.failed)} 篇 OCR 未识别`);
+    return bits.join("，");
+  }
+  function extractState(r) { return ((r && r.extract_status) || {}).status || ""; }
+  function extractBlocked(r) {
+    const s = extractState(r);
+    return r && (r.no_text || s === "missing_pdf" || s === "invalid_pdf" || s === "ocr_failed");
+  }
   function updateProgress(st) {
     const bar = $("#idx-progress");
     const papers = st.papers || 0, meta = st.meta_done || 0;
@@ -424,9 +495,9 @@
     // F4：只在 stage==="deep" 时才叫「深索中」——增量更新(stage=all)/队列空闲时不再误报「深索中 0%」
     if (deepBusy) {
       // 深索（把有 PDF 的文献全文拆成可检索的小段）
-      const noText = st.deep_no_text || 0;
-      if (withPdf > 0 && (deep + noText) >= withPdf) {
-        // embed 已全部嵌完（有正文的全嵌了、其余是扫描件），但整库深索还有最后一步：
+      const blocked = extractCounts(st).blocked;
+      if (withPdf > 0 && (deep + blocked) >= withPdf) {
+        // 可处理正文已嵌完，其余是明确的附件/OCR失败终态；整库深索还有最后一步：
         // 重建 bm25 检索索引 + 印刷页码映射（20 多万块，分词+建索引要好几分钟）。
         // 这期间深索计数已到顶，若仍显示「深索中 1388/1398 · 99%」会让人误以为卡死——
         // 明确告诉用户在收尾（用户 2026-07-15 反馈「卡在 99% 不动」，实为此阶段）。
@@ -479,7 +550,8 @@
       const deep = q.deep_done || 0, withPdf = q.with_pdf || 0;
       const pending = q.pending || 0, inflight = q.in_flight || 0;
       const building = !!q.building, stage = q.stage || "";
-      const undeep = Math.max(0, withPdf - deep - (q.deep_no_text || 0));   // 扣掉扫描件：它们没法常规深索，不算"待深索"
+      const xc = extractCounts(q);
+      const undeep = Math.max(0, withPdf - deep - xc.blocked);
       // BF31：整库深索以后端 /index/queue 的 bulk 字段为准（队列批次也可能瞬时 inflight=0，旧推断会误报「整库」）；
       // 旧后端没有 bulk 字段（undefined）时回退旧推断，保持兼容
       const bulkDeep = building && stage === "deep" &&
@@ -488,9 +560,8 @@
       // F4：分「整库深索中 / 队列进行中 / 空闲」三态，空闲不再假显示「深索中」，无可暂停对象时藏起暂停按钮
       let stat, eta = _etaText(q.eta_seconds), listEmpty;
       if (bulkDeep) {
-        const noText2 = q.deep_no_text || 0;
-        if (withPdf > 0 && (deep + noText2) >= withPdf) {
-          // 有正文的全嵌完了、剩下是扫描件——整库深索进入最后的「重建检索索引」阶段。
+        if (withPdf > 0 && (deep + xc.blocked) >= withPdf) {
+          // 可处理正文已嵌完——整库深索进入最后的「重建检索索引」阶段。
           // 别再显示冻住的 1388/1398，明说在收尾（同 updateProgress 的处理）。
           stat = `深索已完成，正在重建检索索引（bm25 + 页码映射，20 多万块，需几分钟）…请稍候`;
           listEmpty = "正在重建检索索引，本步骤完成后整库深索即结束";
@@ -508,16 +579,16 @@
         stat = `深索队列已空 · ` + (undeep > 0
           ? `待深索 <b>${num(undeep)}</b> 篇（可在「浏览」页勾选后深索）`
           : `全部 PDF 已深索 ✓`);
-        // 有被判「扫描件/无正文」的篇时，给一个重试入口：PDF 曾被占用/坏、或链接附件修好后可重新深索
-        const nt = q.deep_no_text || 0;
-        if (nt > 0) stat += ` · <a href="#" id="dp-retry-nt" title="清除这些篇的『无正文』标记与旧产物，可重新深索（PDF 现在可读则会成功）">🔁 重试 ${num(nt)} 篇扫描件/失败篇</a>`;
+        const issueText = extractCountsText(q);
+        if (issueText) stat += ` · ${issueText}`;
+        if (xc.blocked > 0) stat += ` · <a href="#" id="dp-retry-nt" title="修好附件或 PDF 后，清除失败状态与旧产物再重试">🔁 重试 ${num(xc.blocked)} 篇提取失败文献</a>`;
         listEmpty = "暂无正在深索的文献"; eta = "";
       }
       $("#dp-stat").innerHTML = stat + sacFrag(q);
       const rnt = $("#dp-retry-nt");
       if (rnt) rnt.addEventListener("click", async (ev) => {
         ev.preventDefault();
-        if (!(await uiConfirm("将清除这些篇的『无正文/扫描件』标记与旧提取产物，之后可在「浏览」页重新勾选深索。不影响其它文献。", { title: "重试扫描件/失败篇？", okText: "清除并可重试" }))) return;
+        if (!(await uiConfirm("将清除附件缺失、PDF 无法打开或 OCR 未识别文献的失败状态与旧提取产物。请先确认附件已修好；之后可在「浏览」页重新深索，本地 OCR 会自动运行。不会改动原 PDF。", { title: "重试 PDF 提取失败文献？", okText: "清除并可重试" }))) return;
         try { const r = await jpost("/index/retry_no_text", {}); flashToast(r.msg || `已清除 ${num(r.cleared || 0)} 篇。`); deepPanelPoll(); }
         catch (e) { flashToast("重试失败：" + (e.message || e)); }
       });
@@ -821,12 +892,26 @@
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeTierMenu(); });
   // 次徽标已废弃：权威度数值已收进 tierBadge 的 tooltip（redundant-tier-weight-badge）。保留空实现兼容旧调用点。
   function weightBadge(r) { return ""; }
+  function extractFailureBadge(r) {
+    const s = extractState(r), rec = (r && r.extract_status) || {};
+    if (s === "missing_pdf") return `<span class="tag nopdf" title="记录里有 PDF，但附件文件已不在磁盘上；请先在 Zotero 中修复路径">📎 附件缺失</span>`;
+    if (s === "invalid_pdf") return `<span class="tag nopdf" title="PDF 无法打开，可能损坏、未同步完整或被占用">⚠ PDF无法打开</span>`;
+    if (s === "ocr_failed") return `<span class="tag nopdf" title="本地 OCR 已运行，但没有识别出有效文字；可检查 PDF 后重试">⚠ OCR未识别</span>`;
+    if (!s && r && r.no_text) return `<span class="tag nopdf" title="旧版提取失败记录；更新状态后会显示具体原因">⚠ 正文提取失败</span>`;
+    if (rec.empty_pages > 0 && (s === "ok_native" || s === "ok_ocr"))
+      return `<span class="tag review" title="正文已入索引，但仍有 ${num(rec.empty_pages)} 页未识别">⚠ ${num(rec.empty_pages)}页未识别</span>`;
+    return "";
+  }
   function depthTag(r) {
     if (r.is_wiki) return "";                       // wiki 行用专属徽标（wikiBadge），不显示深度标
-    if (r.no_text) return `<span class="tag nopdf" title="扫描件/无可抽文本，需先 OCR 才能深索">🚫 扫描件·需OCR</span>`;  // C1
-    if (r.depth === "full") return `<span class="tag full">📄 已深索</span>` + (r.has_summary ? `<span class="tag sac" title="已生成 AI 检索摘要，检索更容易命中这篇">🧬 有摘要</span>` : "");
+    const failure = extractFailureBadge(r);
+    if (extractBlocked(r)) return failure;
+    if (r.depth === "full") return `<span class="tag full">📄 已深索</span>` + failure + (r.has_summary ? `<span class="tag sac" title="已生成 AI 检索摘要，检索更容易命中这篇">🧬 有摘要</span>` : "");
     // F12：有 PDF 的未深索命中→可点击深索；无 PDF 的纯题录不给深索入口（避免点了无效）
-    if (r.has_pdf) return `<span class="tag abstract deep-one" data-key="${esc(r.key || "")}" role="button" tabindex="0" title="点此深索该篇：全文拆成可检索的小段后可精读到页码"><span class="lbl-idle">📋 未深索</span><span class="lbl-hover">⚡ 深索该篇</span></span>`;
+    if (r.has_pdf) {
+      const pending = extractState(r) === "ocr_pending";
+      return `<span class="tag abstract deep-one" data-key="${esc(r.key || "")}" role="button" tabindex="0" title="${pending ? "点此继续深索并自动运行本地 OCR；不会上传或改写原 PDF" : "点此深索该篇：全文拆成可检索的小段后可精读到页码"}"><span class="lbl-idle">${pending ? "🔎 待本地OCR" : "📋 未深索"}</span><span class="lbl-hover">⚡ ${pending ? "开始OCR" : "深索该篇"}</span></span>`;
+    }
     return `<span class="tag nopdf" title="无 PDF，只有题录（题名·作者·年份·期刊）">🚫 无全文 / 仅题录</span>`;
   }
   // 综合层徽标：命中的是"已存综合"页（可能已过时；来源可展开回溯到论文页码）。
@@ -1387,18 +1472,18 @@
         <div class="hbar deep-prog-bar"><span class="track"><span class="fill" style="width:0%;background:#16a085"></span></span><span class="val">0%</span></div>
         <p class="deep-prog-txt">暂无可深索文献</p></div>`;
     }
-    const noText = st.deep_no_text || 0;                        // 扫描件：不算"待深索"
-    const processed = Math.min(withPdf, deep + noText);
-    const rawPct = (processed / withPdf) * 100;                  // 按"已处理"算，剩下全是扫描件也到 100%
+    const xc = extractCounts(st), blocked = xc.blocked;
+    const processed = Math.min(withPdf, deep + blocked);
+    const rawPct = (processed / withPdf) * 100;
     const barPct = processed > 0 ? Math.max(3, Math.round(rawPct)) : 0;   // 有成果就留一条可见的进度条，避免 2/1443 显示 0%
     const pctLabel = (processed > 0 && rawPct < 1) ? "<1%" : Math.round(rawPct) + "%";
-    const remain = Math.max(0, withPdf - deep - noText);
+    const remain = Math.max(0, withPdf - deep - blocked);
     const clickable = remain > 0;
     const bar = `<span class="track"><span class="fill" style="width:${barPct}%;background:#16a085"></span></span>`;
     const txt = (remain > 0
       ? `已深索 <b>${num(deep)}</b> / 有PDF ${num(withPdf)} 篇，还有 ${num(remain)} 篇可深索`
-      : (noText > 0
-          ? `已深索 <b>${num(deep)}</b> / 有PDF ${num(withPdf)} 篇，已全部深索完成 ✓（另 ${num(noText)} 篇扫描件无法深索）`
+      : (blocked > 0
+          ? `已深索 <b>${num(deep)}</b> / 有PDF ${num(withPdf)} 篇；可处理正文已完成（${extractCountsText(st)}）`
           : `已深索 <b>${num(deep)}</b> / 有PDF ${num(withPdf)} 篇，已全部深索完成 ✓`)) + sacFrag(st);
     // 查看「已深索了哪些」（跳到浏览的「已深索」筛选）。整卡可点→浏览挑未深索去深索。
     const seeLink = deep > 0 ? `<span class="deep-prog-see" id="deep-prog-see">查看已深索 ${num(deep)} 篇 →</span>` : "";
@@ -1422,10 +1507,9 @@
     const health = d.health || {};
     const st = status || {};
     const withPdf = st.with_pdf || 0, deep = st.deep_done || 0;
-    const noText = st.deep_no_text || 0;                        // 扫描件/无正文：没法深索，不算"待深索"
-    const remain = Math.max(0, withPdf - deep - noText);        // 真正还能深索的（扣掉扫描件）
-    const processed = Math.min(withPdf, deep + noText);         // 已处理＝已深索 + 已确认扫描件
-    // 进度按"已处理"算：深索完 + 剩下的都是扫描件 → 100%，不再永远卡在 99%
+    const xc = extractCounts(st), blocked = xc.blocked;
+    const remain = Math.max(0, withPdf - deep - blocked);
+    const processed = Math.min(withPdf, deep + blocked);
     const rawPct = withPdf ? (processed / withPdf) * 100 : 0;
     const barPct = processed > 0 ? Math.max(3, Math.round(rawPct)) : 0;
     const pctLabel = withPdf === 0 ? "—" : (processed > 0 && rawPct < 1 ? "<1%" : Math.round(rawPct) + "%");
@@ -1449,8 +1533,8 @@
           <div class="hbar dh-bar"><span class="track"><span class="fill" style="width:${barPct}%;background:#7ee0b8"></span></span></div>
           <div class="dh-deep-txt">${withPdf === 0 ? "暂无可深索文献。" : (remain > 0
               ? `把 PDF 全文拆成可检索的小段，回答才能精确到页码。已深索 <b>${num(deep)}</b>/${num(withPdf)} 篇，还有 ${num(remain)} 篇。`
-              : (noText > 0
-                  ? `已全部深索完成 ✓ —— 另有 <b>${num(noText)}</b> 篇是扫描件/无正文（没有文字层，需 OCR 才能深索），已跳过。`
+               : (blocked > 0
+                   ? `可处理正文已完成 ✓ —— ${extractCountsText(st)}。修好附件或 PDF 后可在「深索详情」重试；OCR 全程本地运行。`
                   : `已全部深索完成 ✓`))}
             ${deep > 0 ? `<a class="dh-link" id="dash-see-deep">查看已深索 ${num(deep)} 篇 →</a>` : ""}
             ${remain > 0 ? `<a class="dh-link" id="dash-go-deep">深索全部未深索文献 →</a>` : ""}
@@ -2610,12 +2694,12 @@
   async function loadAgentDeep() {
     try {
       const st = await jget("/index/status");
-      const withPdf = st.with_pdf || 0, deep = st.deep_done || 0, noText = st.deep_no_text || 0;
-      const pct = withPdf ? Math.round((Math.min(withPdf, deep + noText) / withPdf) * 100) : 0;   // 已处理占比（扫描件算已处理）
+      const withPdf = st.with_pdf || 0, deep = st.deep_done || 0, xc = extractCounts(st);
+      const pct = withPdf ? Math.round((Math.min(withPdf, deep + xc.blocked) / withPdf) * 100) : 0;
       $("#ag-deep").innerHTML = withPdf
         ? `已深索 <b>${num(deep)}</b> / 有 PDF ${num(withPdf)} 篇（${pct}%）。` +
-          ((deep + noText) < withPdf ? ` <a class="ag-link" id="ag-godeep">去「浏览」深索更多 →</a>`
-            : (noText > 0 ? ` 已全部深索完成 ✓（另 ${num(noText)} 篇扫描件无法深索）` : ` 已全部深索完成 ✓`)) + sacFrag(st)
+          ((deep + xc.blocked) < withPdf ? ` <a class="ag-link" id="ag-godeep">去「浏览」深索更多 →</a>`
+            : (xc.blocked > 0 ? ` 可处理正文已完成 ✓（${extractCountsText(st)}）` : ` 已全部深索完成 ✓`)) + sacFrag(st)
         : `暂无可深索文献（库里没有带 PDF 的文献，或尚未建库）。`;
       const g = $("#ag-godeep");
       if (g) g.addEventListener("click", () => switchTab("browse"));
@@ -2646,6 +2730,29 @@
   }
   // C4：交付物卡「最近做了哪些主题」——读 /agent/outputs（扫「交付物/*」子文件夹）。
   //     常显：空/失败也显示引导（配合标题的「🔄 刷新」，新增交付物不必重启即可看到）。
+  async function openAgentFolder(which, btn) {
+    const lbl = btn && btn.textContent;
+    try {
+      const r = await jpost("/agent/open_folder", { which });
+      if (r && r.ok === false) throw new Error(r.msg || "打开失败");
+      if (btn) { btn.textContent = "已在文件管理器打开 ✓"; setTimeout(() => (btn.textContent = lbl), 1600); }
+    } catch (e) {
+      if (btn) { btn.textContent = "打开失败：" + (e.message || e); setTimeout(() => (btn.textContent = lbl), 2200); }
+      else flashToast("打开文件夹失败：" + (e.message || e));
+    }
+  }
+  async function openAgentOutput(name, card) {
+    if (!name || (card && card.getAttribute("aria-busy") === "true")) return;
+    if (card) { card.setAttribute("aria-busy", "true"); card.classList.add("opening"); }
+    try {
+      const r = await jpost("/agent/open_output", { name });
+      if (r && r.ok === false) throw new Error(r.msg || "打开失败");
+    } catch (e) {
+      flashToast("打开交付物失败：" + (e.message || e));
+    } finally {
+      if (card) { card.removeAttribute("aria-busy"); card.classList.remove("opening"); }
+    }
+  }
   async function loadAgentOutputs() {
     const box = $("#ag-outputs"); if (!box) return;
     const empty = (msg) => { box.innerHTML = `<div class="ag-outputs-empty">${msg}</div>`; };
@@ -2657,14 +2764,26 @@
         return;
       }
       box.innerHTML = items.map((o) => {
-        const meta = [o.mtime ? esc(o.mtime) : null,
-                      `${o.n_files || 0} 个文件`,
+        const fileCount = o.file_count != null ? o.file_count : (o.n_files || 0);
+        const subdirCount = o.subdir_count || 0;
+        const counts = o.name === "定时任务"
+          ? [`${subdirCount} 个任务文件夹`, `${fileCount} 个成果文件（含子文件夹）`]
+          : [`${fileCount} 个文件${subdirCount ? "（含子文件夹）" : ""}`,
+             subdirCount ? `${subdirCount} 个子文件夹` : null];
+        const meta = [o.mtime ? esc(o.mtime) : null, ...counts,
                       o.has_readme ? "含说明" : null]
           .filter(Boolean).map((x) => `<span>${x}</span>`).join(`<i class="ag-sep">·</i>`);
-        return `<div class="ag-output-item">`
+        return `<div class="ag-output-item" role="button" tabindex="0" data-output="${esc(o.name)}" title="打开这个交付物主题">`
           + `<div class="ag-output-name"><span class="ag-output-ico">📁</span><span>${esc(o.name)}</span></div>`
           + `<div class="ag-output-meta">${meta}</div></div>`;
       }).join("");
+      box.querySelectorAll(".ag-output-item").forEach((card) => {
+        const open = () => openAgentOutput(card.dataset.output, card);
+        card.addEventListener("click", open);
+        card.addEventListener("keydown", (e) => {
+          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); }
+        });
+      });
     } catch (e) {
       empty(`暂时读不到交付物列表（可能是后端未就绪）。稍后点 <b>🔄 刷新</b> 再试。`);
     }
@@ -2675,10 +2794,28 @@
     try {
       const d = await jget("/agent/tasks");
       const items = (d && d.tasks) || [];
+      const unrecognized = (d && d.unrecognized) || [];
+      const diagnostic = () => {
+        if (!unrecognized.length) return "";
+        const missing = unrecognized.filter((x) => x.reason === "missing_task_file").length;
+        const failed = unrecognized.filter((x) => x.reason === "read_error").length;
+        const names = unrecognized.map((x) => esc(x.name || "未命名目录")).join("、");
+        const reasons = [missing ? `${missing} 个缺少「任务.md」` : "", failed ? `${failed} 个读取失败` : ""]
+          .filter(Boolean).join("，");
+        return `<div class="ag-task-diagnostic"><span>发现 ${unrecognized.length} 个未识别任务目录（${reasons}）：${names}</span>`
+          + `<button class="ag-open-taskdir" type="button">打开定时任务文件夹</button></div>`;
+      };
+      const wireDiagnostic = () => {
+        const b = box.querySelector(".ag-open-taskdir");
+        if (b) b.addEventListener("click", () => openAgentFolder("tasks", b));
+      };
       if (!items.length) {
-        box.innerHTML = `<div class="ag-tasks-empty">还没有定时任务。想让 AI 助手定期帮你搜集/综述（如每周少年司法动态），`
-          + `对它说「<b>帮我建一个每周一早上的少年司法周报定时任务</b>」，它会把任务定义写进 `
-          + `<code>资料库/定时任务/</code>，并在它自己的日程里排期。</div>`;
+        box.innerHTML = unrecognized.length
+          ? diagnostic()
+          : `<div class="ag-tasks-empty">还没有定时任务。想让 AI 助手定期帮你搜集/综述（如每周少年司法动态），`
+            + `对它说「<b>帮我建一个每周一早上的少年司法周报定时任务</b>」，它会把任务定义写进 `
+            + `<code>资料库/定时任务/</code>，并在它自己的日程里排期。</div>`;
+        wireDiagnostic();
         return;
       }
       box.innerHTML = items.map((t) => {
@@ -2694,7 +2831,8 @@
         return `<div class="ag-task-item${off}"><span class="ag-task-name">${esc(t.name || "未命名任务")}</span>`
           + b.join("")
           + `<span class="ag-task-desc">${esc(t.desc || "")}</span></div>`;
-      }).join("");
+      }).join("") + diagnostic();
+      wireDiagnostic();
     } catch (e) {
       // 端点尚未就绪（旧后端）或读失败：显示引导而非报错
       box.innerHTML = `<div class="ag-tasks-empty">还没有定时任务。对 AI 助手说「帮我建一个每周定时任务」即可，`
@@ -2727,16 +2865,6 @@
       setTimeout(() => (b.textContent = revert), 1500);
     }));
     // 📂 打开文件夹（交付物/资料库/技能）——复用后端 /agent/open_folder
-    async function openAgentFolder(which, btn) {
-      const lbl = btn && btn.textContent;
-      try {
-        const r = await jpost("/agent/open_folder", { which });
-        if (r && r.ok === false) throw new Error(r.msg || "打开失败");
-        if (btn) { btn.textContent = "已在文件管理器打开 ✓"; setTimeout(() => (btn.textContent = lbl), 1600); }
-      } catch (e) {
-        if (btn) { btn.textContent = "打开失败：" + (e.message || e); setTimeout(() => (btn.textContent = lbl), 2200); }
-      }
-    }
     $$(".ag-openbtn").forEach((b) => b.addEventListener("click", () => openAgentFolder(b.dataset.open, b)));
     const osk = $("#ag-open-skills");
     if (osk) osk.addEventListener("click", () => openAgentFolder("skills", null));
@@ -2777,10 +2905,14 @@
       : `<span class="tag sac none" role="button" tabindex="0" title="点此为这篇生成 AI 检索摘要（知识库建设第②步；让检索更容易命中，需 API key，会重嵌入这一篇，可后台跑）">⚪ 无摘要</span>`;
   }
   function deepBadge(p) {
-    if (p.no_text) return `<span class="tag nopdf" title="扫描件/无可抽文本，需先 OCR 才能深索">🚫 扫描件·需OCR</span>`;  // C1/A2
-    if (p.deep) return `<span class="tag full">📄 已深索</span>` + sacBadge(p);
+    const failure = extractFailureBadge(p);
+    if (extractBlocked(p)) return failure;
+    if (p.deep) return `<span class="tag full">📄 已深索</span>` + failure + sacBadge(p);
     // F11：有 PDF 的未深索徽标可点击深索（hover 变「深索该篇」）
-    if (p.has_pdf) return `<span class="tag abstract deep-one" data-key="${esc(p.key)}" role="button" tabindex="0" title="点此深索该篇（后台排队，不影响你继续操作）"><span class="lbl-idle">📋 未深索</span><span class="lbl-hover">⚡ 深索该篇</span></span>`;
+    if (p.has_pdf) {
+      const pending = extractState(p) === "ocr_pending";
+      return `<span class="tag abstract deep-one" data-key="${esc(p.key)}" role="button" tabindex="0" title="${pending ? "点此继续深索并自动运行本地 OCR；不会上传或改写原 PDF" : "点此深索该篇（后台排队，不影响你继续操作）"}"><span class="lbl-idle">${pending ? "🔎 待本地OCR" : "📋 未深索"}</span><span class="lbl-hover">⚡ ${pending ? "开始OCR" : "深索该篇"}</span></span>`;
+    }
     return `<span class="tag nopdf" title="无 PDF，只有题录（题名·作者·年份·期刊）">🚫 无全文 / 仅题录</span>`;  // T5：与「未深索」区分
   }
   // 文件夹模式：AI 抽的题录待人工核对
@@ -2860,8 +2992,8 @@
 
   function refreshSelUI() {
     const n = BR.selected.size;
-    // F13：深索按钮的计数=选中里「未深索且有 PDF 非扫描件」的数量；加分类/引文按总选中数
-    const deepN = BR.papers.filter((p) => BR.selected.has(p.key) && p.has_pdf && !p.deep && !p.no_text).length;
+    // 待本地 OCR 可以进入深索；只排除附件缺失、坏 PDF、OCR 已失败的终态。
+    const deepN = BR.papers.filter((p) => BR.selected.has(p.key) && p.has_pdf && !p.deep && !extractBlocked(p)).length;
     $("#bl-sel-n").textContent = num(deepN);
     $("#bl-deep-sel").disabled = deepN === 0;
     const _a = $("#bl-addcat"); if (_a) _a.disabled = n === 0;
@@ -2918,8 +3050,7 @@
     }
   }
 
-  // 深索/自愈推进期间，只更新已渲染卡片的 no_text/deep/摘要徽标——不动勾选、滚动、分页。
-  // 治「自愈已把 deep_no_text 从 1382 清到 10，但浏览页整段深索期间不重取 /papers、仍显示扫描件」
+  // 深索/提取状态推进期间，只更新已渲染卡片的状态徽标——不动勾选、滚动、分页。
   // 这个 staleness（用户 2026-07-15 反馈）。后端 /papers 是实时算的，这里只是让前端跟上。
   async function refreshBrowseDeepState() {
     if (!browseLoaded || $("#panel-browse").hidden || !BR.papers.length) return;
@@ -2938,12 +3069,14 @@
       BR.papers.forEach((p) => {
         const f = fresh.get(p.key);
         if (!f) return;
-        if (p.no_text === f.no_text && p.deep === f.deep && p.has_summary === f.has_summary) return;
+        if (p.no_text === f.no_text && p.deep === f.deep && p.has_summary === f.has_summary
+            && JSON.stringify(p.extract_status || {}) === JSON.stringify(f.extract_status || {})) return;
         p.no_text = f.no_text; p.deep = f.deep; p.has_summary = f.has_summary;
+        p.extract_status = f.extract_status || {};
         const old = $(`#bl-list .bcard[data-key="${CSS.escape(p.key)}"]`);
         if (old) old.replaceWith(paperCard(p));    // 整卡重建：勾选态按 BR.selected 重算、事件重绑
       });
-      refreshSelUI();                              // deepN 依赖 !no_text，需重算，顺带解禁被误挡的深索按钮
+      refreshSelUI();                              // 深索候选随提取状态变化，需重算
     } catch (e) { /* 静默：后台刷新，不打扰用户 */ }
   }
 
@@ -3017,7 +3150,7 @@
     try {
       const r = await jpost("/index/deep", { scope: "keys:" + key });
       if (r && r.ok === false) { flashToast("已有任务在跑，稍后再试。"); reset(); return; }
-      if (r && r.queued === 0) { flashToast("这篇可能是扫描件或已在深索，未新增任务。"); reset(); }
+      if (r && r.queued === 0) { flashToast("这篇可能已在深索，或附件/PDF 当前不可读，未新增任务。"); reset(); }
       else { localStorage.removeItem("localkb.deepDismissed"); flashToast("已开始后台深索这篇，进度见顶部。"); poll(); }
     } catch (e) { flashToast("启动深索失败：" + (e.message || e)); reset(); }
   }
@@ -3034,7 +3167,7 @@
   $("#bl-sort").addEventListener("change", () => { BR.sort = $("#bl-sort").value; loadPapers(); });
   $("#bl-deep-filter").addEventListener("change", () => { BR.deepFilter = $("#bl-deep-filter").value; loadPapers(); });
   $("#bl-deep-sel").addEventListener("click", () => {
-    const keys = BR.papers.filter((p) => BR.selected.has(p.key) && p.has_pdf && !p.deep && !p.no_text).map((p) => p.key);
+    const keys = BR.papers.filter((p) => BR.selected.has(p.key) && p.has_pdf && !p.deep && !extractBlocked(p)).map((p) => p.key);
     deepIndexKeys(keys, $("#bl-deep-sel"));
   });
   // D1：工具栏「＋ 加入分类」——对当前勾选集打开加入分类菜单
@@ -3526,10 +3659,11 @@
   async function doBackup() {
     const btn = $("#bk-create"), msg = $("#bk-msg");
     const withKey = $("#bk-with-key").checked;
-    if (withKey && !confirm(
+    if (withKey && !(await uiConfirm(
         "备份包里将包含你的 API 密钥。\n\n" +
         "这个 zip 要是传到云盘、发给别人、或者存进 U 盘弄丢了，密钥就等于泄漏了。\n\n" +
-        "确定包含密钥吗？（不含也没关系，恢复后重填一次即可）")) return;
+        "确定包含密钥吗？（不含也没关系，恢复后重填一次即可）",
+        { title: "确认在备份中包含密钥？", okText: "仍然包含", danger: true }))) return;
     btn.disabled = true;
     if (msg) msg.textContent = "打包中…";
     try {
@@ -3550,24 +3684,27 @@
   async function doRestore(path) {
     const msg = $("#bk-msg");
     let info;
-    try { info = await jpost("/backup/inspect", { path }); } catch (e) { alert("读不了这个包：" + e); return; }
-    if (!info.ok) { alert(info.err || info.error || "这个备份包不可用"); return; }
+    try { info = await jpost("/backup/inspect", { path }); } catch (e) {
+      await uiNotice("读不了这个包：" + e, { title: "无法读取备份包" }); return;
+    }
+    if (!info.ok) { await uiNotice(info.err || info.error || "这个备份包不可用", { title: "备份包不可用" }); return; }
 
     const warns = (info.warnings || []).map(w => "· " + w).join("\n");
-    if (!confirm(
+    if (!(await uiConfirm(
         "要从这个备份恢复吗？\n\n" +
         "备份时间：" + ((info.manifest || {}).created || "?") + "\n" +
         (warns ? "\n注意：\n" + warns + "\n" : "") +
         "\n你现在的数据不会被删掉——会先整体挪进一个 _restore_backup_<时间> 文件夹，" +
-        "万一恢复错了还能捞回来。\n\n恢复完需要重启应用。")) return;
+        "万一恢复错了还能捞回来。\n\n恢复完需要重启应用。",
+        { title: "从这个备份恢复？", okText: "开始恢复", danger: true }))) return;
 
     if (msg) msg.textContent = "恢复中…";
     try {
       const r = await jpost("/backup/restore", { path });
       if (!r.ok) { if (msg) msg.textContent = "❌ " + (r.error || "恢复失败"); return; }
       const res = await pollBackup(() => "✅ 恢复完成");
-      if (res) alert("恢复完成。\n\n" + (res.msg || "") +
-                     "\n\n请关闭并重新打开 PaperPiggy —— 内存里还是旧的索引。");
+      if (res) await uiNotice("恢复完成。\n\n" + (res.msg || "") +
+                     "\n\n请关闭并重新打开 PaperPiggy —— 内存里还是旧的索引。", { title: "恢复完成" });
     } catch (e) {
       if (msg) msg.textContent = "❌ " + e;
     }
@@ -3595,7 +3732,7 @@
     const bkdir = $("#bk-dir"); if (bkdir) bkdir.addEventListener("change", () => saveBkConf({ dir: bkdir.value.trim() }));
     const bko = $("#bk-open"); if (bko) bko.addEventListener("click", async () => {
       const r = await jpost("/backup/open_dir", {});
-      if (!r.ok) alert("打不开：" + (r.error || ""));
+      if (!r.ok) await uiNotice("打不开：" + (r.error || ""), { title: "无法打开备份文件夹" });
     });
     const bkp = $("#bk-pick"); if (bkp) bkp.addEventListener("click", async () => {
       try {
@@ -3645,8 +3782,9 @@
   function renderUpdateBadge(r) {
     const b = $("#up-badge"); if (!b) return;
     const dismissed = localStorage.getItem("localkb.updateDismissed");
-    if (r && r.ok && r.has_update && r.latest && dismissed !== r.latest) {
-      b.textContent = "🎁 有新版 " + r.latest;
+    if (r && r.ok && (r.has_update || r.needs_full_installer) && r.latest
+        && (r.needs_full_installer || dismissed !== r.latest)) {
+      b.textContent = r.needs_full_installer ? "⬇️ 需完整安装器" : "🎁 有新版 " + r.latest;
       b.dataset.latest = r.latest;
       b.hidden = false;
     } else {
@@ -3665,9 +3803,25 @@
         renderUpdateBadge(null);   // 检查失败不亮徽标
         return r;
       }
-      if (r.has_update) {
+      if (r.has_update || r.needs_full_installer) {
         msg.textContent = "";
-        $("#up-ver").innerHTML = `当前 <b>${r.current}</b> → 有新版 <b>${r.latest}</b>`;
+        const apply = $("#up-apply");
+        if (r.needs_full_installer) {
+          const missing = (r.missing_runtime || []).join("、") || "新增运行组件";
+          $("#up-ver").innerHTML = r.has_update
+            ? `当前 <b>${r.current}</b> → 新版 <b>${r.latest}</b> 需要完整安装器（缺少：${esc(missing)}）。<br>直接覆盖安装即可，<b>不用卸载</b>；索引、综述、设置和 Agent 文件都会保留。`
+            : `程序代码已是 <b>${r.current}</b>，但还缺少 ${esc(missing)}。请再运行一次完整安装器补齐；<b>不用卸载</b>，用户数据不会被覆盖。`;
+          apply.dataset.mode = "installer";
+          apply.textContent = "⬇️ 下载完整安装器";
+          apply.disabled = !r.installer_url;
+          $("#up-apply-msg").textContent = r.installer_url ? "" : "该版本暂未提供完整安装器，请稍后再检查";
+        } else {
+          $("#up-ver").innerHTML = `当前 <b>${r.current}</b> → 有新版 <b>${r.latest}</b>`;
+          apply.dataset.mode = "app";
+          apply.textContent = "⬆️ 下载并升级";
+          apply.disabled = false;
+          $("#up-apply-msg").textContent = "";
+        }
         if (r.notes) { $("#up-notes").textContent = r.notes; $("#up-notes-wrap").hidden = false; }
         panel.hidden = false;
       } else {
@@ -3681,10 +3835,20 @@
 
   async function doUpdate() {
     const btn = $("#up-apply"), msg = $("#up-apply-msg");
+    if (btn.dataset.mode === "installer") {
+      btn.disabled = true; msg.textContent = "正在打开官方下载…";
+      try {
+        const r = await jpost("/update/open_installer", {});
+        msg.textContent = r.ok ? "已在默认浏览器打开下载。下载后直接运行，安装到原来的 PaperPiggy 文件夹即可；不用先卸载，用户数据不会被覆盖。" : "❌ 打开失败";
+      } catch (e) { msg.textContent = "❌ " + (e.message || e); }
+      finally { btn.disabled = false; }
+      return;
+    }
     const bridge = window.pywebview && window.pywebview.api && window.pywebview.api.apply_update;
     if (!bridge) { msg.textContent = "请在 PaperPiggy 应用窗口里升级（浏览器模式不支持）。"; return; }
-    if (!confirm("开始升级？\n\n会下载新版程序 → 关闭应用 → 替换后自动重启。\n" +
-                 "你的数据（索引、综述、Agent 交付物、期刊分级）完全不受影响。")) return;
+    if (!(await uiConfirm("会下载新版程序 → 关闭应用 → 替换后自动重启。\n\n" +
+                 "你的数据（索引、综述、Agent 交付物、期刊分级）完全不受影响。",
+                 { title: "开始升级？", okText: "下载并升级" }))) return;
     btn.disabled = true;
     msg.textContent = "下载中…";
     try {
@@ -4667,8 +4831,8 @@
     let st = lastIdxStatus;
     if (!st) { try { st = await jget("/index/status"); lastIdxStatus = st; } catch (e) { return; } }
     if (st.mode !== "full") return;                       // 语义层未就绪不弹
-    const withPdf = st.with_pdf || 0, deep = st.deep_done || 0, noText = st.deep_no_text || 0;
-    if (!(withPdf > 0 && (deep + noText) < withPdf)) return;   // 已全部深索完（剩下的都是扫描件）→ 无需弹
+    const withPdf = st.with_pdf || 0, deep = st.deep_done || 0, blocked = extractCounts(st).blocked;
+    if (!(withPdf > 0 && (deep + blocked) < withPdf)) return;
     renderDeepInvite(deep, withPdf, st.building && st.stage === "deep", st);
   }
   function renderDeepInvite(deep, withPdf, alreadyBusy, st) {

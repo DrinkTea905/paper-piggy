@@ -62,7 +62,7 @@ copy C:\Windows\System32\msvcp140_1.dll  build\py312\
 #    site-packages 里那几份救不了：numpy/pyarrow 的副本被 delvewheel 改名成 msvcp140-<hash>.dll。
 
 # ④ 验证
-build\py312\python.exe -c "import onnxruntime, lancedb, pypdfium2, docx; print('OK')"
+build\py312\python.exe -c "import onnxruntime, lancedb, pypdfium2, rapidocr, cv2, docx; print('OK')"
 ```
 
 ### 0.3 许可证红线
@@ -84,6 +84,7 @@ build\py312\python.exe -c "import onnxruntime, lancedb, pypdfium2, docx; print('
 **构建产物**
 - [ ] `bundle/python/` 下有 `msvcp140.dll` + `msvcp140_1.dll`（≥14.40）
 - [ ] `python-docx` 已装（否则 Word 导出静默降级为 .md）
+- [ ] `rapidocr` + `cv2` 可导入，并用一页真实扫描 PDF 做过本地 OCR 冒烟测试
 - [ ] `models_manifest.json` 存在，且直链可匿名下载（私有仓库的 Release 资产会 404）
 - [ ] `app/version.json` 的 sha256 与磁盘文件一致
 - [ ] 包内**没有** `app/data/`、`app/logs/` 残留
@@ -99,6 +100,7 @@ build\py312\python.exe -c "import onnxruntime, lancedb, pypdfium2, docx; print('
 - [ ] 双击快捷方式弹出**原生窗口**（弹系统浏览器 = WebView2 没装上）
 - [ ] 首启向导能下模型（本地模式）/ 能填 key（API 模式）
 - [ ] 能建库、能检索、能深索出正文
+- [ ] 纯扫描 PDF 能自动 OCR；混合 PDF 只 OCR 空页；原 PDF 的 hash/mtime 均未变化
 - [ ] 关窗后进程干净退出（任务管理器里没有残留 python.exe）
 - [ ] 装到默认位置：数据落**安装目录**的 `data\`（不是 C 盘用户目录）
 - [ ] 在向导里改装到 `D:\PaperPiggy`：数据跟着落 `D:\PaperPiggy\data\`
@@ -165,7 +167,10 @@ build\py312\python.exe -c "import onnxruntime, lancedb, pypdfium2, docx; print('
 2. **检查**：server 后台（可顺搭现有 `_auto_update_loop`，注意与"知识库自动更新"是两回事，UI 文案要区分）或设置页按钮，请求 GitHub API latest release → 比版本 → UI 顶栏提示"有新版 vX.Y.Z"。
 3. **下载**：只下 `app.zip`（纯源码，约几 MB，不含 python/models）→ sha256 校验 → 解压到 `app_new/`。多镜像 fallback 复用 models_manifest.json 的思路（见 §5）。
 4. **替换**：Windows 不能替换运行中的 exe/被占用文件，所以交给**独立小脚本**：主进程写 `update_pending` 标记后退出 → run_localkb.py 启动时发现标记 → `app→app_old, app_new→app` → 失败回滚 `app_old` → 正常启动。（.py 文件本身不锁，但 server 进程活着时换代码不生效，重启替换最干净。）
-5. **大件**：python/、models/ 极少变；若哪天 requirements 变了，release notes 里标记"需要重装完整包"，更新器检测到 `min_full_version` 字段就引导下载完整安装器。
+5. **大件**：python/、models/ 极少变。requirements 新增运行组件时，app 增量包只能先更新代码、不能补
+   `python/site-packages`；新版会由 `updater.missing_runtime_components()` 检测缺失组件，并在设置页和
+   顶栏提示「需完整安装器」，按钮直接打开官方 Release 的安装器。用户只需覆盖安装，**不用先卸载**，
+   `data/`、`0_Agent*`、`models/` 均保留。
 
 ### 备选：Velopack
 当下唯一"活着且官方支持 Python"的完整更新框架（PyPI `velopack` 1.2.0，2026-06）：delta 增量 + 安装器生成 + 更新一条龙，要求目录形态（正好契合）+ 一个 exe 主入口 + 打包机装 .NET SDK。

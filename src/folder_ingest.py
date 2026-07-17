@@ -99,6 +99,12 @@ def _purge_key_artifacts(keys):
                     p.write_text("".join(l + "\n" for l in kept), encoding="utf-8")
             except Exception:
                 pass
+    # 结构化提取状态也必须按 stem 清掉；否则附件替换后仍显示旧的 missing/invalid/OCR 结果。
+    try:
+        import deep_extract_status as DES
+        DES.remove(stems)
+    except Exception:
+        pass
     # BF10：抽取产物 + 页码映射 sidecar（PAGEMAP_DIR）一并按 stem 删——换内容的同名文件
     # 若残留旧 pagemap，页级引注会指向别篇文章的印刷页码。
     for d in (C.EXTRACTED, C.CHUNKS, C.PAGEMAP_DIR):
@@ -137,7 +143,10 @@ def _head_text(pdf, key):
     else:
         try:
             import extract as E
-            pages = E._extract_pages(pdf)[:2]
+            # 题录只需要首两页。必须把上限传进提取器，不能先处理整本再 [:2]；
+            # 且此阶段明确关闭 OCR，避免文件夹初建题录意外 OCR 整本。扫描件仍退文件名题名，
+            # 用户随后主动深索时才走本地页级 OCR。
+            pages = E._extract_pages(pdf, max_pages=2, ocr_mode="off")
         except Exception:
             pages = []
     return "\n".join((p.get("text", "") if isinstance(p, dict) else str(p)) for p in pages[:2]).strip()
