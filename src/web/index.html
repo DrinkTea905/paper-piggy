@@ -354,7 +354,10 @@
       <section class="ag-upgrade ag-full" id="ag-upgrade" hidden>
         <div class="ag-upgrade-head">
           <div><b id="ag-upgrade-title">有内容升级待处理</b><small id="ag-upgrade-sub"></small></div>
-          <button class="ag-refresh" id="ag-upgrade-refresh" type="button">🔄 重新检查</button>
+          <div class="ag-upgrade-actions">
+            <button class="ag-refresh" id="ag-upgrade-refresh" type="button">🔄 重新检查</button>
+            <button class="ag-refresh" id="ag-upgrade-dismiss" type="button" title="本次打开期间暂时不显示">收起</button>
+          </div>
         </div>
         <div id="ag-upgrade-items" class="ag-upgrade-items"></div>
         <div id="ag-upgrade-health" class="ag-upgrade-health"></div>

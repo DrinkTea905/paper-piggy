@@ -654,6 +654,8 @@ button:disabled { opacity: .6; cursor: default; }
   border-radius: 14px; padding: 14px 18px; }
 .ag-upgrade-head { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 10px; }
 .ag-upgrade-head > div { flex: 1; min-width: 0; }
+.ag-upgrade-actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.ag-upgrade-actions .ag-refresh { margin-left: 0; }
 .ag-upgrade-head b { display: block; color: #92400e; font-size: 14px; }
 .ag-upgrade-head small { display: block; color: var(--muted); margin-top: 3px; line-height: 1.5; }
 .ag-upgrade-items { display: flex; flex-direction: column; gap: 8px; }

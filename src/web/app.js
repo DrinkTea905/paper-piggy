@@ -2719,17 +2719,20 @@
     if (!box || !list || !health) return;
     AG.upgrade = h || { template_items: [] };
     const items = AG.upgrade.template_items || [];
-    const system = [["索引", AG.upgrade.index], ["运行环境", AG.upgrade.runtime], ["本地模型", AG.upgrade.models]];
+    const pendingItems = items.map((x, i) => ({ ...x, _upgradeIndex: i }))
+      .filter((x) => x.status === "pending" || x.status === "customized");
+    // 本地模型是否安装是用户可自行选择的运行方式，不作为应用更新后的待处理提醒。
+    const system = [["索引", AG.upgrade.index], ["运行环境", AG.upgrade.runtime]];
     const warnings = system.filter(([, x]) => x && ["stale", "missing", "unknown"].includes(x.state));
-    box.hidden = !items.length && !warnings.length;
+    box.hidden = AG.upgradeDismissed || (!pendingItems.length && !warnings.length);
     if (box.hidden) return;
-    const n = items.filter((x) => x.status === "pending" || x.status === "customized").length;
+    const n = pendingItems.length;
     $("#ag-upgrade-title").textContent = n ? `${n} 项用户内容有新版待合并` : "应用更新后有项目需要留意";
     $("#ag-upgrade-sub").textContent = n
       ? "你的版本没有被覆盖。先看差异，推荐复制给 Agent 合并；也可带备份直接采用新版。"
       : "应用已更新，但下面的配套内容仍需人工处理。";
-    list.innerHTML = items.map((x, i) =>
-      `<div class="ag-upgrade-item" data-upgrade-i="${i}">` +
+    list.innerHTML = pendingItems.map((x) =>
+      `<div class="ag-upgrade-item" data-upgrade-i="${x._upgradeIndex}">` +
       `<div class="agu-name">${esc(x.label)}${x.status === "customized" ? "（新版旁本写入失败）" : ""}</div>` +
       `<div class="agu-actions">` +
       `<button data-uact="diff">查看差异</button><button data-uact="agent">复制给 Agent 合并</button>` +
@@ -2744,6 +2747,7 @@
     }).join("");
   }
   async function refreshUpgradeHealth() {
+    AG.upgradeDismissed = false;
     const h = await jget("/upgrade/health");
     renderUpgradeHealth(h);
     return h;
@@ -2963,6 +2967,11 @@
     wireRefresh("ag-outputs-refresh", loadAgentOutputs);
     wireRefresh("ag-upgrade-refresh", refreshUpgradeHealth);
     const upbox = $("#ag-upgrade");
+    const upDismiss = $("#ag-upgrade-dismiss");
+    if (upDismiss) upDismiss.addEventListener("click", () => {
+      AG.upgradeDismissed = true;
+      if (upbox) upbox.hidden = true;
+    });
     if (upbox) upbox.addEventListener("click", (e) => {
       const b = e.target.closest("button[data-uact]");
       if (b) handleUpgradeAction(b).catch((err) => uiNotice("处理失败：" + (err.message || err), { title:"升级处理失败" }));
