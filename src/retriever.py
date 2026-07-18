@@ -437,45 +437,28 @@ def _active_discipline():
 _WEIGHT_MEMO = {}   # (discipline, journal, issn) -> weight_result；load_all 时清空（改档/换库后不串旧值）
 
 def _weight_res(r):
-    """算一条候选的权重（检索期动态）。优先级：手动改档 > 法源/报告规则 > 期刊分级引擎。
-       全部算不出 → None（排序回退旧离散档）。wiki 行 itemtype="wiki"，不进规则、走引擎兜底。"""
-    try:
-        sr = SR.resolve(r.get("key", ""), r.get("itemtype", ""), r.get("title", ""))
-        if sr:
-            return {"tier": sr["tier"], "weight": sr["weight"], "rank": sr["rank"],
-                    "needsReview": False, "src": sr["src"]}
-    except Exception:
-        pass
-    if JG is None:
+    """从全类型统一事实源取得评价；检索命中的少量候选允许惰性计算期刊目录。"""
+    if _is_wiki(r):
         return None
-    # 进程级 memo：一次检索里同刊多条候选、以及未收录书名/长刊名每次都要做上万条归一名的 SequenceMatcher
-    # 全库 fuzzy 扫描（实测未收录长名单条最高数百 ms），此前每条候选都重付。缓存 None 也是有意的——
-    # 未收录刊反复扫描代价最大。key 带 discipline，改学科即换命名空间，不会串档。
-    disc = _active_discipline()
-    journal = r.get("journal", "") or ""
-    issn = r.get("issn", "") or ""
-    ck = (disc, journal, issn)
-    if ck in _WEIGHT_MEMO:
-        return _WEIGHT_MEMO[ck]
     try:
-        wr = JG.resolve_journal_weight({"journal": journal, "issn": issn}, disc)
+        import grading_svc as GS
+        base = dict((M.get("papers") or {}).get(r.get("key", "")) or {})
+        base.update({k: v for k, v in r.items() if v not in (None, "", [])})
+        return GS.evaluate_paper(base, compute=True)
     except Exception:
-        wr = None
-    _WEIGHT_MEMO[ck] = wr
-    return wr
-
-# F38-B：tier code → 面向用户中文档名（与 grading_svc.TIER_CN 保持一致；前端 tierBadge 统一读中文 weight_tier）
-_TIER_CN = {"T1": "权威", "T1b": "准权威", "T2": "核心", "T3": "次核心",
-            "T4": "一般", "T5": "普通", "待确认": "待确认"}
+        return None
 
 def _attach_weight(d, wr):
-    """把权重结果挂到输出条目（供前端显示/加权/过滤）。weight_tier 统一输出中文档名。"""
+    """把统一评价挂到检索结果；旧字段继续保留供老客户端降级。"""
     d["journal_weight"] = wr.get("weight") if wr else None
     _t = wr.get("tier") if wr else None
-    d["weight_tier"] = _TIER_CN.get(_t, _t) if _t else None      # 中文档名（前端主徽标源）
+    d["weight_tier"] = wr.get("band_name") if wr else None
     d["weight_tier_code"] = _t                                    # 原始 T? 码（调试/兼容用）
-    d["weight_needs_review"] = bool(wr.get("needsReview")) if wr else False
+    d["weight_needs_review"] = bool(wr.get("needs_review") or wr.get("needsReview")) if wr else False
     d["weight_src"] = wr.get("src") if wr else None               # manual=手动改档 / rule=法源报告规则（前端标记）
+    for key in ("source_type", "source_type_name", "objective_label", "band", "band_name",
+                "standard_band_name", "band_rank", "internal_tier", "manual", "hit_catalogs", "explain"):
+        d[key] = wr.get(key) if wr else None
     return d
 
 def _is_wiki(r):

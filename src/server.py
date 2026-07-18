@@ -1211,18 +1211,32 @@ class DiscQ(BaseModel):
 
 @app.get("/setup/discipline")
 def get_discipline():
-    """当前锁定学科 + 可选学科清单（供设置面板下拉）。personal=True 的是个人档（如 law_personal）。"""
+    """当前锁定学科 + 可选学科清单。娱乐命名只做显示别名，不复制规则配置。"""
     import settings as S
+    import grading_svc as GS
     cur = S.discipline()
     items = []
     try:
         import journal_grading as JG
         for did, meta in JG.load_data().disciplines().items():
             items.append({"id": did, "name": meta.get("name", did),
-                          "personal": did.endswith("_personal")})
+                          "personal": did.endswith("_personal"),
+                          "band_names": {b: GS.band_name(b, did) for b in GS.BAND_RANK}})
+        if any(x["id"] == "law_personal" for x in items):
+            items.append({
+                "id": "law_personal_fun", "name": "法学（开发者增强：夯到拉）",
+                "personal": True,
+                "band_names": {b: GS.band_name(b, "law_personal_fun") for b in GS.BAND_RANK},
+                "notice": "仅供娱乐：与“法学（开发者增强）”使用完全相同的目录、权重、排序、缓存和手动改档规则，只改变四档显示名。",
+                "alias_of": "law_personal",
+            })
     except Exception:
-        items = [{"id": cur, "name": cur, "personal": cur.endswith("_personal")}]
-    return {"current": cur, "disciplines": items}
+        items = [{"id": cur, "name": cur, "personal": cur.endswith("_personal"),
+                  "band_names": {b: GS.band_name(b, cur) for b in GS.BAND_RANK}}]
+    current_meta = next((x for x in items if x["id"] == cur), items[0] if items else {})
+    return {"current": cur, "disciplines": items,
+            "band_names": current_meta.get("band_names", {}),
+            "notice": current_meta.get("notice", "")}
 
 @app.post("/setup/discipline")
 def setup_discipline(q: DiscQ):
@@ -1230,6 +1244,9 @@ def setup_discipline(q: DiscQ):
        并后台预热新学科的分级分布缓存，让库总览/浏览稍后刷新即见新口径（不阻塞本请求）。"""
     import settings as S
     if q.discipline:
+        allowed = {x.get("id") for x in get_discipline().get("disciplines", [])}
+        if q.discipline not in allowed:
+            return JSONResponse({"detail": f"未知学科：{q.discipline}"}, status_code=400)
         S.save({"journal_discipline": q.discipline})
         try:
             import grading_svc as GS
@@ -1237,6 +1254,26 @@ def setup_discipline(q: DiscQ):
         except Exception as e:
             log_error("discipline warm", repr(e))
     return {"ok": True, "current": S.discipline()}
+
+
+class GradingMappingQ(BaseModel):
+    mapping_id: str
+    band: Optional[str] = None
+
+
+@app.post("/grading/mapping")
+def set_grading_mapping(q: GradingMappingQ):
+    """调整当前学科的一项目录/性质映射；空 band 恢复自动，客观目录与客观标签不变。"""
+    try:
+        import grading_svc as GS
+        result = GS.set_mapping_override(q.mapping_id.strip(), (q.band or "").strip() or None)
+        GS.warm_async(_load_papers())
+        return {"ok": True, **result}
+    except ValueError as e:
+        return JSONResponse({"detail": str(e)}, status_code=400)
+    except Exception as e:
+        log_error("grading mapping", repr(e), traceback.format_exc())
+        return JSONResponse({"detail": f"保存映射失败：{e}"}, status_code=500)
 
 @app.post("/setup/reset")
 def setup_reset():
@@ -1369,8 +1406,11 @@ def stats_ep():
         s["grading_discipline"] = _S.discipline()
         try:                                          # F3：概览显示中文学科名
             import journal_grading as JG
-            s["grading_discipline_name"] = JG.load_data().disciplines().get(
-                _S.discipline(), {}).get("name", _S.discipline())
+            s["grading_discipline_name"] = (
+                "法学（开发者增强：夯到拉）" if _S.discipline() == "law_personal_fun"
+                else JG.load_data().disciplines().get(
+                    _S.discipline(), {}).get("name", _S.discipline())
+            )
         except Exception:
             s["grading_discipline_name"] = _S.discipline()
         dist = GS.weight_dist(_load_papers())
@@ -1379,6 +1419,9 @@ def stats_ep():
             s["grading_pending"] = False
         else:
             s["grading_pending"] = True
+        s["grading_overview"] = GS.overview(_load_papers(), compute=False)
+        from journal_grading import catalog_registry as CR
+        s["catalog_registry"] = CR.summary()
     except Exception as e:
         log_error("stats grading", repr(e))
     # EN-W1：附 wiki 体检摘要（契约3：{"issues":int,"checked_at":str}）。
@@ -2211,6 +2254,29 @@ def wiki_page(page_id: str):
     p = W.get_page(page_id)
     if not p:
         return JSONResponse({"error": "无此综合页", "id": page_id}, status_code=404)
+    try:
+        from collections import Counter
+        import grading_svc as GS
+        papers_by_key = _load_papers()
+        enriched, labels = [], Counter()
+        for source in p.get("sources", []) or []:
+            row = dict(source) if isinstance(source, dict) else {"key": str(source)}
+            paper = papers_by_key.get(row.get("key")) or {}
+            if paper:
+                g = GS.evaluate_paper(paper, compute=False)
+                row.update({k: g.get(k) for k in (
+                    "source_type", "source_type_name", "objective_label", "band", "band_name",
+                    "standard_band_name", "weight", "manual", "src",
+                )})
+                row.setdefault("title", paper.get("title", ""))
+                labels[g.get("objective_label") or "文献"] += 1
+            enriched.append(row)
+        p["sources"] = enriched
+        p["source_composition"] = [
+            {"label": label, "count": count} for label, count in labels.most_common()
+        ]
+    except Exception as e:
+        log_error("wiki/page grading", repr(e))
     return p
 
 @app.delete("/wiki/page/{page_id}")
@@ -2560,7 +2626,7 @@ def paper_detail(key: str):
     if not p:
         return JSONResponse({"detail": f"未找到文献 {key}（可先用 /papers 枚举）"}, status_code=404)
     import grading_svc as GS
-    g = GS.grade_paper(p, compute=False)     # 快路径：只用已预热 memo，与 /papers 同口径
+    g = GS.evaluate_paper(p, compute=True)
     cited_by_wiki = []
     try:
         cited_by_wiki = [{"id": c.get("id"), "title": c.get("title", "")}
@@ -2570,11 +2636,11 @@ def paper_detail(key: str):
     stem = p.get("stem") or T.safe_name(key)
     _isdeep = is_deep(key)
     extract_status = _extract_record(stem, legacy_deep=_isdeep)
-    return {
+    result = {
         "key": key, "title": p.get("title", ""), "author": p.get("author", ""),
         "year": p.get("year", ""), "journal": p.get("journal", ""),
         "itemtype": p.get("itemtype", ""),
-        "weight_tier": (g["cn"] if g else p.get("journal_tier", "")),
+        "weight_tier": (g["band_name"] if g else p.get("journal_tier", "")),
         "collections": p.get("collections", []),
         "official_pages": p.get("official_pages", ""),
         "has_pdf": bool(p.get("has_pdf", False)),
@@ -2586,6 +2652,20 @@ def paper_detail(key: str):
         "statute_status": p.get("statute_status", "") or "",
         "cited_by_wiki": cited_by_wiki,
     }
+    if g:
+        result.update({k: g.get(k) for k in (
+            "source_type", "source_type_name", "objective_label", "band", "band_name",
+            "standard_band_name", "internal_tier", "weight", "rank", "band_rank",
+            "hit_catalogs", "explain", "manual", "src",
+        )})
+    for field in (
+        "doi", "issn", "url", "website_title", "access_date", "publisher", "place", "isbn",
+        "edition", "series", "book_title", "university", "thesis_type", "institution",
+        "report_type", "report_number", "conference_name", "proceedings_title", "court",
+        "docket_number", "decision_date", "standard_number", "version",
+    ):
+        result[field] = p.get(field, "")
+    return result
 
 @app.get("/cite/{key}")
 def cite_paper(key: str, page: Optional[int] = None, style: str = "footnote", heading: Optional[str] = None):
@@ -2769,11 +2849,20 @@ def research_disclosure(q: DisclosureQ):
         log_error("research/disclosure", repr(e), traceback.format_exc())
         return JSONResponse({"detail": str(e)}, status_code=400)
 
+_SOURCE_TYPE_FILTERS = {
+    "journal_article": {"journal_article"}, "book": {"book"}, "book_section": {"book_section"},
+    "thesis": {"thesis"}, "legal_source": {"legal_source"}, "case": {"case"},
+    "standard": {"standard"}, "report": {"report"}, "preprint": {"preprint"},
+    "conference_paper": {"conference_paper"}, "dataset": {"dataset"},
+    "web": {"web", "newspaper", "other"},
+}
+
+
 @app.get("/papers")
 def papers(collection: Optional[str] = None, topic: Optional[int] = None,
            category: Optional[str] = None, deep: Optional[str] = None,
            sort: str = "recommend", limit: int = 300, offset: int = 0,
-           since: Optional[str] = None):
+           since: Optional[str] = None, source_type: Optional[str] = None):
     # EN-A7：since=YYYY-MM-DD 按 ingested_at 过滤（配合 whats_new：「上次见面后新入了什么」）。
     # ingested_at 形如 "YYYY-MM-DD HH:MM:SS"，与 since 直接字典序比较即可；
     # 没有 ingested_at 的老条目（空串）在 since 模式下会被滤掉——它们本来就不是"新入库"。
@@ -2801,6 +2890,10 @@ def papers(collection: Optional[str] = None, topic: Optional[int] = None,
         "all", "yes", "no", "ocr", "native",
         "summary_yes", "summary_invalid", "summary_no",
     )}
+    source_type_counts = {name: 0 for name in _SOURCE_TYPE_FILTERS}
+    wanted_types = _SOURCE_TYPE_FILTERS.get(source_type) if source_type else None
+    if source_type and wanted_types is None:
+        return JSONResponse({"detail": f"未知文献类型：{source_type}"}, status_code=400)
     for p in items:
         _isdeep = is_deep(p["key"], deepk)
         stem = p.get("stem") or T.safe_name(p["key"])
@@ -2810,27 +2903,39 @@ def papers(collection: Optional[str] = None, topic: Optional[int] = None,
         summary_invalid = summary_stem in sum_issues
         if since and (p.get("ingested_at") or "") < since:   # EN-A7：早于 since（或无入库时间）的滤掉
             continue
+        g = GS.evaluate_paper(p, compute=False)
+        actual_type = g.get("source_type") or "other"
+        deep_match = not deep or _browse_filter_matches(
+            deep, _isdeep, extract_rec, has_summary, summary_invalid)
+        if deep_match:
+            for group, members in _SOURCE_TYPE_FILTERS.items():
+                if actual_type in members:
+                    source_type_counts[group] += 1
+                    break
+        if wanted_types is not None and actual_type not in wanted_types:
+            continue
         filter_counts["all"] += 1
         for filter_name in ("yes", "no", "ocr", "native",
                             "summary_yes", "summary_invalid", "summary_no"):
             if _browse_filter_matches(filter_name, _isdeep, extract_rec,
                                       has_summary, summary_invalid):
                 filter_counts[filter_name] += 1
-        if deep and not _browse_filter_matches(deep, _isdeep, extract_rec,
-                                               has_summary, summary_invalid):
+        if not deep_match:
             continue
-        # F38-B：按当前学科取分级（快路径 compute=False，只用已预热 memo；未预热则回退旧 journal_tier）
-        # 手动改档/法源报告规则在 grade_paper 里优先命中（不走 memo，即改即显）。
-        g = GS.grade_paper(p, compute=False)
         out.append({
             "key": p["key"], "title": p.get("title", ""), "author": p.get("author", ""),
             "year": p.get("year", ""), "journal": p.get("journal", ""),
             "journal_tier": p.get("journal_tier", ""), "tier_rank": p.get("tier_rank", 6),
-            "weight_tier": (g["cn"] if g else ""),           # 学科感知中文档名（未预热时空→前端兜旧）
-            "weight_rank": (g["rank"] if g else 6),
-            "journal_weight": (g["weight"] if g else None),
-            "weight_needs_review": (g["needs_review"] if g else False),
-            "weight_src": (g.get("src") if g else None),     # manual=手动改档 / rule=法源报告规则
+            "weight_tier": g.get("band_name", ""),
+            "weight_rank": g.get("rank", 6),
+            "journal_weight": g.get("weight"),
+            "weight_needs_review": g.get("needs_review", False),
+            "weight_src": g.get("src"),
+            **{k: g.get(k) for k in (
+                "source_type", "source_type_name", "objective_label", "band", "band_name",
+                "standard_band_name", "internal_tier", "band_rank", "hit_catalogs",
+                "explain", "manual",
+            )},
             "official_pages": p.get("official_pages", ""), "has_pdf": p.get("has_pdf", False),
             "collections": p.get("collections", []),
             "needs_review": bool(p.get("needs_review", False)),   # folder 模式：AI 抽的题录待核对
@@ -2857,13 +2962,14 @@ def papers(collection: Optional[str] = None, topic: Optional[int] = None,
     off = max(0, int(offset or 0))
     return {"papers": out[off:off + limit], "total": len(out),
             "filter_counts": filter_counts,
+            "source_type_counts": source_type_counts,
             "collection": collection, "topic": topic, "category": category, "deep": deep,
-            "sort": sort, "since": since}
+            "source_type": source_type, "sort": sort, "since": since}
 
 # ── 单篇手动改档（法源权重改造 2026-07-12）──────────────────
 class TierOverrideQ(BaseModel):
     key: str
-    tier: Optional[str] = None      # "T1"/"T1b"/"T2"/"T3"/"T4"/"T5"；None/空 = 恢复自动
+    tier: Optional[str] = None      # authority/top/core/normal；兼容历史 T?；None/空 = 恢复自动
 
 @app.post("/paper/tier")
 def set_paper_tier(q: TierOverrideQ):
@@ -2871,8 +2977,8 @@ def set_paper_tier(q: TierOverrideQ):
     import source_rules as SR
     import grading_svc as GS
     tier = (q.tier or "").strip() or None
-    if tier and tier not in SR.TIER_W:
-        return JSONResponse({"detail": f"非法档位 {tier}（可选 T1/T1b/T2/T3/T4/T5 或留空恢复自动）"},
+    if tier and tier not in SR.OVERRIDE_VALUES:
+        return JSONResponse({"detail": f"非法档位 {tier}（可选 authority/top/core/normal 或留空恢复自动）"},
                             status_code=400)
     p = _load_papers().get(q.key)
     if not p:
@@ -2882,7 +2988,7 @@ def set_paper_tier(q: TierOverrideQ):
     except Exception as e:
         log_error("paper tier override", repr(e))
         return JSONResponse({"detail": f"写入改档失败：{e}"}, status_code=500)
-    g = GS.grade_paper(p)            # 改完立刻算出生效档（含回落到规则/期刊分级的情形）
+    g = GS.evaluate_paper(p)
     return {"ok": True, "key": q.key, "override": tier,
             "effective": g or {"tier": None, "cn": p.get("journal_tier", "未知"),
                                "weight": None, "rank": p.get("tier_rank", 6),

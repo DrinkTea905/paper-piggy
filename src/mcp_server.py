@@ -473,6 +473,12 @@ TOOLS = [
                 "deep": {"type": "string", "enum": ["yes", "no", "all"], "default": "all",
                          "description": "yes=只列已深索（可 read_source）；no=只列未深索；all=全部"},
                 "category": {"type": "string", "description": "限定到某分类 id（来自 list_kb_categories）"},
+                "source_type": {
+                    "type": "string",
+                    "enum": ["journal_article", "book", "book_section", "thesis", "legal_source",
+                             "case", "standard", "report", "preprint", "conference_paper", "dataset", "web"],
+                    "description": "按识别后的真实文献性质过滤；web 包含网页、报纸和其他文件。",
+                },
                 "limit": {"type": "integer", "default": 50},
                 # EN-M2：分页——千篇大库此前只能看到前 limit 篇，其余永远列不到
                 "offset": {"type": "integer", "default": 0, "description": "跳过前多少条（翻页用）"},
@@ -596,7 +602,7 @@ TOOLS = [
     },
     {
         "name": "get_source_meta",
-        "description": "取**单篇**文献的完整题录与状态：作者/年份/期刊/权重档、有无 PDF、是否深索、摘要、"
+            "description": "取**单篇**文献的完整题录与状态：作者/年份、真实文献性质、唯一客观标签、四档评价、有无 PDF、是否深索、摘要、"
                        "法条时效（statute_status）、以及哪些 wiki 综合页引用了它（cited_by_wiki）。"
                        "替代『list_sources 翻找 + get_backlinks 反查』两跳——精读一篇前先调它一次拿全貌。",
         "inputSchema": {"type": "object", "properties": {
@@ -650,7 +656,7 @@ TOOLS = [
     {
         "name": "add_source",
         "description": "把本机一个 PDF 文件收进知识库（只加不删）。用户在对话里给了本地 PDF 路径、想让它进库时用。"
-                       "题录由 AI 自动抽取、**待人工核对**（应用里会标「待确认」）。收录后建库在后台跑，"
+                       "题录由 AI 自动抽取、**待人工核对**（应用里会标「题录待核对」）。收录后建库在后台跑，"
                        "稍后可用 localkb_status / deep_status 查进度。仅 folder（文件夹）模式可用："
                        "Zotero 模式会拒绝并提示把 PDF 附到 Zotero 条目上。",
         "inputSchema": {"type": "object", "properties": {
@@ -1147,6 +1153,8 @@ def do_tool(name, args):
             params["deep"] = deep
         if args.get("category"):
             params["category"] = args["category"]
+        if args.get("source_type"):
+            params["source_type"] = args["source_type"]
         resp = requests.get(URL + "/papers", params=params, timeout=30)
         if resp.status_code != 200:
             return f"列举失败：{_err_of(resp)}"
@@ -1165,9 +1173,11 @@ def do_tool(name, args):
             if not p.get("has_pdf"):
                 flags.append("仅题录·无PDF")
             tail = ("　[" + "；".join(flags) + "]") if flags else ""
-            out.append(f"- «key:{p.get('key')}» {p.get('title', '')}"
+            label = p.get("objective_label") or p.get("source_type_name") or "文献"
+            band = p.get("band_name") or ""
+            out.append(f"- [{label}] «key:{p.get('key')}» {p.get('title', '')}"
                        f"（{p.get('author', '')} {p.get('year', '')}，{p.get('journal', '')}"
-                       f"{'·' + p['weight_tier'] if p.get('weight_tier') else ''}）{tail}")
+                       f"{'·评价 ' + band if band else ''}）{tail}")
         if off + len(items) < total:
             out.append(f"…… 还有 {total - off - len(items)} 篇未列出，续取请传 offset={off + len(items)}。")
         return "\n".join(out), {"total": total, "offset": off, "papers": items}
@@ -1423,9 +1433,12 @@ def do_tool(name, args):
             flags.append("扫描件·不可抽文本")
         if p.get("statute_status"):
             flags.append("法条时效：" + p["statute_status"])
+        evaluation = " · ".join(x for x in (
+            p.get("source_type_name"), p.get("objective_label"), p.get("band_name")
+        ) if x)
         out = [f"《{p.get('title', '')}》 «key:{key}»",
                f"{p.get('author', '')}，{p.get('journal', '')}，{p.get('year', '')}"
-               f"（{p.get('itemtype', '')}{'·' + p['weight_tier'] if p.get('weight_tier') else ''}）",
+               f"（{evaluation or p.get('itemtype', '')}）",
                f"官方页码：{p.get('official_pages') or '未知'}　收藏夹：{'、'.join(p.get('collections') or []) or '（无）'}",
                f"状态：{'；'.join(flags)}　入库：{str(p.get('ingested_at', ''))[:10]}"]
         if p.get("abstract"):
@@ -1559,7 +1572,7 @@ def do_tool(name, args):
             return "收录失败：" + str(r.get("hint") or r.get("detail") or r)
         if r.get("status") == "duplicate":
             return f"这份 PDF 已在库里（key={r.get('key')}），未重复收录。"
-        out = [f"已收进知识库（key={r.get('key')}）。题录由 AI 自动抽取，**待人工核对**（应用里标「待确认」）。"]
+        out = [f"已收进知识库（key={r.get('key')}）。题录由 AI 自动抽取，**待人工核对**（应用里标「题录待核对」）。"]
         if r.get("building"):
             out.append("建库在后台进行中，稍后可用 localkb_status / deep_status 查进度。")
         if r.get("hint"):

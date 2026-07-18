@@ -811,35 +811,61 @@
   // ══════════════════════════════════════════
   //  检索
   // ══════════════════════════════════════════
-  // F38-B：主徽标口径统一到学科感知中文档名（权威/核心/普通…）；WT_COLOR/WT_RANK 以中文档名为键
-  const WT_COLOR = { "权威":"#c0392b","准权威":"#a93226","核心":"#e67e22","次核心":"#d4a017",
-                     "一般":"#27ae60","普通":"#7f8c8d","待确认":"#bdc3c7","未知":"#8395a7" };
-  const WT_RANK  = { "权威":0,"准权威":1,"核心":2,"次核心":3,"一般":4,"普通":5,"待确认":6,"未知":6 };
-  // 徽标颜色：优先新中文档名；回退旧扁平刊名色（grading 预热中/引擎 down 时 weight_tier 空、兜 journal_tier）
-  function badgeColor(name) {
-    if (WT_COLOR[name] != null) return WT_COLOR[name];
-    return tierNameColor(name);
+  // 普通页面只显示一个客观标签；四档评价留给排序、tooltip、库总览和改档菜单。
+  const BAND_ORDER = ["authority", "top", "core", "normal"];
+  const BAND_STANDARD = { authority: "权威", top: "顶级", core: "核心", normal: "普通" };
+  const BAND_COLOR = { authority: "#c0392b", top: "#a93226", core: "#e67e22", normal: "#7f8c8d" };
+  const LEGACY_BAND = { "权威":"authority", "准权威":"top", "顶级":"top", "核心":"core",
+                        "次核心":"core", "一般":"normal", "普通":"normal", "待确认":"normal", "未知":"normal" };
+  const DISC = { id: "", name: "", bandNames: Object.assign({}, BAND_STANDARD), notice: "" };
+  function absorbBandNames(data) {
+    if (!data) return;
+    let src = data.band_names || data.tier_names || data.bandNames || null;
+    if (!src && Array.isArray(data.bands)) {
+      src = {}; data.bands.forEach((x) => { if (x && x.band) src[x.band] = x.band_name || x.name || x.standard_band_name; });
+    }
+    if (src) BAND_ORDER.forEach((b) => { if (src[b]) DISC.bandNames[b] = String(src[b]); });
+    const minw = $("#minw");
+    if (minw) Array.from(minw.options).forEach((o) => {
+      const b = o.dataset.band;
+      if (b) o.textContent = b === "authority" ? `只看${DISC.bandNames[b]}` : `${DISC.bandNames[b]}及以上`;
+    });
   }
-  // 主徽标＝等级（权威/核心/一般/普通…）。T2：0–1 数值「权威度」收进 tooltip，不再另立一个「权重」徽标（去重复）。
-  // 法源权重改造：徽标可点击 → 手动改档菜单（✎ 标记手动档）；wiki 行/无 key 的不可点。
+  function bandOf(r) {
+    if (r && BAND_ORDER.includes(r.band)) return r.band;
+    const code = (r && (r.weight_tier_code || r.internal_tier || r.tier)) || "";
+    if (code === "T1") return "authority";
+    if (code === "T1b") return "top";
+    if (code === "T2" || code === "T3") return "core";
+    return LEGACY_BAND[(r && (r.band_name || r.weight_tier || r.journal_tier)) || ""] || "normal";
+  }
+  function bandDisplay(r) { return (r && (r.band_name || r.standard_band_name || r.weight_tier)) || DISC.bandNames[bandOf(r)] || BAND_STANDARD[bandOf(r)]; }
+  function objectiveLabel(r) { return (r && (r.objective_label || r.source_label || r.journal_tier || r.source_type_name)) || "来源"; }
+  function badgeColor(nameOrBand) {
+    const b = BAND_ORDER.includes(nameOrBand) ? nameOrBand : (LEGACY_BAND[nameOrBand] || "normal");
+    return BAND_COLOR[b];
+  }
+  function gradingTip(r) {
+    const shown = bandDisplay(r), standard = (r && r.standard_band_name) || BAND_STANDARD[bandOf(r)];
+    const alias = shown && standard && shown !== standard ? `${shown}（标准档：${standard}）` : (shown || standard);
+    const wv = r && r.weight != null ? ` · 内部权重 ${Number(r.weight).toFixed(2)}`
+      : (r && r.journal_weight != null ? ` · 内部权重 ${Number(r.journal_weight).toFixed(2)}` : "");
+    return `${objectiveLabel(r)} · ${alias || "普通"}${wv}${r && (r.manual || r.weight_src === "manual") ? ` · 已手动设为${shown || standard || "普通"}` : " · 自动评定"}`;
+  }
+  // 客观标签可点击打开四档菜单；手动改档只增加轻量 ✎，不改标签文字。
   function tierBadge(r) {
-    const cn = r.weight_tier || r.journal_tier || "未知";
-    const rev = r.weight_needs_review;
-    const wv = (!r.is_wiki && r.journal_weight != null) ? `，权威度 ${Number(r.journal_weight).toFixed(2)}（0–1）` : "";
-    const manual = r.weight_src === "manual";
+    if (r.is_wiki) return "";
+    const label = objectiveLabel(r);
+    const manual = !!r.manual || r.weight_src === "manual";
     const clickable = !!r.key && !r.is_wiki;
-    const tip = (manual ? `手动指定的档位${wv}`
-                : rev ? `待确认：未精确识别到该刊，等级为临时值，请核对原刊${wv}`
-                      : `等级（按当前锁定学科评定）${wv}`)
-              + (clickable ? "。点击可手动改档" : "");
+    const tip = gradingTip(r) + (clickable ? "。点击可手动改档；客观标签不会被改写" : "");
     const dk = clickable ? ` data-key="${esc(r.key)}"` : "";
-    return `<span class="badge tier-badge${clickable ? " tb-click" : ""}"${dk} style="background:${badgeColor(cn)}" title="${esc(tip)}">${esc(cn)}${manual ? " ✎" : ""}</span>`;
+    return `<span class="badge tier-badge objective-badge${clickable ? " tb-click" : ""}"${dk} title="${esc(tip)}">${esc(label)}${manual ? " ✎" : ""}</span>`;
   }
-  // 手动改档菜单：档位与后端 source_rules.TIER_W 一致；空档 = 恢复自动（删除 override）。
-  const TIER_MENU = [
-    ["", "↺ 恢复自动（按规则/期刊评定）"],
-    ["T1", "权威（1.00）"], ["T1b", "准权威（0.92）"], ["T2", "核心（0.85）"],
-    ["T3", "次核心（0.65）"], ["T4", "一般（0.45）"], ["T5", "普通（0.25）"]];
+  function tierMenuItems() {
+    return BAND_ORDER.map((b) => [b, DISC.bandNames[b] || BAND_STANDARD[b]])
+      .concat([["", "↺ 恢复自动"]]);
+  }
   function closeTierMenu() { const old = document.getElementById("tier-menu"); if (old) old.remove(); }
   function openTierMenu(badge) {
     closeTierMenu();
@@ -847,8 +873,8 @@
     if (!key) return;
     const m = document.createElement("div");
     m.id = "tier-menu";
-    m.innerHTML = `<div class="tm-head">手动改档</div>` +
-      TIER_MENU.map(([c, label]) => `<button data-tier="${c}">${label}</button>`).join("");
+    m.innerHTML = `<div class="tm-head">${esc(badge.textContent.replace(/\s*✎\s*$/, ""))} · 手动改档</div>` +
+      tierMenuItems().map(([c, label]) => `<button data-tier="${c}">${esc(label)}</button>`).join("");
     document.body.appendChild(m);
     const rc = badge.getBoundingClientRect();
     m.style.left = Math.max(8, Math.min(rc.left, window.innerWidth - m.offsetWidth - 8)) + "px";
@@ -860,23 +886,25 @@
       try {
         const res = await jpost("/paper/tier", { key, tier: b.dataset.tier || null });
         const g = res.effective || {};
-        const cn = g.cn || "未知";
-        const wv = (g.weight != null) ? `，权威度 ${Number(g.weight).toFixed(2)}（0–1）` : "";
-        const tip = (res.override ? `手动指定的档位${wv}` : `已恢复自动评定${wv}`) + "。点击可手动改档";
+        const isManual = g.manual != null ? !!g.manual : !!res.override;
         // 同键徽标全部更新（同文献可能有多张卡），并回写内存行数据——
         // 否则 facet 收窄/重渲染会用旧数据把徽标打回原档（对抗审查 #9/#12/#13）。
         document.querySelectorAll(`.tier-badge[data-key="${CSS.escape(key)}"]`).forEach((el) => {
-          el.style.background = badgeColor(cn);
-          el.textContent = cn + (res.override ? " ✎" : "");
-          el.title = tip;
+          el.textContent = objectiveLabel(g) + (isManual ? " ✎" : "");
+          el.title = gradingTip(Object.assign({}, g, { manual: isManual })) + "。点击可手动改档；客观标签不会被改写";
         });
         const patch = (row) => {
           if (!row || row.key !== key) return;
-          row.weight_tier = g.cn || "";
-          row.weight_tier_code = g.tier || null;
+          ["objective_label", "band", "band_name", "standard_band_name", "source_type", "source_type_name"].forEach((k) => {
+            if (g[k] != null) row[k] = g[k];
+          });
+          row.weight_tier = g.band_name || g.cn || row.weight_tier || "";
+          row.weight_tier_code = g.internal_tier || g.tier || null;
+          row.weight = (g.weight != null) ? g.weight : row.weight;
           row.journal_weight = (g.weight != null) ? g.weight : null;
-          row.weight_needs_review = !!g.needs_review;
-          row.weight_src = res.override ? "manual" : (g.src || null);
+          row.weight_needs_review = false;
+          row.manual = isManual;
+          row.weight_src = isManual ? "manual" : (g.src || null);
         };
         (SR.raw || []).forEach(patch); (SR.all || []).forEach(patch);
         ((typeof BR !== "undefined" && BR.papers) || []).forEach(patch);
@@ -1065,7 +1093,7 @@
   // 无限滚动：一次取较大批(重排只跑一次、顺序最稳)，先渲染 10 条，滚到底再追加（原#30/副本#24）
   // raw=后端原始命中；all=facet 过滤后当前展示集（F5）。facet=当前选中的二次筛选。
   // reqSeq：BF13 检索请求序号守卫（同浏览页 BR.reqSeq 的 B5），防快速连发时旧响应覆盖新检索
-  const SR = { raw: [], all: [], shown: 0, observer: null, page: 10, facet: { deep: false, tier: "", year: "" }, reqSeq: 0 };
+  const SR = { raw: [], all: [], shown: 0, observer: null, page: 10, facet: { deep: false, band: "", year: "" }, reqSeq: 0 };
   function _renderMoreResults() {
     const end = Math.min(SR.shown + SR.page, SR.all.length);
     for (let i = SR.shown; i < end; i++) $("#results").appendChild(resultCard(SR.all[i], i + 1));
@@ -1092,12 +1120,12 @@
     }, { rootMargin: "200px" });
     SR.observer.observe(sentinel);
   }
-  // F5：基于 SR.raw 前端二次筛选（仅已深索 / 期刊等级 / 年份），即时收窄，无需重查后端
+  // F5：基于 SR.raw 前端二次筛选（仅已深索 / 来源评价 / 年份），即时收窄，无需重查后端
   function applyFacets() {
     const f = SR.facet;
     SR.all = SR.raw.filter((r) => {
       if (f.deep && r.depth !== "full") return false;
-      if (f.tier && (r.weight_tier || r.journal_tier || "未知") !== f.tier) return false;
+      if (f.band && bandOf(r) !== f.band) return false;
       if (f.year && String(r.year || "") !== f.year) return false;
       return true;
     });
@@ -1106,17 +1134,17 @@
   function renderFacets() {
     const box = $("#s-facets"); if (!box) return;
     if (!SR.raw.length) { box.hidden = true; box.innerHTML = ""; return; }
-    const tiers = {}, years = {}; let deepN = 0;
+    const bands = {}, years = {}; let deepN = 0;
     SR.raw.forEach((r) => {
       if (r.depth === "full") deepN++;
-      const t = r.weight_tier || r.journal_tier || "未知"; tiers[t] = (tiers[t] || 0) + 1;
+      const b = bandOf(r); bands[b] = (bands[b] || 0) + 1;
       const y = String(r.year || ""); if (y) years[y] = (years[y] || 0) + 1;
     });
     const f = SR.facet;
     let html = "";
     if (deepN && deepN < SR.raw.length) html += `<span class="facet-chip${f.deep ? " on" : ""}" data-fk="deep">📄 仅已深索 (${deepN})</span>`;
-    Object.keys(tiers).sort((a, b) => (WT_RANK[a] ?? 9) - (WT_RANK[b] ?? 9)).forEach((t) => {
-      if (Object.keys(tiers).length > 1) html += `<span class="facet-chip${f.tier === t ? " on" : ""}" data-fk="tier" data-fv="${esc(t)}">${esc(t)} (${tiers[t]})</span>`;
+    BAND_ORDER.forEach((b) => {
+      if (bands[b] && Object.keys(bands).length > 1) html += `<span class="facet-chip${f.band === b ? " on" : ""}" data-fk="band" data-fv="${b}">${esc(DISC.bandNames[b] || BAND_STANDARD[b])} (${bands[b]})</span>`;
     });
     Object.keys(years).sort((a, b) => b.localeCompare(a)).slice(0, 6).forEach((y) => {
       html += `<span class="facet-chip${f.year === y ? " on" : ""}" data-fk="year" data-fv="${esc(y)}">${esc(y)} (${years[y]})</span>`;
@@ -1135,7 +1163,7 @@
     const myseq = ++SR.reqSeq;   // BF13：请求序号守卫，过期响应不写结果/历史、不提前解禁按钮
     $("#go").disabled = true; $("#results").innerHTML = ""; $("#s-msg").textContent = "检索中…";
     _clearSentinel();
-    SR.raw = []; SR.all = []; SR.shown = 0; SR.facet = { deep: false, tier: "", year: "" };
+    SR.raw = []; SR.all = []; SR.shown = 0; SR.facet = { deep: false, band: "", year: "" };
     const box = $("#s-facets"); if (box) { box.hidden = true; box.innerHTML = ""; }
     try {
       const cat = ($("#s-cat") && $("#s-cat").value) || "";
@@ -1148,11 +1176,7 @@
       // T4：不再泄漏「词法模式」黑话；深索后可精读到页码
       const modeTip = res.mode === "light" ? " · 快速检索（深索后可精读到页码）" : "";
       const capTip = SR.raw.length >= TOPK ? `（已达上限 ${TOPK} 条，可加关键词或缩小范围）` : "";
-      // minweight-leaks-unknown：过滤了期刊等级时，提示未识别档位的来源也一并保留了
-      const mw = parseFloat($("#minw") && $("#minw").value) || 0;
-      const unkN = mw > 0 ? SR.raw.filter((r) => (r.weight_tier || r.journal_tier) === "待确认" || (r.weight_tier || r.journal_tier) === "未知").length : 0;
-      const unkTip = unkN ? `（另有 ${num(unkN)} 条来源未识别档位，已一并保留）` : "";
-      $("#s-msg").textContent = `命中 ${SR.raw.length} 条 · ${res.took_ms != null ? res.took_ms : "?"}ms${modeTip}${capTip}${unkTip}`;
+      $("#s-msg").textContent = `命中 ${SR.raw.length} 条 · ${res.took_ms != null ? res.took_ms : "?"}ms${modeTip}${capTip}`;
       if (!SR.raw.length) {
         // UX14：限定了分类且 0 命中——点明「只搜了这个分类」，给一键切回全库重搜的出口
         const catSel = $("#s-cat");
@@ -1324,21 +1348,18 @@
       </div></div>`;
   }
 
-  // 期刊分级分布：把「待确认」并入「普通」显示（检索卡仍保留「待确认」徽标以提示核对未识别刊）
+  // 旧缓存可能仍是六档；展示层无损折叠为四档。
   function mergeProvisionalTier(by) {
-    const out = []; let prov = 0;
-    (by || []).forEach((x) => { if (x.tier === "待确认") prov += x.n; else out.push({ tier: x.tier, n: x.n }); });
-    if (prov > 0) {
-      const norm = out.find((x) => x.tier === "普通");
-      if (norm) norm.n += prov; else out.push({ tier: "普通", n: prov });
-    }
-    return out;
+    const counts = { authority: 0, top: 0, core: 0, normal: 0 };
+    (by || []).forEach((x) => { counts[x.band || LEGACY_BAND[x.tier] || "normal"] += Number(x.n || x.count || 0); });
+    return BAND_ORDER.map((band) => ({ band, tier: DISC.bandNames[band] || BAND_STANDARD[band], n: counts[band] }));
   }
   // 「最近入库」的「展开更多」→ 跳「浏览」并按入库时间排序
   function _goBrowseRecent() {
-    BR.sort = "ingested"; BR.deepFilter = "";
+    BR.sort = "ingested"; BR.deepFilter = ""; BR.sourceType = "";
     const bs = $("#bl-sort"); if (bs) bs.value = "ingested";
     const df = $("#bl-deep-filter"); if (df) df.value = "";
+    const tf = $("#bl-type-filter"); if (tf) tf.value = "";
     const firstBrowse = !browseLoaded;
     switchTab("browse");
     if (!firstBrowse) selectCollection(null, "全部", null);
@@ -1347,9 +1368,9 @@
     by_tier = mergeProvisionalTier(by_tier);
     if (!by_tier || !by_tier.length) return "";
     const max = Math.max.apply(null, by_tier.map((d) => d.n)) || 1;
-    const rows = by_tier.map((d) => hbar(d.tier, d.n, max, badgeColor(d.tier), true)).join("");
-    return `<div class="dcard"><h4>期刊分级分布</h4>
-      <p class="dcard-sub">按当前锁定学科评定 · 颜色越暖越权威（红＝权威 / 橙＝核心 / 绿＝一般 / 灰＝普通）</p>${rows}</div>`;
+    const rows = by_tier.map((d) => hbar(d.tier, d.n, max, badgeColor(d.band), true)).join("");
+    return `<div class="dcard"><h4>四档来源评价</h4>
+      <p class="dcard-sub">按当前锁定学科评定；普通页面仍只显示客观标签</p>${rows}</div>`;
   }
 
   function journalCard(by_journal) {
@@ -1357,7 +1378,7 @@
     const max = Math.max.apply(null, by_journal.map((d) => d.n)) || 1;
     const rows = by_journal.map((d) => hbar(d.journal, d.n, max, badgeColor(d.tier), true)).join("");
     return `<div class="dcard span2 jlist"><h4>高频期刊 Top ${by_journal.length}</h4>
-      <p class="dcard-sub">带分级色点（按当前学科）</p>${rows}</div>`;
+      <p class="dcard-sub">带来源评价色点（按当前学科）</p>${rows}</div>`;
   }
   // 旧扁平刊名→颜色（保留作 grading 预热中/引擎 down 的兜底；新口径优先走 WT_COLOR）
   const TIER_RANK_BY_NAME = {
@@ -1366,7 +1387,7 @@
     "CSSCI": 2, "台湾一般": 2,
     "CSSCI扩展": 3,
     "外文一般": 4, "普刊": 4,
-    "法源": 1, "官方报告": 2,   // source_rules 建库期标签（法源=准权威档色、报告=核心档色）
+    "法源": 1, "官方报告": 2,   // source_rules 建库期标签的旧版颜色兜底
     "报纸": 5, "未知": 6,
   };
   function tierNameColor(name) {
@@ -1391,7 +1412,82 @@
       <button class="rc-expand" id="rc-expand">去「浏览」页看全部 →</button></div>`;
   }
 
-  // 概览卡：期刊分级分布 + 一行"文献构成"速览（副本#12：除分级分布再放点啥）
+  function rowsOf(value, keyName) {
+    if (Array.isArray(value)) return value;
+    if (value && typeof value === "object") return Object.keys(value).map((k) => {
+      const v = value[k]; return (v && typeof v === "object") ? Object.assign({ [keyName]: k }, v) : { [keyName]: k, n: v };
+    });
+    return [];
+  }
+  function gradingBandRows(d, go) {
+    absorbBandNames(go);
+    let raw = rowsOf(go.bands || go.by_band || go.band_counts, "band");
+    if (!raw.length) raw = mergeProvisionalTier(d.by_tier || []);
+    const map = {};
+    raw.forEach((x) => {
+      const band = x.band || LEGACY_BAND[x.tier] || "normal";
+      map[band] = { band, n: Number(x.n != null ? x.n : (x.count || 0)), ratio: x.ratio,
+                    weight: x.weight, band_name: x.band_name || x.name || x.tier };
+      if (map[band].band_name) DISC.bandNames[band] = map[band].band_name;
+    });
+    absorbBandNames({ band_names: DISC.bandNames });
+    const total = Number(go.total || Object.values(map).reduce((s, x) => s + x.n, 0) || ((d.coverage || {}).meta_indexed) || 0);
+    return BAND_ORDER.map((band) => Object.assign({ band, n: 0, ratio: 0, weight: null }, map[band] || {}, {
+      band_name: (map[band] && map[band].band_name) || DISC.bandNames[band] || BAND_STANDARD[band], total,
+    }));
+  }
+  function gradingMappings(go) { return rowsOf(go.mappings || go.mapping_rows || go.mapping, "mapping_id"); }
+  function gradingBreakdown(go, kind) {
+    if (kind === "type") return rowsOf(go.source_types || go.by_source_type || go.type_counts, "source_type");
+    return rowsOf(go.objective_labels || go.by_objective_label || go.label_counts || go.labels, "objective_label");
+  }
+  function gradingOverviewCard(d) {
+    const go = d.grading_overview || {};
+    const bands = gradingBandRows(d, go);
+    const bandRows = bands.map((x) => {
+      const pct = x.ratio != null ? Math.round(Number(x.ratio) * (Number(x.ratio) <= 1 ? 100 : 1)) : (x.total ? Math.round(x.n / x.total * 100) : 0);
+      const weight = x.weight != null ? ` · 内部权重 ${Number(x.weight).toFixed(2)}` : "";
+      return `<div class="ov-band-row"><span class="ov-band-dot" style="background:${BAND_COLOR[x.band]}"></span>` +
+        `<span class="ov-band-name">${esc(x.band_name)}</span><span class="ov-band-track"><i style="width:${Math.max(0, Math.min(100, pct))}%;background:${BAND_COLOR[x.band]}"></i></span>` +
+        `<b>${num(x.n)}</b><small>${pct}%${weight}</small></div>`;
+    }).join("");
+    const typeRows = gradingBreakdown(go, "type");
+    const labelRows = gradingBreakdown(go, "label");
+    const breakdown = (typeRows.length || labelRows.length) ? `<div class="dcard span2 ov-breakdown"><h4>客观标签与文献性质明细</h4>
+      <p class="dcard-sub">客观标签不随手动改档变化；点击文献性质可到浏览页查看对应文献。</p>
+      <div class="ov-break-grid"><div><h5>文献性质</h5><div class="ov-chips">${typeRows.map((x) => {
+        const type = x.source_type || x.id || x.key || "", name = x.source_type_name || x.name || x.label || type || "其他";
+        const body = `${esc(name)} <b>${num(x.n != null ? x.n : x.count || 0)}</b>`;
+        return type ? `<button class="ov-chip ov-type-chip" data-source-type="${esc(type)}" data-source-name="${esc(name)}">${body}</button>`
+          : `<span class="ov-chip">${body}</span>`;
+      }).join("") || `<span class="hint">暂无统计</span>`}</div></div>
+      <div><h5>唯一客观标签</h5><div class="ov-chips">${labelRows.map((x) => `<span class="ov-chip">${esc(x.objective_label || x.label || x.name || "来源")} <b>${num(x.n != null ? x.n : x.count || 0)}</b></span>`).join("") || `<span class="hint">暂无统计</span>`}</div></div></div></div>` : "";
+    const mappings = gradingMappings(go);
+    const mappingCard = mappings.length ? `<div class="dcard span2 ov-mapping"><h4>目录 / 文献性质 → 四档映射</h4>
+      <p class="dcard-sub">修改只影响当前学科的评价与排序，不会篡改客观目录或单篇客观标签；单篇文献可在检索或浏览页点击客观标签单独改档。</p><div class="ov-map-table">` +
+      mappings.map((x) => {
+        const id = x.mapping_id || x.id || x.key || "", band = x.band || LEGACY_BAND[x.band_name || x.tier] || "normal";
+        const title = x.objective_label || x.source_type_name || x.label || x.name || id;
+        const detail = x.description || x.rule || x.source || "";
+        const select = x.editable ? `<select class="ov-map-select" data-mapping-id="${esc(id)}" data-update-url="${esc(x.update_url || "/grading/mapping")}">` +
+          BAND_ORDER.map((b) => `<option value="${b}"${b === band ? " selected" : ""}>${esc(DISC.bandNames[b] || BAND_STANDARD[b])}</option>`).join("") + `</select>`
+          : `<span class="ov-map-band" style="color:${BAND_COLOR[band]}">${esc(x.band_name || DISC.bandNames[band] || BAND_STANDARD[band])}</span>`;
+        return `<div class="ov-map-row"><div><b>${esc(title)}</b>${detail ? `<small>${esc(detail)}</small>` : ""}</div>${select}</div>`;
+      }).join("") + `</div><div class="ov-map-msg hint" aria-live="polite"></div></div>` : "";
+    const reg = d.catalog_registry || go.catalog_registry || {};
+    const catalogs = Array.isArray(reg) ? reg : (reg.catalogs || []);
+    const registryCard = catalogs.length ? `<div class="dcard span2 ov-catalog"><h4>目录来源与半年检查</h4>
+      <p class="dcard-sub">${esc(reg.frequency || "每半年")}检查 · 上次 ${esc(reg.last_checked || "未记录")} · 下次 ${esc(reg.next_check || "未记录")}${reg.due ? ` · <b>${num(reg.due)} 项待检查</b>` : ""}</p>
+      <details><summary>查看 ${num(catalogs.length)} 个目录的来源、版本和日期</summary><div class="ov-cat-table">${catalogs.map((x) => {
+        const title = x.source || x.catalog || "目录", ver = x.upstream_version || x.catalog_version || "版本未记录";
+        const name = x.source_url ? `<a href="${esc(x.source_url)}" target="_blank" rel="noopener">${esc(title)}</a>` : esc(title);
+        return `<div class="ov-cat-row"><div><b>${name}</b><small>${esc(ver)}${x.note ? ` · ${esc(x.note)}` : ""}</small></div>` +
+          `<span>${x.error ? `读取失败` : `${num(x.count || 0)} 刊`}<small>检查 ${esc(x.last_checked || "—")}<br>下次 ${esc(x.next_check || "—")}</small></span></div>`;
+      }).join("")}</div></details></div>` : "";
+    return { bandRows, breakdown, mappingCard, registryCard };
+  }
+
+  // 概览卡：四档来源评价 + 全类型/目录明细。
   function overviewCard(d) {
     const cov = d.coverage || {};
     const zh = (d.by_lang || []).find((x) => /中/.test(x.lang)) || {};
@@ -1403,22 +1499,23 @@
       ${wai.n ? `<span><b>${num(wai.n)}</b>外文</span>` : ""}
     </div>`;
     // F3：显示当前锁定学科（中文名）+ 修改入口
-    const discName = d.grading_discipline_name || d.grading_discipline || "法学";
+    const go = d.grading_overview || {};
+    DISC.id = go.discipline || d.grading_discipline || DISC.id;
+    DISC.name = go.discipline_name || d.grading_discipline_name || d.grading_discipline || DISC.name || "法学";
+    DISC.notice = go.notice || go.discipline_notice || d.grading_notice || DISC.notice || "";
+    const discName = DISC.name;
     const discLine = `<p class="ov-disc">当前锁定学科：<b>${esc(discName)}</b> · <a id="ov-change-disc" class="dh-link">修改 →</a></p>`;
-    const distSub = `<p class="dcard-sub" style="margin-top:6px">期刊分级分布（按当前锁定学科评定 · 红＝权威/橙＝核心/绿＝一般/灰＝普通）</p>`;
-    let distBody;
-    // F3：分级分布未算完时显示占位，避免闪出与当前学科无关的原始档名
+    const detail = gradingOverviewCard(d);
+    let distBody = detail.bandRows;
     if (d.grading_pending) {
       distBody = `<p class="ov-dist-pending">分级分布计算中，请稍候…</p>`;
-    } else {
-      const by = mergeProvisionalTier(d.by_tier || []);
-      const max = Math.max.apply(null, by.map((x) => x.n).concat([1]));
-      distBody = by.map((x) => hbar(x.tier, x.n, max, badgeColor(x.tier), true)).join("");
     }
-    return `<div class="dcard"><h4>概览</h4>
+    return `<div class="dcard"><h4>全库四档评价</h4>
       ${compose}
       ${discLine}
-      ${distSub}${distBody}</div>`;
+      ${DISC.notice ? `<p class="ov-disc-note">${esc(DISC.notice)}</p>` : ""}
+      <p class="dcard-sub" style="margin-top:6px">权威 / 顶级 / 核心 / 普通；普通页面只显示一个客观标签</p>${distBody}</div>` +
+      detail.breakdown + detail.mappingCard + detail.registryCard;
   }
 
   // 底部：横板四步示意图（替代原密排功能点文字；一页显示、自适应宽度）
@@ -1440,7 +1537,7 @@
       <div class="flow">
         ${step("s1", "1", "📥", "喂饱小猪 · 深索＋摘要", "先把 PDF <b>深索</b>成可读小段，再配<b>检索摘要</b>帮助准确命中文献；都能按需筛选、放后台慢慢完成。")}
         ${arrow}
-        ${step("s2", "2", "🔍", "秒级检索", "抛一个研究问题，全库<b>秒找</b>相关文献与原文段落，按期刊权威度排序、精确到印刷页码。")}
+          ${step("s2", "2", "🔍", "秒级检索", "抛一个研究问题，全库<b>秒找</b>相关文献与原文段落，按来源评价权重排序、精确到印刷页码。")}
         ${arrow}
         ${step("s3", "3", "🤖", "Agent 驱动", "把库接进 <b>Claude Code / Codex</b>，让 AI 替你查库、读页码 —— 尤其半自动研究助手，边问边写。")}
         ${arrow}
@@ -1503,8 +1600,9 @@
   }
 
   function _goDeepBrowse(filter) {
-    BR.deepFilter = filter; BR.sort = "recommend";
+    BR.deepFilter = filter; BR.sourceType = ""; BR.sort = "recommend";
     const df = $("#bl-deep-filter"); if (df) df.value = filter;
+    const tf = $("#bl-type-filter"); if (tf) tf.value = "";
     const bs = $("#bl-sort"); if (bs) bs.value = "recommend";
     const firstBrowse = !browseLoaded;
     switchTab("browse");
@@ -1596,6 +1694,28 @@
       dlint.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); goLint(); } });
     }
     const chD = $("#ov-change-disc"); if (chD) chD.addEventListener("click", (e) => { e.preventDefault(); openSettings("sec-discipline"); });  // F3：修改学科
+    $$(".ov-type-chip").forEach((b) => b.addEventListener("click", () => {
+      BR.sourceType = b.dataset.sourceType || "";
+      const ts = $("#bl-type-filter"); if (ts) ts.value = BR.sourceType;
+      BR.scope = { type: "all", id: null, name: b.dataset.sourceName || "全部" };
+      switchTab("browse");
+      if (browseLoaded) applyScope("all", null, b.dataset.sourceName || "全部", null, true);
+    }));
+    $$(".ov-map-select").forEach((sel) => sel.addEventListener("change", async () => {
+      const old = sel.dataset.savedValue || sel.querySelector("option[selected]")?.value || "";
+      const msg = sel.closest(".ov-mapping")?.querySelector(".ov-map-msg");
+      sel.disabled = true; if (msg) msg.textContent = "正在保存映射…";
+      try {
+        await jpost(sel.dataset.updateUrl || "/grading/mapping", { mapping_id: sel.dataset.mappingId, band: sel.value });
+        sel.dataset.savedValue = sel.value;
+        if (msg) msg.textContent = "映射已更新；客观目录数据和单篇标签保持不变。";
+        if (browseLoaded) loadPapers();
+        setTimeout(() => loadDashboard("silent"), 300);
+      } catch (e) {
+        if (old) sel.value = old;
+        if (msg) msg.textContent = "保存失败：" + (e.message || e);
+      } finally { sel.disabled = false; }
+    }));
     const exp = $("#rc-expand"); if (exp) exp.addEventListener("click", _goBrowseRecent);
     // R10：库总览「最近入库」的深索按钮自己 try/finally 恢复文字并用浮层反馈（不写进隐藏的浏览页 #bl-msg）
     $$(".rc-deep").forEach((b) => b.addEventListener("click", async () => {
@@ -1631,7 +1751,7 @@
   // ══════════════════════════════════════════
   // scope 统一左树选择态（type: all|zotero|topic|kbcat），取代旧的 collection/topic 两两互清。
   const BR = { scope: { type: "all", id: null, name: "全部" },
-               deepFilter: "", sort: "recommend", papers: [], selected: new Set(),
+               deepFilter: "", sourceType: "", sort: "recommend", papers: [], selected: new Set(),
                cats: [], reqSeq: 0, topicIv: null, total: 0 };   // cats：缓存 /kb/categories；reqSeq：B5 守卫；topicIv：R12 主题轮询句柄；total：W1 分页总数
 
   // 左侧收藏夹树（递归渲染，默认折叠，只展开有子节点的第一层由用户点开）
@@ -2104,12 +2224,23 @@
       ? p.markdown.replace(/^\*（[^\n]*(?:fallback\(|no-key|no-hits)[^\n]*）\*\s*$/gm, "")
       : p.markdown;
     $("#wiki-body").innerHTML = banner + mdToHtml(mdSrc);   // 极简 md 渲染（已转义防 XSS）
-    // 参考来源：一页综述的全部可信度，都建立在「能一跳回到原文核对」上。
+    // 参考来源：按 source key 由后端带回统一评价；前端不再从 citation 猜目录或类型。
     // 所以主操作是「📄 打开原文」（直接开 PDF），不是跳去「找相似」。
+    const compositionText = (() => {
+      const c = p.source_composition;
+      if (typeof c === "string") return c;
+      const rows = rowsOf(c, "objective_label");
+      if (rows.length) return rows.map((x) => `${x.objective_label || x.label || x.name || "来源"} ${num(x.n != null ? x.n : x.count || 0)}`).join(" · ");
+      const counts = {};
+      (p.sources || []).forEach((s) => { const k = objectiveLabel(s); counts[k] = (counts[k] || 0) + 1; });
+      return Object.keys(counts).map((k) => `${k} ${num(counts[k])}`).join(" · ");
+    })();
     $("#wiki-sources").innerHTML = (p.sources || []).length
-      ? `<div class="ws-h">参考来源（打开原文核对，或按引文检索溯源）</div>` +
+      ? `<div class="ws-h"><span>参考来源</span>${compositionText ? `<small>${esc(compositionText)}</small>` : ""}</div>` +
         p.sources.map((s, i) =>
           `<div class="ws-item" data-key="${esc(s.key || "")}" data-cite="${esc(s.citation || "")}">` +
+            `<span class="ws-grade"><span class="badge objective-badge">${esc(objectiveLabel(s))}</span>` +
+              `<span class="ws-band" title="${esc(gradingTip(s))}">${esc(bandDisplay(s))}${s.manual ? " · 手动" : ""}</span></span>` +
             `<span class="ws-txt">[${i + 1}] ${esc(s.citation || s.key)}</span>` +
             `<span class="ws-btns">` +
               (s.key ? `<button class="ghost2 ws-pdf" title="用系统阅读器打开这篇 PDF 原文">📄 打开原文</button>` : "") +
@@ -2355,9 +2486,10 @@
     div.innerHTML =
       `<button class="wk-card-del" title="删除这条综述">🗑</button>` +
       `<div class="wk-card-head"><span class="wk-badge k-${esc(p.kind || "answer")}">${esc(kind)}</span>` +
-        `<span class="wk-title">${esc(p.title || "(无标题)")}</span></div>` +
+        `<span class="wk-title">${esc(p.title || "(无标题)")}</span>` +
+        `<span class="wk-card-status">${prov}${stale}</span></div>` +
       `<div class="wk-card-meta">基于 ${num(p.n_sources)} 篇 · ${esc((p.generated_at || "").slice(0, 10) || "未知日期")}` +
-        ` · 模型 ${esc(p.generated_by || "未知")} ${prov} ${stale}</div>`;
+        ` · 模型 ${esc(p.generated_by || "未知")}</div>`;
     div.addEventListener("click", () => openWikiPage(p.id));
     div.setAttribute("role", "button");
     div.setAttribute("tabindex", "0");
@@ -2668,7 +2800,7 @@
   // ══════════════════════════════════════════
   let AG = { cfg: null };
   const AG_TOOLS = [
-    ["“查库里关于 XX 的文献”", "search_localkb", "在你的文库里做混合检索，返回带期刊分级、页码、可回溯引用的结果"],
+        ["“查库里关于 XX 的文献”", "search_localkb", "在你的文库里做混合检索，返回带统一来源评价、页码、可回溯引用的结果"],
     ["“库里现在有多少、索引到哪了”", "localkb_status", "看索引各档进度、篇数，以及已存了多少综合页"],
     ["“把库更新一下 / 深索一下”", "localkb_build", "触发建库或深索（加了新文献后增量更新）"],
     ["“把这个综述存进库”", "save_synthesis", "把 AI 综合出的结论写回成一页带引用的 wiki，下次能被检索命中"],
@@ -2678,7 +2810,7 @@
     ["“看看有哪些综述该更新了”", "pending_wiki_updates", "拉新文献影响了哪些既有综述页，逐页判断标脏 / 重写"],
   ];
   const AG_PROMPTS = [
-    "帮我查库里关于「认罪认罚从宽对司法信任的影响」的权威文献，按期刊层级排。",
+    "帮我查库里关于「认罪认罚从宽对司法信任的影响」的文献，按来源评价排。",
     "先看看库里有没有现成的综述；没有的话检索后综合一版，再帮我存起来。",
     "把库里关于「社会观护」的核心论点综述一下，每个论断带页码引用。",
     "库里最近加的文献深索了吗？没有的话帮我全部深索一遍。",
@@ -2993,7 +3125,7 @@
   function scoreBadge(p) {
     const s = p.score;
     if (s == null || s < 12) return "";
-    return `<span class="brec" title="按期刊层级/年份/有无全文综合推荐，值得优先深读">建议深读</span>`;
+    return `<span class="brec" title="按来源评价、年份和有无全文综合推荐，值得优先深读">建议深读</span>`;
   }
   // 已深索的卡：有效→🧬；异常→🟠；缺失→⚪。异常与缺失都由用户点后才生成。
   function sacBadge(p) {
@@ -3115,6 +3247,15 @@
       opt.textContent = counts[key] == null ? base : `${base}（${num(counts[key])}）`;
     });
   }
+  function renderBrowseTypeCounts(counts) {
+    const sel = $("#bl-type-filter"); if (!sel || !counts) return;
+    Array.from(sel.options).forEach((opt) => {
+      const base = opt.dataset.label || opt.textContent.replace(/（[\d,]+）$/, "");
+      const key = opt.value || "all";
+      opt.dataset.label = base;
+      opt.textContent = counts[key] == null ? base : `${base}（${num(counts[key])}）`;
+    });
+  }
 
   async function loadPapers() {
     const myseq = ++BR.reqSeq;   // B5：请求序号守卫，防止快速切换时旧响应覆盖新选择
@@ -3122,10 +3263,10 @@
     $("#bl-list").innerHTML = ""; $("#bl-msg").textContent = "加载中…";
     BR.selected.clear(); refreshSelUI();
     const isRec = BR.sort === "recommend";
-    // T6：长解释收进点击浮层（.tip-i 已有 ctx 展开习惯）；title 精简为一句
+    // 长解释收进点击浮层（.tip-i 已有 ctx 展开习惯）；title 精简为一句
     $("#bl-tip").innerHTML = isRec
-      ? `⭐ 已按「值得先读」排序：优先高等级期刊（权威/核心）、近年、有全文可深读的
-         <span class="tip-i" title="推荐分＝期刊权威度×10＋近年加成＋有全文可深读；随「设置→检索→期刊分级学科」变化。">ⓘ 怎么算的</span>`
+      ? `⭐ 已按「值得先读」排序：优先来源评价高、较新且有全文可深读的文献
+         <span class="tip-i" title="推荐分＝来源评价权重×10＋近年加成＋有全文可深读；随「设置→检索→来源评价学科」变化。">ⓘ 怎么算的</span>`
       : "";
     $("#bl-tip").style.display = isRec ? "" : "none";
     const om = $("#bl-more"); if (om) om.remove();   // W1：换范围/重载时清掉旧「加载更多」按钮
@@ -3137,9 +3278,11 @@
       else if (s.type === "kbcat") params.set("category", s.id);
       // 文献状态筛选（深索 / OCR / 检索摘要，与左侧范围叠加）
       if (BR.deepFilter) params.set("deep", BR.deepFilter);
+      if (BR.sourceType) params.set("source_type", BR.sourceType);
       const d = await jget("/papers?" + params.toString());
       if (myseq !== BR.reqSeq) return;   // B5：已有更新的请求发出，丢弃这次陈旧响应
       renderBrowseFilterCounts(d.filter_counts || {});
+      renderBrowseTypeCounts(d.source_type_counts || d.type_counts || {});
       BR.papers = d.papers || [];
       // W1：「（显示前 300）」这种死数字标签取消——分页由底部「加载更多」承担
       BR.total = d.total != null ? d.total : BR.papers.length;
@@ -3150,9 +3293,11 @@
         // empty-cat-hint-deadlock：给出可操作路径 + 跳转按钮，而非死胡同
         $("#bl-msg").innerHTML = `该分类暂无文献。去「⭐ 全部文献」勾选后点「＋ 加入分类」，或右键文献卡 / 拖到左侧分类上归类。 <a class="ag-link" id="bl-go-all">→ 去全部文献</a>`;
         const g = $("#bl-go-all"); if (g) g.addEventListener("click", () => selectCollection(null, "全部", null));
-      } else if (BR.deepFilter) {
-        const opt = $("#bl-deep-filter").selectedOptions[0];
-        $("#bl-msg").textContent = `（没有符合“${(opt && opt.textContent.trim()) || "当前筛选"}”的文献）`;
+      } else if (BR.deepFilter || BR.sourceType) {
+        const bits = [];
+        if (BR.sourceType) bits.push($("#bl-type-filter").selectedOptions[0]?.dataset.label || "当前文献类型");
+        if (BR.deepFilter) bits.push($("#bl-deep-filter").selectedOptions[0]?.dataset.label || "当前状态");
+        $("#bl-msg").textContent = `（没有符合“${bits.join(" · ")}”的文献）`;
       } else { $("#bl-msg").textContent = "（该分类暂无文献）"; }
       const frag = document.createDocumentFragment();
       BR.papers.forEach((p) => frag.appendChild(paperCard(p)));
@@ -3178,6 +3323,7 @@
       else if (s.type === "zotero") params.set("collection", s.id);
       else if (s.type === "kbcat") params.set("category", s.id);
       if (BR.deepFilter) params.set("deep", BR.deepFilter);
+      if (BR.sourceType) params.set("source_type", BR.sourceType);
       const d = await jget("/papers?" + params.toString());
       if (myseq !== BR.reqSeq) return;             // 期间用户切了范围/排序 → 丢弃
       const fresh = new Map((d.papers || []).map((x) => [x.key, x]));
@@ -3218,6 +3364,7 @@
       else if (s.type === "zotero") params.set("collection", s.id);
       else if (s.type === "kbcat") params.set("category", s.id);
       if (BR.deepFilter) params.set("deep", BR.deepFilter);
+      if (BR.sourceType) params.set("source_type", BR.sourceType);
       const d = await jget("/papers?" + params.toString());
       if (myseq !== BR.reqSeq) return;
       // W1：recommend/year 排序在两次请求间可能因深索完成/改档而重排——按 key 去重防重复卡片（漏条无法前端补救，可接受）
@@ -3283,6 +3430,7 @@
   });
   $("#bl-sort").addEventListener("change", () => { BR.sort = $("#bl-sort").value; loadPapers(); });
   $("#bl-deep-filter").addEventListener("change", () => { BR.deepFilter = $("#bl-deep-filter").value; loadPapers(); });
+  $("#bl-type-filter").addEventListener("change", () => { BR.sourceType = $("#bl-type-filter").value; loadPapers(); });
   $("#bl-deep-sel").addEventListener("click", () => {
     const keys = BR.papers.filter((p) => BR.selected.has(p.key) && p.has_pdf && !p.deep && !extractBlocked(p)).map((p) => p.key);
     deepIndexKeys(keys, $("#bl-deep-sel"));
@@ -3490,7 +3638,7 @@
     showSettingsPane(pane, targetId);
     loadSac();    // 进入设置面板即拉取 SAC 当前状态并回填
     loadEngine(); // 同时回填检索引擎当前后端/是否已设 key
-    loadDiscipline(); // 回填期刊分级学科下拉
+      loadDiscipline(); // 回填来源评价学科下拉
     loadAutoUpdate(); // 回填自动更新开关/间隔
     loadRetrievalMemory(); // 回填检索组件的空闲释放时间与当前状态
     loadOnlyPdf();    // 回填「只导入有 PDF」开关
@@ -3628,7 +3776,16 @@
     });
   })();
 
-  // ── 期刊分级学科：设置里选整库锁定的学科，保存后下次检索即生效 ──
+  function applyDisciplineMeta(s, id) {
+    const meta = (s.disciplines || []).find((d) => d.id === id) || {};
+    DISC.id = id || s.current || DISC.id;
+    DISC.name = meta.name || s.current_name || DISC.name;
+    DISC.notice = meta.notice || meta.description || s.notice || s.discipline_notice || "";
+    absorbBandNames(meta); absorbBandNames(s);
+    const note = $("#disc-note");
+    if (note) note.textContent = DISC.notice || "普通页面只显示客观标签；四档评价用于排序、总览、手动改档和研究工作流。";
+  }
+  // ── 来源评价学科：整库锁定；娱乐学科的显示名和说明完全由后端元数据下发 ──
   async function loadDiscipline() {
     const sel = $("#disc-select"); if (!sel) return;
     try {
@@ -3637,6 +3794,7 @@
       sel.innerHTML = (s.disciplines || []).map(d =>
         `<option value="${esc(d.id)}">${esc(d.name)}</option>`).join("");
       if (s.current) sel.value = s.current;
+      applyDisciplineMeta(s, s.current || sel.value);
       $("#disc-msg").textContent = "";
     } catch (e) {
       $("#disc-msg").textContent = "加载失败：" + e.message;
@@ -3665,8 +3823,10 @@
   if (_dsel) _dsel.addEventListener("change", async () => {
     const sel = $("#disc-select"), msg = $("#disc-msg");
     try {
+      const picked = sel.options[sel.selectedIndex] ? sel.options[sel.selectedIndex].text : sel.value;
       const r = await jpost("/setup/discipline", { discipline: sel.value });
-      msg.textContent = "已切换：" + (sel.options[sel.selectedIndex] ? sel.options[sel.selectedIndex].text : r.current) + "（检索即时生效；分级分布后台重算后自动刷新）";
+      await loadDiscipline();
+      msg.textContent = "已切换：" + (DISC.name || picked || r.current) + "（检索即时生效；四档分布后台重算后自动刷新）";
       refreshAfterDiscipline();
     } catch (e) { msg.textContent = "保存失败：" + e.message; }
   });
@@ -3992,7 +4152,7 @@
     const bridge = window.pywebview && window.pywebview.api && window.pywebview.api.apply_update;
     if (!bridge) { msg.textContent = "请在 PaperPiggy 应用窗口里升级（浏览器模式不支持）。"; return; }
     if (!(await uiConfirm("会下载新版程序 → 关闭应用 → 替换后自动重启。\n\n" +
-                 "你的数据（索引、综述、Agent 交付物、期刊分级）完全不受影响。",
+                 "你的数据（索引、综述、Agent 交付物、来源评价数据）完全不受影响。",
                  { title: "开始升级？", okText: "下载并升级" }))) return;
     btn.disabled = true;
     msg.textContent = "下载中…";
@@ -5142,6 +5302,7 @@
   }
 
   ensureSource().then(() => { initDragIngest(); maybeShowDropzone(); });
+  loadDiscipline();
   maybeWizard();
   // 冷启动：默认页＝库总览，主动加载一次（懒加载此前只在点 tab 时触发；loadDashboard 只 GET /stats，无副作用）
   if (!dashLoaded) loadDashboard("loud");

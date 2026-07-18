@@ -9,6 +9,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import config as C
 
+EXTRA_META_FIELDS = (
+    "url", "website_title", "access_date", "publisher", "place", "isbn", "edition", "series",
+    "book_title", "university", "thesis_type", "institution", "report_type", "report_number",
+    "conference_name", "proceedings_title", "court", "docket_number", "decision_date",
+    "standard_number", "version",
+)
+
 
 def scan(folder):
     """递归找 PDF，返回绝对路径列表（排序稳定）。
@@ -64,7 +71,7 @@ def load_papers(folder):
         entry = cache.get(key) or {}
         m = entry.get("meta") or {}
         title = m.get("title") or Path(pdf).stem
-        out.append({
+        paper = {
             "key": key, "title": title,
             "author": m.get("author", ""), "year": m.get("year", ""),
             "journal": m.get("journal", ""), "doi": m.get("doi", ""),
@@ -74,5 +81,7 @@ def load_papers(folder):
             "has_pdf": True, "pdf_path": pdf,
             "collections": _subfolder_cats(folder, pdf),
             "needs_review": bool(entry.get("needs_review", True)),
-        })
+        }
+        paper.update({field: m.get(field, "") for field in EXTRA_META_FIELDS})
+        out.append(paper)
     return out

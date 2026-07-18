@@ -90,14 +90,13 @@
       <select id="sort" title="排序">
         <option value="blend">综合</option>
         <option value="relevance">内容相关优先</option>
-        <option value="tier">期刊等级优先</option>
+        <option value="tier">来源评价优先</option>
       </select>
-      <select id="minw" title="按期刊等级过滤（只看够权威的来源）">
-        <option value="0">全部期刊</option>
-        <option value="0.45">一般及以上</option>
-        <option value="0.65">次核心及以上</option>
-        <option value="0.85">核心及以上</option>
-        <option value="0.92">只看权威级</option>
+      <select id="minw" title="按当前学科的四档来源评价过滤">
+        <option value="0">全部来源</option>
+        <option value="0.85" data-band="core">核心及以上</option>
+        <option value="0.92" data-band="top">顶级及以上</option>
+        <option value="1" data-band="authority">只看权威</option>
       </select>
       <button id="go">检索</button>
     </div>
@@ -154,7 +153,7 @@
           <div class="ag-ch-n">4</div>
           <div class="ag-ch-c">
             <h3>第三步 · 检索与提问</h3>
-            <p class="ag-note">· <b>「🔍 检索」</b>：抛一个研究问题，全库秒找相关文献与原文段落，按<b>期刊权威度</b>排序、精确到<b>印刷页码</b>。<br>· <b>「💬 对话」</b>：不想自己翻，就用大白话问，它读你的库回答、每句可回溯到来源页（需在对话页填一个大模型 API Key，硅基流动等有免费额度）。</p>
+        <p class="ag-note">· <b>「🔍 检索」</b>：抛一个研究问题，全库秒找相关文献与原文段落，按<b>来源评价权重</b>排序、精确到<b>印刷页码</b>。<br>· <b>「💬 对话」</b>：不想自己翻，就用大白话问，它读你的库回答、每句可回溯到来源页（需在对话页填一个大模型 API Key，硅基流动等有免费额度）。</p>
           </div>
         </section>
 
@@ -182,7 +181,7 @@
           <div class="ag-ch-n">7</div>
           <div class="ag-ch-c">
             <h3>自动更新、备份与隐私</h3>
-            <p class="ag-note">· <b>自动更新知识库</b>：在「⚙ 设置 → 建库 → 自动更新知识库」可设按天定时增量入库（默认每天 7:00）；也能随时点顶栏「⟳ 手动更新知识库」。<br>· <b>应用出新版</b>（和上面的"更新知识库"不是一回事）：顶栏右上角会亮「🎁 有新版」，点它去设置一键升级；不想每次启动联网检查，可在「⚙ 设置 → 应用 → 应用更新」关掉「启动时自动检查」。<br>· <b>检索内存</b>：检索模型和倒排索引只在用到时加载，默认连续 10 分钟没检索就自动释放；可在「⚙ 设置 → 检索 → 检索内存」改成 5 分钟、1 小时或不自动释放。释放只腾内存，不删任何数据。<br>· <b>备份</b>：「⚙ 设置 → 数据与维护 → 备份与恢复」把<b>丢了就再也没有的东西</b>（综述、Agent 写的论文与记忆、收藏夹、期刊分级）打成一个 zip。<b>想要云备份</b>：把备份位置指到 OneDrive / 坚果云的文件夹里——同步一个静态 zip 是安全的。⛔ 但<b>别把整个数据目录丢进云盘</b>：向量索引是持续读写的数据库，云盘同步它早晚会把索引搞坏。<br>· <b>隐私</b>：<b>全程本地</b>，文献不出你的电脑；大模型 Key 只存本机浏览器与本地服务内存，不上传第三方（除你自己选的模型服务商）。备份包<b>默认不含</b> API 密钥（要含得自己勾选）。</p>
+        <p class="ag-note">· <b>自动更新知识库</b>：在「⚙ 设置 → 建库 → 自动更新知识库」可设按天定时增量入库（默认每天 7:00）；也能随时点顶栏「⟳ 手动更新知识库」。<br>· <b>应用出新版</b>（和上面的"更新知识库"不是一回事）：顶栏右上角会亮「🎁 有新版」，点它去设置一键升级；不想每次启动联网检查，可在「⚙ 设置 → 应用 → 应用更新」关掉「启动时自动检查」。<br>· <b>检索内存</b>：检索模型和倒排索引只在用到时加载，默认连续 10 分钟没检索就自动释放；可在「⚙ 设置 → 检索 → 检索内存」改成 5 分钟、1 小时或不自动释放。释放只腾内存，不删任何数据。<br>· <b>备份</b>：「⚙ 设置 → 数据与维护 → 备份与恢复」把<b>丢了就再也没有的东西</b>（综述、Agent 写的论文与记忆、收藏夹、来源评价数据）打成一个 zip。<b>想要云备份</b>：把备份位置指到 OneDrive / 坚果云的文件夹里——同步一个静态 zip 是安全的。⛔ 但<b>别把整个数据目录丢进云盘</b>：向量索引是持续读写的数据库，云盘同步它早晚会把索引搞坏。<br>· <b>隐私</b>：<b>全程本地</b>，文献不出你的电脑；大模型 Key 只存本机浏览器与本地服务内存，不上传第三方（除你自己选的模型服务商）。备份包<b>默认不含</b> API 密钥（要含得自己勾选）。</p>
           </div>
         </section>
 
@@ -255,6 +254,21 @@
                 <option value="summary_invalid" data-label="🟠 摘要异常">🟠 摘要异常</option>
                 <option value="summary_no" data-label="⚪ 摘要缺失">⚪ 摘要缺失</option>
               </optgroup>
+            </select>
+            <select id="bl-type-filter" title="按识别后的真实文献性质筛选">
+              <option value="">全部文献类型</option>
+              <option value="journal_article">期刊论文</option>
+              <option value="book">书籍</option>
+              <option value="book_section">书章</option>
+              <option value="thesis">学位论文</option>
+              <option value="legal_source">法源</option>
+              <option value="case">案例</option>
+              <option value="standard">标准</option>
+              <option value="report">报告与白皮书</option>
+              <option value="preprint">预印本</option>
+              <option value="conference_paper">会议论文</option>
+              <option value="dataset">数据集</option>
+              <option value="web">网页与其他</option>
             </select>
             <select id="bl-sort" title="排序">
               <option value="recommend">推荐优先</option>
@@ -664,15 +678,15 @@
       </div>
 
       <div class="set-section" id="sec-discipline">
-        <h4>⚖️ 期刊分级学科</h4>
-        <p class="hint">决定用哪套学术标准给检索结果的期刊打「来源门槛」（0–1 分，越高越权威）。整库统一一个学科，改了下次检索即生效、不用重建。</p>
+        <h4>⚖️ 来源评价学科</h4>
+        <p class="hint">决定如何把期刊目录与各类文献性质映射为四档来源评价。整库统一一个学科，改了下次检索即生效、不用重建。</p>
         <label>学科
           <select id="disc-select"></select>
         </label>
         <div class="set-errbtns">
           <span id="disc-msg" class="hint"></span>
         </div>
-        <p class="hint">「法学（开发者增强）」是私人法学分级（含台湾刊 / 顶尖外文法评）。想调分数或顶刊名单，告诉开发者即可。</p>
+        <p class="hint" id="disc-note">「法学（开发者增强）」含台湾来源、顶尖外文法评及全类型文献预设；普通页面只显示客观标签，四档评价用于排序、总览和研究工作流。</p>
       </div>
           </div>
 
@@ -762,7 +776,7 @@
       <div class="set-section" id="sec-backup">
         <h4>💾 备份与恢复</h4>
         <p class="hint">把<b>丢了就再也没有的东西</b>打成一个 zip：综述库、Agent 写的论文与记忆、收藏夹、
-          文献元数据、期刊分级（这个是花过 API 钱的）。<br>
+              文献元数据、来源评价数据（其中部分结果花过 API 钱）。<br>
           <b>想要云备份？</b>把下面的备份位置指到 OneDrive / 坚果云里的一个文件夹就行——
           云盘同步一个<b>静态 zip</b> 是安全的。⛔ 但<b>千万别把整个数据目录丢进云盘</b>：
           向量索引是持续读写的数据库，云盘同步它会锁文件、造重复副本，早晚把索引搞坏。</p>
@@ -805,7 +819,7 @@
         <h4>🧹 清空并从头重建索引</h4>
         <p class="hint">想把整个索引<b>推倒重来</b>时用（比如库里有重复文献要合并、或深索乱了想重跑）。
           它<b>只清索引</b>：全文提取、切块、向量、bm25、深索进度标记、整库状态。<br>
-          ✅ <b>明确保留</b>：综述 wiki、收藏夹分类、期刊分级、检索摘要（花过 API 钱的）、
+              ✅ <b>明确保留</b>：综述 wiki、收藏夹分类、来源评价数据、检索摘要（花过 API 钱的）、
           页码映射、你的设置、<code>0_Agent</code> 工作区。<br>
           清空后按提示点顶栏「⟳ 更新知识库」重建题录+语义（会<b>自动去重、按“只导 PDF”重新导入</b>），
           再到首页点「深索全部」重新深索。</p>
@@ -897,8 +911,10 @@
   <div id="wiki-modal" class="modal" hidden>
     <div class="modal-box wiki-box">
       <div class="wiki-head">
-        <h3 id="wiki-title">综述页</h3>
-        <div id="wiki-flag" class="wiki-flag"></div>
+        <div class="wiki-title-row">
+          <h3 id="wiki-title">综述页</h3>
+          <div id="wiki-flag" class="wiki-flag"></div>
+        </div>
         <div id="wiki-meta" class="hint"></div>
       </div>
       <div id="wiki-body" class="wiki-body"></div>

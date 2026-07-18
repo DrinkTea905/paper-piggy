@@ -4,7 +4,7 @@
     "version": "2026-06-28-legacy",
     "source": "个人整理（SSCI 法学/犯罪学/社科旗舰权威）",
     "origin": "intl",
-    "note": "私有目录（law_personal 专用）：非旗舰法评的 SSCI 权威社科刊。外刊不打折(intl=1.0)→T2。level=收录。 ｜ 已并入 2026-06-28 个人法学旧档。",
+    "note": "私有目录（law_personal 专用）：精选外文法律/犯罪学/社科权威刊，外刊不打折，对外显示顶级。 ｜ 已并入 2026-06-28 个人法学旧档。",
     "migrated_from": "D:\\LocalKB\\data\\journal_tiers.json"
   },
   "journals": [

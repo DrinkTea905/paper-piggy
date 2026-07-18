@@ -13,8 +13,21 @@ import llm as L
 SYS = ("你是文献题录抽取器。下面是一篇学术文献PDF的首1-2页文本。"
        "只输出一个JSON对象，字段：title(题名), author(作者，多个用'; '分隔), "
        "year(4位年份字符串), journal(期刊/出版物名), official_pages(正式页码如'1-20'，无则空), "
-       "abstract(摘要，无则空), itemtype(journalArticle/book/thesis/report之一), "
-       "langid(zh或en). 无法确定的字段留空字符串。不要输出JSON以外的任何内容。")
+       "abstract(摘要，无则空), itemtype(journalArticle/book/bookSection/thesis/report/statute/case/"
+       "standard/dataset/preprint/conferencePaper/webpage/blogPost/newspaperArticle/document之一), "
+       "langid(zh或en), url, website_title, access_date, publisher, place, isbn, edition, series, "
+       "book_title(母书名), university(学位授予单位), thesis_type(博士/硕士/其他), "
+       "institution(报告或数据发布机构), report_type, report_number, conference_name, "
+       "proceedings_title, court, docket_number, decision_date, standard_number, version. "
+       "无法确定的字段留空字符串。不要输出JSON以外的任何内容。")
+
+META_FIELDS = (
+    "title", "author", "year", "journal", "official_pages", "abstract", "itemtype", "langid",
+    "url", "website_title", "access_date", "publisher", "place", "isbn", "edition", "series",
+    "book_title", "university", "thesis_type", "institution", "report_type", "report_number",
+    "conference_name", "proceedings_title", "court", "docket_number", "decision_date",
+    "standard_number", "version",
+)
 
 
 class NoKeyError(Exception):
@@ -68,8 +81,7 @@ def extract_meta(head_text):
     try:
         raw = L.chat_once(msgs, c["base"], c["key"], c["model"], temperature=0.1, timeout=90)
         j = _parse_json(raw)
-        meta = {k: _clean(j.get(k, "")) for k in
-                ("title", "author", "year", "journal", "official_pages", "abstract", "itemtype", "langid")}
+        meta = {k: _clean(j.get(k, "")) for k in META_FIELDS}
         ym = re.search(r"\d{4}", meta.get("year", "") or "")
         meta["year"] = ym.group(0) if ym else ""
         # needs_review 反映抽取成色，不再恒 True：题名齐、且作者或年份至少有一 → 视为合格（False）；

@@ -352,25 +352,28 @@ server 侧 `GET /agent/tasks`（`server.py:649`）解析 `任务.md` 的 frontma
 
 ---
 
-## 7. 期刊分级引擎
+## 7. 全类型文献评价
 
-三层，优先级从高到低：
+**唯一运行时事实源是 `grading_svc.evaluate_paper()`**。检索、浏览、单篇详情、综述来源和 MCP
+都消费同一结果：真实性质 `source_type`、唯一客观标签 `objective_label`、稳定四档
+`band=authority|top|core|normal`、显示名、内部细分档/权重、目录命中解释和手动状态。
 
-1. **`source_rules.py`** —— 文献性质定档 + 单篇手动改档。
-   - `resolve(key, itemtype, title)`（`:149`）：**手动改档（`data/tier_overrides.json`，由 `POST /paper/tier` 写，按 mtime 热重载）> 条目类型 > 标题规则**。
-   - 法源（statute/case/standard）→ `T1b` 权重 0.92；报告（report）→ `T2` 权重 0.85（`ITEMTYPE_TIER`，`:22`；`TIER_W`，`:18`）。
-   - 标题规则 v3（`RE_LAW`/`RE_REPORT`/`RE_EXCLUDE`，`:37-53`）**只对 `TITLE_SCOPE` 里的非学术条目类型生效**（`:25`）——论文标题里出现法名绝不能被误升。报告词先于法源词判定（`classify_title`，`:124-136`）。
-   - 存在理由：期刊分级引擎只认刊名，法规/白皮书没有刊名会被压成"待确认"(0.175)，比普刊还低（`source_rules.py:4`）。
-2. **`journal_grading/`**（包）—— 按学科的连续权重引擎。
-   - `resolver.resolve_journal_weight(item, discipline)`（`resolver.py:80`）：期刊识别 → 取所有命中目录的级别信号 → priority-max 定主档位 → 查档位分 → 乘中/外系数 → clamp[0,1]。
-   - `catalogs/*.json`（15 个目录）：`sjr / pku / cssci / clsci / ami / fms / if_cnki / ssci / ssci_law_authority / ahci / abs / ft50 / erih / law_review_top / newspaper`。
-   - 配置 `config/grading_config.json`（档位表、优先级、学科定义、可见目录）；加载层 `loader.py`（`by_issn` / `by_name` 索引）；识别层 `identify.py`；归一化 `normalize.py`；自检 `selftest.py`。
-   - 未识别 → `tier="待确认"`、`needs_review=True`，**不静默按普通档发**（`resolver.py:14`）。
-   - 学科从 `settings.journal_discipline` 实时读（出厂默认 `"law_personal"` = 法学开发者增强档，外刊不打折；标准法学是 `"law"`；以 `settings.DEFAULT` 为准），**改设置即时生效、不用重建索引**（`retriever.py`、`settings.py:31`）。
-3. **`journal_tiers.py`** —— 旧的离散档（CLSCI/CSSCI/普刊/…），数据在 `journal_tiers.json`。作为兜底：引擎算不出时 `_apply_sort` 用 `config.TIER_BONUS`（`config.py:169-177`）。索引期写进表的 `journal_tier` 列也是这套。
+1. **`source_rules.py`** 识别真实性质。
+   - 期刊、书籍、书章、学位论文、法源、案例、标准、报告、数据集、预印本、会议论文、网页等都有稳定代码。
+   - 网页、报纸和普通文件允许由可靠内容信号改判为法源、报告或数据集；学术论文标题里出现法名不会被误判。
+   - 单篇改档存 `data/tier_overrides.json`；旧 T1～T5 继续读取，新写入使用四档代码。它在评价链最后应用，只改四档与权重，客观标签不变。
+2. **`journal_grading/`** 负责期刊客观目录与内部细分权重。
+   - `catalogs/*.json` 包含中文目录、ShowJCR JCR2025 的 SSCI/Q1～Q4、SJR、正式 TSSCI 法律学门，
+     以及项目内的三大刊、顶尖法评、精选外文权威和台湾个人偏好。
+   - `catalog_registry.py` 统一记录来源 URL、上游提交/版本、检查日期和下次半年检查日期。
+   - 引擎内部仍可保留 T1～T5 和未识别解释；对普通接口一律折叠成权威、顶级、核心、普通，不展示第五档或“待确认”档。
+3. **`grading_svc.py`** 组合非期刊预设、期刊目录和覆盖项。
+   - 书籍/书章=权威；学位论文、法源、案例、标准=顶级；报告=核心；权威机构数据=核心；其他来源按任务书预设。
+   - `law_personal_fun` 只 canonical alias 到 `law_personal`，完全复用规则、目录、缓存、权重与排序，只改变四档显示名。
+   - 目录/性质映射覆盖存 `data/grading_mappings.json`，按学科隔离；`overview()` 给库总览返回四档、映射和明细。
+   - 期刊 memo 与全库分布仍分别存 `grading_memo.json`、`grading_dist.json`，学科切换或映射/单篇改档后自动失效重算，不要求重建索引。
 
-**`grading_svc.py`** 是给 UI/统计用的服务层：`grade()`/`grade_paper()`（`:110`/`:140`）带落盘 memo（`data/grading_memo.json`）、`weight_dist()`（`:163`）算全库分布（`data/grading_dist.json`），`warm_async()`（`:226`）在 server 启动后台预热（首次冷算 20+s，`server.py:372-377`）。
-`TIER_CN`（`grading_svc.py:30`）把 `T1..T5` 映射成中文档名（权威/准权威/核心/次核心/一般/普通），`retriever._TIER_CN`（`:256`）是同一份表的副本。
+**`journal_tiers.py` 与索引里的 `journal_tier` 只作旧库兼容**，不再是普通页面的主标签源。
 
 ---
 

@@ -1,0 +1,21 @@
+{
+  "_meta": {
+    "catalog": "tssci_law",
+    "version": "2024",
+    "source": "2024年臺灣人文及社會科學期刊評比暨核心期刊收錄名單（法律學門）",
+    "source_url": "https://liberal.ncu.edu.tw/xhr/announcements/file/67762fcd0857770928b447d1/2024%E5%B9%B4%E8%A9%95%E6%AF%94%E7%B5%90%E6%9E%9C%E6%9A%A8%E6%A0%B8%E5%BF%83%E6%9C%9F%E5%88%8A%E5%90%8D%E5%96%AE.pdf",
+    "checked_at": "2026-07-19",
+    "next_check_at": "2027-01-19",
+    "origin": "cn",
+    "note": "正式 TSSCI 法律學門目录，适用 2025-01-01 至 2027-12-31；与个人 tw_law 目录分开。普通页面只有命中本目录才显示 TSSCI。"
+  },
+  "journals": [
+    {"name": "东吴法律学报", "issn": "", "level": "收录"},
+    {"name": "政大法学评论", "issn": "", "level": "收录"},
+    {"name": "中正大学法学集刊", "issn": "", "level": "收录"},
+    {"name": "台湾大学法学论丛", "issn": "", "level": "收录"},
+    {"name": "台北大学法学论丛", "issn": "", "level": "收录"},
+    {"name": "辅仁法学", "issn": "", "level": "收录"},
+    {"name": "兴大法学", "issn": "", "level": "收录"}
+  ]
+}

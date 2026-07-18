@@ -6,14 +6,14 @@
   "meta": { "scope": "中文文科知识库", "mode": "整库锁定单学科" },
 
   "tiers": { "T1": 1.00, "T1b": 0.92, "T2": 0.85, "T3": 0.65, "T4": 0.45, "T5": 0.25 },
-  "_comment_tiers": "全局档位分。T1权威1.00 / T1b准权威0.92(law_personal专用:CLSCI来源/外文权威) / T2核心0.85 / T3次核心0.65 / T4一般0.45 / T5普通0.25(未识别默认;预警/报纸也归此档)。已按用户要求取消原T6存疑档(0.05):用户不会自存假文献,故预警刊不再压最低——若另在正经名单(如SJR)按其档走,否则按普通。标准10学科A-D原型不用T1b。",
+  "_comment_tiers": "内部细分权重：T1=权威1.00，T1b=顶级0.92，T2/T3=核心内部细分0.85/0.65，T4/T5=普通内部细分0.45/0.25。普通接口只显示权威/顶级/核心/普通四档；未识别、预警和报纸不会形成第五档。",
 
   "catalogs": {
     "cssci":  { "type": "名录", "levels": ["来源", "扩展"], "builtin": true, "free": true, "note": "文科最高本土标尺，两层必须分开" },
     "clsci":  { "type": "名录", "levels": ["权威", "来源"], "builtin": true, "free": true, "note": "法学专属，约26刊" },
     "pku":    { "type": "名录", "levels": ["收录"], "builtin": true, "free": true, "note": "北大核心，2023第十版，每3年" },
     "ami":    { "type": "名录", "levels": ["顶级", "权威", "核心", "扩展"], "builtin": true, "free": true, "note": "社科院AMI，文科第三套，可选" },
-    "ssci":   { "type": "排名", "levels": ["Q1", "Q2", "Q3", "Q4"], "builtin": true, "free": false, "note": "名单免费(Master Journal List)；分区需自备，可缺省。缺分区时用 SJR 的 Q 区替代 ssci.Q* 位置。" },
+    "ssci":   { "type": "排名", "levels": ["Q1", "Q2", "Q3", "Q4"], "builtin": true, "free": true, "note": "随包目录基于 hitfyd/ShowJCR 的 JCR2025 社区快照，含 SSCI 收录与 Q1-Q4；来源、提交和检查日期见库总览。" },
     "ahci":   { "type": "名录", "levels": ["收录"], "builtin": true, "free": true, "note": "纯人文无JIF分区，只用收录与否" },
     "sjr":    { "type": "排名", "levels": ["Q1", "Q2", "Q3", "Q4"], "builtin": true, "free": true, "note": "外文默认分区源，scimagojr.com 免费导出 Excel" },
     "abs":    { "type": "排名", "levels": ["4*", "4", "3", "2", "1"], "builtin": true, "free": true, "note": "经管事实标准(AJG 2024)" },
@@ -21,14 +21,15 @@
     "utd24":  { "type": "名录", "levels": ["收录"], "builtin": true, "free": true, "note": "经管顶刊加分" },
     "fms":    { "type": "名录", "levels": ["A", "B"], "builtin": true, "free": true, "note": "管理科学高质量期刊(FMS)，国内经管目录" },
     "erih":   { "type": "名录", "levels": ["收录"], "builtin": true, "free": true, "note": "ERIH PLUS，欧洲人文兜底，不排名" },
-    "warning":{ "type": "黑名单", "levels": ["预警"], "builtin": true, "free": true, "note": "预警名单，命中直接 T6" },
+    "warning":{ "type": "风险提示", "levels": ["预警"], "builtin": true, "free": true, "note": "命中信息保留在解释链；普通页面不新增警示档" },
     "if_cnki":{ "type": "数值", "levels": [], "builtin": false, "free": false, "note": "知网复合影响因子，v2 经浏览器接入，v1 留空" },
 
     "_comment_private": "以下为 law_personal（个人法学增强档）专用私有目录，由 2026-06-28 旧档迁移而来，仅 law_personal 的 map 引用；其他学科不引用，命中也不定档。origin 声明中/外刊（resolver 据此选 coeff.cn/intl）。",
     "law_review_top":     { "type": "名录", "levels": ["收录"], "builtin": true, "free": true, "private": true, "origin": "intl", "note": "顶尖外文法律评论（旗舰法评）。law_personal 里→T1，外刊不打折。private=仅按学科白名单放行。" },
     "tw_law":             { "type": "名录", "levels": ["核心", "一般"], "builtin": true, "free": true, "private": true, "origin": "cn", "note": "台湾法学期刊。核心→T1、一般→T2。private=仅按学科白名单放行。" },
-    "ssci_law_authority": { "type": "名录", "levels": ["收录"], "builtin": true, "free": true, "private": true, "origin": "intl", "note": "SSCI 法学/犯罪学/社科旗舰权威（非旗舰法评）。law_personal 里→T2，外刊不打折。private=仅按学科白名单放行。" },
-    "newspaper":          { "type": "黑名单", "levels": ["报纸"], "builtin": true, "free": true, "private": true, "origin": "cn", "note": "报纸/公报，作辅证、压最低档 T6。private=仅按学科白名单放行。" }
+    "tssci_law":          { "type": "名录", "levels": ["收录"], "builtin": true, "free": true, "private": true, "origin": "cn", "note": "2024年臺灣人文及社會科學核心期刊法律學門名单。law_personal 里非重点三刊→T1b；重点三刊仍由 tw_law.核心→T1。" },
+    "ssci_law_authority": { "type": "名录", "levels": ["收录"], "builtin": true, "free": true, "private": true, "origin": "intl", "note": "SSCI 法学/犯罪学/社科旗舰权威（非旗舰法评）。law_personal 里→顶级（内部 T1b），外刊不打折。private=仅按学科白名单放行。" },
+    "newspaper":          { "type": "黑名单", "levels": ["报纸"], "builtin": true, "free": true, "private": true, "origin": "cn", "note": "报纸/公报仅作辅证，统一显示普通（内部 T5）。private=仅按学科白名单放行。" }
   },
 
   "_comment_recognizedTopLists": "认可顶刊清单（T1 最高档）：已联网核实(2026)，可被用户/AI 增删。匹配优先用 ISSN。判定口径见方案 §5.5。现代外语(1003-6105)、外国文学研究(1003-7519) 为通行记载值，入库前建议再核刊号页；实际匹配以离线数据文件的权威 ISSN 为准。",
@@ -158,23 +159,24 @@
       }
     },
     "A_法学个人": {
-      "_comment": "个人法学增强档（law_personal 专用，2026-06-28 旧档迁移）。忠于旧档：外刊不打折(intl=1.0)——顶尖外文法评/台湾核心→T1最高、CLSCI来源/外文权威→T1b(0.92)、CSSCI来源/台湾一般→T2、报纸→普通T5(原T6存疑档已取消)。私有目录 law_review_top/tw_law/ssci_law_authority/newspaper 仅此原型引用。",
+      "_comment": "个人法学增强档（law_personal 专用，2026-06-28 旧档迁移）。外刊不打折(intl=1.0)：顶尖外文法评/台湾重点三刊→T1；CLSCI来源/精选外文权威/正式TSSCI→T1b；CSSCI来源/台湾个人目录其他刊→T2。四档显示由 grading_svc 折叠，T2/T3 均显示核心、T4/T5 均显示普通。",
       "coeff": { "cn": 1.0, "intl": 1.0 }, "ifStrength": 0.05,
+      "signalWeights": { "cssci.扩展": 0.70, "pku.收录": 0.65 },
       "map": {
         "T1": ["clsci.权威", "law_review_top.收录", "tw_law.核心", "cssci.来源@recognizedTop"],
-        "T1b": ["clsci.来源", "ssci_law_authority.收录"],
-        "T2": ["cssci.来源", "tw_law.一般"],
-        "T3": ["cssci.扩展", "pku.收录", "ami.核心"],
-        "T4": ["其他核心", "sjr.Q1"],
-        "T5": ["sjr.Q2", "sjr.Q3", "sjr.Q4", "普通", "warning.预警", "newspaper.报纸"]
+        "T1b": ["clsci.来源", "ssci_law_authority.收录", "tssci_law.收录"],
+        "T2": ["cssci.来源", "tw_law.一般", "ssci.Q1"],
+        "T3": ["cssci.扩展", "pku.收录", "ami.核心", "ssci.Q2"],
+        "T4": ["其他核心", "sjr.Q1", "ssci.Q3"],
+        "T5": ["ssci.Q4", "sjr.Q2", "sjr.Q3", "sjr.Q4", "普通", "warning.预警", "newspaper.报纸"]
       }
     }
   },
 
-  "_comment_disciplines": "10 学科：绑定原型 + 覆盖系数(coeff 覆盖原型默认) + 追加专属目录。注意 law(外0.70) 与 business(外1.00) 方向相反——这正是必须按学科分设系数的证据。",
+  "_comment_disciplines": "10 个标准学科 + 1 个开发者增强学科：绑定原型 + 覆盖系数(coeff 覆盖原型默认) + 追加专属目录。注意 law(外0.70) 与 business(外1.00) 方向相反——这正是必须按学科分设系数的证据。",
   "disciplines": {
     "law":          { "name": "法学",               "archetype": "A_本土政策", "coeff": { "cn": 1.0, "intl": 0.70 }, "catalogs": ["clsci"] },
-    "law_personal": { "name": "法学（开发者增强）",     "archetype": "A_法学个人", "coeff": { "cn": 1.0, "intl": 1.00 }, "catalogs": ["clsci", "law_review_top", "tw_law", "ssci_law_authority", "newspaper"], "_comment": "个人专用：2026-06-28 旧档并入。产品用户用标准 law，本人锁 law_personal。外刊不打折。" },
+    "law_personal": { "name": "法学（开发者增强）",     "archetype": "A_法学个人", "coeff": { "cn": 1.0, "intl": 1.00 }, "catalogs": ["clsci", "law_review_top", "tw_law", "tssci_law", "ssci_law_authority", "newspaper"], "_comment": "个人专用：2026-06-28 旧档并入。娱乐命名学科由 grading_svc canonical alias 到本学科，不在此复制配置。外刊不打折。" },
     "marxism":      { "name": "马克思主义理论/思政",  "archetype": "A_本土政策", "coeff": { "cn": 1.0, "intl": 0.55 } },
     "business":     { "name": "工商管理·会计",       "archetype": "B_国际商科", "coeff": { "cn": 0.9, "intl": 1.00 }, "catalogs": ["abs", "ft50", "utd24", "fms"] },
     "economics":    { "name": "经济学·金融",         "archetype": "B_国际商科", "coeff": { "cn": 0.9, "intl": 1.00 }, "catalogs": ["abs", "ft50"] },
@@ -194,7 +196,7 @@
 
   "resolution": {
     "strategy": "priority-max",
-    "priorityOrder": ["clsci", "law_review_top", "tw_law", "abs", "ft50", "utd24", "cssci", "ssci_law_authority", "ami", "ssci", "pku", "fms", "sjr", "ahci", "erih", "newspaper", "warning"],
+    "priorityOrder": ["clsci", "law_review_top", "tw_law", "tssci_law", "abs", "ft50", "utd24", "cssci", "ssci_law_authority", "ami", "ssci", "pku", "fms", "sjr", "ahci", "erih", "newspaper", "warning"],
     "ifAdjust": "base * (1 + ifStrength * percentileInDiscipline(if))",
     "ifEnabled": true,
     "_comment_ifEnabled": "已开启知网复合影响因子(if_cnki)微调：base×(1+ifStrength×该刊复合IF在全库的分位[0-1])。D_纯人文 ifStrength=0 不受影响；无 if_cnki 数据的刊自动跳过、不报错。数据源 catalogs/if_cnki.json。",

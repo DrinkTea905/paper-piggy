@@ -58,6 +58,7 @@ CORE_IN_DATA = [
     "grading_memo.json",     # ★ 689 条期刊分级的 LLM 结果 —— **花过真钱**，重跑要再花一次
     "tier_overrides.json",   # ★ 用户一条条**手动改**的期刊档位（source_rules.set_override）—— 纯人工
     "grading_dist.json",     # 分级分布（小，顺手带上）
+    "grading_mappings.json", # ★ 用户按学科调整的目录/文献性质四档映射
     "journal_tiers.json",    # 期刊权重表（可能不存在，不存在就跳过）
     "legal_synonyms.txt",    # 法学同义词（用户可自定义）
     "index_manifest.json",   # 整库状态清单

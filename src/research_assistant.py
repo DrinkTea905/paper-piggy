@@ -7,7 +7,7 @@
 诚信红线（§7）作为系统提示内建进每次合成：观点归属/争议双呈/缺口诚实(库内没有≠学界空白)/AI披露/判例不生成。
 规则做格式(cite_format/page_map/覆盖统计)、模型做实质(RCS 综述)。无 LLM key 时退化为"带源证据清单"（诚实标注）。
 """
-import sys, re, hashlib
+import sys, re, hashlib, unicodedata
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import config as C
@@ -63,8 +63,9 @@ def _recall(query, topk):
 def _coverage(hits):
     """按命中密度 + 高层级命中数给覆盖评级。返回 (symbol, label, n, n_high)。"""
     n = len(hits)
-    # 高层级：weight_tier ∈ {权威,准权威,核心} 或 journal_weight≥0.85
-    n_high = sum(1 for h in hits if (h.get("weight_tier") in ("权威", "准权威", "核心"))
+    # 高层级：统一四档中的 authority/top/core；兼容旧结果只作过渡。
+    n_high = sum(1 for h in hits if (h.get("band") in ("authority", "top", "core")
+                 or h.get("weight_tier") in ("权威", "顶级", "核心", "准权威"))
                  or (isinstance(h.get("journal_weight"), (int, float)) and h.get("journal_weight", 0) >= 0.85))
     if n >= 8 and n_high >= 2:
         sym = "◎"
@@ -285,20 +286,150 @@ def _scope_empty(topic):
 
 
 # ═══ 能力三：建议新增文献（Phase D）═══════════════════════════════
-# 脚注引文粗抽：'参见/见/转引自 作者：《题名》，载《刊名》…' 之类
-_RE_CITE = re.compile(r"(?:参见|见|另见|又见|转引自)\s*([^，：:《]{1,20})[：:]?\s*《([^》]{2,60})》")
+# 参考文献粗抽。这里刻意不用 LLM：先从库内真实全文反向追踪，再把候选交给后续核验。
+# 中文兼容脚注/参考文献表；英文兼容常见 APA/数字编号格式。解析结果保留原文与来源链，
+# OCR 把标点打坏时宁可少抽，也不把模型猜测冒充成书目事实。
+_RE_CITE_ZH = re.compile(
+    r"(?:(?:参见|见|另见|又见|转引自)\s*|^\s*(?:\[?\d{1,4}[\].)、]\s*)?)"
+    r"(?P<author>[^\n，；;：:《]{1,60})[：:]?\s*"
+    r"《(?P<title>[^》\n]{2,180})》"
+    r"(?:\s*[，,]?\s*(?:载|刊于)\s*《(?P<journal>[^》\n]{2,120})》)?"
+)
+_RE_DOI = re.compile(r"(?i)(?:https?://(?:dx\.)?doi\.org/|doi\s*[:：]?\s*)?"
+                     r"(10\.\d{4,9}/[-._;()/:A-Z0-9]+)")
+_RE_YEAR = re.compile(r"(?<!\d)((?:18|19|20)\d{2})(?!\d)")
+_RE_REF_INDEX = re.compile(r"^\s*(?:\[(\d{1,4})\]|(\d{1,4})[.)、])\s*")
+
+
+def _norm_title(title):
+    """书目去重键：NFKC + 小写 + 去空白/标点；中英文共用。"""
+    t = unicodedata.normalize("NFKC", str(title or "")).casefold()
+    return "".join(ch for ch in t if ch.isalnum())
+
+
+def _norm_doi(doi):
+    d = unicodedata.normalize("NFKC", str(doi or "")).strip().casefold()
+    d = re.sub(r"^(?:https?://(?:dx\.)?doi\.org/|doi\s*[:：]?\s*)", "", d)
+    return d.rstrip(".,;:，；。)]}〉》")
+
+
+def _doi_of(text):
+    m = _RE_DOI.search(text or "")
+    return _norm_doi(m.group(1)) if m else ""
+
+
+def _ref_index_of(text):
+    m = _RE_REF_INDEX.match(text or "")
+    return int(m.group(1) or m.group(2)) if m else None
+
+
+def _clean_author(text):
+    s = re.sub(r"^\s*(?:参见|见|另见|又见|转引自)\s*", "", text or "")
+    return s.strip(" \t,，.。:：;；[]()")
+
+
+def _clean_journal(text):
+    s = re.sub(r"(?i)https?://(?:dx\.)?doi\.org/\S+|doi\s*[:：]?\s*10\.\S+", "", text or "")
+    # 卷期页码不是刊名；保留名称本身。
+    s = re.split(r"\s*,\s*\d|\s+\d+\s*\(|\s+vol\.?\s*\d", s, maxsplit=1,
+                 flags=re.I)[0]
+    return s.strip(" \t,，.。:：;；()")
+
+
+def _parse_en_reference(raw):
+    """解析一条常见英文参考文献；不命中返回 None。"""
+    if not raw or not re.search(r"[A-Za-z]", raw):
+        return None
+    doi = _doi_of(raw)
+    clean = _RE_REF_INDEX.sub("", raw).strip()
+    year_m = _RE_YEAR.search(clean)
+    if not year_m:
+        return None
+    year = year_m.group(1)
+
+    # Chicago/法评常见：Author. "Title." Journal ... (2020).
+    qm = re.search(r"[\"“](?P<title>[^\"”\n]{3,240})[\"”]", clean)
+    if qm:
+        author = _clean_author(clean[:qm.start()])
+        tail = clean[qm.end():]
+        ym_tail = _RE_YEAR.search(tail)
+        journal = _clean_journal(tail[:ym_tail.start()] if ym_tail else tail)
+        if author and len(author.split()) <= 20:
+            return {"author": author, "title": qm.group("title").strip(),
+                    "year": year, "doi": doi, "journal": journal}
+
+    # APA/数字编号常见：Author. (2020). Title. Journal, 12(3), ...
+    author = _clean_author(clean[:year_m.start()])
+    if not author or len(author.split()) > 20:
+        return None
+    rest = clean[year_m.end():].lstrip(" )].,;:，。；：")
+    parts = [x.strip() for x in re.split(r"(?<=[.!?])\s+", rest) if x.strip()]
+    if len(parts) < 2:
+        return None
+    title = parts[0].rstrip(".!?").strip()
+    journal = _clean_journal(parts[1])
+    if len(_norm_title(title)) < 3:
+        return None
+    return {"author": author, "title": title, "year": year,
+            "doi": doi, "journal": journal}
+
+
+def _merge_candidate(found, title_keys, doi_keys, item, provenance):
+    """按 DOI 优先、无 DOI 时按规范化题名合并；同候选保留全部来源链。"""
+    title_key = _norm_title(item.get("title"))
+    doi = _norm_doi(item.get("doi"))
+    if len(title_key) < 3:
+        return
+    doi_key = "doi:" + doi if doi else ""
+    key = doi_keys.get(doi) if doi else None
+    if not key:
+        key = title_keys.get(title_key)
+    if not key:
+        key = doi_key or "title:" + title_key
+    cur = found.get(key)
+    if cur is None:
+        cur = {"author": "", "title": "", "year": "", "doi": "", "journal": "",
+               "freq": 0, "provenance": []}
+        found[key] = cur
+    for field in ("author", "title", "year", "journal"):
+        if not cur[field] and item.get(field):
+            cur[field] = str(item[field]).strip()
+    if doi and not cur["doi"]:
+        cur["doi"] = doi
+    cur["freq"] += 1
+    cur["provenance"].append(provenance)
+    title_keys[title_key] = key
+    if doi:
+        doi_keys[doi] = key
+
+
+def _citation_segments(text):
+    """逐行切参考文献；分号只在明显开始下一条时切，保留可核对 raw。"""
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = re.split(r"[；;](?=\s*(?:\[?\d{1,4}[\].)、]|参见|见|另见|又见|转引自|[A-Z][A-Za-z'’-]+[, ]))", line)
+        for part in parts:
+            part = part.strip()
+            if part:
+                yield part
 
 
 def _mine_citations(hits, limit_pdfs=20):
-    """从命中文献的 extracted 全文里粗抽被引文献（脚注模式）。返回 [{author,title,freq}]。"""
+    """从命中文献全文反向追踪中英文参考文献，并保留可核对的 provenance。"""
     import json
     from textutil import safe_name
     found = {}
+    title_keys = {}
+    doi_keys = {}
     keys = []
+    source_titles = {}
     for h in hits:
         k = h.get("key")
         if k and k not in keys:
             keys.append(k)
+            source_titles[k] = h.get("title", "")
     for k in keys[:limit_pdfs]:
         ex = C.EXTRACTED / f"{safe_name(k)}.json"
         if not ex.exists():
@@ -307,16 +438,36 @@ def _mine_citations(hits, limit_pdfs=20):
             d = json.loads(ex.read_text(encoding="utf-8"))
         except Exception:
             continue
-        text = "\n".join(p.get("text", "") for p in (d.get("pages") or []))
-        for m in _RE_CITE.finditer(text):
-            author = m.group(1).strip().strip("，,。")
-            title = m.group(2).strip()
-            if len(title) < 3:
-                continue
-            key2 = (author, title)
-            found[key2] = found.get(key2, 0) + 1
-    items = [{"author": a, "title": t, "freq": n} for (a, t), n in found.items()]
-    items.sort(key=lambda x: -x["freq"])
+        for page in (d.get("pages") or []):
+            pdf_page = page.get("page", page.get("pdf_page"))
+            for raw in _citation_segments(page.get("text", "")):
+                matched_zh = False
+                for m in _RE_CITE_ZH.finditer(raw):
+                    matched_zh = True
+                    # 年份/DOI 通常位于题名之后；raw 保留下来供后续人工核验。
+                    ym = _RE_YEAR.search(raw[m.end():]) or _RE_YEAR.search(raw)
+                    item = {"author": _clean_author(m.group("author")),
+                            "title": m.group("title").strip(),
+                            "year": ym.group(1) if ym else "",
+                            "doi": _doi_of(raw),
+                            "journal": (m.group("journal") or "").strip()}
+                    prov = {"source_key": k,
+                            "source_title": source_titles.get(k) or d.get("title", ""),
+                            "pdf_page": pdf_page,
+                            "ref_index": _ref_index_of(raw),
+                            "raw": raw}
+                    _merge_candidate(found, title_keys, doi_keys, item, prov)
+                if not matched_zh:
+                    item = _parse_en_reference(raw)
+                    if item:
+                        prov = {"source_key": k,
+                                "source_title": source_titles.get(k) or d.get("title", ""),
+                                "pdf_page": pdf_page,
+                                "ref_index": _ref_index_of(raw),
+                                "raw": raw}
+                        _merge_candidate(found, title_keys, doi_keys, item, prov)
+    items = list(found.values())
+    items.sort(key=lambda x: (-x["freq"], x.get("title", "").casefold()))
     return items
 
 
@@ -328,21 +479,30 @@ def suggest_sources(topic, topk=20, llm=None):
         raise RuntimeError(err)
     sym, label, n, n_high = _coverage(hits)
     mined = _mine_citations(hits)
-    # 与库内 papers.jsonl 比对：题名/作者已有的剔除（粗匹配）
-    have_titles = set()
+    # 与库内 papers 比对：DOI 优先，缺 DOI 时按规范化题名；给全部候选标明是否已入库。
+    have_titles = {}
+    have_dois = {}
     try:
         import retriever as R
-        for p in (R.M.get("papers") or {}).values():
+        for key, p in (R.M.get("papers") or {}).items():
             t = (p.get("title") or "").strip()
             if t:
-                have_titles.add(re.sub(r"\s+", "", t))
+                have_titles.setdefault(_norm_title(t), key)
+            doi = _norm_doi(p.get("doi"))
+            if doi:
+                have_dois.setdefault(doi, key)
     except Exception:
         pass
     missing = []
     for it in mined:
-        norm_t = re.sub(r"\s+", "", it["title"])
-        if norm_t and not any(norm_t in ht or ht in norm_t for ht in have_titles):
-            # 估算期刊层级（若脚注给了刊名——此处粗抽未含刊名，留待增强）
+        doi = _norm_doi(it.get("doi"))
+        norm_t = _norm_title(it.get("title"))
+        library_key = have_dois.get(doi) if doi else None
+        if not library_key:
+            library_key = have_titles.get(norm_t)
+        it["in_library"] = bool(library_key)
+        it["library_key"] = library_key or ""
+        if not library_key:
             missing.append(it)
     # 库内错配：有 PDF 但未深索的相关篇
     mismatch = []
@@ -362,6 +522,16 @@ def suggest_sources(topic, topk=20, llm=None):
         "topic": topic,
         "coverage": {"symbol": sym, "label": label, "n": n, "n_high": n_high},
         "missing_cited": missing[:20],       # 被库内引用但库中缺失的文献（按被引频次）
+        "reference_chain_candidates": mined[:20],  # 库内真实参考链候选（含已入库标记与 provenance）
+        "candidate_sections": {
+            "library_reference_chain": mined[:20],
+            # 本函数绝不联网；联网候选须在完成参考链去重/缺口判断后由上层另行检索。
+            "network_supplement": [],
+        },
+        "network_search": {
+            "performed": False,
+            "reason": "本工具只做库内参考链反向追踪；联网补充应在参考链去重和缺口判断后单独进行。",
+        },
         "mismatch_undeep": mismatch[:20],    # 已有 PDF 但未深索的相关篇
         "gap_note": _gap_note(topic, hits, sym),
     }
