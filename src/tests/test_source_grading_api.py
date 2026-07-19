@@ -32,6 +32,7 @@ class SourceGradingApiTests(unittest.TestCase):
             _rec_score=mock.Mock(return_value=0.0),
         ):
             got = server.papers(source_type="report", limit=20)
+            by_label = server.papers(objective_label="书籍", limit=20)
         self.assertEqual(1, got["total"])
         self.assertEqual("r", got["papers"][0]["key"])
         self.assertEqual(("report", "官方报告", "core"),
@@ -39,6 +40,10 @@ class SourceGradingApiTests(unittest.TestCase):
                                ("source_type", "objective_label", "band")))
         self.assertEqual(1, got["source_type_counts"]["report"])
         self.assertEqual(1, got["source_type_counts"]["book"])
+        self.assertEqual(1, by_label["total"])
+        self.assertEqual("b", by_label["papers"][0]["key"])
+        self.assertEqual("书籍", by_label["objective_label"])
+        self.assertEqual(1, by_label["objective_label_counts"]["书籍"])
 
     def test_wiki_sources_are_enriched_in_one_response(self):
         page = {"id": "w", "sources": [{"key": "b", "citation": "某书"}]}

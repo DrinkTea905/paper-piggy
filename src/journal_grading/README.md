@@ -37,7 +37,7 @@ python journal_grading/selftest.py
 journal_grading/
   config/grading_config.json   ① 配置即代码（CC0）——用户/AI 微调只碰这一份
   catalogs/*.json              ② 客观目录数据（每目录一文件；用户副本放 <DATA>/journals/）
-  catalog_registry.py          目录来源、上游版本/提交与半年检查日期
+  catalog_registry.py          目录来源、上游版本/提交与开发维护日期
   update_catalogs.py           把已审查的 ShowJCR CSV 机械转换为 SSCI/JCR 目录
   normalize.py                 刊名/ISSN 归一
   loader.py                    加载配置+目录，建 ISSN/归一名索引（DATA优先→APP种子回退，带缓存/reload）

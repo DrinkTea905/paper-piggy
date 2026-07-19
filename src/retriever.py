@@ -457,7 +457,8 @@ def _attach_weight(d, wr):
     d["weight_needs_review"] = bool(wr.get("needs_review") or wr.get("needsReview")) if wr else False
     d["weight_src"] = wr.get("src") if wr else None               # manual=手动改档 / rule=法源报告规则（前端标记）
     for key in ("source_type", "source_type_name", "objective_label", "band", "band_name",
-                "standard_band_name", "band_rank", "internal_tier", "manual", "hit_catalogs", "explain"):
+                "standard_band_name", "auto_band", "auto_band_name", "auto_standard_band_name",
+                "band_rank", "internal_tier", "manual", "hit_catalogs", "explain"):
         d[key] = wr.get(key) if wr else None
     return d
 

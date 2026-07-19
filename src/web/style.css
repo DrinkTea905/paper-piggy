@@ -489,6 +489,10 @@ button:disabled { opacity: .6; cursor: default; }
 .primary-btn { padding: 7px 14px; border: none; border-radius: 8px; background: var(--accent); color: #fff; font-weight: 600; cursor: pointer; font-size: 12.5px; }
 .primary-btn:hover { background: var(--accent-d); }
 .bl-tip { padding: 8px 20px; font-size: 12.5px; color: #4338ca; background: #eef2ff; border-bottom: 1px solid #e0e7ff; }
+.bl-active-filters { padding: 7px 20px; border-bottom: 1px solid var(--line); background: var(--card); }
+.bl-active-filters span { display: inline-flex; align-items: center; gap: 4px; padding: 4px 7px 4px 10px; border: 1px solid rgba(37,99,235,.28); border-radius: 14px; color: var(--accent); font-size: 12px; background: rgba(37,99,235,.06); }
+.bl-active-filters button { width: 20px; height: 20px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--accent); cursor: pointer; font-size: 15px; line-height: 20px; }
+.bl-active-filters button:hover { background: rgba(37,99,235,.12); }
 .bl-list { flex: 1; overflow-y: auto; padding: 10px 20px 24px; }
 
 .bcard { display: flex; gap: 10px; border: 1px solid var(--line); border-radius: 12px; background: var(--card); padding: 12px 14px; margin-bottom: 10px; }
@@ -927,10 +931,16 @@ button:disabled { opacity: .6; cursor: default; }
 .objective-badge { background: #475569; color: #fff; }
 .tier-badge.tb-click { cursor: pointer; }
 .tier-badge.tb-click:hover { filter: brightness(1.12); box-shadow: 0 0 0 2px rgba(37,99,235,.25); }
-#tier-menu { position: fixed; z-index: 200; min-width: 170px; background: var(--card); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 8px 28px rgba(0,0,0,.16); padding: 4px; }
-#tier-menu .tm-head { font-size: 11.5px; color: var(--muted); padding: 6px 10px 4px; border-bottom: 1px solid var(--line); margin-bottom: 4px; }
-#tier-menu button { display: block; width: 100%; text-align: left; background: none; border: 0; padding: 7px 10px; border-radius: 6px; cursor: pointer; font-size: 13px; color: var(--fg); white-space: nowrap; }
+#tier-menu { position: fixed; z-index: 200; min-width: 230px; background: var(--card); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 8px 28px rgba(0,0,0,.16); padding: 5px; }
+#tier-menu .tm-head { display: flex; flex-direction: column; gap: 3px; color: var(--muted); padding: 7px 10px 8px; border-bottom: 1px solid var(--line); margin-bottom: 4px; }
+#tier-menu .tm-head b { color: var(--fg); font-size: 12.5px; }
+#tier-menu .tm-head span { font-size: 12px; }
+#tier-menu .tm-head small { font-size: 11px; color: var(--muted); }
+#tier-menu button { display: grid; grid-template-columns: 18px 1fr; align-items: center; width: 100%; text-align: left; background: none; border: 0; padding: 7px 10px; border-radius: 6px; cursor: pointer; font-size: 13px; color: var(--fg); white-space: nowrap; }
 #tier-menu button:hover { background: rgba(37,99,235,.1); }
+#tier-menu button.selected { background: rgba(37,99,235,.10); color: var(--accent); font-weight: 650; }
+#tier-menu button > span { width: 18px; color: var(--accent); }
+#tier-menu button.tm-restore { display: block; margin-top: 4px; padding-top: 9px; border-top: 1px solid var(--line); color: var(--accent); }
 .chat-scope { padding: 6px 14px 0; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .chat-scope label { font-size: 12.5px; color: var(--muted); display: inline-flex; align-items: center; gap: 6px; }
 /* 对话页常驻引导：对话开始后欢迎语会消失，这条一直在，提醒 Agent 效果更好 */
@@ -1044,30 +1054,41 @@ button:disabled { opacity: .6; cursor: default; }
 .ov-band-track { height: 7px; border-radius: 6px; background: rgba(148,163,184,.20); overflow: hidden; }
 .ov-band-track i { display: block; height: 100%; min-width: 0; border-radius: inherit; }
 .ov-band-row small { color: var(--muted); text-align: right; white-space: nowrap; }
-.ov-break-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
-.ov-break-grid h5 { margin: 0 0 7px; font-size: 12px; color: var(--muted); }
+.ov-break-tabs { display: inline-flex; gap: 3px; padding: 3px; margin: 9px 0 11px; border-radius: 9px; background: rgba(148,163,184,.12); }
+.ov-break-tabs button { border: 0; background: transparent; color: var(--muted); border-radius: 7px; padding: 6px 12px; cursor: pointer; font: inherit; font-size: 12px; }
+.ov-break-tabs button.active { background: var(--card); color: var(--fg); box-shadow: 0 1px 4px rgba(15,23,42,.10); font-weight: 650; }
+.ov-break-panel { display: none; }
+.ov-break-panel.active { display: block; }
 .ov-chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .ov-chip { border: 1px solid var(--line); background: rgba(148,163,184,.08); color: var(--fg); border-radius: 12px; padding: 4px 9px; font-size: 11.5px; }
 button.ov-chip { cursor: pointer; font-family: inherit; }
 button.ov-chip:hover { border-color: var(--accent); color: var(--accent); }
 .ov-chip b { margin-left: 3px; font-variant-numeric: tabular-nums; }
-.ov-map-table, .ov-cat-table { border: 1px solid var(--line); border-radius: 9px; overflow: hidden; }
-.ov-map-row, .ov-cat-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 8px 10px; border-bottom: 1px solid var(--line); font-size: 12px; }
-.ov-map-row:last-child, .ov-cat-row:last-child { border-bottom: 0; }
-.ov-map-row > div, .ov-cat-row > div { min-width: 0; }
-.ov-map-row small, .ov-cat-row small { display: block; color: var(--muted); margin-top: 2px; line-height: 1.45; }
+.ov-label-chip span { margin-left: 4px; color: var(--muted); transition: transform .15s ease; }
+.ov-label-chip:hover span { transform: translateX(2px); color: var(--accent); }
+.ov-mapping { padding: 0; overflow: hidden; }
+.ov-mapping > summary { list-style: none; display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 15px 17px; cursor: pointer; }
+.ov-mapping > summary::-webkit-details-marker { display: none; }
+.ov-mapping > summary span { display: flex; flex-direction: column; gap: 3px; }
+.ov-mapping > summary small { color: var(--muted); font-size: 11.5px; font-weight: 400; }
+.ov-mapping > summary em { color: var(--accent); font-size: 12px; font-style: normal; white-space: nowrap; }
+.ov-mapping[open] > summary { border-bottom: 1px solid var(--line); }
+.ov-mapping[open] > summary em { font-size: 0; }
+.ov-mapping[open] > summary em::after { content: "收起"; font-size: 12px; }
+.ov-mapping-body { padding: 14px 17px 17px; }
+.ov-mapping-body h5 { margin: 14px 0 7px; font-size: 12px; color: var(--muted); }
+.ov-map-table { border: 1px solid var(--line); border-radius: 9px; overflow: hidden; }
+.ov-map-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 8px 10px; border-bottom: 1px solid var(--line); font-size: 12px; }
+.ov-map-row:last-child { border-bottom: 0; }
+.ov-map-row > div { min-width: 0; }
+.ov-map-row small { display: block; color: var(--muted); margin-top: 2px; line-height: 1.45; }
 .ov-map-select { min-width: 98px; padding: 5px 7px; border: 1px solid var(--line); border-radius: 7px; background: var(--card); color: var(--fg); }
 .ov-map-band { font-weight: 650; white-space: nowrap; }
 .ov-map-msg { margin-top: 7px; min-height: 1.3em; }
-.ov-catalog details summary { cursor: pointer; color: var(--accent); font-size: 12.5px; }
-.ov-cat-table { margin-top: 9px; max-height: 320px; overflow-y: auto; }
-.ov-cat-row > span { text-align: right; white-space: nowrap; color: var(--muted); }
-.ov-cat-row a { color: var(--accent); text-decoration: none; }
-.ov-cat-row a:hover { text-decoration: underline; }
 @media (max-width: 720px) {
-  .ov-break-grid { grid-template-columns: 1fr; }
   .ov-band-row { grid-template-columns: 9px 54px 1fr auto; }
   .ov-band-row small { grid-column: 3 / 5; text-align: left; }
+  .ov-map-row { align-items: flex-start; }
   .wiki-title-row { flex-direction: column; }
   .wiki-title-row .wiki-flag { margin-left: 0; justify-content: flex-start; }
   .wk-card-head { flex-wrap: wrap; }

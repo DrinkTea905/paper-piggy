@@ -841,16 +841,16 @@
   }
   function bandDisplay(r) { return (r && (r.band_name || r.standard_band_name || r.weight_tier)) || DISC.bandNames[bandOf(r)] || BAND_STANDARD[bandOf(r)]; }
   function objectiveLabel(r) { return (r && (r.objective_label || r.source_label || r.journal_tier || r.source_type_name)) || "来源"; }
+  function bandAlias(shown, standard) {
+    return shown && standard && shown !== standard ? `${shown}（${standard}）` : (shown || standard || "普通");
+  }
   function badgeColor(nameOrBand) {
     const b = BAND_ORDER.includes(nameOrBand) ? nameOrBand : (LEGACY_BAND[nameOrBand] || "normal");
     return BAND_COLOR[b];
   }
   function gradingTip(r) {
     const shown = bandDisplay(r), standard = (r && r.standard_band_name) || BAND_STANDARD[bandOf(r)];
-    const alias = shown && standard && shown !== standard ? `${shown}（标准档：${standard}）` : (shown || standard);
-    const wv = r && r.weight != null ? ` · 内部权重 ${Number(r.weight).toFixed(2)}`
-      : (r && r.journal_weight != null ? ` · 内部权重 ${Number(r.journal_weight).toFixed(2)}` : "");
-    return `${objectiveLabel(r)} · ${alias || "普通"}${wv}${r && (r.manual || r.weight_src === "manual") ? ` · 已手动设为${shown || standard || "普通"}` : " · 自动评定"}`;
+    return `${objectiveLabel(r)} · 当前评价：${bandAlias(shown, standard)} · ${r && (r.manual || r.weight_src === "manual") ? "手动改档" : "自动评定"}`;
   }
   // 客观标签可点击打开四档菜单；手动改档只增加轻量 ✎，不改标签文字。
   function tierBadge(r) {
@@ -859,22 +859,35 @@
     const manual = !!r.manual || r.weight_src === "manual";
     const clickable = !!r.key && !r.is_wiki;
     const tip = gradingTip(r) + (clickable ? "。点击可手动改档；客观标签不会被改写" : "");
+    const currentBand = bandOf(r), currentName = bandDisplay(r), currentStandard = r.standard_band_name || BAND_STANDARD[currentBand];
+    const autoBand = r.auto_band || currentBand, autoName = r.auto_band_name || DISC.bandNames[autoBand] || BAND_STANDARD[autoBand];
+    const autoStandard = r.auto_standard_band_name || BAND_STANDARD[autoBand];
     const dk = clickable ? ` data-key="${esc(r.key)}"` : "";
-    return `<span class="badge tier-badge objective-badge${clickable ? " tb-click" : ""}"${dk} title="${esc(tip)}">${esc(label)}${manual ? " ✎" : ""}</span>`;
-  }
-  function tierMenuItems() {
-    return BAND_ORDER.map((b) => [b, DISC.bandNames[b] || BAND_STANDARD[b]])
-      .concat([["", "↺ 恢复自动"]]);
+    const gradingData = clickable ? ` data-band="${esc(currentBand)}" data-band-name="${esc(currentName)}" data-standard-band-name="${esc(currentStandard)}" data-auto-band="${esc(autoBand)}" data-auto-band-name="${esc(autoName)}" data-auto-standard-band-name="${esc(autoStandard)}" data-manual="${manual ? "1" : "0"}"` : "";
+    return `<span class="badge tier-badge objective-badge${clickable ? " tb-click" : ""}"${dk}${gradingData} title="${esc(tip)}">${esc(label)}${manual ? " ✎" : ""}</span>`;
   }
   function closeTierMenu() { const old = document.getElementById("tier-menu"); if (old) old.remove(); }
   function openTierMenu(badge) {
     closeTierMenu();
     const key = badge.dataset.key;
     if (!key) return;
+    const label = badge.textContent.replace(/\s*✎\s*$/, "");
+    const currentBand = badge.dataset.band || "normal";
+    const currentName = badge.dataset.bandName || DISC.bandNames[currentBand] || BAND_STANDARD[currentBand];
+    const currentStandard = badge.dataset.standardBandName || BAND_STANDARD[currentBand];
+    const autoBand = badge.dataset.autoBand || currentBand;
+    const autoName = badge.dataset.autoBandName || DISC.bandNames[autoBand] || BAND_STANDARD[autoBand];
+    const autoStandard = badge.dataset.autoStandardBandName || BAND_STANDARD[autoBand];
+    const manual = badge.dataset.manual === "1";
     const m = document.createElement("div");
     m.id = "tier-menu";
-    m.innerHTML = `<div class="tm-head">${esc(badge.textContent.replace(/\s*✎\s*$/, ""))} · 手动改档</div>` +
-      tierMenuItems().map(([c, label]) => `<button data-tier="${c}">${esc(label)}</button>`).join("");
+    const bandButtons = BAND_ORDER.map((b) => {
+      const shown = DISC.bandNames[b] || BAND_STANDARD[b];
+      const selected = b === currentBand;
+      return `<button data-tier="${b}" class="${selected ? "selected" : ""}" aria-pressed="${selected ? "true" : "false"}"><span>${selected ? "✓" : ""}</span>${esc(bandAlias(shown, BAND_STANDARD[b]))}</button>`;
+    }).join("");
+    const restore = manual ? `<button data-tier="" class="tm-restore">↺ 恢复自动：${esc(bandAlias(autoName, autoStandard))}</button>` : "";
+    m.innerHTML = `<div class="tm-head"><b>${esc(label)}</b><span>当前评价：${esc(bandAlias(currentName, currentStandard))} · ${manual ? "手动改档" : "自动评定"}</span>${manual ? `<small>自动规则：${esc(bandAlias(autoName, autoStandard))}</small>` : ""}</div>${bandButtons}${restore}`;
     document.body.appendChild(m);
     const rc = badge.getBoundingClientRect();
     m.style.left = Math.max(8, Math.min(rc.left, window.innerWidth - m.offsetWidth - 8)) + "px";
@@ -892,10 +905,18 @@
         document.querySelectorAll(`.tier-badge[data-key="${CSS.escape(key)}"]`).forEach((el) => {
           el.textContent = objectiveLabel(g) + (isManual ? " ✎" : "");
           el.title = gradingTip(Object.assign({}, g, { manual: isManual })) + "。点击可手动改档；客观标签不会被改写";
+          const band = g.band || "normal", auto = g.auto_band || band;
+          el.dataset.band = band;
+          el.dataset.bandName = g.band_name || DISC.bandNames[band] || BAND_STANDARD[band];
+          el.dataset.standardBandName = g.standard_band_name || BAND_STANDARD[band];
+          el.dataset.autoBand = auto;
+          el.dataset.autoBandName = g.auto_band_name || DISC.bandNames[auto] || BAND_STANDARD[auto];
+          el.dataset.autoStandardBandName = g.auto_standard_band_name || BAND_STANDARD[auto];
+          el.dataset.manual = isManual ? "1" : "0";
         });
         const patch = (row) => {
           if (!row || row.key !== key) return;
-          ["objective_label", "band", "band_name", "standard_band_name", "source_type", "source_type_name"].forEach((k) => {
+          ["objective_label", "band", "band_name", "standard_band_name", "auto_band", "auto_band_name", "auto_standard_band_name", "source_type", "source_type_name"].forEach((k) => {
             if (g[k] != null) row[k] = g[k];
           });
           row.weight_tier = g.band_name || g.cn || row.weight_tier || "";
@@ -1356,7 +1377,7 @@
   }
   // 「最近入库」的「展开更多」→ 跳「浏览」并按入库时间排序
   function _goBrowseRecent() {
-    BR.sort = "ingested"; BR.deepFilter = ""; BR.sourceType = "";
+    BR.sort = "ingested"; BR.deepFilter = ""; BR.sourceType = ""; BR.objectiveLabel = "";
     const bs = $("#bl-sort"); if (bs) bs.value = "ingested";
     const df = $("#bl-deep-filter"); if (df) df.value = "";
     const tf = $("#bl-type-filter"); if (tf) tf.value = "";
@@ -1446,26 +1467,28 @@
     const bands = gradingBandRows(d, go);
     const bandRows = bands.map((x) => {
       const pct = x.ratio != null ? Math.round(Number(x.ratio) * (Number(x.ratio) <= 1 ? 100 : 1)) : (x.total ? Math.round(x.n / x.total * 100) : 0);
-      const weight = x.weight != null ? ` · 内部权重 ${Number(x.weight).toFixed(2)}` : "";
       return `<div class="ov-band-row"><span class="ov-band-dot" style="background:${BAND_COLOR[x.band]}"></span>` +
         `<span class="ov-band-name">${esc(x.band_name)}</span><span class="ov-band-track"><i style="width:${Math.max(0, Math.min(100, pct))}%;background:${BAND_COLOR[x.band]}"></i></span>` +
-        `<b>${num(x.n)}</b><small>${pct}%${weight}</small></div>`;
+        `<b>${num(x.n)}</b><small>${pct}%</small></div>`;
     }).join("");
     const typeRows = gradingBreakdown(go, "type");
     const labelRows = gradingBreakdown(go, "label");
-    const breakdown = (typeRows.length || labelRows.length) ? `<div class="dcard span2 ov-breakdown"><h4>客观标签与文献性质明细</h4>
-      <p class="dcard-sub">客观标签不随手动改档变化；点击文献性质可到浏览页查看对应文献。</p>
-      <div class="ov-break-grid"><div><h5>文献性质</h5><div class="ov-chips">${typeRows.map((x) => {
+    const breakdown = (typeRows.length || labelRows.length) ? `<div class="dcard span2 ov-breakdown"><h4>文献构成</h4>
+      <p class="dcard-sub">每篇文献只显示一个客观标签；点击任一项可到浏览页查看对应文献。</p>
+      <div class="ov-break-tabs" role="tablist"><button class="active" data-break-kind="type" role="tab" aria-selected="true">按文献性质</button><button data-break-kind="label" role="tab" aria-selected="false">按客观标签</button></div>
+      <div class="ov-break-panel active" data-break-panel="type"><div class="ov-chips">${typeRows.map((x) => {
         const type = x.source_type || x.id || x.key || "", name = x.source_type_name || x.name || x.label || type || "其他";
         const body = `${esc(name)} <b>${num(x.n != null ? x.n : x.count || 0)}</b>`;
         return type ? `<button class="ov-chip ov-type-chip" data-source-type="${esc(type)}" data-source-name="${esc(name)}">${body}</button>`
           : `<span class="ov-chip">${body}</span>`;
       }).join("") || `<span class="hint">暂无统计</span>`}</div></div>
-      <div><h5>唯一客观标签</h5><div class="ov-chips">${labelRows.map((x) => `<span class="ov-chip">${esc(x.objective_label || x.label || x.name || "来源")} <b>${num(x.n != null ? x.n : x.count || 0)}</b></span>`).join("") || `<span class="hint">暂无统计</span>`}</div></div></div></div>` : "";
+      <div class="ov-break-panel" data-break-panel="label"><div class="ov-chips">${labelRows.map((x) => {
+        const label = x.objective_label || x.label || x.name || "来源";
+        return `<button class="ov-chip ov-label-chip" data-objective-label="${esc(label)}">${esc(label)} <b>${num(x.n != null ? x.n : x.count || 0)}</b><span aria-hidden="true">→</span></button>`;
+      }).join("") || `<span class="hint">暂无统计</span>`}</div></div></div>` : "";
     const mappings = gradingMappings(go);
-    const mappingCard = mappings.length ? `<div class="dcard span2 ov-mapping"><h4>目录 / 文献性质 → 四档映射</h4>
-      <p class="dcard-sub">修改只影响当前学科的评价与排序，不会篡改客观目录或单篇客观标签；单篇文献可在检索或浏览页点击客观标签单独改档。</p><div class="ov-map-table">` +
-      mappings.map((x) => {
+    const customCount = mappings.filter((x) => x.customized).length;
+    const mappingRows = (rows) => rows.map((x) => {
         const id = x.mapping_id || x.id || x.key || "", band = x.band || LEGACY_BAND[x.band_name || x.tier] || "normal";
         const title = x.objective_label || x.source_type_name || x.label || x.name || id;
         const detail = x.description || x.rule || x.source || "";
@@ -1473,18 +1496,15 @@
           BAND_ORDER.map((b) => `<option value="${b}"${b === band ? " selected" : ""}>${esc(DISC.bandNames[b] || BAND_STANDARD[b])}</option>`).join("") + `</select>`
           : `<span class="ov-map-band" style="color:${BAND_COLOR[band]}">${esc(x.band_name || DISC.bandNames[band] || BAND_STANDARD[band])}</span>`;
         return `<div class="ov-map-row"><div><b>${esc(title)}</b>${detail ? `<small>${esc(detail)}</small>` : ""}</div>${select}</div>`;
-      }).join("") + `</div><div class="ov-map-msg hint" aria-live="polite"></div></div>` : "";
-    const reg = d.catalog_registry || go.catalog_registry || {};
-    const catalogs = Array.isArray(reg) ? reg : (reg.catalogs || []);
-    const registryCard = catalogs.length ? `<div class="dcard span2 ov-catalog"><h4>目录来源与半年检查</h4>
-      <p class="dcard-sub">${esc(reg.frequency || "每半年")}检查 · 上次 ${esc(reg.last_checked || "未记录")} · 下次 ${esc(reg.next_check || "未记录")}${reg.due ? ` · <b>${num(reg.due)} 项待检查</b>` : ""}</p>
-      <details><summary>查看 ${num(catalogs.length)} 个目录的来源、版本和日期</summary><div class="ov-cat-table">${catalogs.map((x) => {
-        const title = x.source || x.catalog || "目录", ver = x.upstream_version || x.catalog_version || "版本未记录";
-        const name = x.source_url ? `<a href="${esc(x.source_url)}" target="_blank" rel="noopener">${esc(title)}</a>` : esc(title);
-        return `<div class="ov-cat-row"><div><b>${name}</b><small>${esc(ver)}${x.note ? ` · ${esc(x.note)}` : ""}</small></div>` +
-          `<span>${x.error ? `读取失败` : `${num(x.count || 0)} 刊`}<small>检查 ${esc(x.last_checked || "—")}<br>下次 ${esc(x.next_check || "—")}</small></span></div>`;
-      }).join("")}</div></details></div>` : "";
-    return { bandRows, breakdown, mappingCard, registryCard };
+      }).join("");
+    const catalogMappings = mappings.filter((x) => String(x.mapping_id || x.id || "").startsWith("label:"));
+    const natureMappings = mappings.filter((x) => !String(x.mapping_id || x.id || "").startsWith("label:"));
+    const mappingCard = mappings.length ? `<details class="dcard span2 ov-mapping"><summary><span><b>评价规则（高级）</b><small>当前：${esc(DISC.name || "当前学科")} · ${customCount ? `另有 ${num(customCount)} 项自定义` : "使用当前预设"}</small></span><em>展开调整</em></summary>
+      <div class="ov-mapping-body"><p class="dcard-sub">修改只影响当前学科的评价与排序，不会篡改客观标签；单篇文献可在浏览或检索页单独改档。</p>
+      <h5>期刊与目录</h5><div class="ov-map-table">${mappingRows(catalogMappings)}</div>
+      <h5>其他文献性质</h5><div class="ov-map-table">${mappingRows(natureMappings)}</div>
+      <div class="ov-map-msg hint" aria-live="polite"></div></div></details>` : "";
+    return { bandRows, breakdown, mappingCard };
   }
 
   // 概览卡：四档来源评价 + 全类型/目录明细。
@@ -1515,7 +1535,7 @@
       ${discLine}
       ${DISC.notice ? `<p class="ov-disc-note">${esc(DISC.notice)}</p>` : ""}
       <p class="dcard-sub" style="margin-top:6px">权威 / 顶级 / 核心 / 普通；普通页面只显示一个客观标签</p>${distBody}</div>` +
-      detail.breakdown + detail.mappingCard + detail.registryCard;
+      detail.breakdown + detail.mappingCard;
   }
 
   // 底部：横板四步示意图（替代原密排功能点文字；一页显示、自适应宽度）
@@ -1600,7 +1620,7 @@
   }
 
   function _goDeepBrowse(filter) {
-    BR.deepFilter = filter; BR.sourceType = ""; BR.sort = "recommend";
+    BR.deepFilter = filter; BR.sourceType = ""; BR.objectiveLabel = ""; BR.sort = "recommend";
     const df = $("#bl-deep-filter"); if (df) df.value = filter;
     const tf = $("#bl-type-filter"); if (tf) tf.value = "";
     const bs = $("#bl-sort"); if (bs) bs.value = "recommend";
@@ -1694,12 +1714,24 @@
       dlint.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); goLint(); } });
     }
     const chD = $("#ov-change-disc"); if (chD) chD.addEventListener("click", (e) => { e.preventDefault(); openSettings("sec-discipline"); });  // F3：修改学科
+    $$(".ov-break-tabs button").forEach((tab) => tab.addEventListener("click", () => {
+      const kind = tab.dataset.breakKind;
+      $$(".ov-break-tabs button").forEach((x) => { const on = x === tab; x.classList.toggle("active", on); x.setAttribute("aria-selected", on ? "true" : "false"); });
+      $$(".ov-break-panel").forEach((x) => x.classList.toggle("active", x.dataset.breakPanel === kind));
+    }));
     $$(".ov-type-chip").forEach((b) => b.addEventListener("click", () => {
-      BR.sourceType = b.dataset.sourceType || "";
+      BR.sourceType = b.dataset.sourceType || ""; BR.objectiveLabel = "";
       const ts = $("#bl-type-filter"); if (ts) ts.value = BR.sourceType;
       BR.scope = { type: "all", id: null, name: b.dataset.sourceName || "全部" };
       switchTab("browse");
       if (browseLoaded) applyScope("all", null, b.dataset.sourceName || "全部", null, true);
+    }));
+    $$(".ov-label-chip").forEach((b) => b.addEventListener("click", () => {
+      BR.objectiveLabel = b.dataset.objectiveLabel || ""; BR.sourceType = "";
+      const ts = $("#bl-type-filter"); if (ts) ts.value = "";
+      BR.scope = { type: "all", id: null, name: "全部" };
+      switchTab("browse");
+      if (browseLoaded) applyScope("all", null, "全部", null, true);
     }));
     $$(".ov-map-select").forEach((sel) => sel.addEventListener("change", async () => {
       const old = sel.dataset.savedValue || sel.querySelector("option[selected]")?.value || "";
@@ -1751,7 +1783,7 @@
   // ══════════════════════════════════════════
   // scope 统一左树选择态（type: all|zotero|topic|kbcat），取代旧的 collection/topic 两两互清。
   const BR = { scope: { type: "all", id: null, name: "全部" },
-               deepFilter: "", sourceType: "", sort: "recommend", papers: [], selected: new Set(),
+               deepFilter: "", sourceType: "", objectiveLabel: "", sort: "recommend", papers: [], selected: new Set(),
                cats: [], reqSeq: 0, topicIv: null, total: 0 };   // cats：缓存 /kb/categories；reqSeq：B5 守卫；topicIv：R12 主题轮询句柄；total：W1 分页总数
 
   // 左侧收藏夹树（递归渲染，默认折叠，只展开有子节点的第一层由用户点开）
@@ -3257,12 +3289,21 @@
     });
   }
 
+  function renderBrowseActiveFilters() {
+    const box = $("#bl-active-filters"); if (!box) return;
+    const chips = [];
+    if (BR.objectiveLabel) chips.push(`<span>客观标签：<b>${esc(BR.objectiveLabel)}</b><button type="button" data-clear-filter="objective" aria-label="清除客观标签筛选">×</button></span>`);
+    box.innerHTML = chips.join("");
+    box.hidden = !chips.length;
+  }
+
   async function loadPapers() {
     const myseq = ++BR.reqSeq;   // B5：请求序号守卫，防止快速切换时旧响应覆盖新选择
     $("#bl-name").textContent = BR.scope.name;
     $("#bl-list").innerHTML = ""; $("#bl-msg").textContent = "加载中…";
     BR.selected.clear(); refreshSelUI();
     const isRec = BR.sort === "recommend";
+    renderBrowseActiveFilters();
     // 长解释收进点击浮层（.tip-i 已有 ctx 展开习惯）；title 精简为一句
     $("#bl-tip").innerHTML = isRec
       ? `⭐ 已按「值得先读」排序：优先来源评价高、较新且有全文可深读的文献
@@ -3279,6 +3320,7 @@
       // 文献状态筛选（深索 / OCR / 检索摘要，与左侧范围叠加）
       if (BR.deepFilter) params.set("deep", BR.deepFilter);
       if (BR.sourceType) params.set("source_type", BR.sourceType);
+      if (BR.objectiveLabel) params.set("objective_label", BR.objectiveLabel);
       const d = await jget("/papers?" + params.toString());
       if (myseq !== BR.reqSeq) return;   // B5：已有更新的请求发出，丢弃这次陈旧响应
       renderBrowseFilterCounts(d.filter_counts || {});
@@ -3293,10 +3335,11 @@
         // empty-cat-hint-deadlock：给出可操作路径 + 跳转按钮，而非死胡同
         $("#bl-msg").innerHTML = `该分类暂无文献。去「⭐ 全部文献」勾选后点「＋ 加入分类」，或右键文献卡 / 拖到左侧分类上归类。 <a class="ag-link" id="bl-go-all">→ 去全部文献</a>`;
         const g = $("#bl-go-all"); if (g) g.addEventListener("click", () => selectCollection(null, "全部", null));
-      } else if (BR.deepFilter || BR.sourceType) {
+      } else if (BR.deepFilter || BR.sourceType || BR.objectiveLabel) {
         const bits = [];
         if (BR.sourceType) bits.push($("#bl-type-filter").selectedOptions[0]?.dataset.label || "当前文献类型");
         if (BR.deepFilter) bits.push($("#bl-deep-filter").selectedOptions[0]?.dataset.label || "当前状态");
+        if (BR.objectiveLabel) bits.push(`客观标签：${BR.objectiveLabel}`);
         $("#bl-msg").textContent = `（没有符合“${bits.join(" · ")}”的文献）`;
       } else { $("#bl-msg").textContent = "（该分类暂无文献）"; }
       const frag = document.createDocumentFragment();
@@ -3324,6 +3367,7 @@
       else if (s.type === "kbcat") params.set("category", s.id);
       if (BR.deepFilter) params.set("deep", BR.deepFilter);
       if (BR.sourceType) params.set("source_type", BR.sourceType);
+      if (BR.objectiveLabel) params.set("objective_label", BR.objectiveLabel);
       const d = await jget("/papers?" + params.toString());
       if (myseq !== BR.reqSeq) return;             // 期间用户切了范围/排序 → 丢弃
       const fresh = new Map((d.papers || []).map((x) => [x.key, x]));
@@ -3365,6 +3409,7 @@
       else if (s.type === "kbcat") params.set("category", s.id);
       if (BR.deepFilter) params.set("deep", BR.deepFilter);
       if (BR.sourceType) params.set("source_type", BR.sourceType);
+      if (BR.objectiveLabel) params.set("objective_label", BR.objectiveLabel);
       const d = await jget("/papers?" + params.toString());
       if (myseq !== BR.reqSeq) return;
       // W1：recommend/year 排序在两次请求间可能因深索完成/改档而重排——按 key 去重防重复卡片（漏条无法前端补救，可接受）
@@ -3431,6 +3476,12 @@
   $("#bl-sort").addEventListener("change", () => { BR.sort = $("#bl-sort").value; loadPapers(); });
   $("#bl-deep-filter").addEventListener("change", () => { BR.deepFilter = $("#bl-deep-filter").value; loadPapers(); });
   $("#bl-type-filter").addEventListener("change", () => { BR.sourceType = $("#bl-type-filter").value; loadPapers(); });
+  $("#bl-active-filters").addEventListener("click", (e) => {
+    const b = e.target.closest("button[data-clear-filter]");
+    if (!b) return;
+    if (b.dataset.clearFilter === "objective") BR.objectiveLabel = "";
+    loadPapers();
+  });
   $("#bl-deep-sel").addEventListener("click", () => {
     const keys = BR.papers.filter((p) => BR.selected.has(p.key) && p.has_pdf && !p.deep && !extractBlocked(p)).map((p) => p.key);
     deepIndexKeys(keys, $("#bl-deep-sel"));

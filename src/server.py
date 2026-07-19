@@ -1420,8 +1420,6 @@ def stats_ep():
         else:
             s["grading_pending"] = True
         s["grading_overview"] = GS.overview(_load_papers(), compute=False)
-        from journal_grading import catalog_registry as CR
-        s["catalog_registry"] = CR.summary()
     except Exception as e:
         log_error("stats grading", repr(e))
     # EN-W1：附 wiki 体检摘要（契约3：{"issues":int,"checked_at":str}）。
@@ -2266,7 +2264,8 @@ def wiki_page(page_id: str):
                 g = GS.evaluate_paper(paper, compute=False)
                 row.update({k: g.get(k) for k in (
                     "source_type", "source_type_name", "objective_label", "band", "band_name",
-                    "standard_band_name", "weight", "manual", "src",
+                    "standard_band_name", "auto_band", "auto_band_name", "auto_standard_band_name",
+                    "weight", "manual", "src",
                 )})
                 row.setdefault("title", paper.get("title", ""))
                 labels[g.get("objective_label") or "文献"] += 1
@@ -2655,7 +2654,8 @@ def paper_detail(key: str):
     if g:
         result.update({k: g.get(k) for k in (
             "source_type", "source_type_name", "objective_label", "band", "band_name",
-            "standard_band_name", "internal_tier", "weight", "rank", "band_rank",
+            "standard_band_name", "auto_band", "auto_band_name", "auto_standard_band_name",
+            "internal_tier", "weight", "rank", "band_rank",
             "hit_catalogs", "explain", "manual", "src",
         )})
     for field in (
@@ -2862,7 +2862,8 @@ _SOURCE_TYPE_FILTERS = {
 def papers(collection: Optional[str] = None, topic: Optional[int] = None,
            category: Optional[str] = None, deep: Optional[str] = None,
            sort: str = "recommend", limit: int = 300, offset: int = 0,
-           since: Optional[str] = None, source_type: Optional[str] = None):
+           since: Optional[str] = None, source_type: Optional[str] = None,
+           objective_label: Optional[str] = None):
     # EN-A7：since=YYYY-MM-DD 按 ingested_at 过滤（配合 whats_new：「上次见面后新入了什么」）。
     # ingested_at 形如 "YYYY-MM-DD HH:MM:SS"，与 since 直接字典序比较即可；
     # 没有 ingested_at 的老条目（空串）在 since 模式下会被滤掉——它们本来就不是"新入库"。
@@ -2891,7 +2892,9 @@ def papers(collection: Optional[str] = None, topic: Optional[int] = None,
         "summary_yes", "summary_invalid", "summary_no",
     )}
     source_type_counts = {name: 0 for name in _SOURCE_TYPE_FILTERS}
+    objective_label_counts = {}
     wanted_types = _SOURCE_TYPE_FILTERS.get(source_type) if source_type else None
+    wanted_label = (objective_label or "").strip() or None
     if source_type and wanted_types is None:
         return JSONResponse({"detail": f"未知文献类型：{source_type}"}, status_code=400)
     for p in items:
@@ -2905,14 +2908,20 @@ def papers(collection: Optional[str] = None, topic: Optional[int] = None,
             continue
         g = GS.evaluate_paper(p, compute=False)
         actual_type = g.get("source_type") or "other"
+        actual_label = g.get("objective_label") or "来源"
         deep_match = not deep or _browse_filter_matches(
             deep, _isdeep, extract_rec, has_summary, summary_invalid)
-        if deep_match:
+        label_match = wanted_label is None or actual_label == wanted_label
+        if deep_match and label_match:
             for group, members in _SOURCE_TYPE_FILTERS.items():
                 if actual_type in members:
                     source_type_counts[group] += 1
                     break
         if wanted_types is not None and actual_type not in wanted_types:
+            continue
+        if deep_match:
+            objective_label_counts[actual_label] = objective_label_counts.get(actual_label, 0) + 1
+        if not label_match:
             continue
         filter_counts["all"] += 1
         for filter_name in ("yes", "no", "ocr", "native",
@@ -2933,7 +2942,8 @@ def papers(collection: Optional[str] = None, topic: Optional[int] = None,
             "weight_src": g.get("src"),
             **{k: g.get(k) for k in (
                 "source_type", "source_type_name", "objective_label", "band", "band_name",
-                "standard_band_name", "internal_tier", "band_rank", "hit_catalogs",
+                "standard_band_name", "auto_band", "auto_band_name", "auto_standard_band_name",
+                "internal_tier", "band_rank", "hit_catalogs",
                 "explain", "manual",
             )},
             "official_pages": p.get("official_pages", ""), "has_pdf": p.get("has_pdf", False),
@@ -2963,8 +2973,10 @@ def papers(collection: Optional[str] = None, topic: Optional[int] = None,
     return {"papers": out[off:off + limit], "total": len(out),
             "filter_counts": filter_counts,
             "source_type_counts": source_type_counts,
+            "objective_label_counts": objective_label_counts,
             "collection": collection, "topic": topic, "category": category, "deep": deep,
-            "source_type": source_type, "sort": sort, "since": since}
+            "source_type": source_type, "objective_label": wanted_label,
+            "sort": sort, "since": since}
 
 # ── 单篇手动改档（法源权重改造 2026-07-12）──────────────────
 class TierOverrideQ(BaseModel):

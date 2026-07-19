@@ -32,6 +32,17 @@ class AgentOutputTests(unittest.TestCase):
             self.assertIn("工作流闸门", agents.read_text(encoding="utf-8"))
             self.assertIn("用户只要提到“维护”", claude.read_text(encoding="utf-8"))
 
+    def test_scaffold_removes_only_obsolete_catalog_check_task(self):
+        with tempfile.TemporaryDirectory() as td, mock.patch.object(AW, "base_dir", return_value=Path(td)):
+            obsolete = AW.tasks_dir() / "文献目录半年检查"
+            keep = AW.tasks_dir() / "我的定时任务"
+            obsolete.mkdir(parents=True); keep.mkdir(parents=True)
+            (obsolete / "任务.md").write_text("旧开发任务", encoding="utf-8")
+            (keep / "任务.md").write_text("用户任务", encoding="utf-8")
+            AW.ensure_scaffold()
+            self.assertFalse(obsolete.exists())
+            self.assertTrue((keep / "任务.md").exists())
+
     def test_recursive_output_stats_include_nested_files(self):
         with tempfile.TemporaryDirectory() as td:
             topic = Path(td) / "定时任务"

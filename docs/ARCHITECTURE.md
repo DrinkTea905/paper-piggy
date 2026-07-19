@@ -365,11 +365,11 @@ server 侧 `GET /agent/tasks`（`server.py:649`）解析 `任务.md` 的 frontma
 2. **`journal_grading/`** 负责期刊客观目录与内部细分权重。
    - `catalogs/*.json` 包含中文目录、ShowJCR JCR2025 的 SSCI/Q1～Q4、SJR、正式 TSSCI 法律学门，
      以及项目内的三大刊、顶尖法评、精选外文权威和台湾个人偏好。
-   - `catalog_registry.py` 统一记录来源 URL、上游提交/版本、检查日期和下次半年检查日期。
+   - `catalog_registry.py` 保留来源 URL、上游提交/版本和检查日期，供开发维护与目录溯源；不在普通用户界面展示维护任务。
    - 引擎内部仍可保留 T1～T5 和未识别解释；对普通接口一律折叠成权威、顶级、核心、普通，不展示第五档或“待确认”档。
 3. **`grading_svc.py`** 组合非期刊预设、期刊目录和覆盖项。
-   - 书籍/书章=权威；学位论文、法源、案例、标准=顶级；报告=核心；权威机构数据=核心；其他来源按任务书预设。
-   - `law_personal_fun` 只 canonical alias 到 `law_personal`，完全复用规则、目录、缓存、权重与排序，只改变四档显示名。
+   - 书籍/书章=权威；学位论文、法源、案例、标准=顶级；标准法学预设中的报告=核心；权威机构数据=核心；其他来源按任务书预设。
+   - `law_personal` 是用户私人定制的法学增强预设，四档映射以 `PERSONAL_MAPPING_DEFAULTS` 为出厂值；`law_personal_fun` 只 canonical alias 到它，完全复用规则、目录、缓存、权重与排序，只改变四档显示名。
    - 目录/性质映射覆盖存 `data/grading_mappings.json`，按学科隔离；`overview()` 给库总览返回四档、映射和明细。
    - 期刊 memo 与全库分布仍分别存 `grading_memo.json`、`grading_dist.json`，学科切换或映射/单篇改档后自动失效重算，不要求重建索引。
 

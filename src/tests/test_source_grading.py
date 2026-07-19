@@ -66,7 +66,7 @@ class SourceGradingTests(unittest.TestCase):
             ({"itemtype": "statute", "title": "某法"}, "法源", "top"),
             ({"itemtype": "case", "title": "某案"}, "案例", "top"),
             ({"itemtype": "standard", "title": "某标准"}, "标准", "top"),
-            ({"itemtype": "report", "title": "研究报告"}, "研究报告", "core"),
+            ({"itemtype": "report", "title": "研究报告"}, "研究报告", "top"),
             ({"itemtype": "preprint", "title": "预印本"}, "预印本", "normal"),
             ({"itemtype": "conferencePaper", "title": "会议论文"}, "会议论文", "normal"),
         ]
@@ -84,8 +84,10 @@ class SourceGradingTests(unittest.TestCase):
 
         report = self.ev({"itemtype": "webpage", "title": "未成年人司法保护白皮书",
                           "institution": "最高人民法院"})
-        self.assertEqual(("report", "官方报告", "core"),
+        self.assertEqual(("report", "官方报告", "top"),
                          (report["source_type"], report["objective_label"], report["band"]))
+        standard_report = self.ev({"itemtype": "report", "title": "研究报告"}, "law")
+        self.assertEqual("core", standard_report["band"])
         law = self.ev({"itemtype": "newspaperArticle", "title": "最高人民法院关于审理某案的指导意见"})
         self.assertEqual(("legal_source", "法源", "top"),
                          (law["source_type"], law["objective_label"], law["band"]))
@@ -105,24 +107,51 @@ class SourceGradingTests(unittest.TestCase):
 
     def test_tssci_and_taiwan_priority(self):
         ordinary = self.ev({"itemtype": "journalArticle", "title": "文", "journal": "东吴法律学报"})
-        self.assertEqual(("TSSCI", "top"), (ordinary["objective_label"], ordinary["band"]))
+        self.assertEqual(("TSSCI", "authority"), (ordinary["objective_label"], ordinary["band"]))
 
         highlighted = self.ev({"itemtype": "journalArticle", "title": "文", "journal": "台湾大学法学论丛"})
         self.assertEqual("TSSCI", highlighted["objective_label"])
         self.assertEqual("authority", highlighted["band"])
 
         personal_only = self.ev({"itemtype": "journalArticle", "title": "文", "journal": "全国律师"})
-        self.assertEqual(("台湾法学", "core"),
+        self.assertEqual(("台湾法学", "top"),
                          (personal_only["objective_label"], personal_only["band"]))
+
+    def test_personal_factory_mapping_matches_user_preset(self):
+        expected = {
+            "label:SSCI Q1": "authority", "label:SSCI Q2": "authority",
+            "label:SSCI Q3": "top", "label:SSCI Q4": "top",
+            "label:CSSCI": "top", "nature:report": "top",
+            "label:SJR Q1": "core", "label:SJR Q2": "core",
+            "label:SJR Q3": "core", "label:SJR Q4": "core",
+            "label:SSCI": "core", "label:TSSCI": "authority",
+            "label:精选外文权威": "authority", "label:台湾法学": "top",
+        }
+        original = self.GS._requested_disc
+        try:
+            self.GS._requested_disc = lambda: "law_personal"
+            overview = self.GS.overview([])
+            actual = {x["mapping_id"]: x["band"] for x in overview["mappings"]}
+            self.assertEqual(expected, {k: actual[k] for k in expected})
+            self.GS._requested_disc = lambda: "law_personal_fun"
+            fun = self.GS.overview([])
+            fun_actual = {x["mapping_id"]: x["band"] for x in fun["mappings"]}
+            self.assertEqual(expected, {k: fun_actual[k] for k in expected})
+        finally:
+            self.GS._requested_disc = original
 
     def test_manual_override_changes_only_evaluation(self):
         paper = {"key": "p1", "itemtype": "journalArticle", "title": "文", "journal": "中国法学"}
         auto = self.ev(paper)
+        self.assertEqual((auto["band"], auto["band_name"]),
+                         (auto["auto_band"], auto["auto_band_name"]))
         self.SR.set_override("p1", "normal")
         manual = self.ev(paper)
         self.assertEqual(auto["objective_label"], manual["objective_label"])
         self.assertEqual("三大刊", manual["objective_label"])
         self.assertEqual("normal", manual["band"])
+        self.assertEqual(("authority", "权威"),
+                         (manual["auto_band"], manual["auto_band_name"]))
         self.assertTrue(manual["manual"])
         self.assertEqual("manual", manual["src"])
         self.SR.set_override("p1", None)

@@ -71,6 +71,33 @@ MAPPING_SPECS = [
     ("nature:conference_paper", "会议论文", "normal"), ("nature:web", "网页与其他", "normal"),
 ]
 
+# 用户本人定制的「法学（开发者增强）」出厂预设。娱乐命名学科 canonical 到
+# law_personal，因此天然共用这份配置，绝不维护第二份。
+PERSONAL_MAPPING_DEFAULTS = {
+    "label:SSCI Q1": "authority",
+    "label:SSCI Q2": "authority",
+    "label:SSCI Q3": "top",
+    "label:SSCI Q4": "top",
+    "label:CSSCI": "top",
+    "nature:report": "top",
+    "label:SJR Q1": "core",
+    "label:SJR Q2": "core",
+    "label:SJR Q3": "core",
+    "label:SJR Q4": "core",
+    "label:SSCI": "core",
+    "label:TSSCI": "authority",
+    "label:精选外文权威": "authority",
+    "label:台湾法学": "top",
+}
+
+
+def _mapping_default(mapping_id, discipline, fallback=None):
+    """返回学科预设；普通学科沿用通用说明，开发者增强使用私人定制值。"""
+    disc = canonical_discipline(discipline)
+    if disc == "law_personal" and mapping_id in PERSONAL_MAPPING_DEFAULTS:
+        return PERSONAL_MAPPING_DEFAULTS[mapping_id]
+    return fallback
+
 
 def canonical_discipline(discipline):
     """娱乐学科只作显示别名；规则、目录、权重和缓存全部复用 law_personal。"""
@@ -367,7 +394,8 @@ def _apply_mapping_override(out, requested):
         mapping_id = "nature:dataset_authority"
     else:
         mapping_id = "nature:" + source_type
-    band = overrides.get(mapping_id)
+    # 开发者增强的私人定制值本身就是出厂预设；用户显式调整仍然最后覆盖。
+    band = overrides.get(mapping_id) or _mapping_default(mapping_id, disc)
     if not band:
         return out
     result = dict(out)
@@ -401,6 +429,14 @@ def evaluate_paper(p, compute=True, discipline=None):
         out = _non_journal_result(p, source_type)
     out = _localized(out, requested)
     out = _apply_mapping_override(out, requested)
+    # 单篇改档菜单需要同时展示「当前评价」与「恢复自动后评价」。这四个字段在手动覆盖前冻结，
+    # 不改变既有评价字段，也不要求前端再发一轮请求。
+    out.update({
+        "auto_band": out.get("band"),
+        "auto_band_name": out.get("band_name"),
+        "auto_standard_band_name": out.get("standard_band_name"),
+        "auto_weight": out.get("weight"),
+    })
 
     raw_override = None
     try:
@@ -481,11 +517,16 @@ def overview(papers, compute=False):
     } for b in BAND_RANK]
     disc = canonical_discipline(requested)
     overrides = _load_mapping_overrides().get(disc) or {}
-    mappings = [{
-        "mapping_id": mid, "label": label, "default_band": default,
-        "band": overrides.get(mid, default), "band_name": band_name(overrides.get(mid, default), requested),
-        "customized": mid in overrides, "editable": True, "update_url": "/grading/mapping",
-    } for mid, label, default in MAPPING_SPECS]
+    mappings = []
+    for mid, label, generic_default in MAPPING_SPECS:
+        default = _mapping_default(mid, disc, generic_default)
+        effective = overrides.get(mid, default)
+        mappings.append({
+            "mapping_id": mid, "label": label, "default_band": default,
+            "band": effective, "band_name": band_name(effective, requested),
+            "customized": mid in overrides and overrides.get(mid) != default,
+            "editable": True, "update_url": "/grading/mapping",
+        })
     return {
         "discipline": requested, "canonical_discipline": disc,
         "discipline_name": ("法学（开发者增强：夯到拉）" if requested == "law_personal_fun"
