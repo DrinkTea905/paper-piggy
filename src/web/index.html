@@ -229,10 +229,16 @@
         </div>
         <div id="browse-view" class="library-browse-view">
           <div class="bl-bar">
-            <div class="bl-title"><span id="bl-name">全部</span><span id="bl-count" class="bl-count"></span></div>
-            <div class="bl-tools">
-              <button class="ag-refresh" data-act="refresh-browse" title="重新扫描：文献列表 / 收藏夹树计数 / 分类 / 总数（新入库或后台深索后，点这里就能看到，不用重开应用）">🔄 刷新</button>
-              <label class="bl-sel-all"><input type="checkbox" id="bl-selall" /> 全选</label>
+            <div class="bl-summary-row">
+              <div class="bl-title"><span id="bl-name">全部</span><span id="bl-count" class="bl-count"></span></div>
+              <div class="bl-batch-actions">
+                <label class="bl-sel-all"><input type="checkbox" id="bl-selall" /> 全选</label>
+                <button id="bl-addcat" class="ghost2b" disabled title="把勾选的文献加入某个「手动分类」；也可右键文献卡，或拖到左侧手动分类">＋ 加入分类</button>
+                <button id="bl-deep-sel" class="primary-btn" disabled>深索选中的未深索文献 <span id="bl-sel-n">0</span> 篇</button>
+                <button class="ag-refresh" data-act="refresh-browse" title="重新扫描文献列表、分类和计数（新入库或后台深索后使用）">🔄 刷新</button>
+              </div>
+            </div>
+            <div class="bl-filter-row" aria-label="筛选与排序">
               <select id="bl-deep-filter" title="筛选文献">
                 <option value="" data-label="全部">全部状态</option>
                 <optgroup label="深索状态">
@@ -273,11 +279,8 @@
                 <option value="recommend">综合推荐</option>
                 <option value="match" hidden>匹配程度</option>
               </select>
-              <button id="bl-addcat" class="ghost2b" disabled title="把勾选的文献加入某个「手动分类」">＋ 加入分类</button>
-              <button id="bl-deep-sel" class="primary-btn" disabled>深索选中的未深索文献 <span id="bl-sel-n">0</span> 篇</button>
             </div>
           </div>
-          <div class="bl-cat-hint">💡 想把文献归类？勾选后点「＋ 加入分类」，或右键文献卡 / 把卡片拖到左侧「手动分类」上。</div>
           <div id="bl-active-filters" class="bl-active-filters" hidden></div>
           <div id="empty-dropzone" class="empty-dropzone" hidden>
             <div class="ed-ic">📥</div>
