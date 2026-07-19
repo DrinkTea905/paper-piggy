@@ -12,8 +12,9 @@ import mcp_server as MCP  # noqa: E402
 
 
 class _Response:
-    def __init__(self, body):
+    def __init__(self, body, status_code=200):
         self.body = body
+        self.status_code = status_code
 
     def json(self):
         return self.body
@@ -40,6 +41,19 @@ class McpDeepStatusTests(unittest.TestCase):
                          "get_template_upgrade_diff", "merge_template_upgrade",
                          "submit_agent_summaries", "resolve_wiki_suggestion"} <= names)
         self.assertIn("用户只要提到“维护”", MCP.instructions())
+
+    def test_source_meta_names_bibliographic_and_retrieval_summaries_separately(self):
+        body = {
+            "key": "KEY", "title": "标题", "abstract": "题录里的摘要",
+            "bibliographic_abstract": "题录里的摘要", "retrieval_summary": "给检索用的摘要",
+            "retrieval_summary_valid": True, "cited_by_wiki": [],
+        }
+        with mock.patch.object(MCP, "ensure_up", return_value=True), \
+                mock.patch.object(MCP.requests, "get", return_value=_Response(body)):
+            text, structured = MCP.do_tool("get_source_meta", {"key": "KEY"})
+        self.assertIn("题录摘要（来自 Zotero / 文献元数据）", text)
+        self.assertIn("检索摘要（SAC，用于语义检索）", text)
+        self.assertEqual(structured["retrieval_summary"], "给检索用的摘要")
 
 
 if __name__ == "__main__":

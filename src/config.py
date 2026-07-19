@@ -21,7 +21,7 @@ SUBPROC_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0   # CREATE_NO_W
 # 全项目**只有这一处**版本字面量：发版改版本号只改这里，其余地方一律 `C.APP_VERSION` 引用
 # （踩过的坑：版本号散落在 mcp_server 的 serverInfo、打包脚本、页脚里，改一处漏三处，
 #  用户报 bug 时报的版本对不上代码）。1.0.0 = 首个公开发布版（Apache-2.0 开源）。
-APP_VERSION = "1.0.28"
+APP_VERSION = "1.0.29"
 
 APP = Path(__file__).parent                 # 源码目录；分发版 = bundle/app
 RAG = APP                                    # 兼容：引擎脚本都在项目根
@@ -237,10 +237,15 @@ TIER_BONUS = {
     "法源": 0.46, "官方报告": 0.42,   # source_rules 定档（=0.92/0.85 × WEIGHT_BONUS_SCALE，与新引擎口径对齐）
 }
 
-# ---- 期刊权重接入（journal_grading 引擎；检索期动态算，改学科即时生效、不用重建索引）----
-# blend 排序里 journal_weight∈[0,1] 的加成尺度：weight=1.0(T1)→+0.5，与旧 CLSCI 的 TIER_BONUS 齐平。
-# journal_grading 不可用/算不出时，_apply_sort 自动回退到上面的离散 TIER_BONUS。
-WEIGHT_BONUS_SCALE = 0.5
+# ---- 来源评价权重接入（journal_grading 引擎；检索期动态算，改学科即时生效、不用重建索引）----
+# API reranker 返回 0~1，本地 ONNX 返回原始 logit（尺度更宽），不能再共用一把加成尺。
+# API=0.30：由 38 条真实查询金标集确定（25 条调参、13 条盲测）；相较旧 0.50，
+# 校准组 Recall@8 从 94.4% 恢复到 100%，盲测保持 Hit@3/Recall@8=100%，nDCG 也略升。
+# 本地模式尚无同口径金标，保留既有 0.50，避免拿 API 结论硬套另一种分数尺度。
+WEIGHT_BONUS_SCALE_API = 0.30
+WEIGHT_BONUS_SCALE_LOCAL = 0.50
+# 兼容外部脚本/旧插件读取；运行时 _blend_bonus 会按后端选上面两个明确常量。
+WEIGHT_BONUS_SCALE = WEIGHT_BONUS_SCALE_LOCAL
 
 # ---- 法学检索增强（EN 系列，2026-07）----
 # EN-L3：查询侧同义词扩展开关。只扩 bm25 的**查询**词袋（索引侧一个字节不动→零重建成本；

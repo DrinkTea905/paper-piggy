@@ -2393,7 +2393,7 @@ def wiki_update_page(page_id: str, q: WikiUpdateQ):
 
 @app.get("/wiki/lint")
 def wiki_lint(min_mentions: int = 2):
-    """gist 的 Lint：孤儿页 / 过时页 / 断链 / 无来源 / 降级页 / 缺失概念页。纯读，零副作用。"""
+    """gist 的 Lint：孤儿 / 过时 / 断链 / 来源 / 降级 / 缺失概念 / 重复外壳。纯读。"""
     try:
         return {"ok": True, **W.lint(min_mentions)}
     except Exception as e:
@@ -2648,6 +2648,12 @@ def paper_detail(key: str):
     stem = p.get("stem") or T.safe_name(key)
     _isdeep = is_deep(key)
     extract_status = _extract_record(stem, legacy_deep=_isdeep)
+    summary_info = {"summary": "", "valid": False, "reason": ""}
+    try:
+        import sac as SAC
+        summary_info = SAC.inspect(stem)
+    except Exception as e:
+        log_error("paper detail retrieval summary", repr(e))
     result = {
         "key": key, "title": p.get("title", ""), "author": p.get("author", ""),
         "year": p.get("year", ""), "journal": p.get("journal", ""),
@@ -2659,7 +2665,12 @@ def paper_detail(key: str):
         "deep": _isdeep,
         "no_text": stem in _deep_no_text_keys(),
         "extract_status": extract_status,
+        # abstract 保留作兼容；新增明确命名，避免 Agent 把 Zotero 题录摘要误当成 SAC 检索摘要。
         "abstract": p.get("abstract", ""),
+        "bibliographic_abstract": p.get("abstract", ""),
+        "retrieval_summary": summary_info.get("summary", ""),
+        "retrieval_summary_valid": bool(summary_info.get("valid")),
+        "retrieval_summary_error": summary_info.get("reason", ""),
         "ingested_at": p.get("ingested_at", ""),
         "statute_status": p.get("statute_status", "") or "",
         "cited_by_wiki": cited_by_wiki,

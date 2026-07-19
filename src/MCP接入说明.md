@@ -41,10 +41,10 @@
 | `get_backlinks(key?, page_id?)` | 读 | 反查关联。给 key（论文）→ 哪些综合页引用了这篇（新增或更新这篇后，据此判断哪些页要标脏/重生）；给 page_id（综合页）→ 它引用了哪些论文、与哪些页互链、是不是孤儿页。这是 ingest 后「一篇源触及多个 wiki 页」和 lint 的起点。 |
 | `update_wiki_page(page_id, kind?, title?, content, sources?, mode=replace, links?)` | 写 | 建立或修改一个 wiki 综合页。这是维护 wiki 的主要动作。 kind 可选：answer(问答沉淀) / concept(概念) / topic(主题) / digest(资料汇编) / outline(选题框架) / **entity(实体页：作者、机构、案件、制度)** / **overview(总论页：随全库演进的核心论点)**。 mode='append' 把新内容并入既有正文（读完一篇新文献后补充某页时用），'replace' 整体重写。 护栏：不能覆盖用户人工核验过的页（会被拒绝）。每个论断带 [n] 引用，sources 填论文 key。 |
 | `set_wiki_links(page_id, links, mode=replace)` | 写 | 维护某页的交叉链接（wiki 页之间的边）。**这是把一堆孤立页面变成一张知识图的唯一途径**——没有 links，每一页都是孤儿，lint 会一直报警。只接受已存在的页 id，自动拒绝自链与断链。 |
-| `lint_wiki(min_mentions=2)` | 读 | 综合层健康体检（gist 三大操作之一）。查：孤儿页、已过时页、断链、无来源论文的页、未配 AI 模型时生成的降级页、被反复提及却没有独立页的概念。返回问题清单 + 建议动作。定期跑一次，wiki 才不会烂掉。纯读，不改任何东西。 |
+| `lint_wiki(min_mentions=2)` | 读 | 综合层健康体检（gist 三大操作之一）。查：孤儿页、已过时页、断链、无来源论文的页、未配 AI 模型时生成的降级页、被反复提及却没有独立页的概念、无效来源 key、重复标题/研究问题。返回问题清单 + 建议动作。定期跑一次，wiki 才不会烂掉。纯读，不改任何东西。 |
 | `propose_wiki_updates(key, topk=12)` | 读 | **读完一篇文献后必调**。给论文 key，返回这篇影响了哪些既有 wiki 页、每页该怎么改。 两条线索：① 直接引用它的页（结论可能被推翻）；② 讲同一主题却没引用它的页（该更新却没人知道）。 gist 的经验：一篇源常常触及 10-15 个页。拿到清单后逐页执行 update_wiki_page / mark_stale / set_wiki_links，别只改一页就收工。 |
 | `format_citation(key, pdf_page?, style=footnote)` | 读 | 把一篇文献排成规范引注（脚注格式）。写论文脚注时用：key 来自 search_localkb / list_sources，pdf_page 传检索命中的 PDF 顺序页号，我会换算成期刊印刷页码再排。返回里若有 missing_fields（题录缺字段）或 page_estimated（页码为推算）请提醒用户人工核对。注意：引领词（参见/见/转引自）由作者按引用性质自定，本工具不加。排注前建议先用 locate_quote 核对引文确实在那一页。 |
-| `get_source_meta(key)` | 读 | 取**单篇**文献的完整题录与状态：作者/年份、真实文献性质、唯一客观标签、四档评价、有无 PDF、是否深索、摘要、法条时效（statute_status）、以及哪些 wiki 综合页引用了它（cited_by_wiki）。替代『list_sources 翻找 + get_backlinks 反查』两跳——精读一篇前先调它一次拿全貌。 |
+| `get_source_meta(key)` | 读 | 取**单篇**文献的完整题录与状态：作者/年份、真实文献性质、唯一客观标签、四档评价、有无 PDF、是否深索、题录摘要（bibliographic_abstract）与 SAC 检索摘要（retrieval_summary，二者明确分开）、法条时效（statute_status）、以及哪些 wiki 综合页引用了它（cited_by_wiki）。替代『list_sources 翻找 + get_backlinks 反查』两跳——精读一篇前先调它一次拿全貌。 |
 | `similar_sources(key, topk=8)` | 读 | 给一篇 key，返回**向量近邻**的相似文献（cosine，非关键词匹配）。精读完一篇后用它扩展检索面——换角度找到 search_localkb 用词召不回的同题文献。需要语义索引（full 模式）且该篇已入向量表；不满足时会明确告知回退办法。 |
 | `whats_new(days=7, limit=20)` | 读 | 列出最近 N 天新入库的文献（按入库时间倒序）。回访一个久未碰的库时先调它，了解「上次之后进了什么新东西」。返回的 affected_pages 恒为空数组——逐篇分析太贵，请对关心的新篇配合 propose_wiki_updates / get_wiki_page 深入。 |
 | `locate_quote(quote, key?, fuzzy=True)` | 读 | **引注核对地基**：给一句引文，核对它是否真的在原文里、在第几页（PDF 页号 + 期刊印刷页码）。写脚注前、以及核查既有文稿的引注时逐条过一遍。默认模糊匹配（容忍 OCR/标点差异），exact=false 的命中请人工比对 context。给 key 则只在该篇内找，不给则全库找。 |

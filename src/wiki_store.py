@@ -493,6 +493,44 @@ def _render_md(meta, question, answer, sources):
     return "\n".join(body)
 
 
+def _strip_leading_scaffold(body, title="", question=""):
+    """剥掉调用方误放进正文开头的渲染外壳（同名 H1 / 同一研究问题）。
+
+    _render_md 会统一生成这两行。MCP 调用方若把完整 Markdown 又塞进 content，旧行为会把
+    标题和研究问题各写两遍。这里只处理**开头且内容完全相同**的外壳，不碰正文中正常的小标题。
+    """
+    lines = (body or "").strip().splitlines()
+    while lines and not lines[0].strip():
+        lines.pop(0)
+
+    title = (title or "").strip()
+    question = (question or "").strip()
+    if lines and title and lines[0].strip() == f"# {title}":
+        lines.pop(0)
+        while lines and not lines[0].strip():
+            lines.pop(0)
+
+    if lines and question:
+        qline = lines[0].strip()
+        if re.fullmatch(r">\s*\*\*研究问题\*\*[：:]\s*" + re.escape(question), qline):
+            lines.pop(0)
+            while lines and not lines[0].strip():
+                lines.pop(0)
+    return "\n".join(lines).strip()
+
+
+def _leading_scaffold_count(body, title="", question=""):
+    """返回正文开头连续出现了几层同名渲染外壳；正常落盘页应恰好为 1。"""
+    rest, count = (body or "").strip(), 0
+    while rest:
+        stripped = _strip_leading_scaffold(rest, title, question)
+        if stripped == rest:
+            break
+        count += 1
+        rest = stripped
+    return count
+
+
 def _plain_body(answer, sources):
     """给 reranker/嵌入用的纯文本（答案 + 来源引用），比 markdown 更利于语义匹配。"""
     src = " ".join(s.get("citation", "") for s in sources)
@@ -594,6 +632,37 @@ def _resolve_citation(key, fallback=""):
     return fallback or key
 
 
+def _paper_keys():
+    """取当前文献目录中的全部 key；优先内存，冷态回退 papers.jsonl。纯读。"""
+    try:
+        import retriever as R
+        papers = R.M.get("papers") or {}
+        if papers:
+            return set(papers)
+    except Exception:
+        pass
+
+    keys = set()
+    try:
+        if C.PAPERS_JSONL.exists():
+            with C.PAPERS_JSONL.open("r", encoding="utf-8") as f:
+                for line in f:
+                    try:
+                        key = str((json.loads(line) or {}).get("key") or "").strip()
+                    except Exception:
+                        continue
+                    if key:
+                        keys.add(key)
+    except Exception:
+        pass
+    return keys
+
+
+def _source_suggestions(key, known_keys):
+    """给错一位的 Zotero key 提示最接近候选；不自动替换，避免把引用指错论文。"""
+    return difflib.get_close_matches(key, sorted(known_keys), n=3, cutoff=0.55)
+
+
 # ═══ EN-W4：来源相关性门槛——低相关命中不配进 provenance ═══════════════
 # 真实案例：digest-92820857 的 sources 混入了测试文件和离题文献——检索召回的长尾命中
 # 被原样落成「本页所依据的论文」，读者据此回溯就会扑空。落盘前按相对分过滤。
@@ -633,8 +702,9 @@ def filter_provenance(hits, min_keep=2):
 def _norm_sources(sources):
     """规整 sources：去重 key，服务端权威解析页级引用（客户端 citation 作兜底）。
     EN-W4：先过相关性门槛——answer/digest 等页沉淀时，调用方若在 sources 里带了检索 score，
-    低于「最高分 - margin」的离题命中在此被剔除，不落成 provenance。"""
-    seen, out = set(), []
+    低于「最高分 - margin」的离题命中在此被剔除，不落成 provenance。
+    若对话检索命中了既有 wiki 页，则把该页展开为它的原始论文来源；frontmatter 仍只落论文 key。"""
+    seen, pending = set(), []
     for s in filter_provenance(sources):
         if isinstance(s, str):
             s = {"key": s, "citation": ""}
@@ -642,8 +712,52 @@ def _norm_sources(sources):
         if not k or k in seen:
             continue
         seen.add(k)
-        out.append({"key": k, "citation": _resolve_citation(k, s.get("citation", ""))})
-    return out
+        pending.append((k, s.get("citation", "")))
+
+    if not pending:
+        return []
+    known = _paper_keys()
+    if not known:
+        raise ValueError("文献目录尚未加载，无法校验来源 key；整页未写入，请稍后重试")
+    expanded, source_pages_without_provenance, wiki_map = [], [], None
+    for key, citation in pending:
+        if key in known:
+            expanded.append((key, citation))
+            continue
+        if wiki_map is None:
+            wiki_map = index_map()
+        wiki_page = wiki_map.get(key)
+        if not wiki_page:
+            expanded.append((key, citation))
+            continue
+        page_sources = wiki_page.get("sources") or []
+        if not page_sources:
+            source_pages_without_provenance.append(key)
+            continue
+        for source in page_sources:
+            skey = str(source.get("key") if isinstance(source, dict) else source or "").strip()
+            scite = source.get("citation", "") if isinstance(source, dict) else ""
+            if skey:
+                expanded.append((skey, scite))
+
+    if source_pages_without_provenance:
+        raise ValueError("作为来源的综合页没有论文 provenance：" + "、".join(source_pages_without_provenance) +
+                         "。整页未写入，请先给这些综合页补来源")
+    # wiki 展开后再去重，避免同一篇论文经多个综合页重复出现。
+    pending, seen = [], set()
+    for key, citation in expanded:
+        if key not in seen:
+            seen.add(key)
+            pending.append((key, citation))
+    invalid = [(k, _source_suggestions(k, known)) for k, _ in pending if k not in known]
+    if invalid:
+        details = []
+        for key, suggestions in invalid:
+            hint = f"（可能是 {'、'.join(suggestions)}）" if suggestions else ""
+            details.append(key + hint)
+        raise ValueError("来源 key 不存在：" + "；".join(details) + "。整页未写入，请先核对 key")
+
+    return [{"key": k, "citation": _resolve_citation(k, citation)} for k, citation in pending]
 
 
 def _persist_page(page_id, kind, title, subject, body, norm_sources, generated_by="", by_agent=False):
@@ -665,9 +779,13 @@ def _persist_page(page_id, kind, title, subject, body, norm_sources, generated_b
             raise WikiWriteDenied(
                 f"「{existing.get('title') or page_id}」已经人工核验，agent 不得覆盖。"
                 f"若它被新文献推翻，请用 mark_stale 标脏并写清理由。")
+        final_title = (title or _title_from(subject, body)).strip()
+        body = _strip_leading_scaffold(body, final_title, subject)
+        if not body:
+            raise ValueError("正文只有重复的标题/研究问题，拒绝写入空页面")
         meta = {
             "id": page_id, "kind": kind,
-            "title": (title or _title_from(subject, body)).strip(),
+            "title": final_title,
             "subject": subject, "sources": norm_sources,
             "generated_at": _now(), "generated_by": generated_by or "",
             "stale": False, "by_agent": bool(by_agent),
@@ -1213,7 +1331,7 @@ def propose_updates(source_key, topk=12):
 def lint(min_mentions=2):
     """gist 三大操作之一：wiki 健康体检。纯读（index.json + 各页 .md），不碰检索、不调 LLM、零副作用。
 
-    查七类问题：
+    查九类问题：
       orphan           孤儿页：既不链出也无人链入（gist: "orphan pages with no inbound links"）
       stale            已被标脏、等待重生的页
       broken_link      frontmatter links 指向了不存在的页 id
@@ -1222,6 +1340,8 @@ def lint(min_mentions=2):
       no_sources       没有任何来源论文的页（无 provenance，最可疑）
       degraded         未配 AI 模型 / 生成失败的降级页（内容只是片段清单）
       missing_concept  被 >=min_mentions 个页在标题里提到、却没有自己独立页的概念
+      invalid_source   来源 key 在当前文献目录中不存在（通常是抄错一位）
+      duplicate_scaffold 页面开头重复出现同名标题 / 研究问题外壳
 
     返回结构化结果 + 建议动作，供 agent 逐条处理，或在 UI 里展示。
     刻意**不做矛盾检测**：那需要 LLM 判断，且规约明确「矛盾只作未核实提示，不落成 wiki 断言」。"""
@@ -1238,7 +1358,8 @@ def lint(min_mentions=2):
             else:
                 broken.append({"page_id": p["id"], "title": p.get("title", ""), "dangling": t})
 
-    orphan, stale_pages, no_src, degraded_pages = [], [], [], []
+    orphan, stale_pages, no_src, degraded_pages, invalid_sources = [], [], [], [], []
+    known_keys = _paper_keys()
     for p in pages:
         pid, brief = p["id"], {"id": p["id"], "title": p.get("title", ""), "kind": p.get("kind", "")}
         if not (p.get("links") or []) and not inbound[pid]:
@@ -1249,6 +1370,12 @@ def lint(min_mentions=2):
             no_src.append(brief)
         if is_degraded(p.get("generated_by", "")):
             degraded_pages.append({**brief, "reason": degraded_reason(p.get("generated_by", ""))})
+        if known_keys:
+            for source in (p.get("sources") or []):
+                key = str(source.get("key") if isinstance(source, dict) else source or "").strip()
+                if key and key not in known_keys:
+                    invalid_sources.append({**brief, "key": key,
+                                            "suggestions": _source_suggestions(key, known_keys)})
 
     # 被多页标题提及、却无独立页的概念：用已有 concept 页的 slug 反查
     have = {p.get("subject") or p.get("title", "") for p in pages if p.get("kind") == "concept"}
@@ -1266,7 +1393,7 @@ def lint(min_mentions=2):
 
     # EN-W5：正文断链——正则解析 frontmatter 之外的正文里的 [[page-id]] / [[page-id|文字]]，
     # 目标不在 index 里即断链。同页同目标只报一次（一页里重复引同一个坏链没必要刷屏）。
-    body_broken = []
+    body_broken, duplicate_scaffold = [], []
     for p in pages:
         path = page_path(p["id"], p.get("kind", "answer"))
         if not path.exists():
@@ -1276,6 +1403,9 @@ def lint(min_mentions=2):
         except Exception:
             continue
         body_txt = re.sub(r"^---[\s\S]*?\n---\n?", "", txt)      # 剥掉 frontmatter，只查正文
+        if _leading_scaffold_count(body_txt, p.get("title", ""), p.get("subject", "")) > 1:
+            duplicate_scaffold.append({"id": p["id"], "title": p.get("title", ""),
+                                       "kind": p.get("kind", "")})
         seen_t = set()
         for m in re.finditer(r"\[\[([^\[\]|\n]+?)(?:\|[^\[\]\n]*)?\]\]", body_txt):
             target = m.group(1).strip()
@@ -1286,7 +1416,8 @@ def lint(min_mentions=2):
 
     issues = {"orphan": orphan, "stale": stale_pages, "broken_link": broken,
               "body_broken_link": body_broken,
-              "no_sources": no_src, "degraded": degraded_pages, "missing_concept": missing_concept}
+              "no_sources": no_src, "degraded": degraded_pages, "missing_concept": missing_concept,
+              "invalid_source": invalid_sources, "duplicate_scaffold": duplicate_scaffold}
     total = sum(len(v) for v in issues.values())
     return {
         "n_pages": len(pages), "n_issues": total,
@@ -1318,8 +1449,14 @@ def _lint_suggestions(issues):
     if issues["missing_concept"]:
         names = "、".join(x["concept"] for x in issues["missing_concept"][:3])
         s.append(f"这些概念被反复提及却没有独立页：{names}…… 考虑各建一个 concept 页。")
+    if issues.get("invalid_source"):
+        s.append(f"{len(issues['invalid_source'])} 个来源 key 在文献目录中不存在："
+                 f"按候选提示核对真实 key，再用 update_wiki_page 重写该页来源；不要凭猜测替换。")
+    if issues.get("duplicate_scaffold"):
+        s.append(f"{len(issues['duplicate_scaffold'])} 个页重复写了标题或研究问题："
+                 f"用 update_wiki_page(mode='replace') 保留一份正文外壳后重写。")
     if not s:
-        s.append("综合层健康：无孤儿页、无过时页、无断链、无缺 provenance 的页。")
+        s.append("综合层健康：无孤儿页、无过时页、无断链、无缺失/无效来源、无重复标题或研究问题。")
     return s
 
 

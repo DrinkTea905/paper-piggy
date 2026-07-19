@@ -60,7 +60,7 @@ def _wiki_todo_note(prefix="\n\n"):
     if n_sugg:
         bits.append(f"{n_sugg} 篇新文献待并入综合层（调 pending_wiki_updates 看受影响页）")
     if n_lint:
-        bits.append(f"{n_lint} 项综合层体检问题（调 lint_wiki 看孤儿/过时/断链页）")
+        bits.append(f"{n_lint} 项综合层体检问题（调 lint_wiki 看孤儿/过时/断链/来源错误/重复外壳）")
     return f"{prefix}⚠ wiki 维护待办：" + "；".join(bits) + "。主动维护是高优先级，别等用户开口。"
 
 
@@ -182,7 +182,7 @@ def _workspace_text():
         "  —— 你替用户写的成品放这里，**每个主题一个子文件夹**，附一个 README（用途/引注规范/与其他材料的关系）。\n\n"
         "主动维护（优先级高，别等用户开口）：\n"
         "· 深索一批文献后 / 想维护 wiki 时，先调 pending_wiki_updates 拿受影响页清单，再逐页判断标脏或重写。\n"
-        "· 定期调 lint_wiki 给综合层做体检（孤儿页/过时页/断链/无来源页/该有独立页的概念），照清单修。\n"
+        "· 定期调 lint_wiki 给综合层做体检（孤儿页/过时页/断链/来源错误/重复外壳/缺失概念），照清单修。\n"
         "· 接入本库、或每次检索/深索后，工具输出尾部若出现「⚠ wiki 维护待办」，就顺手把它清掉——别累积。\n"
         "· 跑完定时任务后，依检索到的时效内容更新相关综合页——时效资料是 wiki 的活水。\n"
         "· 产出交付物前，和用户确认交付形态（篇幅/引注/要不要 .docx），可参照交付模板。\n"
@@ -560,7 +560,8 @@ TOOLS = [
     {
         "name": "lint_wiki",
         "description": "综合层健康体检（gist 三大操作之一）。查：孤儿页、已过时页、断链、无来源论文的页、"
-                       "未配 AI 模型时生成的降级页、被反复提及却没有独立页的概念。返回问题清单 + 建议动作。"
+                       "未配 AI 模型时生成的降级页、被反复提及却没有独立页的概念、无效来源 key、重复标题/研究问题。"
+                       "返回问题清单 + 建议动作。"
                        "定期跑一次，wiki 才不会烂掉。纯读，不改任何东西。",
         "inputSchema": {
             "type": "object",
@@ -602,7 +603,8 @@ TOOLS = [
     },
     {
         "name": "get_source_meta",
-            "description": "取**单篇**文献的完整题录与状态：作者/年份、真实文献性质、唯一客观标签、四档评价、有无 PDF、是否深索、摘要、"
+            "description": "取**单篇**文献的完整题录与状态：作者/年份、真实文献性质、唯一客观标签、四档评价、有无 PDF、是否深索、"
+                       "题录摘要（bibliographic_abstract）与 SAC 检索摘要（retrieval_summary，二者明确分开）、"
                        "法条时效（statute_status）、以及哪些 wiki 综合页引用了它（cited_by_wiki）。"
                        "替代『list_sources 翻找 + get_backlinks 反查』两跳——精读一篇前先调它一次拿全貌。",
         "inputSchema": {"type": "object", "properties": {
@@ -1277,15 +1279,17 @@ def do_tool(name, args):
             return "体检失败：" + _err_of(resp)
         r = resp.json()
         if r.get("healthy"):
-            return f"综合层健康（共 {r['n_pages']} 页）：无孤儿页、无过时页、无断链、无缺 provenance 的页。"
+            return (f"综合层健康（共 {r['n_pages']} 页）：无孤儿页、无过时页、无断链、"
+                    "无缺失/无效来源、无重复标题或研究问题。")
         iss = r["issues"]
         out = [f"综合层体检：{r['n_pages']} 页，发现 {r['n_issues']} 个问题。\n"]
-        # body_broken_link（正文 [[wikilink]] 断链）是后端 lint 必返回的第 7 类；旧字典漏配它，
-        # 一旦任何页正文有断链（agent 先引后建是常态）就 KeyError，整份体检报告崩掉。
+        # 每一类都必须有稳定标签；旧字典曾漏配 body_broken_link，一有正文断链整份报告就崩掉。
         label = {"orphan": "孤儿页（无任何互链）", "stale": "已标过时", "broken_link": "断链",
                  "body_broken_link": "正文互链指向不存在的页",
                  "no_sources": "无来源论文", "degraded": "降级页（未配 AI 模型时生成）",
-                 "missing_concept": "被反复提及却无独立页的概念"}
+                 "missing_concept": "被反复提及却无独立页的概念",
+                 "invalid_source": "来源 key 在文献目录中不存在",
+                 "duplicate_scaffold": "重复标题或研究问题"}
         for k, items in iss.items():
             if not items:
                 continue
@@ -1295,6 +1299,9 @@ def do_tool(name, args):
                     out.append(f"   - [{x['page_id']}] {x['title']} → 指向不存在的 {x['dangling']}")
                 elif k == "missing_concept":
                     out.append(f"   - 「{x['concept']}」被 {x['mentioned_in']} 个页提及")
+                elif k == "invalid_source":
+                    hint = "（可能是 " + "、".join(x.get("suggestions") or []) + "）" if x.get("suggestions") else ""
+                    out.append(f"   - [{x['id']}] {x['title']} → {x['key']}{hint}")
                 else:
                     extra = f"（{x['reason']}）" if x.get("reason") else ""
                     out.append(f"   - [{x['id']}] {x['title']}{extra}")
@@ -1441,8 +1448,15 @@ def do_tool(name, args):
                f"（{evaluation or p.get('itemtype', '')}）",
                f"官方页码：{p.get('official_pages') or '未知'}　收藏夹：{'、'.join(p.get('collections') or []) or '（无）'}",
                f"状态：{'；'.join(flags)}　入库：{str(p.get('ingested_at', ''))[:10]}"]
-        if p.get("abstract"):
-            out.append("摘要：" + str(p["abstract"])[:500])
+        if p.get("bibliographic_abstract") or p.get("abstract"):
+            out.append("题录摘要（来自 Zotero / 文献元数据）：" +
+                       str(p.get("bibliographic_abstract") or p.get("abstract"))[:500])
+        if p.get("retrieval_summary_valid"):
+            out.append("检索摘要（SAC，用于语义检索）：" + str(p.get("retrieval_summary") or "")[:500])
+        elif p.get("retrieval_summary_error"):
+            out.append("⚠ 检索摘要（SAC）异常：" + str(p["retrieval_summary_error"]))
+        else:
+            out.append("检索摘要（SAC）：尚未生成")
         cb = p.get("cited_by_wiki") or []
         if cb:
             out.append(f"被 {len(cb)} 个综合页引用：" + "、".join(f"[{w.get('id')}] {w.get('title', '')}" for w in cb[:10]))

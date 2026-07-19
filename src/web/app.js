@@ -2683,11 +2683,13 @@
     }
   }
 
-  // ── 体检（lint）：孤儿页 / 过时页 / 断链 / 无来源页 / 降级页 / 缺失概念页 ──
+  // ── 体检（lint）：孤儿 / 过时 / 断链 / 来源 / 降级 / 缺失概念 / 重复外壳 ──
   const LINT_LABEL = { orphan: "孤儿页（没有任何互链）", stale: "已标记过时", broken_link: "断链",
                        body_broken_link: "正文链接指向不存在的页",   // EN-F4：正文 [[wikilink]] 的断链
                        no_sources: "没有来源论文", degraded: "降级页（未配 AI 模型时生成）",
-                       missing_concept: "被反复提及、却没有独立页的概念" };
+                       missing_concept: "被反复提及、却没有独立页的概念",
+                       invalid_source: "来源指向不存在的文献",
+                       duplicate_scaffold: "重复标题或研究问题" };
   // 体检建议的大白话版（给法学用户看；后端 suggestions 带工具名是给 agent 的，这里不用）
   const LINT_FIX = {
     orphan: (n) => `有 ${n} 页没跟其它综述连起来（成了"孤岛"）。可以让 AI 把它们和相关的页互相关联，以后顺着就能查到；或者确认它们本来就该单独放。`,
@@ -2698,6 +2700,8 @@
     no_sources: (n) => `有 ${n} 页没标是根据哪些文献写的。没有出处的综述不可靠——让 AI 补上来源，或者干脆删掉。`,
     degraded: (n) => `有 ${n} 页是没配 AI 模型时生成的，其实只是原文片段的清单、不是真正的综述。配好 AI 模型后重新生成一下。`,
     missing_concept: (n, items) => `有些概念被好几页反复提到、却没有自己的独立页（比如${(items || []).slice(0, 3).map((x) => "「" + x.concept + "」").join("、")}）。可以让 AI 各写一页，查起来更方便。`,
+    invalid_source: (n) => `有 ${n} 个来源编号在当前文献库里不存在，通常是复制时错了一位。让 AI 按候选编号回查原文后修正，不能凭猜测替换。`,
+    duplicate_scaffold: (n) => `有 ${n} 页把标题或研究问题重复写了两遍。让 AI 保留一份正文外壳后重写即可。`,
   };
   async function runLint() {
     const box = $("#wk-lint-panel"), btn = $("#wk-lint");
@@ -2710,10 +2714,10 @@
       const r = await jget("/wiki/lint");
       // 大白话：为什么要维护、维护了有什么用（法学用户看得懂）
       const why = `<div class="lint-why">📖 <b>综述库为什么要"维护"？</b>你和 AI 生成的每页综述，会随着你不断加新文献而<b>慢慢过时、或彼此脱节</b>。
-        定期体检能揪出：没跟其它页连起来的<b>孤立页</b>、被新文献推翻的<b>过时页</b>、指向已删页的<b>断链</b>、没有来源出处的<b>可疑页</b>。
+        定期体检能揪出：没跟其它页连起来的<b>孤立页</b>、被新文献推翻的<b>过时页</b>、指向已删页的<b>断链</b>、没有或写错来源的<b>可疑页</b>，以及重复的标题/研究问题。
         把这些理顺，你的知识库才会<b>越用越准、越查越省事</b>，而不是越堆越乱。这些整理活儿都可以交给 AI 代劳。</div>`;
       if (r.healthy) {
-        box.innerHTML = why + `<div class="lint-ok">✅ 综述库很健康：${r.n_pages} 页，没有孤立页、过时页、断链，来源齐全，暂时不用维护。</div>`;
+        box.innerHTML = why + `<div class="lint-ok">✅ 综述库很健康：${r.n_pages} 页，没有孤立页、过时页、断链，来源齐全有效，标题也没有重复，暂时不用维护。</div>`;
         return;
       }
       let html = why + `<div class="lint-h">🩺 体检结果：共 ${r.n_pages} 页，发现 <b>${r.n_issues}</b> 处可以理顺的地方</div>`;
@@ -2724,6 +2728,7 @@
           // EN-F4：body_broken_link 结构同 broken_link（page_id/title/dangling），chip 点开出问题的那页
           if (k === "broken_link" || k === "body_broken_link") return `<span class="lint-chip" data-id="${esc(x.page_id)}">${esc(x.title || x.page_id)} → ${esc(x.dangling)}</span>`;
           if (k === "missing_concept") return `<span class="lint-chip plain">${esc(x.concept)}（被 ${x.mentioned_in} 页提及）</span>`;
+          if (k === "invalid_source") return `<span class="lint-chip" data-id="${esc(x.id)}">${esc(x.title || x.id)} → ${esc(x.key)}${(x.suggestions || []).length ? `（可能是 ${esc(x.suggestions.join("、"))}）` : ""}</span>`;
           return `<span class="lint-chip" data-id="${esc(x.id)}">${esc(x.title || x.id)}</span>`;
         }).join("");
         if (items.length > 10) html += `<span class="lint-chip plain">…… 还有 ${items.length - 10} 个</span>`;

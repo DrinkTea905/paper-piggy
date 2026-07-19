@@ -868,7 +868,15 @@ def _blend_bonus(x, lex):
     scale = 3 if lex else 1
     wr = x[3] if len(x) > 3 else None
     if wr and wr.get("weight") is not None:
-        b = wr["weight"] * C.WEIGHT_BONUS_SCALE * scale
+        # API reranker 是 0~1，本地 ONNX 是原始 logit；两种尺度共用 0.50 会让 API 来源档次
+        # 压过正文相关性。API 的 0.30 由 25+13 条真实查询校准/盲测，本地保留旧值。
+        try:
+            import settings as S
+            bonus_scale = (getattr(C, "WEIGHT_BONUS_SCALE_API", 0.30) if S.is_api()
+                           else getattr(C, "WEIGHT_BONUS_SCALE_LOCAL", C.WEIGHT_BONUS_SCALE))
+        except Exception:
+            bonus_scale = C.WEIGHT_BONUS_SCALE
+        b = wr["weight"] * bonus_scale * scale
     else:
         b = C.TIER_BONUS.get(x[2], 0.0) * scale
     return b

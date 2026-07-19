@@ -64,6 +64,16 @@ def validate_summary(summary):
     if useful < 30 or (visible and question_marks / len(visible) > 0.20):
         return False, "有效文字过少，疑似乱码"
 
+    punctuation_run = re.search(r"[，,。；;：:！？!?、]{3,}", s)
+    if punctuation_run:
+        return False, f"标点“{punctuation_run.group(0)}”异常连续，疑似生成损坏"
+
+    # 保守抓取相邻重复的中文短语：重要性重要性 / 测量方法，测量方法 / 研究设计，设计了。
+    # 只允许空白或标点隔开，正常的“问卷设计、访谈设计”不会命中。
+    chinese_repeat = re.search(r"([\u3400-\u9fff]{2,8})[\s，,、；;：:]*\1", s)
+    if chinese_repeat:
+        return False, f"中文短语“{chinese_repeat.group(1)}”连续重复，疑似生成损坏"
+
     words = re.findall(r"[A-Za-z]+|\d+", s.lower())
     run = 1
     for idx in range(1, len(words)):
