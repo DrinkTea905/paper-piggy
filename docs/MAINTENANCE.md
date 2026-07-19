@@ -46,7 +46,7 @@
 
 | 你改了 | 必须同步 | 校验 |
 |---|---|---|
-| `WIKI_MD_SEED`(:33) —— wiki 页面规约种子 | ① **必须 bump `SCHEMA_VERSION`**(:31，现在是 `"v2"`) ② 把当前版和所有旧版 normalized-sha1 留在 `_FACTORY_HASHES`(:172) ③ `MCP接入说明.md` 的「信任模型」段 | ✅ check_guides ④（schema + 当前 hash；③仍靠人） |
+| `WIKI_MD_SEED` —— wiki 页面规约种子 | ① **必须 bump `SCHEMA_VERSION`**（当前值以 `wiki_store.py` 为准） ② 把当前版和所有旧版 normalized-sha1 留在 `_FACTORY_HASHES` ③ `MCP接入说明.md` 的「信任模型」段 | ✅ check_guides ④（schema + 当前 hash；③仍靠人） |
 
 > ⚠️ **忘了 bump `SCHEMA_VERSION` 会静默让老库永远收到过期规约。** 这是本项目最阴的一个坑：
 > 不报错、不告警，只是所有老用户的 wiki 规约永远停在旧版。

@@ -2191,6 +2191,56 @@ def wiki_list(offset: int = 0, limit: int = 0):
     out = pages[off:off + lim] if lim > 0 else pages[off:]
     return {"pages": out, "total": total}
 
+
+class WikiThemeQ(BaseModel):
+    name: str = ""
+
+
+class WikiThemeRenameQ(BaseModel):
+    old_name: str
+    new_name: str
+
+
+@app.get("/wiki/themes")
+def wiki_themes():
+    """综述主题书架：自动分类计数 + 用户自定义主题。"""
+    return W.list_themes()
+
+
+@app.post("/wiki/themes")
+def wiki_theme_create(q: WikiThemeQ):
+    try:
+        return {"ok": True, **W.create_theme(q.name)}
+    except ValueError as e:
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
+
+
+@app.post("/wiki/themes/rename")
+def wiki_theme_rename(q: WikiThemeRenameQ):
+    try:
+        return {"ok": True, **W.rename_theme(q.old_name, q.new_name)}
+    except ValueError as e:
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
+
+
+@app.delete("/wiki/themes/{name}")
+def wiki_theme_delete(name: str):
+    try:
+        return {"ok": True, **W.delete_theme(name)}
+    except ValueError as e:
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
+
+
+@app.post("/wiki/page/{page_id}/theme")
+def wiki_page_theme(page_id: str, q: WikiThemeQ):
+    try:
+        return {"ok": True, **W.set_page_theme(page_id, q.name)}
+    except ValueError as e:
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=404)
+    except Exception as e:
+        log_error("wiki/theme", repr(e), traceback.format_exc())
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
+
 @app.get("/wiki/timeline")
 def wiki_timeline(limit: int = 100):
     """EN-W3：全库时间线（契约1）。git log 解析优先，无 git 退 .history 快照目录。

@@ -133,7 +133,7 @@
           <div class="ag-ch-n">5</div>
           <div class="ag-ch-c">
             <h3>第四步 · 养库（越用越厚）</h3>
-            <p class="ag-note">好答案不该说完就忘。它能把结论沉淀成<b>「📖 综述库」</b>——带页码引用、可复用、下次直接命中；还能记住你的偏好与进度（<b>记忆</b>），甚至定期帮你搜集动态（<b>定时任务</b>）。喂得越勤，小猪越懂你。</p>
+            <p class="ag-note">好答案不该说完就忘。它能把结论沉淀成<b>「📖 综述库」</b>——带页码引用、可复用、下次直接命中。综述会按来源自动归入研究主题，也能新建自己的主题手动整理；还能记住你的偏好与进度（<b>记忆</b>），甚至定期帮你搜集动态（<b>定时任务</b>）。喂得越勤，小猪越懂你。</p>
           </div>
         </section>
 
@@ -306,10 +306,18 @@
   <!-- wiki 页面板（综合页书架：新建综述 + 列表 + 打开/重生/删除） -->
   <main id="panel-wiki" class="panel" data-panel="wiki" hidden>
     <div class="wiki-page">
+      <div class="wk-page-head">
+        <div>
+          <h2>综述库</h2>
+          <p>把积累下来的综合按研究主题整理，像翻自己的专题书架。</p>
+        </div>
+        <button id="wk-gen-toggle" class="primary-btn" title="手动生成一页概念/主题综述">＋ 生成综述</button>
+      </div>
       <!-- EN-F2：建议横幅——新深索的文献可能影响已有综述页（/wiki/suggestions），由 JS 填充，空则不渲染 -->
       <div id="wk-suggest" class="wk-suggest" hidden></div>
       <div class="wk-bar">
         <div class="wk-tools">
+          <label class="wk-search"><span aria-hidden="true">⌕</span><input id="wk-search" type="search" placeholder="搜索综述标题" /></label>
           <select id="wk-kind" title="按类型筛选">
             <option value="">全部类型</option>
             <option value="answer">📝 对话沉淀</option>
@@ -320,6 +328,11 @@
             <option value="entity">👤 实体页</option>
             <option value="overview">🧭 总论页</option>
           </select>
+          <select id="wk-sort" title="综述排序">
+            <option value="new">最近更新</option>
+            <option value="title">标题 A–Z</option>
+            <option value="sources">来源数量</option>
+          </select>
           <label class="wk-agent-only"><input type="checkbox" id="wk-agent" /> 只看 🤖 未核验</label>
           <span class="wk-tools-sp"></span>
           <button class="ag-refresh" data-act="refresh-wiki" title="重新加载综述列表 + 建议横幅（外部 AI 助手新建/改写综述后，点这里就能看到，不用重开应用）">🔄 刷新</button>
@@ -327,7 +340,6 @@
           <!-- EN-F3：时间线——谁在什么时候建/改了哪页（git log 优先，退快照记录） -->
           <button id="wk-timeline" class="ghost" title="综述库演化时间线：每一页在什么时候被谁（🤖/👤）建立或修改">🕘 时间线</button>
           <button id="wk-view" class="ghost" title="切换列表 / 关系图">🕸 关系图</button>
-          <button id="wk-gen-toggle" class="ghost" title="手动生成一页概念/主题综述">＋ 生成综述</button>
         </div>
       </div>
       <!-- 生成综述：默认收起。推荐用 Agent 生成（效果更好），这里只作网页端兜底入口 -->
@@ -342,19 +354,32 @@
       </div>
       <div id="wk-msg" class="msg"></div>
       <div id="wk-lint-panel" class="wk-lint-panel" hidden></div>
-      <div id="wk-list" class="wk-list"></div>
-      <!-- 关系图：节点=综述页，边=互链。用户不装 Obsidian，图就长在应用里 -->
-      <div id="wk-graph" class="wk-graph" hidden>
-        <div class="wk-graph-bar">
-          <span id="wk-graph-stat" class="hint"></span>
-          <span class="wk-graph-legend">
-            <i class="lg lg-answer"></i>对话沉淀 <i class="lg lg-concept"></i>概念
-            <i class="lg lg-entity"></i>实体 <i class="lg lg-overview"></i>总论
-            <i class="lg lg-orphan"></i>孤儿页
-          </span>
-        </div>
-        <svg id="wk-graph-svg" role="img" aria-label="综述页关系图"></svg>
-        <div id="wk-graph-empty" class="wk-empty" hidden></div>
+      <div class="wk-library">
+        <aside class="wk-themes-pane" aria-label="综述主题">
+          <div class="wk-themes-head"><span>研究主题</span><button id="wk-theme-new" title="新建自定义主题">＋</button></div>
+          <div id="wk-themes" class="wk-themes"></div>
+          <p class="wk-themes-tip">来源相近的综述会自动归类；你也可以新建主题并手动固定。</p>
+        </aside>
+        <section class="wk-content-pane">
+          <div class="wk-list-head">
+            <div><h3 id="wk-current-theme">全部综述</h3><span id="wk-count" class="hint"></span></div>
+            <div id="wk-theme-actions" class="wk-theme-actions"></div>
+          </div>
+          <div id="wk-list" class="wk-list"></div>
+          <!-- 关系图：节点=综述页，边=互链。用户不装 Obsidian，图就长在应用里 -->
+          <div id="wk-graph" class="wk-graph" hidden>
+            <div class="wk-graph-bar">
+              <span id="wk-graph-stat" class="hint"></span>
+              <span class="wk-graph-legend">
+                <i class="lg lg-answer"></i>对话沉淀 <i class="lg lg-concept"></i>概念
+                <i class="lg lg-entity"></i>实体 <i class="lg lg-overview"></i>总论
+                <i class="lg lg-orphan"></i>孤儿页
+              </span>
+            </div>
+            <svg id="wk-graph-svg" role="img" aria-label="综述页关系图"></svg>
+            <div id="wk-graph-empty" class="wk-empty" hidden></div>
+          </div>
+        </section>
       </div>
     </div>
   </main>
@@ -521,7 +546,7 @@
           <div class="ag-ch-n">5</div>
           <div class="ag-ch-c">
             <h3>综述库（wiki）：把问答沉淀成越用越厚的知识</h3>
-            <p class="ag-note">AI 每答一个问题、读完一篇文献，可把结论写成一页<b>带引用的综述</b>，下次直接命中、不重复劳动。它会<b>主动维护</b>：新文献可能推翻旧结论时会标记「过时」并写明理由。你放心——AI 写的页都标 <b>🤖 未核验</b>、<b>不覆盖</b>你亲自核验过的页、随时<b>可一键删</b>。而且这些未核验页在检索里会被<b>降权</b>，不会盖过你的原始文献；你亲自<b>核验</b>过的页则恢复正常权重——AI 一眼就能分清哪些是它自己没核过的草稿、哪些是可信综合。在主菜单「📖 综述库」页可浏览、核验、删除。</p>
+            <p class="ag-note">AI 每答一个问题、读完一篇文献，可把结论写成一页<b>带引用的综述</b>，下次直接命中、不重复劳动。综述页会按来源与现有 AI 主题的重合度<b>自动归类</b>；你也能新建主题、手动固定、搜索和排序。它还会<b>主动维护</b>：新文献可能推翻旧结论时会标记「过时」并写明理由。AI 写的页都标 <b>🤖 未核验</b>、<b>不覆盖</b>你亲自核验过的页；未核验页在检索里会被<b>降权</b>，不会盖过原始文献。打开一页后可沿目录阅读、核验、查看来源与历史；删除自定义主题只会恢复自动归类，<b>不会删除综述</b>。</p>
           </div>
         </section>
 
@@ -925,7 +950,10 @@
         </div>
         <div id="wiki-meta" class="hint"></div>
       </div>
-      <div id="wiki-body" class="wiki-body"></div>
+      <div class="wiki-reader">
+        <nav id="wiki-toc" class="wiki-toc" aria-label="本页目录" hidden></nav>
+        <div id="wiki-body" class="wiki-body"></div>
+      </div>
       <div id="wiki-sources" class="wiki-sources"></div>
       <!-- 互链（出链）与反向链接（入链）：把孤立的页变成可走的图 -->
       <div id="wiki-links" class="wiki-links"></div>

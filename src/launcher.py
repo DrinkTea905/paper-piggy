@@ -163,7 +163,9 @@ def _ensure_icon():
     try:
         png = C.APP / "web" / "PaperPiggy.png"
         ico = C.DATA / "PaperPiggy.ico"
-        if ico.exists() and ico.stat().st_size > 0:
+        # 源 PNG 更新时必须重建；否则已生成的 PaperPiggy.ico 会让新版图标永远不生效。
+        if (ico.exists() and ico.stat().st_size > 0 and png.exists()
+                and ico.stat().st_mtime >= png.stat().st_mtime):
             return str(ico)
         if not png.exists():
             return None

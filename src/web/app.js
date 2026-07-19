@@ -2248,9 +2248,10 @@
     $("#wiki-title").textContent = p.title || "综述页";
     const stale = p.stale ? " · ⚠ 可能已过时" : "";
     // 降级页不显示「模型 fallback(no-key)」这种黑话——它对读者毫无意义，还让人以为是正常综述
+    const themeMeta = p.theme ? ` · ${p.theme_source === "manual" ? "◆" : "◇"} ${p.theme}` : "";
     $("#wiki-meta").textContent = p.degraded
-      ? `基于 ${(p.sources || []).length} 篇 · 生成于 ${(p.generated_at || "").slice(0, 10)}${stale}`
-      : `本地综述 · 基于 ${(p.sources || []).length} 篇 · 生成于 ${(p.generated_at || "").slice(0, 10)} · 模型 ${p.generated_by || "未知"}${stale}`;
+      ? `基于 ${(p.sources || []).length} 篇 · 生成于 ${(p.generated_at || "").slice(0, 10)}${themeMeta}${stale}`
+      : `本地综述 · 基于 ${(p.sources || []).length} 篇 · 生成于 ${(p.generated_at || "").slice(0, 10)}${themeMeta} · 模型 ${p.generated_by || "未知"}${stale}`;
     // unverified-flag-missing-in-modal：模态里也显示 🤖 未核验 / 📝 我保存的；降级页优先警示
     // W3：agent 写回的页可人工核验——未核验给「标为已核验」按钮，核验后徽章转 ✅（frontmatter 落 verified_at）
     const flag = $("#wiki-flag");
@@ -2297,6 +2298,7 @@
       ? p.markdown.replace(/^\*（[^\n]*(?:fallback\(|no-key|no-hits)[^\n]*）\*\s*$/gm, "")
       : p.markdown;
     $("#wiki-body").innerHTML = banner + mdToHtml(mdSrc);   // 极简 md 渲染（已转义防 XSS）
+    renderWikiToc();
     // 参考来源：按 source key 由后端带回统一评价；前端不再从 citation 猜目录或类型。
     // 所以主操作是「📄 打开原文」（直接开 PDF），不是跳去「找相似」。
     const compositionText = (() => {
@@ -2352,6 +2354,18 @@
     const wvI = $("#wv-claim"); if (wvI) wvI.value = "";
     const wvR = $("#wv-result"); if (wvR) { wvR.hidden = true; wvR.innerHTML = ""; }
     $("#wiki-modal").hidden = false;
+  }
+  function renderWikiToc() {
+    const body = $("#wiki-body"), toc = $("#wiki-toc"); if (!body || !toc) return;
+    const headings = [...body.querySelectorAll("h2, h3")];
+    if (headings.length < 2) { toc.hidden = true; toc.innerHTML = ""; return; }
+    headings.forEach((h, i) => { h.id = `wiki-section-${i}`; });
+    toc.innerHTML = `<div class="wiki-toc-h">本页目录</div>` + headings.map((h, i) =>
+      `<button class="wiki-toc-link lv-${h.tagName.toLowerCase()}" data-target="wiki-section-${i}">${esc(h.textContent || "")}</button>`).join("");
+    toc.hidden = false;
+    toc.querySelectorAll(".wiki-toc-link").forEach((b) => b.addEventListener("click", () => {
+      const h = body.querySelector("#" + b.dataset.target); if (h) h.scrollIntoView({ behavior: "smooth", block: "start" });
+    }));
   }
   // 互链（本页链出）与反向链接（哪些页链到本页）——把孤立的页面走成一张图。
   // 这是 karpathy 用 Obsidian graph view 看的东西，这里长在应用自己的界面里。
@@ -2505,14 +2519,17 @@
   // ══════════════════════════════════════════
   //  wiki 页（综合页书架）：列出 /wiki/list + 新建综述 + 打开/重生/删除
   // ══════════════════════════════════════════
-  let WK = { kind: "", agentOnly: false, pages: [] };
+  let WK = { kind: "", agentOnly: false, pages: [], themes: [], theme: "", search: "", sort: "new" };
   async function loadWikiList(mode) {
     const box = $("#wk-list");
     loadWikiSuggestions();   // EN-F2：每次进综述库都刷新建议横幅（fire-and-forget，失败静默）
     if (mode !== "silent") box.innerHTML = `<div class="wk-loading">加载综合页中…</div>`;
     try {
-      const d = await jget("/wiki/list");
+      const [d, td] = await Promise.all([jget("/wiki/list"), jget("/wiki/themes")]);
       WK.pages = d.pages || [];
+      WK.themes = td.themes || [];
+      if (WK.theme && !WK.themes.some((x) => x.name === WK.theme)) WK.theme = "";
+      renderWikiThemes();
       renderWikiList();
       if (GV.on) drawGraph();      // 关系图开着时（删页/回滚/新建后）同步重画
       wikiLoaded = true;   // 成功才置位，失败保持 false 便于切回重试
@@ -2523,12 +2540,41 @@
   const WK_KIND = { answer: "📝 对话沉淀", concept: "🧩 概念综述", topic: "🗂 主题综述",
                     digest: "📚 资料汇编", outline: "🧭 选题框架",
                     entity: "👤 实体页", overview: "🧭 总论页" };
+  function renderWikiThemes() {
+    const box = $("#wk-themes"); if (!box) return;
+    const rows = [{ name: "", label: "全部综述", count: WK.pages.length, source: "all" }, ...WK.themes.map((x) => ({ ...x, label: x.name }))];
+    box.innerHTML = rows.map((t) =>
+      `<button class="wk-theme${WK.theme === t.name ? " active" : ""}" data-theme="${esc(t.name)}">` +
+        `<span class="wk-theme-ic">${t.source === "manual" ? "◆" : (t.source === "all" ? "▦" : "◇")}</span>` +
+        `<span class="wk-theme-name">${esc(t.label)}</span><span class="wk-theme-count">${num(t.count)}</span></button>`).join("");
+    box.querySelectorAll(".wk-theme").forEach((el) => el.addEventListener("click", () => {
+      WK.theme = el.dataset.theme || ""; renderWikiThemes(); renderWikiList();
+    }));
+    const selected = WK.themes.find((x) => x.name === WK.theme);
+    const actions = $("#wk-theme-actions");
+    if (actions) {
+      actions.innerHTML = selected && selected.custom
+        ? `<button class="ghost2b" data-theme-act="rename">重命名</button><button class="ghost2b danger" data-theme-act="delete">删除主题</button>` : "";
+      const rn = actions.querySelector('[data-theme-act="rename"]'); if (rn) rn.addEventListener("click", renameWikiTheme);
+      const del = actions.querySelector('[data-theme-act="delete"]'); if (del) del.addEventListener("click", deleteWikiTheme);
+    }
+  }
   function renderWikiList() {
     const box = $("#wk-list");
-    let list = WK.pages;
+    let list = [...WK.pages];
+    if (WK.theme) list = list.filter((p) => (p.theme || "未分类") === WK.theme);
     if (WK.kind) list = list.filter((p) => (p.kind || "answer") === WK.kind);
     // W3：「只看未核验」＝agent 写回且尚未人工核验（已核验的不再算待办）
     if (WK.agentOnly) list = list.filter((p) => p.by_agent && !p.verified_at);
+    if (WK.search) {
+      const q = WK.search.toLocaleLowerCase("zh-CN");
+      list = list.filter((p) => (p.title || "").toLocaleLowerCase("zh-CN").includes(q));
+    }
+    if (WK.sort === "title") list.sort((a, b) => (a.title || "").localeCompare(b.title || "", "zh-CN"));
+    else if (WK.sort === "sources") list.sort((a, b) => Number(b.n_sources || 0) - Number(a.n_sources || 0));
+    else list.sort((a, b) => String(b.generated_at || "").localeCompare(String(a.generated_at || "")));
+    const heading = $("#wk-current-theme"); if (heading) heading.textContent = WK.theme || "全部综述";
+    const count = $("#wk-count"); if (count) count.textContent = `共 ${list.length} 页`;
     if (!WK.pages.length) {
       box.innerHTML = `<div class="wk-empty">
         <div class="wk-empty-ic">📖</div>
@@ -2554,24 +2600,53 @@
           : `<span class="wk-flag agent" title="agent 写回、未经人工核验">🤖 未核验</span>`)
       : `<span class="wk-flag" title="你保存/生成的综述页">📝 我保存的</span>`;
     const stale = p.stale ? `<span class="wk-flag stale" title="有新论文可能影响此综述，建议重生">⚠ 可能已过时</span>` : "";
-    // 整卡可点即打开；删除按钮浮在右上角，点它不触发打开。其余操作（重新生成/历史）都在详情页里。
+    // 整卡可点即打开；整理主题与删除收进「…」，让列表优先服务阅读。
     div.className += " wk-card-click";
+    const themeOptions = [`<option value="">自动归类</option>`, ...WK.themes.map((t) =>
+      `<option value="${esc(t.name)}"${p.theme_source === "manual" && p.theme === t.name ? " selected" : ""}>${esc(t.name)}</option>`)].join("");
     div.innerHTML =
-      `<button class="wk-card-del" title="删除这条综述">🗑</button>` +
-      `<div class="wk-card-head"><span class="wk-badge k-${esc(p.kind || "answer")}">${esc(kind)}</span>` +
-        `<span class="wk-title">${esc(p.title || "(无标题)")}</span>` +
-        `<span class="wk-card-status">${prov}${stale}</span></div>` +
-      `<div class="wk-card-meta">基于 ${num(p.n_sources)} 篇 · ${esc((p.generated_at || "").slice(0, 10) || "未知日期")}` +
-        ` · 模型 ${esc(p.generated_by || "未知")}</div>`;
+      `<div class="wk-card-main"><div class="wk-card-head"><span class="wk-badge k-${esc(p.kind || "answer")}">${esc(kind)}</span>` +
+        `<span class="wk-title">${esc(p.title || "(无标题)")}</span></div>` +
+      `<div class="wk-card-meta"><span>${p.theme_source === "manual" ? "◆" : "◇"} ${esc(p.theme || "未分类")}</span>` +
+        `<span>基于 ${num(p.n_sources)} 篇</span><span>${esc((p.generated_at || "").slice(0, 10) || "未知日期")}</span></div></div>` +
+      `<span class="wk-card-status">${prov}${stale}</span>` +
+      `<button class="wk-card-more" title="整理或删除" aria-label="整理或删除">•••</button>` +
+      `<div class="wk-card-pop" hidden><label>固定到主题<select class="wk-card-theme">${themeOptions}</select></label>` +
+        `<button class="wk-card-del">删除这条综述</button></div>`;
     div.addEventListener("click", () => openWikiPage(p.id));
     div.setAttribute("role", "button");
     div.setAttribute("tabindex", "0");
     div.addEventListener("keydown", (e) => { if (e.key === "Enter") openWikiPage(p.id); });
+    const more = div.querySelector(".wk-card-more"), pop = div.querySelector(".wk-card-pop");
+    more.addEventListener("click", (e) => { e.stopPropagation(); pop.hidden = !pop.hidden; });
+    pop.addEventListener("click", (e) => e.stopPropagation());
+    div.querySelector(".wk-card-theme").addEventListener("change", async (e) => {
+      e.stopPropagation();
+      try { await jpost("/wiki/page/" + encodeURIComponent(p.id) + "/theme", { name: e.target.value }); await loadWikiList("silent"); }
+      catch (err) { flashToast("整理主题失败：" + (err.message || err)); }
+    });
     div.querySelector(".wk-card-del").addEventListener("click", (e) => {
       e.stopPropagation();
       discardWiki(p.id, () => loadWikiList("silent"), e.currentTarget);
     });
     return div;
+  }
+  async function createWikiTheme() {
+    const name = await askText("新建研究主题", "", "例如：少年司法"); if (!name) return;
+    try { await jpost("/wiki/themes", { name }); WK.theme = name; await loadWikiList("silent"); }
+    catch (e) { flashToast("新建主题失败：" + (e.message || e)); }
+  }
+  async function renameWikiTheme() {
+    if (!WK.theme) return;
+    const name = await askText("重命名主题", WK.theme, "主题名称"); if (!name || name === WK.theme) return;
+    try { await jpost("/wiki/themes/rename", { old_name: WK.theme, new_name: name }); WK.theme = name; await loadWikiList("silent"); }
+    catch (e) { flashToast("重命名失败：" + (e.message || e)); }
+  }
+  async function deleteWikiTheme() {
+    if (!WK.theme) return;
+    if (!(await uiConfirm("主题里的综述不会被删除，它们会恢复自动归类。", { title: `删除“${WK.theme}”主题？`, okText: "删除主题", danger: true }))) return;
+    try { await jsend("/wiki/themes/" + encodeURIComponent(WK.theme), "DELETE"); WK.theme = ""; await loadWikiList("silent"); }
+    catch (e) { flashToast("删除主题失败：" + (e.message || e)); }
   }
   async function genConcept() {
     const c = $("#wk-concept").value.trim();
@@ -2857,7 +2932,10 @@
     const gen = $("#wk-gen"); if (gen) gen.addEventListener("click", genConcept);
     const inp = $("#wk-concept"); if (inp) inp.addEventListener("keydown", (e) => { if (e.key === "Enter") genConcept(); });
     const kind = $("#wk-kind"); if (kind) kind.addEventListener("change", () => { WK.kind = kind.value; renderWikiList(); });
+    const search = $("#wk-search"); if (search) search.addEventListener("input", () => { WK.search = search.value.trim(); renderWikiList(); });
+    const sort = $("#wk-sort"); if (sort) sort.addEventListener("change", () => { WK.sort = sort.value; renderWikiList(); });
     const ag = $("#wk-agent"); if (ag) ag.addEventListener("change", () => { WK.agentOnly = ag.checked; renderWikiList(); });
+    const nt = $("#wk-theme-new"); if (nt) nt.addEventListener("click", createWikiTheme);
     const lint = $("#wk-lint"); if (lint) lint.addEventListener("click", runLint);
     // EN-F3：时间线按钮 + 弹层关闭（Esc/遮罩关闭统一走 W2 的通用弹窗处理，见「W2」段）
     const tl = $("#wk-timeline"); if (tl) tl.addEventListener("click", openTimeline);

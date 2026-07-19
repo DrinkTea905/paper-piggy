@@ -26,11 +26,11 @@ class WikiWriteDenied(PermissionError):
 # （_atomic_write 只防文件撕裂，不防 read-modify-write 的丢更新）。
 _INDEX_LOCK = threading.RLock()
 
-# EN-W6：v1 → v2——新增「新建页 vs 原地编辑」判定规则与正文 [[互链]] 约定。
+# v2 → v3：新增 theme（人工主题）字段；未设置时按页面来源与 AI 主题的重合度自动归类。
 # 升级机制沿 v0→v1 先例（见 ensure_scaffold / _FACTORY_HASHES）：仅当用户没手改过才自动升级。
-SCHEMA_VERSION = "v2"
+SCHEMA_VERSION = "v3"
 
-WIKI_MD_SEED = """# 本地知识库 · 综合层（Wiki）约定 — schema v2
+WIKI_MD_SEED = """# 本地知识库 · 综合层（Wiki）约定 — schema v3
 
 > 本目录（data/wiki/）是"综合层"：把 LLM 对文献的理解**持久化**成可累积、带引用、互链的页面。
 > 它是文献库之上的**附加缓存**，不是替代——删除本目录不影响文献库/Zotero/索引。
@@ -45,7 +45,8 @@ WIKI_MD_SEED = """# 本地知识库 · 综合层（Wiki）约定 — schema v2
 - overview **总论页**：随全库演进的 thesis；每读一篇新文献，它被强化或被挑战
 
 ## 每页结构
-YAML frontmatter（id/kind/title/subject/sources/generated_at/generated_by/stale/by_agent/links）+ markdown 正文。
+YAML frontmatter（id/kind/title/subject/theme/sources/generated_at/generated_by/stale/by_agent/links）+ markdown 正文。
+- theme：用户手动整理到的主题；留空时，应用会按来源与 AI 主题的重合度自动归类。
 - sources：本页综合所依据的论文 key（provenance 命脉；每个 key 可回溯到印刷页码）。
 - generated_at / generated_by：生成时间与模型（可信度审计）。
 - stale：该页已被新文献推翻或不再成立。用 `mark_stale` 置位，检索中乘性重罚。
@@ -174,11 +175,13 @@ def ensure_scaffold():
 _FACTORY_HASHES = {
     "2d7c7749b165d5640772d62791c6f9e569aa5e47",   # schema v0
     "21793476a7a6538582a3d14eb0651f426d4b45a6",   # schema v1（EN-W6：升 v2 时对 v1 出厂原样放行自动升级）
-    "ae231356c6227b1fa88b02982a29611b1ae3f52b",   # schema v2（当前出厂版；未来升级时不得删除）
+    "ae231356c6227b1fa88b02982a29611b1ae3f52b",   # schema v2（升 v3 时放行自动升级）
+    "53d369cf71b4583d60a44084e702f23d8873f672",   # schema v3（当前出厂版；未来升级时不得删除）
 }
 # 一个 schema 版本只能对应一份出厂正文。只改 seed 却忘记 bump 版本时，check_guides 必须挡住发布。
 _SCHEMA_HASHES = {
     "v2": "ae231356c6227b1fa88b02982a29611b1ae3f52b",
+    "v3": "53d369cf71b4583d60a44084e702f23d8873f672",
 }
 
 
@@ -351,6 +354,7 @@ def _rebuild_index_from_disk():
             pages.append({
                 "id": fm["id"], "kind": fm.get("kind", kind), "title": fm.get("title", ""),
                 "subject": fm.get("subject", "") or fm.get("title", ""),
+                "theme": fm.get("theme", "") or "",
                 "sources": [{"key": k, "citation": _resolve_citation(k)}
                             for k in (fm.get("sources") or [])],
                 "generated_at": fm.get("generated_at", ""),
@@ -419,7 +423,7 @@ def _upsert_index(meta):
         # W3：verified_at 一并入表；正文被重写(_persist_page)时 meta 无此键 → 置空=核验自然失效
         entry = {k: meta.get(k) for k in
                  ("id", "kind", "title", "subject", "sources", "generated_at", "generated_by",
-                  "verified_at", "stale", "by_agent", "links")}
+                  "verified_at", "stale", "by_agent", "links", "theme")}
         pages.append(entry)
         idx["pages"] = pages
         idx["by_source"] = _build_by_source(pages)
@@ -464,6 +468,7 @@ def _frontmatter(meta):
         f"kind: {meta['kind']}",
         f"title: {json.dumps(meta.get('title', ''), ensure_ascii=False)}",
         f"subject: {json.dumps(meta.get('subject', '') or '', ensure_ascii=False)}",
+        f"theme: {json.dumps(meta.get('theme', '') or '', ensure_ascii=False)}",
         f"sources: {jl([k for k in src_keys if k])}",
         f"generated_at: {meta.get('generated_at', '')}",
         f"generated_by: {meta.get('generated_by', '')}",
@@ -578,6 +583,7 @@ def restore_page(page_id, rev):
         entry = {
             "id": page_id, "kind": fm.get("kind", kind), "title": fm.get("title", ""),
             "subject": fm.get("subject", "") or fm.get("title", ""),
+            "theme": fm.get("theme", "") or "",
             "sources": [{"key": k, "citation": _resolve_citation(k)} for k in (fm.get("sources") or [])],
             "generated_at": fm.get("generated_at", ""), "generated_by": fm.get("generated_by", ""),
             "verified_at": fm.get("verified_at", "") or "",   # W3：回滚版本里若有核验章则一并恢复
@@ -791,6 +797,8 @@ def _persist_page(page_id, kind, title, subject, body, norm_sources, generated_b
             "stale": False, "by_agent": bool(by_agent),
             # 重生/覆盖时保留既有互链，别把 links 清零（波次2 set_wiki_links 会写它）
             "links": list((existing or {}).get("links") or []),
+            # 主题是人的整理结果；重新生成正文不能把它移回自动分类。
+            "theme": (existing or {}).get("theme", "") or "",
             "query": subject,
         }
         # 写盘与 index 更新必须同在锁内，否则护栏检查与落盘之间存在 TOCTOU 窗口
@@ -857,6 +865,81 @@ def _slug(s):
 def _load_ai_topics():
     f = C.CATEGORIES_DIR / "ai_topics.json"
     return json.loads(f.read_text(encoding="utf-8")) if f.exists() else {"topics": []}
+
+
+def _theme_state_path():
+    """主题册放在 wiki 目录内，随综述库一起备份，不新增独立数据落点。"""
+    return C.WIKI_DIR / "themes.json"
+
+
+def _load_theme_state():
+    path = _theme_state_path()
+    if not path.exists():
+        return {"themes": []}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        themes = data.get("themes", []) if isinstance(data, dict) else []
+        return {"themes": [str(x).strip() for x in themes if str(x).strip()]}
+    except Exception:
+        return {"themes": []}
+
+
+def _save_theme_state(themes):
+    clean = list(dict.fromkeys(str(x).strip() for x in themes if str(x).strip()))
+    _atomic_write(_theme_state_path(), json.dumps(
+        {"themes": clean, "updated_at": _now()}, ensure_ascii=False, indent=1))
+
+
+def _valid_theme_name(name):
+    name = re.sub(r"\s+", " ", str(name or "").strip())
+    if not name:
+        raise ValueError("主题名称不能为空")
+    if len(name) > 40:
+        raise ValueError("主题名称最多 40 个字")
+    if name in {"全部综述", "未分类"}:
+        raise ValueError(f"「{name}」是系统分类，不能作为自定义主题")
+    return name
+
+
+def _topic_label(name):
+    """把聚类器的「中文 · 近义词 · English」名称压成适合侧栏的短标签。"""
+    parts = [x.strip() for x in re.split(r"[·|/、,，]+", str(name or "")) if x.strip()]
+    chinese = [re.sub(r"修改$", "", x).strip() for x in parts if re.search(r"[\u4e00-\u9fff]", x)]
+    chinese = [x for x in chinese if x]
+    if chinese:
+        # 优先信息量更高的较长中文词；Python 排序稳定，同长度沿用聚类器给出的顺序。
+        return sorted(chinese, key=len, reverse=True)[0][:20]
+    return (parts[0] if parts else "未分类")[:20]
+
+
+def _auto_theme(meta, topics=None):
+    """零 API 自动分类：以综述来源 key 和 AI 主题成员 key 的重合度判定。"""
+    page_keys = {str(s.get("key") if isinstance(s, dict) else s) for s in (meta.get("sources") or [])}
+    page_keys.discard("")
+    if not page_keys:
+        return {"name": "未分类", "source": "none", "topic_id": None, "overlap": 0}
+    topics = topics if topics is not None else (_load_ai_topics().get("topics") or [])
+    best = None
+    for pos, topic in enumerate(topics):
+        keys = {str(x) for x in (topic.get("keys") or []) if str(x)}
+        overlap = len(page_keys & keys)
+        if not overlap:
+            continue
+        score = (overlap, overlap / max(1, len(page_keys)), -pos)
+        if best is None or score > best[0]:
+            best = (score, topic, overlap)
+    if not best:
+        return {"name": "未分类", "source": "none", "topic_id": None, "overlap": 0}
+    topic = best[1]
+    return {"name": _topic_label(topic.get("name")), "source": "auto",
+            "topic_id": topic.get("id"), "overlap": best[2]}
+
+
+def _effective_theme(meta, topics=None):
+    manual = str(meta.get("theme") or "").strip()
+    if manual:
+        return {"name": manual, "source": "manual", "topic_id": None, "overlap": 0}
+    return _auto_theme(meta, topics)
 
 
 def _gather_evidence(query, topk):
@@ -957,15 +1040,138 @@ def regenerate(page_id, **llm):
 # ═══ 对外：列表 / 取单页 ═══════════════════════════════════════════
 def list_pages():
     idx = load_index()
-    return [{"id": p["id"], "kind": p.get("kind", "answer"), "title": p.get("title", ""),
-             "generated_at": p.get("generated_at", ""), "generated_by": p.get("generated_by", ""),
-             "verified_at": p.get("verified_at") or "",   # W3：人工核验时间（无则空串）
-             "stale": bool(p.get("stale")), "by_agent": bool(p.get("by_agent")),
-             "degraded": is_degraded(p.get("generated_by", "")),
-             "degraded_reason": degraded_reason(p.get("generated_by", "")),
-             "n_sources": len(p.get("sources", []))}
-            for p in sorted(idx.get("pages", []),
-                            key=lambda x: x.get("generated_at", ""), reverse=True)]
+    topics = _load_ai_topics().get("topics") or []
+    out = []
+    for p in sorted(idx.get("pages", []), key=lambda x: x.get("generated_at", ""), reverse=True):
+        theme = _effective_theme(p, topics)
+        out.append({"id": p["id"], "kind": p.get("kind", "answer"), "title": p.get("title", ""),
+                    "generated_at": p.get("generated_at", ""), "generated_by": p.get("generated_by", ""),
+                    "verified_at": p.get("verified_at") or "",   # W3：人工核验时间（无则空串）
+                    "stale": bool(p.get("stale")), "by_agent": bool(p.get("by_agent")),
+                    "degraded": is_degraded(p.get("generated_by", "")),
+                    "degraded_reason": degraded_reason(p.get("generated_by", "")),
+                    "theme": theme["name"], "theme_source": theme["source"],
+                    "theme_overlap": theme["overlap"],
+                    "n_sources": len(p.get("sources", []))})
+    return out
+
+
+def list_themes():
+    """返回主题侧栏数据。自动主题来自现有本地聚类，手动主题即使为空也保留。"""
+    pages = list_pages()
+    custom = _load_theme_state()["themes"]
+    counts, sources = {}, {}
+    for p in pages:
+        name = p.get("theme") or "未分类"
+        counts[name] = counts.get(name, 0) + 1
+        sources.setdefault(name, p.get("theme_source") or "none")
+    order = list(custom)
+    order += [x for x in counts if x not in order and x != "未分类"]
+    if counts.get("未分类"):
+        order.append("未分类")
+    return {"themes": [{"name": name, "count": counts.get(name, 0),
+                         "custom": name in custom,
+                         "source": "manual" if name in custom else sources.get(name, "auto")}
+                        for name in order],
+            "total": len(pages)}
+
+
+def create_theme(name):
+    name = _valid_theme_name(name)
+    with _INDEX_LOCK:
+        state = _load_theme_state()
+        if name not in state["themes"]:
+            state["themes"].append(name)
+            _save_theme_state(state["themes"])
+    return {"name": name}
+
+
+def _sync_theme_frontmatter(meta):
+    path = page_path(meta["id"], meta.get("kind", "answer"))
+    if not path.exists():
+        return
+    txt = path.read_text(encoding="utf-8")
+    val = json.dumps(meta.get("theme", "") or "", ensure_ascii=False)
+    end = txt.find("\n---", 3) if txt.startswith("---") else -1
+    if end < 0:
+        return
+    head = txt[:end]
+    if re.search(r"(?m)^theme:", head):
+        head = re.sub(r"(?m)^theme:.*$", f"theme: {val}", head, count=1)
+    else:
+        head += f"\ntheme: {val}"
+    new = head + txt[end:]
+    if new != txt:
+        _atomic_write(path, new)
+
+
+def set_page_theme(page_id, name=""):
+    """固定到自定义主题；传空串则恢复按来源自动归类。只改整理元数据，不改正文。"""
+    name = re.sub(r"\s+", " ", str(name or "").strip())
+    if name:
+        name = _valid_theme_name(name)
+    with _INDEX_LOCK:
+        idx = load_index()
+        meta = next((p for p in idx.get("pages", []) if p.get("id") == page_id), None)
+        if not meta:
+            raise ValueError(f"无此综合页 {page_id}")
+        meta["theme"] = name
+        if name:
+            state = _load_theme_state()
+            if name not in state["themes"]:
+                state["themes"].append(name)
+                _save_theme_state(state["themes"])
+        _save_index(idx)
+        _sync_theme_frontmatter(meta)
+    try:
+        import retriever as R
+        if page_id in (R.M.get("wiki") or {}):
+            R.M["wiki"][page_id]["theme"] = name
+    except Exception:
+        pass
+    _snapshot(page_id, f"人整理主题：{name or '恢复自动分类'}")
+    return {"id": page_id, "theme": _effective_theme(meta)}
+
+
+def rename_theme(old_name, new_name):
+    old_name, new_name = _valid_theme_name(old_name), _valid_theme_name(new_name)
+    with _INDEX_LOCK:
+        state = _load_theme_state()
+        if old_name not in state["themes"]:
+            raise ValueError("自动主题不能直接改名；请新建自定义主题后移动综述")
+        if new_name != old_name and new_name in state["themes"]:
+            raise ValueError("已有同名主题")
+        state["themes"] = [new_name if x == old_name else x for x in state["themes"]]
+        idx = load_index()
+        changed = []
+        for meta in idx.get("pages", []):
+            if (meta.get("theme") or "") == old_name:
+                meta["theme"] = new_name
+                _sync_theme_frontmatter(meta)
+                changed.append(meta["id"])
+        _save_theme_state(state["themes"])
+        _save_index(idx)
+    return {"name": new_name, "moved": len(changed)}
+
+
+def delete_theme(name):
+    """删主题不删页：清掉人工归类，页面立即回到自动主题或「未分类」。"""
+    name = _valid_theme_name(name)
+    with _INDEX_LOCK:
+        state = _load_theme_state()
+        if name not in state["themes"]:
+            raise ValueError("自动主题不能删除")
+        state["themes"] = [x for x in state["themes"] if x != name]
+        idx = load_index()
+        changed = []
+        for meta in idx.get("pages", []):
+            if (meta.get("theme") or "") == name:
+                meta["theme"] = ""
+                _sync_theme_frontmatter(meta)
+                changed.append(meta["id"])
+        _save_theme_state(state["themes"])
+        _save_index(idx)
+    return {"deleted": name, "reset_pages": len(changed)}
 
 
 def get_page(page_id):
@@ -979,13 +1185,15 @@ def get_page(page_id):
         key = s.get("key") if isinstance(s, dict) else s
         cite = s.get("citation") if isinstance(s, dict) else ""
         src_cites.append({"key": key, "citation": cite or _resolve_citation(key)})
+    theme = _effective_theme(meta)
     return {"id": page_id, "kind": meta.get("kind"), "title": meta.get("title", ""),
             "generated_at": meta.get("generated_at", ""), "generated_by": meta.get("generated_by", ""),
             "verified_at": meta.get("verified_at") or "",   # W3：人工核验时间（无则空串）
             "stale": bool(meta.get("stale")), "by_agent": bool(meta.get("by_agent")),
             "degraded": is_degraded(meta.get("generated_by", "")),
             "degraded_reason": degraded_reason(meta.get("generated_by", "")),
-            "links": meta.get("links", []), "sources": src_cites, "markdown": md}
+            "links": meta.get("links", []), "sources": src_cites, "markdown": md,
+            "theme": theme["name"], "theme_source": theme["source"]}
 
 
 def reindex_missing_pages():
