@@ -200,6 +200,25 @@ class SourceGradingTests(unittest.TestCase):
         self.GS.set_mapping_override("nature:book", None, "law_personal")
         self.assertEqual("authority", self.ev(paper, "law_personal")["band"])
 
+    def test_default_value_is_not_stored_and_all_defaults_can_be_restored(self):
+        # 与出厂值相同的选择不应制造“伪自定义”。娱乐显示名恢复的是共用的 law_personal 配置。
+        self.GS.set_mapping_override("label:三大刊", "authority", "law_personal")
+        self.assertNotIn("law_personal", self.GS._load_mapping_overrides())
+
+        self.GS.set_mapping_override("label:SSCI Q4", "core", "law_personal")
+        self.GS.set_mapping_override("nature:book", "normal", "law")
+        result = self.GS.clear_mapping_overrides("law_personal_fun")
+        saved = self.GS._load_mapping_overrides()
+        self.assertEqual(("law_personal", 1),
+                         (result["canonical_discipline"], result["removed"]))
+        self.assertNotIn("law_personal", saved)
+        self.assertEqual("normal", saved["law"]["nature:book"])
+        restored = self.GS._apply_mapping_override({
+            "objective_label": "SSCI Q4", "source_type": "journal_article",
+            "band": "normal", "band_name": "普通", "standard_band_name": "普通", "weight": 0.25,
+        }, "law_personal")
+        self.assertEqual("top", restored["band"])
+
     def test_authority_dataset_has_an_independent_mapping(self):
         authority = {"itemtype": "dataset", "title": "人口数据", "institution": "国家统计局"}
         ordinary = {"itemtype": "dataset", "title": "研究数据"}

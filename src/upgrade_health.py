@@ -87,6 +87,11 @@ def index_health():
     changed = [k for k, v in current.items() if built.get(k) != v]
     if not changed:
         return {"state": "current", "label": "索引与当前规则一致"}
+    if changed == ["light"]:
+        return {"state": "stale", "label": "题录分类规则已更新",
+                "changed": changed, "action": "手动更新知识库",
+                "detail": "只需更新一次题录；无需清空索引、重新深索或重建语义索引。",
+                "full_rebuild": False}
     need_full = any(k in changed for k in ("deep", "semantic"))
     return {"state": "stale", "label": "索引由旧规则生成",
             "changed": changed, "action": "清空并从头重建索引" if need_full else "手动更新知识库",

@@ -1275,6 +1275,19 @@ def set_grading_mapping(q: GradingMappingQ):
         log_error("grading mapping", repr(e), traceback.format_exc())
         return JSONResponse({"detail": f"保存映射失败：{e}"}, status_code=500)
 
+
+@app.post("/grading/mapping/reset")
+def reset_grading_mappings():
+    """恢复当前学科的全部出厂映射；不改索引、客观标签或单篇手动改档。"""
+    try:
+        import grading_svc as GS
+        result = GS.clear_mapping_overrides()
+        GS.warm_async(_load_papers())
+        return {"ok": True, **result}
+    except Exception as e:
+        log_error("grading mapping reset", repr(e), traceback.format_exc())
+        return JSONResponse({"detail": f"恢复默认失败：{e}"}, status_code=500)
+
 @app.post("/setup/reset")
 def setup_reset():
     """设置页「恢复默认」：settings.json 覆盖为默认（清 API/SAC key、学科回标准法学、后端回本地、

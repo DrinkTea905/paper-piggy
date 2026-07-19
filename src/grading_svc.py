@@ -356,6 +356,20 @@ def _load_mapping_overrides():
         return {}
 
 
+def _mapping_spec_default(mapping_id, discipline):
+    generic = next((default for mid, _label, default in MAPPING_SPECS if mid == mapping_id), None)
+    return _mapping_default(mapping_id, discipline, generic)
+
+
+def _invalidate_mapping_dist(disc):
+    """映射只影响动态评价与排序；只清分布缓存，不触碰任何索引。"""
+    with _LOCK:
+        global _DIST
+        _load_dist()
+        _DIST.pop(disc, None)
+        _atomic_write(DIST_FILE, _DIST)
+
+
 def set_mapping_override(mapping_id, band, discipline=None):
     """保存当前学科的目录/性质四档覆盖；band 为空表示恢复自动。"""
     valid = {x[0] for x in MAPPING_SPECS}
@@ -366,20 +380,31 @@ def set_mapping_override(mapping_id, band, discipline=None):
     disc = canonical_discipline(discipline or _requested_disc())
     raw = _load_mapping_overrides()
     dm = raw.setdefault(disc, {})
-    if band:
+    default = _mapping_spec_default(mapping_id, disc)
+    # 选择出厂值等同于恢复默认，避免 grading_mappings.json 留下“看似自定义”的冗余项。
+    if band and band != default:
         dm[mapping_id] = band
     else:
         dm.pop(mapping_id, None)
     if not dm:
         raw.pop(disc, None)
     _atomic_write(MAPPING_FILE, raw)
-    # 分布包含映射结果，写后立即失效；逐刊 memo 保留客观识别事实不受影响。
-    with _LOCK:
-        global _DIST
-        _load_dist()
-        _DIST.pop(disc, None)
-        _atomic_write(DIST_FILE, _DIST)
-    return {"mapping_id": mapping_id, "band": band, "discipline": discipline or _requested_disc()}
+    _invalidate_mapping_dist(disc)
+    return {"mapping_id": mapping_id, "band": None if band == default else band,
+            "effective_band": band or default, "default_band": default,
+            "discipline": discipline or _requested_disc()}
+
+
+def clear_mapping_overrides(discipline=None):
+    """恢复当前学科的全部出厂映射；娱乐显示名与开发者增强共用同一份配置。"""
+    requested = discipline or _requested_disc()
+    disc = canonical_discipline(requested)
+    raw = _load_mapping_overrides()
+    removed = len(raw.get(disc) or {})
+    raw.pop(disc, None)
+    _atomic_write(MAPPING_FILE, raw)
+    _invalidate_mapping_dist(disc)
+    return {"discipline": requested, "canonical_discipline": disc, "removed": removed}
 
 
 def _apply_mapping_override(out, requested):
@@ -523,6 +548,7 @@ def overview(papers, compute=False):
         effective = overrides.get(mid, default)
         mappings.append({
             "mapping_id": mid, "label": label, "default_band": default,
+            "default_band_name": band_name(default, requested),
             "band": effective, "band_name": band_name(effective, requested),
             "customized": mid in overrides and overrides.get(mid) != default,
             "editable": True, "update_url": "/grading/mapping",

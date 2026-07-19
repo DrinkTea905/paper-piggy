@@ -10,6 +10,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 import server
+import grading_svc as GS
 
 
 class SourceGradingApiTests(unittest.TestCase):
@@ -56,6 +57,27 @@ class SourceGradingApiTests(unittest.TestCase):
         self.assertEqual("书籍", got["sources"][0]["objective_label"])
         self.assertEqual("authority", got["sources"][0]["band"])
         self.assertEqual([{"label": "书籍", "count": 1}], got["source_composition"])
+
+    def test_reset_all_mappings_uses_current_discipline_without_touching_index(self):
+        with (
+            mock.patch.object(GS, "clear_mapping_overrides", return_value={
+                "discipline": "law_personal_fun", "canonical_discipline": "law_personal", "removed": 1,
+            }) as clear,
+            mock.patch.object(GS, "warm_async") as warm,
+            mock.patch.object(server, "_load_papers", return_value={"a": {"key": "a"}}),
+        ):
+            got = server.reset_grading_mappings()
+        self.assertTrue(got["ok"])
+        self.assertEqual(1, got["removed"])
+        clear.assert_called_once_with()
+        warm.assert_called_once()
+
+    def test_dashboard_polish_contract(self):
+        app = (SRC / "web" / "app.js").read_text(encoding="utf-8")
+        self.assertNotIn('aria-hidden="true">→</span>', app)
+        self.assertIn("点击项目查看文献", app)
+        self.assertIn("恢复全部默认", app)
+        self.assertIn("无需重建索引", app)
 
 
 if __name__ == "__main__":

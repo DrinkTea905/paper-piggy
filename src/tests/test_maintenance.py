@@ -18,6 +18,22 @@ import wiki_store as W  # noqa: E402
 
 
 class MaintenanceAuditTests(unittest.TestCase):
+    def test_light_rule_change_requires_only_metadata_refresh(self):
+        with tempfile.TemporaryDirectory() as td:
+            manifest = Path(td) / "index_manifest.json"
+            manifest.write_text(json.dumps({"pipeline_fingerprints": {
+                "light": "old", "deep": "same-deep", "semantic": "same-semantic",
+            }}), encoding="utf-8")
+            with mock.patch.object(UH.C, "INDEX_MANIFEST", manifest), \
+                    mock.patch.object(UH, "pipeline_fingerprints", return_value={
+                        "light": "new", "deep": "same-deep", "semantic": "same-semantic",
+                    }):
+                result = UH.index_health()
+        self.assertEqual("题录分类规则已更新", result["label"])
+        self.assertEqual("手动更新知识库", result["action"])
+        self.assertFalse(result["full_rebuild"])
+        self.assertIn("无需清空索引", result["detail"])
+
     def test_agent_mode_classifies_simple_work_as_auto_and_external_files_as_blocked(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td); state = root / "state"; state.mkdir()

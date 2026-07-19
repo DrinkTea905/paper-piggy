@@ -1416,9 +1416,9 @@
     return TIER_COLOR[r != null ? r : 6];
   }
 
-  // 最近入库：默认 4 条、可展开；每条带三态深索按钮（可深索/已深索/无PDF）
-  function recentCard(recent) {
-    if (!recent || !recent.length) return `<div class="dcard"><h4>最近入库</h4><p class="dcard-sub">暂无</p></div>`;
+  // 最近入库与评价分布共用一张「文库概况」卡；每条带三态深索按钮。
+  function recentSection(recent) {
+    if (!recent || !recent.length) return `<section class="ov-recent"><div class="ov-panel-head"><h5>最近入库</h5></div><p class="hint">暂无</p></section>`;
     const row = (r) => {
       const t = (r.title || "").slice(0, 52) + ((r.title || "").length > 52 ? "…" : "");
       let btn;
@@ -1428,9 +1428,8 @@
       return `<li><div class="rc-main"><div class="rt">${esc(t)}</div><div class="rd">${esc(r.ingested_at || "")}</div></div>${btn}</li>`;
     };
     const head = recent.slice(0, 5).map(row).join("");
-    return `<div class="dcard"><h4>最近入库</h4>
-      <ul class="recent-list">${head}</ul>
-      <button class="rc-expand" id="rc-expand">去「浏览」页看全部 →</button></div>`;
+    return `<section class="ov-recent"><div class="ov-panel-head"><h5>最近入库</h5><button class="rc-expand" id="rc-expand">查看全部</button></div>
+      <ul class="recent-list">${head}</ul></section>`;
   }
 
   function rowsOf(value, keyName) {
@@ -1473,34 +1472,45 @@
     }).join("");
     const typeRows = gradingBreakdown(go, "type");
     const labelRows = gradingBreakdown(go, "label");
-    const breakdown = (typeRows.length || labelRows.length) ? `<div class="dcard span2 ov-breakdown"><h4>文献构成</h4>
-      <p class="dcard-sub">每篇文献只显示一个客观标签；点击任一项可到浏览页查看对应文献。</p>
-      <div class="ov-break-tabs" role="tablist"><button class="active" data-break-kind="type" role="tab" aria-selected="true">按文献性质</button><button data-break-kind="label" role="tab" aria-selected="false">按客观标签</button></div>
+    const labelLimit = 12;
+    const breakdown = (typeRows.length || labelRows.length) ? `<div class="dcard span2 ov-breakdown">
+      <div class="ov-break-head"><div class="ov-break-title"><h4>文献构成</h4><div class="ov-break-tabs" role="tablist"><button class="active" data-break-kind="type" role="tab" aria-selected="true">按文献性质</button><button data-break-kind="label" role="tab" aria-selected="false">按客观标签</button></div></div><small>点击项目查看文献</small></div>
       <div class="ov-break-panel active" data-break-panel="type"><div class="ov-chips">${typeRows.map((x) => {
         const type = x.source_type || x.id || x.key || "", name = x.source_type_name || x.name || x.label || type || "其他";
         const body = `${esc(name)} <b>${num(x.n != null ? x.n : x.count || 0)}</b>`;
         return type ? `<button class="ov-chip ov-type-chip" data-source-type="${esc(type)}" data-source-name="${esc(name)}">${body}</button>`
           : `<span class="ov-chip">${body}</span>`;
       }).join("") || `<span class="hint">暂无统计</span>`}</div></div>
-      <div class="ov-break-panel" data-break-panel="label"><div class="ov-chips">${labelRows.map((x) => {
+      <div class="ov-break-panel" data-break-panel="label"><div class="ov-chips">${labelRows.map((x, i) => {
         const label = x.objective_label || x.label || x.name || "来源";
-        return `<button class="ov-chip ov-label-chip" data-objective-label="${esc(label)}">${esc(label)} <b>${num(x.n != null ? x.n : x.count || 0)}</b><span aria-hidden="true">→</span></button>`;
-      }).join("") || `<span class="hint">暂无统计</span>`}</div></div></div>` : "";
+        return `<button class="ov-chip ov-label-chip${i >= labelLimit ? " ov-chip-extra" : ""}" data-objective-label="${esc(label)}">${esc(label)} <b>${num(x.n != null ? x.n : x.count || 0)}</b></button>`;
+      }).join("") || `<span class="hint">暂无统计</span>`}${labelRows.length > labelLimit ? `<button class="ov-break-more" data-extra-count="${labelRows.length - labelLimit}">展开其余 ${num(labelRows.length - labelLimit)} 项</button>` : ""}</div></div></div>` : "";
     const mappings = gradingMappings(go);
-    const customCount = mappings.filter((x) => x.customized).length;
+    const customized = mappings.filter((x) => x.customized);
+    const customCount = customized.length;
     const mappingRows = (rows) => rows.map((x) => {
         const id = x.mapping_id || x.id || x.key || "", band = x.band || LEGACY_BAND[x.band_name || x.tier] || "normal";
+        const defaultBand = x.default_band || band;
+        const defaultName = x.default_band_name || DISC.bandNames[defaultBand] || BAND_STANDARD[defaultBand];
         const title = x.objective_label || x.source_type_name || x.label || x.name || id;
         const detail = x.description || x.rule || x.source || "";
-        const select = x.editable ? `<select class="ov-map-select" data-mapping-id="${esc(id)}" data-update-url="${esc(x.update_url || "/grading/mapping")}">` +
+        const select = x.editable ? `<select class="ov-map-select" data-mapping-id="${esc(id)}" data-default-band="${esc(defaultBand)}" data-saved-value="${esc(band)}" data-update-url="${esc(x.update_url || "/grading/mapping")}">` +
           BAND_ORDER.map((b) => `<option value="${b}"${b === band ? " selected" : ""}>${esc(DISC.bandNames[b] || BAND_STANDARD[b])}</option>`).join("") + `</select>`
           : `<span class="ov-map-band" style="color:${BAND_COLOR[band]}">${esc(x.band_name || DISC.bandNames[band] || BAND_STANDARD[band])}</span>`;
-        return `<div class="ov-map-row"><div><b>${esc(title)}</b>${detail ? `<small>${esc(detail)}</small>` : ""}</div>${select}</div>`;
+        return `<div class="ov-map-row${x.customized ? " customized" : ""}"><div><b>${esc(title)}</b>${x.customized ? `<small>默认：${esc(defaultName)}</small>` : (detail ? `<small>${esc(detail)}</small>` : "")}</div>${select}</div>`;
       }).join("");
+    const customRows = customized.map((x) => {
+      const id = x.mapping_id || x.id || x.key || "", band = x.band || "normal", defaultBand = x.default_band || "normal";
+      const title = x.objective_label || x.source_type_name || x.label || x.name || id;
+      const currentName = x.band_name || DISC.bandNames[band] || BAND_STANDARD[band];
+      const defaultName = x.default_band_name || DISC.bandNames[defaultBand] || BAND_STANDARD[defaultBand];
+      return `<div class="ov-custom-row"><div><b>${esc(title)}</b><small>当前：${esc(currentName)} · 默认：${esc(defaultName)}</small></div><button class="ov-map-reset" data-mapping-id="${esc(id)}">恢复此项</button></div>`;
+    }).join("");
     const catalogMappings = mappings.filter((x) => String(x.mapping_id || x.id || "").startsWith("label:"));
     const natureMappings = mappings.filter((x) => !String(x.mapping_id || x.id || "").startsWith("label:"));
-    const mappingCard = mappings.length ? `<details class="dcard span2 ov-mapping"><summary><span><b>评价规则（高级）</b><small>当前：${esc(DISC.name || "当前学科")} · ${customCount ? `另有 ${num(customCount)} 项自定义` : "使用当前预设"}</small></span><em>展开调整</em></summary>
-      <div class="ov-mapping-body"><p class="dcard-sub">修改只影响当前学科的评价与排序，不会篡改客观标签；单篇文献可在浏览或检索页单独改档。</p>
+    const mappingCard = mappings.length ? `<details class="dcard span2 ov-mapping"><summary><span><b>评价规则</b><small>当前：${esc(DISC.name || "当前学科")} · ${customCount ? `<mark>${num(customCount)} 项已修改</mark>` : "使用当前预设"}</small></span><em>展开调整</em></summary>
+      <div class="ov-mapping-body"><div class="ov-map-intro"><span>调整后评价、总览和检索排序会即时更新；无需重建索引，客观标签不变。</span>${customCount ? `<button id="ov-map-reset-all">恢复全部默认</button>` : ""}</div>
+      ${customCount ? `<h5 class="ov-custom-title">已修改（${num(customCount)}）</h5><div class="ov-map-custom">${customRows}</div>` : ""}
       <h5>期刊与目录</h5><div class="ov-map-table">${mappingRows(catalogMappings)}</div>
       <h5>其他文献性质</h5><div class="ov-map-table">${mappingRows(natureMappings)}</div>
       <div class="ov-map-msg hint" aria-live="polite"></div></div></details>` : "";
@@ -1524,17 +1534,14 @@
     DISC.name = go.discipline_name || d.grading_discipline_name || d.grading_discipline || DISC.name || "法学";
     DISC.notice = go.notice || go.discipline_notice || d.grading_notice || DISC.notice || "";
     const discName = DISC.name;
-    const discLine = `<p class="ov-disc">当前锁定学科：<b>${esc(discName)}</b> · <a id="ov-change-disc" class="dh-link">修改 →</a></p>`;
+    const discLine = `<div class="ov-disc"><span>当前学科：<b>${esc(discName)}</b> · <a id="ov-change-disc" class="dh-link">修改</a></span>${DISC.notice ? `<small>${esc(DISC.notice)}</small>` : ""}</div>`;
     const detail = gradingOverviewCard(d);
     let distBody = detail.bandRows;
     if (d.grading_pending) {
       distBody = `<p class="ov-dist-pending">分级分布计算中，请稍候…</p>`;
     }
-    return `<div class="dcard"><h4>全库四档评价</h4>
-      ${compose}
-      ${discLine}
-      ${DISC.notice ? `<p class="ov-disc-note">${esc(DISC.notice)}</p>` : ""}
-      <p class="dcard-sub" style="margin-top:6px">权威 / 顶级 / 核心 / 普通；普通页面只显示一个客观标签</p>${distBody}</div>` +
+    return `<div class="dcard span2 ov-library"><div class="ov-library-head"><div><h4>文库概况</h4>${compose}</div>${discLine}</div>
+      <div class="ov-library-grid"><section class="ov-rating"><div class="ov-panel-head"><h5>评价分布</h5><small>按当前学科计算</small></div>${distBody}</section>${recentSection(d.recent)}</div></div>` +
       detail.breakdown + detail.mappingCard;
   }
 
@@ -1688,7 +1695,7 @@
       ? `<div class="dash-lint" id="dash-lint" role="button" tabindex="0" title="上次体检：${esc(wl.checked_at || "未知时间")}。点击去综述库查看体检详情">🩺 综述库有 <b>${num(wl.issues)}</b> 处待理顺（孤立页 / 过时页 / 断链等）→</div>`
       : "";
     $("#dash").innerHTML = header + lintLine
-      + `<div class="dash-grid dash-2col">${overviewCard(d)}${recentCard(d.recent)}</div>`
+      + `<div class="dash-grid dash-2col">${overviewCard(d)}</div>`
       // 新手指引改为「点开＝全屏图文教程」，首页保持清爽（详细内容在 #home-guide 浮层）
       + `<button class="dash-teach-open" id="dash-teach-open" type="button"><span class="dto-ic">📖</span><span class="dto-tx"><b>新手指引</b><small>四步把小猪养成你的专属知识库 · 图文详解</small></span><span class="dto-cta">点开 →</span></button>`;
     // 事件
@@ -1719,6 +1726,10 @@
       $$(".ov-break-tabs button").forEach((x) => { const on = x === tab; x.classList.toggle("active", on); x.setAttribute("aria-selected", on ? "true" : "false"); });
       $$(".ov-break-panel").forEach((x) => x.classList.toggle("active", x.dataset.breakPanel === kind));
     }));
+    $$(".ov-break-more").forEach((b) => b.addEventListener("click", () => {
+      const chips = b.closest(".ov-chips"), expanded = chips.classList.toggle("expanded");
+      b.textContent = expanded ? "收起" : `展开其余 ${b.dataset.extraCount || ""} 项`;
+    }));
     $$(".ov-type-chip").forEach((b) => b.addEventListener("click", () => {
       BR.sourceType = b.dataset.sourceType || ""; BR.objectiveLabel = "";
       const ts = $("#bl-type-filter"); if (ts) ts.value = BR.sourceType;
@@ -1734,13 +1745,13 @@
       if (browseLoaded) applyScope("all", null, "全部", null, true);
     }));
     $$(".ov-map-select").forEach((sel) => sel.addEventListener("change", async () => {
-      const old = sel.dataset.savedValue || sel.querySelector("option[selected]")?.value || "";
+      const old = sel.dataset.savedValue || "";
       const msg = sel.closest(".ov-mapping")?.querySelector(".ov-map-msg");
       sel.disabled = true; if (msg) msg.textContent = "正在保存映射…";
       try {
         await jpost(sel.dataset.updateUrl || "/grading/mapping", { mapping_id: sel.dataset.mappingId, band: sel.value });
         sel.dataset.savedValue = sel.value;
-        if (msg) msg.textContent = "映射已更新；客观目录数据和单篇标签保持不变。";
+        if (msg) msg.textContent = "评价与检索排序已更新，无需重建索引；客观标签保持不变。";
         if (browseLoaded) loadPapers();
         setTimeout(() => loadDashboard("silent"), 300);
       } catch (e) {
@@ -1748,6 +1759,37 @@
         if (msg) msg.textContent = "保存失败：" + (e.message || e);
       } finally { sel.disabled = false; }
     }));
+    $$(".ov-map-reset").forEach((b) => b.addEventListener("click", async () => {
+      const msg = b.closest(".ov-mapping")?.querySelector(".ov-map-msg");
+      b.disabled = true; if (msg) msg.textContent = "正在恢复默认…";
+      try {
+        await jpost("/grading/mapping", { mapping_id: b.dataset.mappingId, band: null });
+        if (browseLoaded) loadPapers();
+        await loadDashboard("silent");
+        flashToast("已恢复这一项的默认评价；无需重建索引。");
+      } catch (e) {
+        if (msg) msg.textContent = "恢复失败：" + (e.message || e);
+        b.disabled = false;
+      }
+    }));
+    const resetAll = $("#ov-map-reset-all");
+    if (resetAll) resetAll.addEventListener("click", async () => {
+      const ok = await uiConfirm("将恢复当前学科的全部出厂评价规则。单篇手动改档、客观标签和索引都不会改变。", {
+        title: "恢复全部默认评价", okText: "恢复全部默认", danger: true,
+      });
+      if (!ok) return;
+      resetAll.disabled = true;
+      try {
+        await jpost("/grading/mapping/reset", {});
+        if (browseLoaded) loadPapers();
+        await loadDashboard("silent");
+        flashToast("当前学科已恢复全部默认评价；无需重建索引。");
+      } catch (e) {
+        resetAll.disabled = false;
+        const msg = resetAll.closest(".ov-mapping")?.querySelector(".ov-map-msg");
+        if (msg) msg.textContent = "恢复失败：" + (e.message || e);
+      }
+    });
     const exp = $("#rc-expand"); if (exp) exp.addEventListener("click", _goBrowseRecent);
     // R10：库总览「最近入库」的深索按钮自己 try/finally 恢复文字并用浮层反馈（不写进隐藏的浏览页 #bl-msg）
     $$(".rc-deep").forEach((b) => b.addEventListener("click", async () => {
@@ -2888,13 +2930,17 @@
     // 本地模型是否安装是用户可自行选择的运行方式，不作为应用更新后的待处理提醒。
     const system = [["索引", AG.upgrade.index], ["运行环境", AG.upgrade.runtime]];
     const warnings = system.filter(([, x]) => x && ["stale", "missing", "unknown"].includes(x.state));
+    const lightIndexOnly = !pendingItems.length && warnings.length === 1 && warnings[0][0] === "索引"
+      && Array.isArray((warnings[0][1] || {}).changed) && warnings[0][1].changed.join(",") === "light";
     box.hidden = AG.upgradeDismissed || (!pendingItems.length && !warnings.length);
     if (box.hidden) return;
     const n = pendingItems.length;
-    $("#ag-upgrade-title").textContent = n ? `${n} 项用户内容有新版待合并` : "应用更新后有项目需要留意";
+    $("#ag-upgrade-title").textContent = n ? `${n} 项用户内容有新版待合并`
+      : (lightIndexOnly ? "题录分类规则需要更新" : "应用更新后有项目需要留意");
     $("#ag-upgrade-sub").textContent = n
       ? "你的版本没有被覆盖。先看差异，推荐复制给 Agent 合并；也可带备份直接采用新版。"
-      : "应用已更新，但下面的配套内容仍需人工处理。";
+      : (lightIndexOnly ? (warnings[0][1].detail || "手动更新一次知识库即可，无需清空或重新深索。")
+        : "应用已更新，但下面的配套内容仍需人工处理。");
     list.innerHTML = pendingItems.map((x) =>
       `<div class="ag-upgrade-item" data-upgrade-i="${x._upgradeIndex}">` +
       `<div class="agu-name">${esc(x.label)}${x.status === "customized" ? "（新版旁本写入失败）" : ""}</div>` +
@@ -2903,12 +2949,15 @@
       `<button data-uact="ack">本版不再提醒</button><button class="agu-use" data-uact="replace">备份后采用新版</button>` +
       `</div><div class="agu-path">你的文件：${esc(x.main_path)}${x.new_path ? `<br>新版旁本：${esc(x.new_path)}` : ""}</div></div>`
     ).join("");
-    health.innerHTML = system.map(([name, x]) => {
-      if (!x) return "";
-      const warn = ["stale", "missing", "unknown"].includes(x.state);
+    // 正常状态不占警告卡；这里只显示确实需要处理的项目。
+    health.innerHTML = warnings.map(([name, x]) => {
       const tip = x.action ? `；建议：${x.action}` : "";
-      return `<span class="agu-health${warn ? " warn" : ""}" title="${esc((x.label || "") + tip)}">${esc(name)}：${esc(x.label || "未知")}</span>`;
+      const action = name === "索引" && x.action === "手动更新知识库" && !x.full_rebuild
+        ? `<button class="agu-health-action" data-uhealth="index">手动更新知识库</button>` : "";
+      return `<div class="agu-health-line"><span class="agu-health warn" title="${esc((x.label || "") + tip)}">${esc(name)}：${esc(x.label || "未知")}</span>${action}</div>`;
     }).join("");
+    const refreshIndex = health.querySelector('[data-uhealth="index"]');
+    if (refreshIndex) refreshIndex.addEventListener("click", doManualUpdate);
   }
   async function refreshUpgradeHealth() {
     AG.upgradeDismissed = false;
@@ -4552,6 +4601,7 @@
                   } else flashToast("更新完成 ✓");
                 } catch (e) { flashToast("更新完成 ✓"); }
               }
+              refreshUpgradeHealth().catch((e) => reportErr(e && e.message, "refresh upgrade health after build"));
             }
           }
         } catch (e) { clearInterval(iv); restore(); }
