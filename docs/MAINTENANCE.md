@@ -66,7 +66,7 @@
 | 你改了 | 必须同步 | 校验 |
 |---|---|---|
 | 全类型文献评价、客观标签或四档映射 | `source_rules.py` + `grading_svc.py` + `journal_grading/`；同步检索/浏览/单篇详情/wiki 来源/MCP 契约与库总览，跑 `test_source_grading*.py` 和 `journal_grading/selftest.py`。新增目录还要登记 `catalog_registry.py` 的来源、上游版本、检查日期 | ✅ 单测 + selftest；UI 文案人肉 |
-| 文献真实性质筛选 | `server.py /papers(source_type)` + `mcp_server.py list_sources.source_type` + 浏览页十二类选项；网页/报纸内容覆盖与分页组合必须一起测 | ✅ `test_source_grading_api.py`；UI 组合人肉 |
+| 文献页查找与来源筛选 | `server.py /papers(query, source_type, objective_label)` + `mcp_server.py list_sources.source_type` + 文献页题录查找、十二类性质和动态客观标签；分类/状态/排序/分页组合必须一起测 | ✅ `test_source_grading_api.py`；UI 组合人肉 |
 | Agent 工作流或出厂定时任务 | 修改 `agent_ws._WF_*` / 任务模板后，同步 `_template_specs()`，运行 `agent_ws.py --print-hashes` 并把新 hash 追加到 `_FACTORY_HASHES`（旧值不删） | ✅ 模板 hash 构建检查 |
 | 依赖 | `requirements.txt` **和** `requirements.lock` 同时改；同步 `THIRD-PARTY-NOTICES.md` 并核许可证；分发包需要重建 `build/py312`。含新依赖的首版必须走完整安装器，应用内 app 增量包不会补 Python wheel。⚠️ 平台专属包用标记：Windows-only 加 `; sys_platform=="win32"`（如 `pythonnet`），macOS-only 加 `; sys_platform=="darwin"`（如 `pyobjc-*`）。`.lock` 是 Windows 实机冻结，**macOS 用 `.txt` 不用 `.lock`** | ❌ |
 | 版本号 | **只改 `config.APP_VERSION`**(`config.py:19`) | ✅ check_guides ⑤（断言全源码没有第二处版本字面量） |

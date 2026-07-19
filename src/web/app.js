@@ -737,7 +737,50 @@
     if (tab === "wiki") loadWikiList(wikiLoaded ? "silent" : "loud");
     if (tab === "agent" && !agentLoaded) loadAgentConfig();
     if (tab === "chat") loadChatCats();
-    if (tab === "search") loadSearchCats();   // D2：进检索页刷新「范围」下拉，纳入新建的分类/主题
+  }
+  // 浏览与全文检索共用「文献」页。题录查找走 /papers，本地即时；全文模式复用 /search。
+  let LIBRARY_MODE = "metadata";
+  function browseScopeCategory() {
+    if (!BR || !BR.scope || BR.scope.type === "all") return null;
+    if (BR.scope.type === "topic") return `topic:${BR.scope.id}`;
+    if (BR.scope.type === "zotero") return `zotero:${BR.scope.id}`;
+    return BR.scope.id || null;
+  }
+  function syncMetadataSort(queryChanged) {
+    const q = (BR.query || "").trim(), sel = $("#bl-sort");
+    const match = sel && sel.querySelector('option[value="match"]');
+    if (match) match.hidden = !q;
+    if (q && queryChanged && BR.sort === "ingested") BR.sort = "match";
+    if (!q && BR.sort === "match") BR.sort = "ingested";
+    if (sel) sel.value = BR.sort;
+  }
+  function runMetadataSearch() {
+    const q = $("#q").value.trim(), changed = q !== BR.query;
+    BR.query = q;
+    syncMetadataSort(changed);
+    if (browseLoaded) loadPapers();
+  }
+  function setLibrarySearchMode(mode, run) {
+    LIBRARY_MODE = mode === "semantic" ? "semantic" : "metadata";
+    const semantic = LIBRARY_MODE === "semantic";
+    const modeSel = $("#lib-search-mode"); if (modeSel) modeSel.value = LIBRARY_MODE;
+    const controls = $("#lib-semantic-controls"); if (controls) controls.hidden = !semantic;
+    const browseView = $("#browse-view"); if (browseView) browseView.hidden = semantic;
+    const semanticView = $("#semantic-view"); if (semanticView) semanticView.hidden = !semantic;
+    const q = $("#q"), go = $("#go");
+    if (q) q.placeholder = semantic
+      ? "输入研究问题，检索相关文献与原文片段"
+      : "按题名、作者、期刊、年份、DOI 或 ISBN 查找";
+    if (go) go.textContent = semantic ? "检索全文" : "查找";
+    if (run === false) return;
+    if (semantic) {
+      if (q && q.value.trim()) doSearch();
+      else if ($("#s-msg")) $("#s-msg").textContent = "输入研究问题，检索相关文献与原文片段。";
+    } else runMetadataSearch();
+  }
+  function runLibrarySearch() {
+    if (LIBRARY_MODE === "semantic") doSearch();
+    else runMetadataSearch();
   }
   // 「找相似」本地实词提取（F58，止血版）：不再把整句标题灌进检索，
   // 而是在中文虚词/标点处切开、去停用词、取前几个实词短语作为查询。向量近邻版放后续波次。
@@ -756,7 +799,8 @@
   }
   // 供浏览 tab 里点标题「找相似」用：默认用 AI 从标题抽核心检索词（更准），无 key 退本地实词
   async function switchToSearch(q) {
-    switchTab("search");
+    switchTab("browse");
+    setLibrarySearchMode("semantic", false);
     $("#q").value = "正在提取关键词…"; $("#go").disabled = true;
     let kw = "";
     try {
@@ -773,7 +817,8 @@
   // ok:false（light 模式 / 取不到向量）时无损回退到既有抽词法 switchToSearch。
   async function findSimilar(key, title) {
     if (!key) { switchToSearch(title || ""); return; }
-    switchTab("search");
+    switchTab("browse");
+    setLibrarySearchMode("semantic", false);
     // UX7：不再把「与「XX」相似」这种伪查询塞进 #q（用户会误当成自己的检索词）——#q 保持原输入，
     // 相似态改由 #s-msg 的提示条表达，点「清除」即回到普通检索
     const tShort = (title || "").slice(0, 24) + ((title || "").length > 24 ? "…" : "");
@@ -997,23 +1042,6 @@
     if (o.official_pages) bits.push(`<span class="pg">第 ${esc(o.official_pages)} 页</span>`);
     return bits.length ? `<div class="card-meta">${bits.join('<span class="dot-sep">·</span>')}</div>` : "";
   }
-  // 复制「引文 + 片段」（研究者更需要的是可直接引用的文本，非工程 score）
-  async function copyResult(r, btn) {
-    const txt = (r.citation || r.title || "") + "\n\n" + (r.text || "").trim();
-    const old = btn.textContent;
-    try {
-      await navigator.clipboard.writeText(txt);
-      btn.textContent = "✓ 已复制";
-    } catch (e) {
-      const ta = document.createElement("textarea");
-      ta.value = txt; ta.style.position = "fixed"; ta.style.opacity = "0";
-      document.body.appendChild(ta); ta.focus(); ta.select();
-      try { document.execCommand("copy"); btn.textContent = "✓ 已复制"; }
-      catch (_) { btn.textContent = "复制失败"; }
-      document.body.removeChild(ta);
-    }
-    setTimeout(() => { btn.textContent = old; }, 1500);
-  }
   function resultCard(r, i) {
     const div = document.createElement("div");
     div.className = "card";
@@ -1080,36 +1108,6 @@
     document.body.appendChild(ta); ta.focus(); ta.select();
     try { document.execCommand("copy"); ok(); } catch (_) { if (btn) btn.textContent = "复制失败"; }
     document.body.removeChild(ta);
-  }
-  // GB/T 7714（国标）引文：作者. 题名. 期刊, 年份: 页码.（缺字段则省略；已有 citation 优先）
-  function citationGBT(r) {
-    if (r.citation) return r.citation;
-    const bits = [];
-    const who = (r.author || "").split(";").map((s) => s.trim()).filter(Boolean).join(", ");
-    if (who) bits.push(who + ".");
-    if (r.title) bits.push(esc0(r.title) + ".");
-    const tail = [];
-    if (r.journal) tail.push(r.journal);
-    let ym = "";
-    if (r.year) ym += String(r.year);
-    if (r.official_pages) ym += (ym ? ": " : "") + r.official_pages;
-    if (ym) tail.push(ym);
-    if (tail.length) bits.push(tail.join(", ") + ".");
-    return bits.join(" ").trim() || (r.title || "");
-  }
-  const esc0 = (s) => String(s || "");
-  // BibTeX @article 条目（字段有则填；key 用 stem/首作者+年）
-  function bibtexEntry(r) {
-    const first = (r.author || "").split(";")[0].trim().replace(/\s+/g, "");
-    const cite = (first || "ref") + (r.year || "");
-    const f = [];
-    if (r.author) f.push("  author = {" + (r.author || "").split(";").map((s) => s.trim()).filter(Boolean).join(" and ") + "}");
-    if (r.title) f.push("  title = {" + r.title + "}");
-    if (r.journal) f.push("  journal = {" + r.journal + "}");
-    if (r.year) f.push("  year = {" + r.year + "}");
-    if (r.official_pages) f.push("  pages = {" + r.official_pages + "}");
-    if (r.doi) f.push("  doi = {" + r.doi + "}");
-    return "@article{" + cite + ",\n" + f.join(",\n") + "\n}";
   }
   // 无限滚动：一次取较大批(重排只跑一次、顺序最稳)，先渲染 10 条，滚到底再追加（原#30/副本#24）
   // raw=后端原始命中；all=facet 过滤后当前展示集（F5）。facet=当前选中的二次筛选。
@@ -1187,7 +1185,7 @@
     SR.raw = []; SR.all = []; SR.shown = 0; SR.facet = { deep: false, band: "", year: "" };
     const box = $("#s-facets"); if (box) { box.hidden = true; box.innerHTML = ""; }
     try {
-      const cat = ($("#s-cat") && $("#s-cat").value) || "";
+      const cat = browseScopeCategory() || "";
       const TOPK = 50;   // search-hard-cap：由 20 提到 50
       const res = await jpost("/search", { query: q, topk: TOPK, sort: $("#sort").value,
         min_weight: parseFloat($("#minw") && $("#minw").value) || 0, category: cat || null });
@@ -1200,12 +1198,11 @@
       $("#s-msg").textContent = `命中 ${SR.raw.length} 条 · ${res.took_ms != null ? res.took_ms : "?"}ms${modeTip}${capTip}`;
       if (!SR.raw.length) {
         // UX14：限定了分类且 0 命中——点明「只搜了这个分类」，给一键切回全库重搜的出口
-        const catSel = $("#s-cat");
-        if (cat && catSel) {
-          const catName = catSel.options[catSel.selectedIndex] ? catSel.options[catSel.selectedIndex].text : "";
-          $("#s-msg").innerHTML = `当前仅在『${esc(catName)}』分类内检索，无结果 · <a class="ag-link" id="s-cat-clear">切回全部文献</a>`;
+        if (cat) {
+          const catName = (BR.scope && BR.scope.name) || "当前分类";
+          $("#s-msg").innerHTML = `当前仅在『${esc(catName)}』内检索，无结果 · <a class="ag-link" id="s-cat-clear">切回全部文献</a>`;
           const cc = $("#s-cat-clear");
-          if (cc) cc.addEventListener("click", () => { catSel.value = ""; doSearch(); });
+          if (cc) cc.addEventListener("click", () => applyScope("all", null, "全部", null, true));
         } else { $("#s-msg").textContent += "（无结果，换个关键词试试）"; }
         return;
       }
@@ -1218,9 +1215,10 @@
     }
     finally { if (myseq === SR.reqSeq) $("#go").disabled = false; }   // BF13：只有最新请求才解禁按钮
   }
-  $("#go").addEventListener("click", doSearch);
-  // Enter 触发检索，但按钮禁用（检索进行中）时不重复提交，避免结果闪烁
-  $("#q").addEventListener("keydown", (e) => { if (e.key === "Enter" && !$("#go").disabled) doSearch(); });
+  $("#go").addEventListener("click", runLibrarySearch);
+  // Enter 触发当前模式；全文检索进行中时不重复提交。
+  $("#q").addEventListener("keydown", (e) => { if (e.key === "Enter" && !$("#go").disabled) runLibrarySearch(); });
+  $("#lib-search-mode").addEventListener("change", (e) => setLibrarySearchMode(e.target.value));
 
   // ── F4：检索历史（localStorage 最近 15 条，可点 chip）──
   function pushSearchHistory(q) {
@@ -1266,20 +1264,6 @@
     if (qs.length) { EXAMPLES_DYN = qs; renderExamples(); }
   }
   renderExamples(); renderSearchHistory();
-  // 检索范围下拉（D2）：复用对话「限定分类」的数据源
-  loadSearchCats();
-  async function loadSearchCats() {
-    const sel = $("#s-cat"); if (!sel) return;
-    const cur = sel.value;
-    const [cats, tops] = await Promise.all([
-      jget("/kb/categories").then((d) => d.categories || []).catch(() => []),
-      jget("/topics").then((d) => d.topics || []).catch(() => []),
-    ]);
-    sel.innerHTML = `<option value="">全部文献</option>`
-      + cats.map((c) => `<option value="${esc(c.id)}">🗂 ${esc(c.name)}</option>`).join("")
-      + tops.map((t) => `<option value="topic:${t.id}">🧠 ${esc(t.name)}</option>`).join("");
-    if (cur) sel.value = cur;
-  }
 
   // ══════════════════════════════════════════
   //  库总览（仪表盘）—— 全部手绘 SVG/CSS
@@ -1377,7 +1361,9 @@
   }
   // 「最近入库」的「展开更多」→ 跳「浏览」并按入库时间排序
   function _goBrowseRecent() {
-    BR.sort = "ingested"; BR.deepFilter = ""; BR.sourceType = ""; BR.objectiveLabel = "";
+    BR.sort = "ingested"; BR.query = ""; BR.deepFilter = ""; BR.sourceType = ""; BR.objectiveLabel = "";
+    setLibrarySearchMode("metadata", false);
+    const q = $("#q"); if (q) q.value = "";
     const bs = $("#bl-sort"); if (bs) bs.value = "ingested";
     const df = $("#bl-deep-filter"); if (df) df.value = "";
     const tf = $("#bl-type-filter"); if (tf) tf.value = "";
@@ -1427,7 +1413,7 @@
       else btn = `<span class="rc-tag nopdf" title="无 PDF，无法深索">无PDF</span>`;
       return `<li><div class="rc-main"><div class="rt">${esc(t)}</div><div class="rd">${esc(r.ingested_at || "")}</div></div>${btn}</li>`;
     };
-    const head = recent.slice(0, 5).map(row).join("");
+    const head = recent.slice(0, 3).map(row).join("");
     return `<section class="ov-recent"><div class="ov-panel-head"><h5>最近入库</h5><button class="rc-expand" id="rc-expand">查看全部</button></div>
       <ul class="recent-list">${head}</ul></section>`;
   }
@@ -1627,7 +1613,9 @@
   }
 
   function _goDeepBrowse(filter) {
-    BR.deepFilter = filter; BR.sourceType = ""; BR.objectiveLabel = ""; BR.sort = "recommend";
+    BR.deepFilter = filter; BR.sourceType = ""; BR.objectiveLabel = ""; BR.query = ""; BR.sort = "recommend";
+    setLibrarySearchMode("metadata", false);
+    const q = $("#q"); if (q) q.value = "";
     const df = $("#bl-deep-filter"); if (df) df.value = filter;
     const tf = $("#bl-type-filter"); if (tf) tf.value = "";
     const bs = $("#bl-sort"); if (bs) bs.value = "recommend";
@@ -1731,14 +1719,18 @@
       b.textContent = expanded ? "收起" : `展开其余 ${b.dataset.extraCount || ""} 项`;
     }));
     $$(".ov-type-chip").forEach((b) => b.addEventListener("click", () => {
-      BR.sourceType = b.dataset.sourceType || ""; BR.objectiveLabel = "";
+      BR.sourceType = b.dataset.sourceType || ""; BR.objectiveLabel = ""; BR.query = "";
+      setLibrarySearchMode("metadata", false);
+      const q = $("#q"); if (q) q.value = "";
       const ts = $("#bl-type-filter"); if (ts) ts.value = BR.sourceType;
       BR.scope = { type: "all", id: null, name: b.dataset.sourceName || "全部" };
       switchTab("browse");
       if (browseLoaded) applyScope("all", null, b.dataset.sourceName || "全部", null, true);
     }));
     $$(".ov-label-chip").forEach((b) => b.addEventListener("click", () => {
-      BR.objectiveLabel = b.dataset.objectiveLabel || ""; BR.sourceType = "";
+      BR.objectiveLabel = b.dataset.objectiveLabel || ""; BR.sourceType = ""; BR.query = "";
+      setLibrarySearchMode("metadata", false);
+      const q = $("#q"); if (q) q.value = "";
       const ts = $("#bl-type-filter"); if (ts) ts.value = "";
       BR.scope = { type: "all", id: null, name: "全部" };
       switchTab("browse");
@@ -1825,7 +1817,7 @@
   // ══════════════════════════════════════════
   // scope 统一左树选择态（type: all|zotero|topic|kbcat），取代旧的 collection/topic 两两互清。
   const BR = { scope: { type: "all", id: null, name: "全部" },
-               deepFilter: "", sourceType: "", objectiveLabel: "", sort: "recommend", papers: [], selected: new Set(),
+               query: "", deepFilter: "", sourceType: "", objectiveLabel: "", sort: "ingested", papers: [], selected: new Set(),
                cats: [], reqSeq: 0, topicIv: null, total: 0 };   // cats：缓存 /kb/categories；reqSeq：B5 守卫；topicIv：R12 主题轮询句柄；total：W1 分页总数
 
   // 左侧收藏夹树（递归渲染，默认折叠，只展开有子节点的第一层由用户点开）
@@ -1881,7 +1873,10 @@
     $$("#bt-topics .bt-topic").forEach((c) => c.classList.remove("active"));
     $$("#bt-kbcats .kbcat").forEach((c) => c.classList.remove("active"));
     if (rowEl && type !== "all") rowEl.classList.add("active");
-    loadPapers();
+    if (LIBRARY_MODE === "semantic") {
+      if ($("#q").value.trim()) doSearch();
+      else $("#s-msg").textContent = `当前范围：${BR.scope.name}。输入研究问题开始检索。`;
+    } else loadPapers();
   }
   // 薄封装（保留原签名，兼容既有调用点）：收藏夹 / AI 主题 / 知识库分类
   function selectCollection(path, name, rowEl, keepFilter) {
@@ -2107,20 +2102,24 @@
       try { const r = await jpost("/kb/categories", { name }); if (r.ok) loadKbCats(); }
       catch (e) { toast("新建分类失败：" + e.message); }
     });
-    // 收起/展开两区（状态存 localStorage）
+    // 手动分类默认展开；AI 分类与 Zotero 分类默认收起。用户调整后记住选择。
     const applyCollapse = () => {
       const st = safeParse(localStorage.getItem("localkb.btCollapse"), {});
+      const defaults = { kbc: false, topics: true, zot: true };
       // 各分区约定：#bt-{sec}-body（topics / kbc / zot）——按 caret 的 data-sec 统一收放
       $$(".bt-caret2").forEach((c) => {
         const body = $("#bt-" + c.dataset.sec + "-body");
-        if (body) body.hidden = !!st[c.dataset.sec];
-        c.textContent = st[c.dataset.sec] ? "▸" : "▾";
+        const collapsed = st[c.dataset.sec] == null ? !!defaults[c.dataset.sec] : !!st[c.dataset.sec];
+        if (body) body.hidden = collapsed;
+        c.textContent = collapsed ? "▸" : "▾";
       });
     };
     $$(".bt-caret2").forEach((c) => c.addEventListener("click", (e) => {
       e.stopPropagation();
       const st = safeParse(localStorage.getItem("localkb.btCollapse"), {});
-      st[c.dataset.sec] = !st[c.dataset.sec];
+      const defaults = { kbc: false, topics: true, zot: true };
+      const collapsed = st[c.dataset.sec] == null ? !!defaults[c.dataset.sec] : !!st[c.dataset.sec];
+      st[c.dataset.sec] = !collapsed;
       localStorage.setItem("localkb.btCollapse", JSON.stringify(st));
       applyCollapse();
     }));
@@ -3202,12 +3201,6 @@
     document.addEventListener("keydown", (e) => { if (e.key === "Escape" && guide && !guide.hidden) showGuide(false); });
   })();
 
-  // 只保留友好的「建议深读」标签，隐藏 ⭐15.7 这种裸数字（假精度；口径与设置「学科」无关，见 F17）
-  function scoreBadge(p) {
-    const s = p.score;
-    if (s == null || s < 12) return "";
-    return `<span class="brec" title="按来源评价、年份和有无全文综合推荐，值得优先深读">建议深读</span>`;
-  }
   // 已深索的卡：有效→🧬；异常→🟠；缺失→⚪。异常与缺失都由用户点后才生成。
   function sacBadge(p) {
     if (!p.deep) return "";
@@ -3242,7 +3235,7 @@
     div.innerHTML =
       `<label class="bcard-cb"><input type="checkbox" ${checked} data-key="${esc(p.key)}"/></label>` +
       `<div class="bcard-body">` +
-        `<div class="bcard-head">${scoreBadge(p)}${tierBadge(p)}${statuteBadge(p)}${deepBadge(p)}${reviewBadge(p)}` +   // EN-F5：浏览卡带法条时效徽标
+        `<div class="bcard-head">${tierBadge(p)}${statuteBadge(p)}${deepBadge(p)}${reviewBadge(p)}` +   // EN-F5：浏览卡带法条时效徽标
           // UX4：直接开原文 PDF（复用检索卡的 /open_pdf 通道）；无 PDF 禁用。标题点击仍保持「找相似」不动
           `<button class="bcard-open" title="${p.has_pdf ? "用系统阅读器打开这篇的 PDF 原文" : "无 PDF，无法打开原文"}"${p.has_pdf ? "" : " disabled"}>📄 打开</button>` +
           `<button class="bcard-addcat" title="加入「手动分类」">＋分类</button></div>` +   // D1：可见入口
@@ -3311,7 +3304,6 @@
     $("#bl-sel-n").textContent = num(deepN);
     $("#bl-deep-sel").disabled = deepN === 0;
     const _a = $("#bl-addcat"); if (_a) _a.disabled = n === 0;
-    const _c = $("#bl-cite-sel"); if (_c) _c.disabled = n === 0;
     // 全选框状态：所有卡片均可勾选，故以当前列表全部为分母
     const allSel = BR.papers.length > 0 && BR.papers.every((p) => BR.selected.has(p.key));
     const box = $("#bl-selall");
@@ -3337,6 +3329,17 @@
       opt.textContent = counts[key] == null ? base : `${base}（${num(counts[key])}）`;
     });
   }
+  function renderBrowseLabelCounts(counts) {
+    const sel = $("#bl-label-filter"); if (!sel) return;
+    const current = BR.objectiveLabel || "";
+    const rows = Object.entries(counts || {}).sort((a, b) => Number(b[1] || 0) - Number(a[1] || 0) || a[0].localeCompare(b[0], "zh-CN"));
+    sel.innerHTML = `<option value="">全部客观标签</option>` + rows.map(([label, count]) =>
+      `<option value="${esc(label)}">${esc(label)}（${num(count)}）</option>`).join("");
+    if (current && !rows.some(([label]) => label === current)) {
+      const opt = document.createElement("option"); opt.value = current; opt.textContent = `${current}（0）`; sel.appendChild(opt);
+    }
+    sel.value = current;
+  }
 
   function renderBrowseActiveFilters() {
     const box = $("#bl-active-filters"); if (!box) return;
@@ -3351,14 +3354,7 @@
     $("#bl-name").textContent = BR.scope.name;
     $("#bl-list").innerHTML = ""; $("#bl-msg").textContent = "加载中…";
     BR.selected.clear(); refreshSelUI();
-    const isRec = BR.sort === "recommend";
     renderBrowseActiveFilters();
-    // 长解释收进点击浮层（.tip-i 已有 ctx 展开习惯）；title 精简为一句
-    $("#bl-tip").innerHTML = isRec
-      ? `⭐ 已按「值得先读」排序：优先来源评价高、较新且有全文可深读的文献
-         <span class="tip-i" title="推荐分＝来源评价权重×10＋近年加成＋有全文可深读；随「设置→检索→来源评价学科」变化。">ⓘ 怎么算的</span>`
-      : "";
-    $("#bl-tip").style.display = isRec ? "" : "none";
     const om = $("#bl-more"); if (om) om.remove();   // W1：换范围/重载时清掉旧「加载更多」按钮
     try {
       const params = new URLSearchParams({ sort: BR.sort, limit: "300", offset: "0" });
@@ -3370,10 +3366,12 @@
       if (BR.deepFilter) params.set("deep", BR.deepFilter);
       if (BR.sourceType) params.set("source_type", BR.sourceType);
       if (BR.objectiveLabel) params.set("objective_label", BR.objectiveLabel);
+      if (BR.query) params.set("query", BR.query);
       const d = await jget("/papers?" + params.toString());
       if (myseq !== BR.reqSeq) return;   // B5：已有更新的请求发出，丢弃这次陈旧响应
       renderBrowseFilterCounts(d.filter_counts || {});
       renderBrowseTypeCounts(d.source_type_counts || d.type_counts || {});
+      renderBrowseLabelCounts(d.objective_label_counts || {});
       BR.papers = d.papers || [];
       // W1：「（显示前 300）」这种死数字标签取消——分页由底部「加载更多」承担
       BR.total = d.total != null ? d.total : BR.papers.length;
@@ -3384,8 +3382,9 @@
         // empty-cat-hint-deadlock：给出可操作路径 + 跳转按钮，而非死胡同
         $("#bl-msg").innerHTML = `该分类暂无文献。去「⭐ 全部文献」勾选后点「＋ 加入分类」，或右键文献卡 / 拖到左侧分类上归类。 <a class="ag-link" id="bl-go-all">→ 去全部文献</a>`;
         const g = $("#bl-go-all"); if (g) g.addEventListener("click", () => selectCollection(null, "全部", null));
-      } else if (BR.deepFilter || BR.sourceType || BR.objectiveLabel) {
+      } else if (BR.query || BR.deepFilter || BR.sourceType || BR.objectiveLabel) {
         const bits = [];
+        if (BR.query) bits.push(`题录：${BR.query}`);
         if (BR.sourceType) bits.push($("#bl-type-filter").selectedOptions[0]?.dataset.label || "当前文献类型");
         if (BR.deepFilter) bits.push($("#bl-deep-filter").selectedOptions[0]?.dataset.label || "当前状态");
         if (BR.objectiveLabel) bits.push(`客观标签：${BR.objectiveLabel}`);
@@ -3417,6 +3416,7 @@
       if (BR.deepFilter) params.set("deep", BR.deepFilter);
       if (BR.sourceType) params.set("source_type", BR.sourceType);
       if (BR.objectiveLabel) params.set("objective_label", BR.objectiveLabel);
+      if (BR.query) params.set("query", BR.query);
       const d = await jget("/papers?" + params.toString());
       if (myseq !== BR.reqSeq) return;             // 期间用户切了范围/排序 → 丢弃
       const fresh = new Map((d.papers || []).map((x) => [x.key, x]));
@@ -3459,6 +3459,7 @@
       if (BR.deepFilter) params.set("deep", BR.deepFilter);
       if (BR.sourceType) params.set("source_type", BR.sourceType);
       if (BR.objectiveLabel) params.set("objective_label", BR.objectiveLabel);
+      if (BR.query) params.set("query", BR.query);
       const d = await jget("/papers?" + params.toString());
       if (myseq !== BR.reqSeq) return;
       // W1：recommend/year 排序在两次请求间可能因深索完成/改档而重排——按 key 去重防重复卡片（漏条无法前端补救，可接受）
@@ -3525,6 +3526,7 @@
   $("#bl-sort").addEventListener("change", () => { BR.sort = $("#bl-sort").value; loadPapers(); });
   $("#bl-deep-filter").addEventListener("change", () => { BR.deepFilter = $("#bl-deep-filter").value; loadPapers(); });
   $("#bl-type-filter").addEventListener("change", () => { BR.sourceType = $("#bl-type-filter").value; loadPapers(); });
+  $("#bl-label-filter").addEventListener("change", () => { BR.objectiveLabel = $("#bl-label-filter").value; loadPapers(); });
   $("#bl-active-filters").addEventListener("click", (e) => {
     const b = e.target.closest("button[data-clear-filter]");
     if (!b) return;
@@ -3542,15 +3544,6 @@
     e.stopPropagation();   // 否则冒泡到 document 的关闭浮层处理器会立刻关掉刚打开的菜单
     const rect = _blAdd.getBoundingClientRect();
     openAddToCatMenu([...BR.selected], rect.left, rect.bottom + 2);
-  });
-  // D3/F1：导出选中引文（GB/T 7714 国标，一篇一行）
-  const _blCite = $("#bl-cite-sel");
-  if (_blCite) _blCite.addEventListener("click", () => {
-    const picked = BR.papers.filter((p) => BR.selected.has(p.key));
-    if (!picked.length) return;
-    const txt = picked.map((p) => citationGBT(p)).join("\n\n");
-    copyText(txt, _blCite);
-    flashToast(`已复制 ${num(picked.length)} 篇的规范引文（GB/T 7714）。`);
   });
   // 「深索推荐 Top 10」按钮已移除（F19：年份排序时名不副实，且与选中深索重复）
   $("#bt-all").addEventListener("click", () => selectCollection(null, "全部", null));

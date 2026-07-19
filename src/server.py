@@ -2871,12 +2871,41 @@ _SOURCE_TYPE_FILTERS = {
 }
 
 
+_PAPER_QUERY_FIELDS = (
+    "title", "author", "journal", "year", "doi", "isbn", "issn", "publisher",
+    "book_title", "website_title", "institution", "university", "conference_name",
+    "court", "docket_number", "standard_number", "report_number",
+)
+
+
+def _paper_metadata_match_rank(p: dict, query: str) -> Optional[int]:
+    """本地题录查找：全部词都需命中；题名精确/开头/包含优先，其次作者和其他字段。"""
+    q = " ".join(str(query or "").split()).casefold()
+    if not q:
+        return 0
+    title = " ".join(str(p.get("title") or "").split()).casefold()
+    author = " ".join(str(p.get("author") or "").split()).casefold()
+    values = [str(p.get(field) or "") for field in _PAPER_QUERY_FIELDS]
+    haystack = " ".join(values).casefold()
+    if not all(token in haystack for token in q.split()):
+        return None
+    if title == q:
+        return 0
+    if title.startswith(q):
+        return 1
+    if q in title:
+        return 2
+    if q in author:
+        return 3
+    return 4
+
+
 @app.get("/papers")
 def papers(collection: Optional[str] = None, topic: Optional[int] = None,
            category: Optional[str] = None, deep: Optional[str] = None,
            sort: str = "recommend", limit: int = 300, offset: int = 0,
            since: Optional[str] = None, source_type: Optional[str] = None,
-           objective_label: Optional[str] = None):
+           objective_label: Optional[str] = None, query: Optional[str] = None):
     # EN-A7：since=YYYY-MM-DD 按 ingested_at 过滤（配合 whats_new：「上次见面后新入了什么」）。
     # ingested_at 形如 "YYYY-MM-DD HH:MM:SS"，与 since 直接字典序比较即可；
     # 没有 ingested_at 的老条目（空串）在 since 模式下会被滤掉——它们本来就不是"新入库"。
@@ -2898,6 +2927,16 @@ def papers(collection: Optional[str] = None, topic: Optional[int] = None,
         items = [papers[k] for k in cats["by_collection"][collection] if k in papers]
     else:
         items = list(papers.values())
+    query = " ".join(str(query or "").split())
+    match_ranks = {}
+    if query:
+        matched = []
+        for p in items:
+            rank = _paper_metadata_match_rank(p, query)
+            if rank is not None:
+                matched.append(p)
+                match_ranks[p["key"]] = rank
+        items = matched
     import grading_svc as GS
     out = []
     filter_counts = {name: 0 for name in (
@@ -2932,7 +2971,7 @@ def papers(collection: Optional[str] = None, topic: Optional[int] = None,
                     break
         if wanted_types is not None and actual_type not in wanted_types:
             continue
-        if deep_match:
+        if deep_match and (wanted_types is None or actual_type in wanted_types):
             objective_label_counts[actual_label] = objective_label_counts.get(actual_label, 0) + 1
         if not label_match:
             continue
@@ -2972,7 +3011,14 @@ def papers(collection: Optional[str] = None, topic: Optional[int] = None,
             "summary_invalid": summary_invalid,
             "summary_error": sum_issues.get(summary_stem, ""),
         })
-    if sort == "recommend":
+    if sort == "match" and query:
+        def _match_y(x):
+            try:
+                return int(str(x.get("year") or "0")[:4])
+            except (TypeError, ValueError):
+                return 0
+        out.sort(key=lambda x: (match_ranks.get(x["key"], 9), -_match_y(x)))
+    elif sort == "recommend":
         out.sort(key=lambda x: -x["score"])
     elif sort == "year":
         def _y(x):
@@ -2989,7 +3035,7 @@ def papers(collection: Optional[str] = None, topic: Optional[int] = None,
             "objective_label_counts": objective_label_counts,
             "collection": collection, "topic": topic, "category": category, "deep": deep,
             "source_type": source_type, "objective_label": wanted_label,
-            "sort": sort, "since": since}
+            "sort": sort, "since": since, "query": query}
 
 # ── 单篇手动改档（法源权重改造 2026-07-12）──────────────────
 class TierOverrideQ(BaseModel):

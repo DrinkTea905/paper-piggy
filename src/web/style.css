@@ -90,9 +90,11 @@ body {
 
 .panel { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
 
-/* 检索 */
-.searchbar { display: flex; gap: 8px; padding: 14px 20px; border-bottom: 1px solid var(--line); background: var(--card); }
-#q { flex: 1; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; font-size: 14px; outline: none; }
+/* 文献页统一题录查找 / 全文检索 */
+.library-searchbar { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 20px; border-bottom: 1px solid var(--line); background: var(--card); }
+.library-searchbar #lib-search-mode { flex: 0 0 auto; font-weight: 600; }
+.library-searchbar #lib-semantic-controls { display: flex; gap: 8px; }
+#q { flex: 1 1 260px; min-width: 160px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; font-size: 14px; outline: none; }
 #q:focus { border-color: var(--accent); }
 select { padding: 0 8px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
 #go, #chat-go { padding: 10px 20px; border: none; border-radius: 8px; background: var(--accent); color: #fff; font-weight: 600; cursor: pointer; }
@@ -478,6 +480,7 @@ button:disabled { opacity: .6; cursor: default; }
 
 /* 右侧文献列表 */
 .browse-list { flex: 1; display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+.library-browse-view, .library-semantic-view { flex: 1; display: flex; flex-direction: column; min-height: 0; min-width: 0; }
 .bl-bar { display: flex; align-items: center; gap: 12px; padding: 12px 20px; border-bottom: 1px solid var(--line); background: var(--card); flex-wrap: wrap; }
 .bl-title { font-weight: 700; font-size: 15px; display: flex; align-items: baseline; gap: 8px; min-width: 0; }
 .bl-title #bl-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 320px; }
@@ -488,7 +491,6 @@ button:disabled { opacity: .6; cursor: default; }
 .ghost2b:hover { border-color: var(--accent); color: var(--accent); }
 .primary-btn { padding: 7px 14px; border: none; border-radius: 8px; background: var(--accent); color: #fff; font-weight: 600; cursor: pointer; font-size: 12.5px; }
 .primary-btn:hover { background: var(--accent-d); }
-.bl-tip { padding: 8px 20px; font-size: 12.5px; color: #4338ca; background: #eef2ff; border-bottom: 1px solid #e0e7ff; }
 .bl-active-filters { padding: 7px 20px; border-bottom: 1px solid var(--line); background: var(--card); }
 .bl-active-filters span { display: inline-flex; align-items: center; gap: 4px; padding: 4px 7px 4px 10px; border: 1px solid rgba(37,99,235,.28); border-radius: 14px; color: var(--accent); font-size: 12px; background: rgba(37,99,235,.06); }
 .bl-active-filters button { width: 20px; height: 20px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--accent); cursor: pointer; font-size: 15px; line-height: 20px; }
@@ -503,7 +505,6 @@ button:disabled { opacity: .6; cursor: default; }
 .bcard-head { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; flex-wrap: wrap; }
 .bscore { font-size: 12px; font-weight: 700; color: #64748b; font-variant-numeric: tabular-nums; }
 .bscore.hot { color: #b45309; }
-.brec { font-size: 10.5px; font-weight: 700; color: #92400e; background: #fef3c7; padding: 1px 7px; border-radius: 9px; }
 .bcard-title { font-weight: 600; font-size: 14px; cursor: pointer; line-height: 1.5; }
 .bcard-title:hover { color: var(--accent); text-decoration: underline; }
 .bcard .card-meta { margin-top: 4px; margin-bottom: 0; }
@@ -997,6 +998,7 @@ button:disabled { opacity: .6; cursor: default; }
 .ov-library-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
 .ov-library-grid > section { min-width: 0; padding: 15px 18px 17px; }
 .ov-library-grid > section + section { border-left: 1px solid var(--line); }
+.ov-rating { display: flex; flex-direction: column; justify-content: center; }
 .ov-panel-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 24px; margin-bottom: 7px; }
 .ov-panel-head h5 { margin: 0; font-size: 13px; }
 .ov-panel-head small { color: var(--muted); font-size: 11.5px; }
@@ -1124,6 +1126,7 @@ button.ov-chip:hover { border-color: var(--accent); color: var(--accent); }
   .ov-disc { align-items: flex-start; text-align: left; }
   .ov-library-grid { grid-template-columns: 1fr; }
   .ov-library-grid > section + section { border-left: 0; border-top: 1px solid var(--line); }
+  .ov-rating { justify-content: flex-start; }
   .ov-break-head, .ov-break-title, .ov-map-intro { align-items: flex-start; flex-direction: column; }
   .ov-break-head > small { white-space: normal; }
   .ov-band-row { grid-template-columns: 9px 54px 1fr auto; }
@@ -1264,7 +1267,7 @@ a.wk-export:hover { border-color: var(--accent); color: var(--accent); }
 :root[data-theme="dark"] .ag-intro { background: #2a2410; border-color: #5c4a1a; }
 :root[data-theme="dark"] .snippet { background: rgba(110,168,254,.10); }
 :root[data-theme="dark"] .dash-loading, :root[data-theme="dark"] .donut-total { color: var(--fg); }
-:root[data-theme="dark"] .brec, :root[data-theme="dark"] .tag.review, :root[data-theme="dark"] .wk-flag.agent { filter: brightness(.9); }
+:root[data-theme="dark"] .tag.review, :root[data-theme="dark"] .wk-flag.agent { filter: brightness(.9); }
 :root[data-theme="dark"] .wk-flag.degraded { filter: brightness(.9); }
 :root[data-theme="dark"] .wk-degraded-banner { background: rgba(220,38,38,.12); border-color: #7f1d1d; color: #fca5a5; }
 :root[data-theme="dark"] .lint-chip { background: rgba(245,158,11,.12); border-color: #78350f; color: #fbbf24; }
@@ -1304,7 +1307,7 @@ a.wk-export:hover { border-color: var(--accent); color: var(--accent); }
 .dash-lint b { font-size: 14px; }
 :root[data-theme="dark"] .dash-lint { background: rgba(245,158,11,.10); border-color: #78350f; color: #fbbf24; }
 
-/* EN-F2：综述库建议横幅（蓝底信息条，与 .bl-tip / deep-invite 同一视觉家族） */
+/* EN-F2：综述库建议横幅（蓝底信息条，与 deep-invite 同一视觉家族） */
 .wk-suggest { border: 1px solid #bfdbfe; background: #eff6ff; border-radius: 10px;
   padding: 10px 14px; margin-bottom: 12px; font-size: 13px; }
 .wk-suggest .wsg-head { cursor: pointer; user-select: none; }
