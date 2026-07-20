@@ -1372,7 +1372,9 @@ def update_page(page_id, kind=None, title=None, content=None, sources=None,
     - 页不存在：按给定 kind 新建（kind 必填）。
     - 页已存在：mode=replace 覆盖正文；mode=append 追加到正文末尾（保留原有内容与来源）。
     - 沿用 _persist_page 的写权护栏：agent 不能覆盖人工核验过的页。
-    - sources 合并去重；links 可一并写入。
+    - mode=append 时 sources 与旧来源合并；mode=replace 且显式传 sources 时，以新列表替换旧来源。
+      replace 未传 sources 时保留旧来源。这样既不会无意丢失 provenance，也允许修正历史失效 key。
+    - links 可一并写入。
     """
     ensure_scaffold()
     body = (content or "").strip()
@@ -1390,7 +1392,13 @@ def update_page(page_id, kind=None, title=None, content=None, sources=None,
                 old_body = re.split(r"\n---\n\s*\*\*参考来源\*\*", old_body)[0].strip()
                 old_body = re.sub(r"(?m)^\*（.*）\*\s*$", "", old_body).strip()
                 body = (old_body + "\n\n" + body).strip()
-            merged = list(existing.get("sources") or []) + list(sources or [])
+            old_sources = list(existing.get("sources") or [])
+            if mode == "append":
+                merged = old_sources + list(sources or [])
+            elif sources is None:
+                merged = old_sources
+            else:
+                merged = list(sources)
         else:
             if not kind:
                 raise ValueError("新建页必须指定 kind：" + "/".join(KINDS))

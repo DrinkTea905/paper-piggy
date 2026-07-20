@@ -2425,7 +2425,8 @@ class WikiUpdateQ(BaseModel):
 
 @app.post("/wiki/page/{page_id}")
 def wiki_update_page(page_id: str, q: WikiUpdateQ):
-    """建 / 覆盖 / 追加任意 kind 的 wiki 页（含 entity / overview）。沿用 agent 写权护栏。"""
+    """建 / 覆盖 / 追加任意 kind 的 wiki 页（含 entity / overview）。
+    replace 显式传 sources 时替换旧来源，允许用有效 key 修正历史失效 key；最终页面仍整页校验。"""
     try:
         m = W.update_page(page_id, kind=q.kind, title=q.title, content=q.content,
                           sources=q.sources, mode=q.mode, links=q.links,

@@ -281,7 +281,7 @@
                   </optgroup>
                 </select>
                 <select id="bl-type-filter" title="按识别后的真实文献性质筛选">
-                  <option value="">全部文献性质</option>
+                  <option value="">文献性质</option>
                   <option value="journal_article">期刊论文</option>
                   <option value="book">书籍</option>
                   <option value="book_section">书章</option>
@@ -296,7 +296,7 @@
                   <option value="web">网页与其他</option>
                 </select>
                 <select id="bl-label-filter" title="按客观标签筛选">
-                  <option value="">全部客观标签</option>
+                  <option value="">客观标签</option>
                 </select>
                 <select id="bl-sort" title="排序；综合推荐考虑来源评价、年份和全文可用性">
                   <option value="ingested" selected>最新入库</option>
@@ -308,7 +308,7 @@
               <div class="bl-batch-actions">
                 <label class="bl-sel-all"><input type="checkbox" id="bl-selall" /> 全选</label>
                 <button id="bl-addcat" class="ghost2b" disabled title="把勾选的文献加入某个「手动分类」；也可右键文献卡，或拖到左侧手动分类">＋ 加入分类</button>
-                <button id="bl-deep-sel" class="primary-btn" disabled>深索选中的未深索文献 <span id="bl-sel-n">0</span> 篇</button>
+                <button id="bl-deep-sel" class="primary-btn" disabled>深索选中 <span id="bl-sel-n">0</span> 篇</button>
                 <button class="ag-refresh" data-act="refresh-browse" title="重新扫描文献列表、分类和计数（新入库或后台深索后使用）">🔄 刷新</button>
               </div>
             </div>
@@ -371,14 +371,9 @@
               刷新
             </button>
             <button id="wk-view" class="ghost wk-view-btn" title="切换列表 / 关系图">关系图</button>
-            <details class="wk-more">
-              <summary><span aria-hidden="true">•••</span>更多工具</summary>
-              <div class="wk-more-menu">
-                <button id="wk-lint" class="ghost" title="体检：孤儿页 / 过时页 / 断链 / 来源错误 / 重复标题">体检综述库</button>
-                <!-- EN-F3：时间线——谁在什么时候建/改了哪页（git log 优先，退快照记录） -->
-                <button id="wk-timeline" class="ghost" title="综述库演化时间线：每一页在什么时候被谁建立或修改">查看时间线</button>
-              </div>
-            </details>
+            <button id="wk-lint" class="ghost wk-view-btn" title="体检：孤儿页 / 过时页 / 断链 / 来源错误 / 重复标题">体检综述库</button>
+            <!-- EN-F3：时间线——谁在什么时候建/改了哪页（git log 优先，退快照记录） -->
+            <button id="wk-timeline" class="ghost wk-view-btn" title="综述库演化时间线：每一页在什么时候被谁建立或修改">查看时间线</button>
           </div>
           </div>
         </div>
@@ -455,18 +450,16 @@
 
       <!-- 📦 交付物 -->
       <section class="ag-card ag-folder">
-        <h3>📦 你的交付物</h3>
+        <div class="ag-folder-head"><h3>📦 你的交付物</h3><button class="ghost2 ag-openbtn" data-open="output">📂 打开交付物文件夹</button></div>
         <p class="ag-note">AI 助手替你写的成品（论文、资料汇编、周报）都放这，<b>每个主题一个文件夹</b>。产出前，和你的助手<b>商量清楚交付形态</b>（篇幅 / 引注 / 要不要 .docx）。</p>
         <div class="ag-folder-path" id="ag-output-path"></div>
-        <button class="ghost2 ag-openbtn" data-open="output">📂 打开交付物文件夹</button>
       </section>
 
       <!-- 📚 专属资料库 -->
       <section class="ag-card ag-folder">
-        <h3>📚 专属资料库</h3>
+        <div class="ag-folder-head"><h3>📚 专属资料库</h3><button class="ghost2 ag-openbtn" data-open="rely">📂 打开资料库文件夹</button></div>
         <p class="ag-note">AI 助手专属：放<b>记忆、技能、参考格式、交付模板、定时任务</b>。换了 AI 助手也会自动读取这里、无缝接上；AI 会自己维护、保持人类可读。</p>
         <div class="ag-folder-path" id="ag-rely-path"></div>
-        <button class="ghost2 ag-openbtn" data-open="rely">📂 打开资料库文件夹</button>
       </section>
 
       <!-- 📦 最近交付物主题（跨满一行，独立于上面两卡）——常显 + 🔄 刷新：新增交付物无需重启即可看到 -->

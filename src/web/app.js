@@ -730,6 +730,7 @@
   function switchTab(tab) {
     $$(".tab").forEach((x) => x.classList.toggle("active", x.dataset.tab === tab));
     $$(".panel").forEach((p) => { p.hidden = p.dataset.panel !== tab; });
+    syncHomeGuideTrigger(tab);
     // R12：离开浏览页时清掉「生成主题」的轮询，避免后台卡住时无限轮询
     if (tab !== "browse" && BR && BR.topicIv) { clearInterval(BR.topicIv); BR.topicIv = null; }
     if (tab === "dashboard") loadDashboard(dashLoaded ? "silent" : "loud");
@@ -1560,7 +1561,7 @@
     </div>`;
   }
 
-  // 库总览·新手指引：左上角小猪头像是常驻入口；首次显示一次锚定提示。
+  // 库总览·新手指引：只在库总览页启用左上角小猪；首次显示一次锚定提示。
   function openHomeGuide() {
     const g = $("#home-guide"); if (!g) return;
     const vis = $("#hg-visual");
@@ -1573,6 +1574,16 @@
     const body = g.querySelector(".ag-guide-body"); if (body) body.scrollTop = 0;
   }
   function closeHomeGuide() { const g = $("#home-guide"); if (g) g.hidden = true; }
+  function syncHomeGuideTrigger(tab) {
+    const opener = $("#brand-guide"), tip = $("#brand-guide-tip");
+    if (!opener) return;
+    const active = tab === "dashboard";
+    opener.classList.toggle("is-inactive", !active);
+    opener.setAttribute("aria-disabled", active ? "false" : "true");
+    opener.setAttribute("aria-label", active ? "打开新手指引" : "PaperPiggy");
+    opener.title = active ? "打开新手指引" : "";
+    if (!active && tip) tip.hidden = true;
+  }
   (function wireHomeGuide() {
     const opener = $("#brand-guide"), tip = $("#brand-guide-tip"), tipClose = $("#brand-guide-tip-close");
     const tipKey = "localkb.brandGuideTipSeen";
@@ -1580,9 +1591,15 @@
       if (tip) tip.hidden = true;
       try { localStorage.setItem(tipKey, "1"); } catch (_) {}
     };
-    if (opener) opener.addEventListener("click", () => { dismissTip(); openHomeGuide(); });
+    if (opener) opener.addEventListener("click", () => {
+      if (opener.getAttribute("aria-disabled") === "true") return;
+      dismissTip(); openHomeGuide();
+    });
     if (tipClose) tipClose.addEventListener("click", dismissTip);
-    try { if (tip && localStorage.getItem(tipKey) !== "1") tip.hidden = false; } catch (_) { if (tip) tip.hidden = false; }
+    syncHomeGuideTrigger($(".tab.active")?.dataset.tab || "dashboard");
+    try {
+      if (tip && opener?.getAttribute("aria-disabled") !== "true" && localStorage.getItem(tipKey) !== "1") tip.hidden = false;
+    } catch (_) { if (tip && opener?.getAttribute("aria-disabled") !== "true") tip.hidden = false; }
     const c = $("#home-guide-close"); if (c) c.addEventListener("click", closeHomeGuide);
     const t2a = $("#hg-to-agent"); if (t2a) t2a.addEventListener("click", () => { closeHomeGuide(); switchTab("agent"); });
     document.addEventListener("keydown", (e) => { const g = $("#home-guide"); if (e.key === "Escape" && g && !g.hidden) closeHomeGuide(); });
@@ -3368,7 +3385,7 @@
     const sel = $("#bl-label-filter"); if (!sel) return;
     const current = BR.objectiveLabel || "";
     const rows = Object.entries(counts || {}).sort((a, b) => Number(b[1] || 0) - Number(a[1] || 0) || a[0].localeCompare(b[0], "zh-CN"));
-    sel.innerHTML = `<option value="">全部客观标签</option>` + rows.map(([label, count]) =>
+    sel.innerHTML = `<option value="">客观标签</option>` + rows.map(([label, count]) =>
       `<option value="${esc(label)}">${esc(label)}（${num(count)}）</option>`).join("");
     if (current && !rows.some(([label]) => label === current)) {
       const opt = document.createElement("option"); opt.value = current; opt.textContent = `${current}（0）`; sel.appendChild(opt);

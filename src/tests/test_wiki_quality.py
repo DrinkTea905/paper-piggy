@@ -50,6 +50,26 @@ class WikiSourceQualityTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "文献目录尚未加载.*整页未写入"):
                 W._norm_sources(["ANYKEY"])
 
+    def test_replace_can_repair_legacy_invalid_source_before_validation(self):
+        existing = {
+            "id": "topic-fenliu-zhuanchu", "kind": "topic", "title": "分流转处",
+            "subject": "分流转处", "sources": [{"key": "H3HVZYW"}],
+        }
+        with mock.patch.object(W, "ensure_scaffold"), \
+                mock.patch.object(W, "index_map", return_value={existing["id"]: existing}), \
+                mock.patch.object(W, "_paper_keys", return_value={"H3HVZ5YW"}), \
+                mock.patch.object(W, "_resolve_citation", return_value="规范引文"), \
+                mock.patch.object(W, "_persist_page", side_effect=lambda *a, **k: {
+                    "id": a[0], "kind": a[1], "title": a[2], "sources": a[5],
+                }) as persist, \
+                mock.patch.object(W, "_snapshot"):
+            result = W.update_page(
+                existing["id"], content="更正后的完整正文", sources=[{"key": "H3HVZ5YW"}], mode="replace",
+            )
+
+        self.assertEqual(result["sources"], [{"key": "H3HVZ5YW", "citation": "规范引文"}])
+        self.assertEqual(persist.call_args.args[5], result["sources"])
+
 
 class WikiScaffoldQualityTests(unittest.TestCase):
     def test_exact_leading_title_and_question_are_removed_once(self):

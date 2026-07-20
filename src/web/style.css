@@ -38,6 +38,9 @@ button { line-height: 1.2; }
   border-radius: 12px; background: transparent; color: inherit; cursor: pointer; transition: transform .15s, border-color .15s, box-shadow .15s, background .15s; }
 .brand-guide:hover { transform: translateY(-1px); border-color: rgba(232,84,138,.42); background: rgba(232,84,138,.07); box-shadow: 0 5px 14px rgba(78,42,62,.13); }
 .brand-guide:focus-visible { outline: 3px solid rgba(232,84,138,.22); outline-offset: 2px; border-color: var(--accent); }
+.brand-guide.is-inactive { cursor: default; }
+.brand-guide.is-inactive:hover { transform: none; border-color: transparent; background: transparent; box-shadow: none; }
+.brand-guide.is-inactive .brand-guide-badge { display: none; }
 .brand-logo { width: 36px; height: 36px; border-radius: 10px; clip-path: inset(0 round 22%); object-fit: contain; filter: drop-shadow(0 3px 6px rgba(44,52,64,.18)); }
 .brand-guide .brand-logo { display: block; width: 100%; height: 100%; }
 .brand-guide-badge { position: absolute; right: -5px; bottom: -4px; display: grid; place-items: center; width: 18px; height: 18px;
@@ -647,15 +650,6 @@ button:disabled { opacity: .6; cursor: default; }
 .wk-status-dot { width: 7px; height: 7px; border-radius: 50%; background: #f59e0b; box-shadow: 0 0 0 3px rgba(245,158,11,.13); }
 .wk-icon-btn { min-width: 34px; height: 34px; padding: 0 9px; }
 .wk-view-btn { height: 34px; }
-.wk-more { position: relative; }
-.wk-more > summary { height: 34px; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
-  padding: 0 11px; border: 1px solid var(--line); border-radius: var(--radius-control); color: var(--muted);
-  background: transparent; cursor: pointer; list-style: none; user-select: none; font-size: 13px; }
-.wk-more > summary::-webkit-details-marker { display: none; }
-.wk-more > summary:hover, .wk-more[open] > summary { border-color: var(--accent); color: var(--accent); }
-.wk-more-menu { position: absolute; z-index: 20; right: 0; top: calc(100% + 6px); width: 158px; padding: 6px;
-  border: 1px solid var(--line); border-radius: 10px; background: var(--card); box-shadow: 0 12px 28px rgba(0,0,0,.16); }
-.wk-more-menu button { width: 100%; min-height: 34px; justify-content: flex-start; border: none; }
 .wk-library { min-height: 430px; display: grid; grid-template-columns: 224px minmax(0, 1fr); overflow: hidden; background: var(--card); border: 1px solid var(--line); border-radius: 16px; box-shadow: var(--shadow); }
 .wk-themes-pane { padding: 14px 10px; border-right: 1px solid var(--line); background: linear-gradient(180deg, rgba(78,42,62,.035), transparent); }
 .wk-themes-head { display: flex; align-items: center; justify-content: space-between; padding: 0 8px 9px; font-size: 12px; color: var(--muted); font-weight: 700; letter-spacing: .04em; }
@@ -907,14 +901,15 @@ button:disabled { opacity: .6; cursor: default; }
 .ag-philo-arr { display: flex; align-items: center; color: var(--accent); font-weight: 700; font-size: 15px; }
 @media (max-width: 720px) { .ag-philo-arr { display: none; } .ag-philo-step { min-width: 100%; } }
 /* 📦📚 文件夹卡：路径 + 打开按钮 */
-/* 交付物 / 资料库 两卡等高、「打开文件夹」按钮钉在底部对齐（交付物卡多出「最近主题」列表也不错位） */
+/* 交付物 / 资料库 两卡等高；打开按钮紧跟标题，减少单独一行。 */
 .ag-folder { display: flex; flex-direction: column; align-self: stretch; }
-.ag-folder .ag-openbtn { margin-top: auto; align-self: flex-start; }
+.ag-folder-head { display: flex; align-items: center; gap: 10px; margin-bottom: 9px; flex-wrap: wrap; }
+.ag-folder-head h3 { margin: 0; }
 .ag-folder-path { font-family: ui-monospace, Consolas, monospace; font-size: 11.5px; color: var(--muted);
-  background: rgba(148,163,184,.08); border-radius: 7px; padding: 7px 10px; margin: 4px 0 10px;
+  background: rgba(148,163,184,.08); border-radius: 7px; padding: 7px 10px; margin: 4px 0 0;
   word-break: break-all; white-space: pre-wrap; }
 :root[data-theme="dark"] .ag-folder-path { background: rgba(148,163,184,.12); }
-.ag-openbtn { font-size: 13px; }
+.ag-openbtn { font-size: 12px; padding: 5px 9px; }
 /* ⏰ 定时任务卡（跨满） */
 .ag-tasks-card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 14px 18px; }
 .ag-tasks-h { font-size: 15px; font-weight: 700; color: var(--fg); margin-bottom: 10px;
@@ -1670,16 +1665,16 @@ input:focus, select:focus, textarea:focus, #q:focus, #chat-q:focus,
   .wk-action-group { width: 100%; overflow-x: auto; padding-bottom: 2px; }
 }
 
-/* 两处资料工具区在同一水平线上完成：宽屏完整展示，窄屏只在工具区内部横向滚动。 */
-.bl-bar { overflow-x: auto; overflow-y: hidden; }
-.bl-bar > .bl-summary-row { display: block; min-width: max-content; }
-.bl-one-row { min-width: max-content; display: flex; align-items: center; gap: 10px; }
+/* 文献工具区宽屏保持一行；缩短两项筛选后不再产生横向滚动条。 */
+.bl-bar { overflow: hidden; }
+.bl-bar > .bl-summary-row { display: block; min-width: 0; }
+.bl-one-row { min-width: 0; width: 100%; display: flex; align-items: center; gap: 9px; }
 .bl-one-row .bl-title { flex: 0 0 auto; margin-right: 4px; }
 .bl-one-row .bl-filter-row { display: flex; flex: 0 0 auto; align-items: center; gap: 8px; }
-.bl-one-row .bl-filter-row select { flex: 0 0 auto; width: 160px; }
-.bl-one-row #bl-type-filter, .bl-one-row #bl-label-filter { width: 178px; }
-.bl-one-row #bl-sort { width: 132px; }
-.bl-one-row .bl-batch-actions { flex: 0 0 auto; margin-left: 4px; flex-wrap: nowrap; }
+.bl-one-row .bl-filter-row select { flex: 0 0 auto; width: 132px; }
+.bl-one-row #bl-type-filter, .bl-one-row #bl-label-filter { width: 116px; }
+.bl-one-row #bl-sort { width: 106px; }
+.bl-one-row .bl-batch-actions { flex: 0 0 auto; margin-left: 2px; flex-wrap: nowrap; }
 
 .wk-page-head { min-width: 0; flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden; padding-bottom: 2px; }
 .wk-page-head h2 { flex: 0 0 auto; }
@@ -1688,3 +1683,12 @@ input:focus, select:focus, textarea:focus, #q:focus, #chat-q:focus,
 .wk-page-head .wk-filter-group { flex: 0 0 auto; align-items: center; flex-wrap: nowrap; }
 .wk-page-head .wk-search { width: clamp(240px, 28vw, 420px); max-width: 420px; flex: 0 0 auto; }
 .wk-page-head .wk-action-group { width: auto; flex: 0 0 auto; overflow: visible; padding-bottom: 0; justify-content: flex-start; }
+
+@media (max-width: 1100px) {
+  .bl-one-row { flex-wrap: wrap; }
+  .bl-one-row .bl-batch-actions { margin-left: 0; }
+}
+@media (max-width: 760px) {
+  .bl-one-row .bl-filter-row, .bl-one-row .bl-batch-actions { flex-wrap: wrap; }
+  .wk-page-head .wk-action-group { flex-wrap: wrap; }
+}

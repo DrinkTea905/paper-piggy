@@ -520,7 +520,8 @@ TOOLS = [
         "description": "建立或修改一个 wiki 综合页。这是维护 wiki 的主要动作。\n"
                        "kind 可选：answer(问答沉淀) / concept(概念) / topic(主题) / digest(资料汇编) / "
                        "outline(选题框架) / **entity(实体页：作者、机构、案件、制度)** / **overview(总论页：随全库演进的核心论点)**。\n"
-                       "mode='append' 把新内容并入既有正文（读完一篇新文献后补充某页时用），'replace' 整体重写。\n"
+                       "mode='append' 把新内容与来源并入既有页；'replace' 整体重写，显式传 sources 时会替换旧来源，"
+                       "可用于修正失效 key；replace 不传 sources 则保留旧来源。\n"
                        "护栏：不能覆盖用户人工核验过的页（会被拒绝）。每个论断带 [n] 引用，sources 填论文 key。",
         "inputSchema": {
             "type": "object",
@@ -1240,9 +1241,10 @@ def do_tool(name, args):
             return "需要 page_id。新建时自取，建议带类型前缀（entity-xxx / concept-xxx / overview-main）。"
         body = {"kind": args.get("kind"), "title": args.get("title"),
                 "content": args.get("content", ""),
-                "sources": [{"key": k} for k in (args.get("sources") or [])],
                 "mode": args.get("mode", "replace"), "links": args.get("links"),
                 "by_agent": True, "model": "agent"}
+        if "sources" in args:
+            body["sources"] = [{"key": k} for k in (args.get("sources") or [])]
         resp = requests.post(URL + "/wiki/page/" + pid, json=body, timeout=120)
         if resp.status_code == 409:
             return "拒绝写入：" + _err_of(resp)
