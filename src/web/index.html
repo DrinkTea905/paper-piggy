@@ -5,6 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>PaperPiggy · 本地文献知识库</title>
   <link rel="icon" href="/static/PaperPiggy.png" />
+  <script>
+    /* 在样式加载前恢复主题，避免夜间模式启动时先闪一下白屏。 */
+    try {
+      const ui = JSON.parse(localStorage.getItem("localkb.ui") || "{}");
+      const systemDark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+      document.documentElement.dataset.theme = ui.theme === "dark" || (ui.theme !== "light" && systemDark) ? "dark" : "light";
+      document.documentElement.dataset.fontsize = ui.fontsize || "normal";
+    } catch (_) {}
+  </script>
   <link rel="stylesheet" href="/static/style.css" />
   <style>
     /* 启动遮罩·关键样式内联（★别删）：后端或静态资源较慢时，遮罩若只靠外链样式可能先短暂白屏。
@@ -12,27 +21,28 @@
        index.html 一解析就正确铺满整屏，不依赖 style.css。配色对齐 :root（浅）与 :root[data-theme="dark"]（深）；
        与 style.css 里的 .boot* 同值，#boot 前缀 id 优先级更高，二者并存不打架。keyframes 同名 boot-spin 也同值。 */
     #boot { position: fixed; inset: 0; z-index: 9999; display: flex; align-items: center; justify-content: center;
-      background: #f7f4f6; color: #2a2230; transition: opacity .45s ease;
+      background: #f4f1ee; color: #252a32; transition: opacity .45s ease;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif; }
     #boot.gone { opacity: 0; pointer-events: none; }
     #boot .boot-box { text-align: center; max-width: 400px; padding: 24px; }
-    #boot .boot-pig { font-size: 40px; line-height: 1; }
+    #boot .boot-pig { width: 64px; height: 64px; margin: 0 auto; }
+    #boot .boot-pig img { display: block; width: 100%; height: 100%; object-fit: contain; border-radius: 18px; clip-path: inset(0 round 22%); }
     #boot .boot-spin { width: 32px; height: 32px; margin: 18px auto 14px; border: 3px solid #ece7ea;
-      border-top-color: #2563eb; border-radius: 50%; animation: boot-spin .8s linear infinite; }
+      border-top-color: #d85b7c; border-radius: 50%; animation: boot-spin .8s linear infinite; }
     @keyframes boot-spin { to { transform: rotate(360deg); } }
     #boot .boot-h { font-size: 16px; font-weight: 600; margin: 2px 0 6px; }
     #boot .boot-msg { font-size: 13px; color: #6b7280; line-height: 1.6; }
     #boot .boot-hint { font-size: 12px; color: #6b7280; line-height: 1.6; margin-top: 16px; }
-    :root[data-theme="dark"] #boot { background: #16121b; color: #e8e2ec; }
-    :root[data-theme="dark"] #boot .boot-spin { border-color: #322a3a; border-top-color: #6ea8fe; }
-    :root[data-theme="dark"] #boot .boot-msg, :root[data-theme="dark"] #boot .boot-hint { color: #9a93a3; }
+    :root[data-theme="dark"] #boot { background: #0f1115; color: #f1f3f5; }
+    :root[data-theme="dark"] #boot .boot-spin { border-color: #303642; border-top-color: #f07b9a; }
+    :root[data-theme="dark"] #boot .boot-msg, :root[data-theme="dark"] #boot .boot-hint { color: #9da6b2; }
   </style>
 </head>
 <body>
   <!-- 启动遮罩：盖住整屏直到 /health.loading 变 false（库目录读取完成），再淡出。见 app.js bootWatch()。 -->
   <div id="boot" class="boot">
     <div class="boot-box">
-      <div class="boot-pig">🐷</div>
+      <div class="boot-pig"><img src="/static/PaperPiggy-battle.png" alt="" /></div>
       <div class="boot-spin" aria-hidden="true"></div>
       <div class="boot-h">正在启动 PaperPiggy…</div>
       <div id="boot-msg" class="boot-msg">正在连接本地服务…</div>
@@ -40,18 +50,22 @@
     </div>
   </div>
   <header class="topbar">
-    <div class="brand"><img src="/static/PaperPiggy.png" class="brand-logo" alt="" />PaperPiggy <span id="status" class="status">连接中…</span></div>
+    <button id="theme-quick-toggle" class="theme-quick-toggle" type="button" aria-label="切换到夜间模式" title="切换到夜间模式">
+      <svg class="theme-sun" viewBox="0 0 20 20" fill="none" aria-hidden="true"><circle cx="10" cy="10" r="3.4"/><path d="M10 2.2v1.7M10 16.1v1.7M2.2 10h1.7M16.1 10h1.7M4.5 4.5l1.2 1.2M14.3 14.3l1.2 1.2M15.5 4.5l-1.2 1.2M5.7 14.3l-1.2 1.2"/></svg>
+      <svg class="theme-moon" viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M16.4 12.5A6.9 6.9 0 0 1 7.5 3.6 7 7 0 1 0 16.4 12.5Z"/></svg>
+    </button>
+    <div class="brand"><img src="/static/PaperPiggy-battle.png" class="brand-logo" alt="" /><span class="brand-word">PaperPiggy</span><span id="status" class="status">连接中…</span></div>
     <nav class="tabs">
-      <button class="tab active" data-tab="dashboard">📊 库总览</button>
-      <button class="tab" data-tab="browse">📚 文献</button>
-      <button class="tab" data-tab="agent">🤖 Agent</button>
-      <button class="tab" data-tab="wiki">📖 综述库</button>
-      <button class="tab" data-tab="chat">💬 对话</button>
+      <button class="tab active" data-tab="dashboard" aria-label="库总览"><span aria-hidden="true">📊</span><span class="tab-label">库总览</span></button>
+      <button class="tab" data-tab="browse" aria-label="文献"><span aria-hidden="true">📚</span><span class="tab-label">文献</span></button>
+      <button class="tab" data-tab="agent" aria-label="Agent"><span aria-hidden="true">🤖</span><span class="tab-label">Agent</span></button>
+      <button class="tab" data-tab="wiki" aria-label="综述库"><span aria-hidden="true">📖</span><span class="tab-label">综述库</span></button>
+      <button class="tab" data-tab="chat" aria-label="对话"><span aria-hidden="true">💬</span><span class="tab-label">对话</span></button>
     </nav>
     <div class="actions">
       <button id="up-badge" class="up-badge" hidden title="有新版本可用，点击查看并升级"></button>
-      <button id="btn-build" class="ghost" title="点一次即在后台增量更新：补新增题录与检索质量（已入库的跳过；深索仍手动）。想定时自动更新？到 ⚙ 设置 → 建库 → 自动更新知识库里开。">⟳ 手动更新知识库</button>
-      <button id="btn-settings" class="ghost">⚙ 设置</button>
+      <button id="btn-build" class="ghost" aria-label="手动更新知识库" title="点一次即在后台增量更新：补新增题录与检索质量（已入库的跳过；深索仍手动）。想定时自动更新？到设置 → 建库 → 自动更新知识库里开。"><span aria-hidden="true">⟳</span><span class="top-action-label">手动更新知识库</span></button>
+      <button id="btn-settings" class="ghost" aria-label="设置"><span aria-hidden="true">⚙</span><span class="top-action-label">设置</span></button>
     </div>
   </header>
 
@@ -303,18 +317,14 @@
     </div>
   </main>
 
-  <!-- wiki 页面板（综合页书架：新建综述 + 列表 + 打开/重生/删除） -->
+  <!-- wiki 页面板（综合页书架：主题整理 + 列表 + 打开/核验/删除；写作交给 Agent） -->
   <main id="panel-wiki" class="panel" data-panel="wiki" hidden>
     <div class="wiki-page">
       <div class="wk-page-head">
         <div>
           <h2>综述库</h2>
-          <p>把积累下来的综合按研究主题整理，像翻自己的专题书架。</p>
+          <p>Agent 生成的综合会按研究主题整理在这里，便于阅读、核验和持续维护。</p>
         </div>
-        <button id="wk-gen-toggle" class="primary-btn" title="手动生成一页概念/主题综述">
-          <span class="ui-icon" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></span>
-          生成综述
-        </button>
       </div>
       <!-- EN-F2：建议横幅——新深索的文献可能影响已有综述页（/wiki/suggestions），由 JS 填充，空则不渲染 -->
       <div id="wk-suggest" class="wk-suggest" hidden></div>
@@ -357,16 +367,6 @@
               </div>
             </details>
           </div>
-        </div>
-      </div>
-      <!-- 生成综述：默认收起。推荐用 Agent 生成（效果更好），这里只作网页端兜底入口 -->
-      <div id="wk-gen-panel" class="wk-gen-panel" hidden>
-        <p class="wk-gen-tip">💡 更推荐用 <b>🤖 Agent</b> 生成综述——它能读全文、跨篇综合、自动建互链，效果好得多。
-          <button type="button" id="wk-to-agent" class="link-btn">怎么接入 Agent →</button></p>
-        <div class="wk-new">
-          <input id="wk-concept" type="text"
-            placeholder="输入一个概念/主题，生成一页综述（如：认罪认罚从宽的证据法争议）" />
-          <button id="wk-gen" class="primary-btn">生成</button>
         </div>
       </div>
       <div id="wk-msg" class="msg"></div>
@@ -802,7 +802,7 @@
 
       <div class="set-section">
         <h4>🎨 外观（主题 / 字号）</h4>
-        <p class="hint">深色模式默认跟随系统；也可手动指定。字号偏小可调大，长时间读片段/综述更舒服。改动即时生效、存本机。</p>
+        <p class="hint">左上角太阳/月亮可快速切换明亮与夜间模式；这里也可选择跟随系统。字号偏小可调大，改动即时生效、存本机。</p>
         <label>主题
           <select id="ui-theme">
             <option value="system">跟随系统</option>
@@ -986,7 +986,6 @@
       </div>
       <div class="modal-actions">
         <button id="wiki-hist" class="ghost" title="查看这一页的修改历史，可回滚">🕘 历史</button>
-        <button id="wiki-regen" class="ghost">↻ 重新生成</button>
         <button id="wiki-discard" class="ghost danger">🗑 删除此综述</button>
         <button id="wiki-close" class="ghost">关闭</button>
       </div>

@@ -1906,8 +1906,7 @@
         const chip = document.createElement("span");
         chip.className = "bt-topic";
         chip.title = t.name;
-        chip.innerHTML = `<span class="tp-nm">${esc(t.name)}</span><span class="tp-cnt" title="已深索/总篇数">${num(t.deep || 0)}/${num(t.size)}</span><button class="tp-gen" title="生成/查看本主题的综述页">🧩</button>`;
-        chip.querySelector(".tp-gen").addEventListener("click", (e) => { e.stopPropagation(); genTopic(t.id, t.name, e.currentTarget); });
+        chip.innerHTML = `<span class="tp-nm">${esc(t.name)}</span><span class="tp-cnt" title="已深索/总篇数">${num(t.deep || 0)}/${num(t.size)}</span>`;
         chip.addEventListener("click", () => {
           // 再点已选中的主题 → 取消，回到全库
           if (BR.scope.type === "topic" && BR.scope.id === t.id) { selectCollection(null, "全部", null); return; }
@@ -2287,10 +2286,10 @@
         `href="/research/export_docx/${encodeURIComponent(p.id)}" download ` +
         `title="导出为 Word 文档（含参考文献，可直接拿去写作）">⬇ 导出 Word</a>`;
     }
-    // 降级页在正文顶部挂一条醒目横幅，说明它为什么不是综述、怎么补救
+    // 降级页在正文顶部挂一条醒目横幅，说明它为什么不是综述、怎么交给 Agent 补救
     const banner = p.degraded
       ? `<div class="wk-degraded-banner">⚠ <b>这不是 AI 综述。</b>${esc(p.degraded_reason || "")}。` +
-        `<br>配置 AI 模型后，点下方「↻ 重新生成」即可得到真正的综述。本页也不参与检索。</div>`
+        `<br>请让 Agent 读取原始文献后重写这一页；本页在修复前不参与检索。</div>`
       : "";
     // 旧版存量降级页的斜体尾注里仍写着「模型 fallback(no-key)」这类黑话（新页已不再这样写）。
     // 顶部横幅已把话说清楚，这里只在显示层隐去那一行，不改盘上的 .md。
@@ -2345,11 +2344,8 @@
     });
     renderWikiLinks(p);
     $("#wiki-hist").dataset.id = p.id;
+    $("#wiki-discard").dataset.id = p.id;
     $("#wiki-history").hidden = true;
-    $("#wiki-regen").dataset.id = p.id;
-    // R11：对话沉淀页禁止「重新生成」（点了必报错）——隐藏该按钮并记录 kind 供二次拦截
-    const regenBtn = $("#wiki-regen");
-    if (regenBtn) { regenBtn.dataset.kind = p.kind || "answer"; regenBtn.style.display = (p.kind || "answer") === "answer" ? "none" : ""; }
     // EN-F7：换页时清空上一页残留的核验输入与结果，避免张冠李戴
     const wvI = $("#wv-claim"); if (wvI) wvI.value = "";
     const wvR = $("#wv-result"); if (wvR) { wvR.hidden = true; wvR.innerHTML = ""; }
@@ -2443,17 +2439,6 @@
     } catch (e) { flashToast("删除失败：" + (e.message || e)); }   // UX10
     finally { if (btn) { btn.disabled = false; if (old != null) btn.textContent = old; } }
   }
-  async function genTopic(topicId, name, btn) {
-    if (!(await ensureLlmKey())) return;
-    const old = btn ? btn.textContent : null;
-    if (btn) { btn.textContent = "⏳"; btn.disabled = true; }
-    try {
-      const r = await jpost("/wiki/topic", llmBody({ topic_id: topicId }));
-      if (!r.ok) throw new Error(r.detail || "生成失败");
-      await openWikiPage(r.id);
-    } catch (e) { flashToast("生成「" + name + "」综述失败：" + (e.message || e)); }   // UX10
-    finally { if (btn) { btn.textContent = old; btn.disabled = false; } }
-  }
   (function wireWikiModal() {
     const close = $("#wiki-close"); if (close) close.addEventListener("click", () => ($("#wiki-modal").hidden = true));
     // EN-F4：正文 wikilink 点击委托——mdToHtml 输出走 innerHTML，不能挂内联 onclick；
@@ -2494,30 +2479,16 @@
     const wvGo = $("#wv-go"); if (wvGo) wvGo.addEventListener("click", runVerifyClaim);
     const wvIn = $("#wv-claim"); if (wvIn) wvIn.addEventListener("keydown", (e) => { if (e.key === "Enter") runVerifyClaim(); });
     const disc = $("#wiki-discard");
-    if (disc) disc.addEventListener("click", () => discardWiki($("#wiki-regen").dataset.id,
+    if (disc) disc.addEventListener("click", () => discardWiki(disc.dataset.id,
       () => {
         $("#wiki-modal").hidden = true;
         if (wikiLoaded) loadWikiList("silent");        // 从 wiki 页删的，刷新列表
         if ($("#q").value.trim()) doSearch();          // 从检索删的，刷新检索（保留原行为）
       }, disc));
-    const regen = $("#wiki-regen");
-    if (regen) regen.addEventListener("click", async () => {
-      if ((regen.dataset.kind || "") === "answer") { flashToast("「对话沉淀」页由对话生成，请回「💬 对话」重新提问后再保存。"); return; }  // R11/UX10
-      if (!(await ensureLlmKey())) return;
-      const id = regen.dataset.id; if (!id) return;
-      regen.textContent = "重新生成中…"; regen.disabled = true;
-      try {
-        const r = await jpost("/wiki/regenerate/" + encodeURIComponent(id), llmBody({}));
-        if (!r.ok) throw new Error(r.detail || "失败");
-        await openWikiPage(r.id);
-        if (wikiLoaded) loadWikiList("silent");
-      } catch (e) { flashToast("重新生成失败：" + (e.message || e)); }   // UX10
-      finally { regen.textContent = "↻ 重新生成"; regen.disabled = false; }
-    });
   })();
 
   // ══════════════════════════════════════════
-  //  wiki 页（综合页书架）：列出 /wiki/list + 新建综述 + 打开/重生/删除
+  //  wiki 页（综合页书架）：列出 /wiki/list + 主题整理 + 打开/核验/删除；写作交给 Agent
   // ══════════════════════════════════════════
   let WK = { kind: "", agentOnly: false, pages: [], themes: [], theme: "", search: "", sort: "new" };
   async function loadWikiList(mode) {
@@ -2579,8 +2550,8 @@
       box.innerHTML = `<div class="wk-empty">
         <div class="wk-empty-ic">📖</div>
         <div class="wk-empty-h">还没有综述页</div>
-        <div class="wk-empty-s">在上面输入一个概念点「生成综述」，或在「💬 对话」里问答后「保存此答案」，
-          或让「🤖 Agent」调 save_synthesis 写回——综述页会在这里累积。</div></div>`;
+        <div class="wk-empty-s">请让「🤖 Agent」阅读文献并把带来源的综合写回；
+          生成后的页面会自动出现在这里，供你分类、阅读和核验。</div></div>`;
       return;
     }
     if (!list.length) { box.innerHTML = `<div class="wk-empty">当前筛选下没有综述页。</div>`; return; }
@@ -2599,7 +2570,7 @@
           ? `<span class="wk-flag ok" title="已于 ${esc(p.verified_at)} 人工核验"><span class="status-dot" aria-hidden="true"></span>已核验</span>`
           : `<span class="wk-flag agent" title="agent 写回、未经人工核验"><span class="status-dot" aria-hidden="true"></span>未核验</span>`)
       : `<span class="wk-flag" title="你保存/生成的综述页"><span class="status-dot" aria-hidden="true"></span>我保存的</span>`;
-    const stale = p.stale ? `<span class="wk-flag stale" title="有新论文可能影响此综述，建议重生">⚠ 可能已过时</span>` : "";
+    const stale = p.stale ? `<span class="wk-flag stale" title="有新论文可能影响此综述，建议让 Agent 读取新增文献后更新">⚠ 可能已过时</span>` : "";
     // 整卡可点即打开；整理主题与删除收进「…」，让列表优先服务阅读。
     div.className += " wk-card-click";
     const themeOptions = [`<option value="">自动归类</option>`, ...WK.themes.map((t) =>
@@ -2647,23 +2618,6 @@
     if (!(await uiConfirm("主题里的综述不会被删除，它们会恢复自动归类。", { title: `删除“${WK.theme}”主题？`, okText: "删除主题", danger: true }))) return;
     try { await jsend("/wiki/themes/" + encodeURIComponent(WK.theme), "DELETE"); WK.theme = ""; await loadWikiList("silent"); }
     catch (e) { flashToast("删除主题失败：" + (e.message || e)); }
-  }
-  async function genConcept() {
-    const c = $("#wk-concept").value.trim();
-    if (!c) { $("#wk-msg").textContent = "请先输入一个概念或主题。"; return; }
-    if (!(await ensureLlmKey())) return;
-    // BF22：进来时先存原文案、结束恢复——index.html 里按钮是「生成」，之前写死恢复成「＋ 生成综述」会越改越错
-    const btn = $("#wk-gen"); const old = btn.textContent;
-    btn.disabled = true; btn.textContent = "生成中…"; $("#wk-msg").textContent = "";
-    try {
-      const r = await jpost("/wiki/concept", llmBody({ concept: c }));
-      if (!r.ok) throw new Error(r.detail || "生成失败");
-      $("#wk-concept").value = "";
-      await openWikiPage(r.id);
-      loadWikiList("silent");
-      $("#wk-msg").textContent = r.cached ? "已命中已有综合（未重复生成）。" : "已生成新综述并加入列表。";
-    } catch (e) { $("#wk-msg").textContent = "生成失败：" + (e.message || e); }
-    finally { btn.disabled = false; btn.textContent = old; }   // BF22
   }
   // ── EN-F2：建议横幅——新深索的文献可能影响已有综述页（Ingest 环：喂了新料，提醒回头更新综述）──
   const WSUG = { items: [], open: false };   // open：列表是否展开（跨刷新保持用户的展开选择）
@@ -2773,7 +2727,7 @@
     // EN-F4：正文里 [[双方括号链接]] 的断链，与上面的元数据关联断链分开说
     body_broken_link: (n) => `有 ${n} 处正文链接指向不存在的页（点了会扑空）。让 AI 把这些链接改成正确的页，或补写目标页。`,
     no_sources: (n) => `有 ${n} 页没标是根据哪些文献写的。没有出处的综述不可靠——让 AI 补上来源，或者干脆删掉。`,
-    degraded: (n) => `有 ${n} 页是没配 AI 模型时生成的，其实只是原文片段的清单、不是真正的综述。配好 AI 模型后重新生成一下。`,
+    degraded: (n) => `有 ${n} 页是没配 AI 模型时生成的，其实只是原文片段的清单、不是真正的综述。请让 Agent 读取原始文献后重写。`,
     missing_concept: (n, items) => `有些概念被好几页反复提到、却没有自己的独立页（比如${(items || []).slice(0, 3).map((x) => "「" + x.concept + "」").join("、")}）。可以让 AI 各写一页，查起来更方便。`,
     invalid_source: (n) => `有 ${n} 个来源编号在当前文献库里不存在，通常是复制时错了一位。让 AI 按候选编号回查原文后修正，不能凭猜测替换。`,
     duplicate_scaffold: (n) => `有 ${n} 页把标题或研究问题重复写了两遍。让 AI 保留一份正文外壳后重写即可。`,
@@ -2929,8 +2883,6 @@
   }
 
   (function wireWikiPage() {
-    const gen = $("#wk-gen"); if (gen) gen.addEventListener("click", genConcept);
-    const inp = $("#wk-concept"); if (inp) inp.addEventListener("keydown", (e) => { if (e.key === "Enter") genConcept(); });
     const kind = $("#wk-kind"); if (kind) kind.addEventListener("change", () => { WK.kind = kind.value; renderWikiList(); });
     const search = $("#wk-search"); if (search) search.addEventListener("input", () => { WK.search = search.value.trim(); renderWikiList(); });
     const sort = $("#wk-sort"); if (sort) sort.addEventListener("change", () => { WK.sort = sort.value; renderWikiList(); });
@@ -2943,13 +2895,6 @@
     const tlc = $("#wk-tl-close"); if (tlc) tlc.addEventListener("click", () => ($("#wk-tl-modal").hidden = true));
     const view = $("#wk-view"); if (view) view.addEventListener("click", toggleGraph);
     const hist = $("#wiki-hist"); if (hist) hist.addEventListener("click", () => toggleWikiHistory(hist.dataset.id));
-    // 生成综述折叠入口（推荐用 Agent，这里只是网页端兜底）
-    const gt = $("#wk-gen-toggle"); if (gt) gt.addEventListener("click", () => {
-      const panel = $("#wk-gen-panel"); panel.hidden = !panel.hidden;
-      gt.classList.toggle("primary-btn", !panel.hidden);
-      if (!panel.hidden) { const c = $("#wk-concept"); if (c) c.focus(); }
-    });
-    const ta = $("#wk-to-agent"); if (ta) ta.addEventListener("click", () => switchTab("agent"));
   })();
 
   // ══════════════════════════════════════════
@@ -4040,6 +3985,13 @@
     root.setAttribute("data-fontsize", fs);
     const ts = $("#ui-theme"); if (ts) ts.value = pref;   // 下拉显示用户选择（system/light/dark），非解析值
     const fsel = $("#ui-fontsize"); if (fsel) fsel.value = fs;
+    const quick = $("#theme-quick-toggle");
+    if (quick) {
+      quick.dataset.theme = theme;
+      const next = theme === "dark" ? "明亮" : "夜间";
+      quick.setAttribute("aria-label", `切换到${next}模式`);
+      quick.title = `切换到${next}模式`;
+    }
   }
   function saveAppearance() {
     const a = safeParse(localStorage.getItem("localkb.ui"), {});
@@ -4051,6 +4003,12 @@
   }
   { const ts = $("#ui-theme"); if (ts) ts.addEventListener("change", saveAppearance);
     const fsel = $("#ui-fontsize"); if (fsel) fsel.addEventListener("change", saveAppearance);
+    const quick = $("#theme-quick-toggle"); if (quick) quick.addEventListener("click", () => {
+      const a = safeParse(localStorage.getItem("localkb.ui"), {});
+      a.theme = document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark";
+      localStorage.setItem("localkb.ui", JSON.stringify(a));
+      applyAppearance();
+    });
     // 跟随系统时，系统主题变化即时重解析
     if (window.matchMedia) { try { window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
       const a = safeParse(localStorage.getItem("localkb.ui"), {}); if ((a.theme || "system") === "system") applyAppearance();
@@ -4642,8 +4600,8 @@
   let manualUpdating = false;
   async function doManualUpdate() {
     if (manualUpdating) return;
-    const btn = $("#btn-build"); const old = btn.textContent;
-    const restore = () => { manualUpdating = false; btn.disabled = false; btn.textContent = old; };
+    const btn = $("#btn-build"); const old = btn.innerHTML;
+    const restore = () => { manualUpdating = false; btn.disabled = false; btn.innerHTML = old; };
     manualUpdating = true; btn.disabled = true; btn.textContent = "⟳ 更新中…";
     // UX6：更新前记一份篇数基线（total/deep），完成后对比告诉用户到底新增了几篇；取不到就退化为普通完成提示
     let baseTotal = null;

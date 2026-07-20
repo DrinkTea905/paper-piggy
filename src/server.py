@@ -2501,50 +2501,6 @@ def wiki_vcs_status():
     except Exception as e:
         return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
 
-# ── Phase 1：按需生成概念/主题综述页（命中缓存 0 成本；LLM 综合 + LLM 命名）──
-class WikiSynthQ(BaseModel):
-    concept: str = ""
-    topic_id: Optional[int] = None
-    force: bool = False           # 忽略缓存、强制重生
-    provider: str = "siliconflow"
-    base_url: str = ""
-    api_key: str = ""
-    model: str = ""
-    topk: int = 8
-
-def _synth_llm(q):
-    return {"provider": q.provider, "base_url": q.base_url, "api_key": q.api_key,
-            "model": q.model, "topk": q.topk}
-
-def _synth_ret(m):
-    return {"ok": True, "id": m["id"], "title": m["title"], "kind": m.get("kind"),
-            "cached": m.get("cached", False), "indexed": m.get("indexed", False),
-            "n_sources": len(m.get("sources", []))}
-
-@app.post("/wiki/concept")
-def wiki_concept(q: WikiSynthQ):
-    try:
-        return _synth_ret(W.synthesize_concept(q.concept, force=q.force, **_synth_llm(q)))
-    except Exception as e:
-        log_error("wiki/concept", repr(e), traceback.format_exc())
-        return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
-
-@app.post("/wiki/topic")
-def wiki_topic(q: WikiSynthQ):
-    try:
-        return _synth_ret(W.synthesize_topic(q.topic_id, force=q.force, **_synth_llm(q)))
-    except Exception as e:
-        log_error("wiki/topic", repr(e), traceback.format_exc())
-        return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
-
-@app.post("/wiki/regenerate/{page_id}")
-def wiki_regen(page_id: str, q: WikiSynthQ):
-    try:
-        return _synth_ret(W.regenerate(page_id, **_synth_llm(q)))
-    except Exception as e:
-        log_error("wiki/regenerate", repr(e), traceback.format_exc())
-        return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
-
 # ══════════════════════════════════════════════════════════════════
 #  Phase 5：半自动研究助手（选题/框架/带页级引注的资料汇编/建议补文献）
 # ══════════════════════════════════════════════════════════════════
