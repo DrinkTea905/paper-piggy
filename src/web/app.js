@@ -2260,22 +2260,22 @@
         ? `<span class="wk-flag degraded" title="${esc(p.degraded_reason || "")}">⚠ 证据清单（非 AI 综述）</span>`
         : p.by_agent
         ? (p.verified_at
-            ? `<span class="wk-flag ok" title="已于 ${esc(p.verified_at)} 人工核验">✅ 已核验</span>`
-            : `<span class="wk-flag agent" title="agent 写回、未经人工核验，请核对来源原文">🤖 未核验</span>` +
-              `<button id="wiki-verify" class="ghost2b wiki-verify" title="确认内容与来源无误后，把这一页标为已人工核验">✓ 标为已核验</button>`)
-        : `<span class="wk-flag" title="你保存/生成的综述页">📝 我保存的</span>`;
+            ? `<span class="wk-flag ok" title="已于 ${esc(p.verified_at)} 人工核验"><span class="status-dot" aria-hidden="true"></span>已核验</span>`
+            : `<span class="wk-flag agent" title="agent 写回、未经人工核验，请核对来源原文"><span class="status-dot" aria-hidden="true"></span>未核验</span>` +
+              `<button id="wiki-verify" class="ghost2b wiki-verify" title="确认内容与来源无误后，把这一页标为已人工核验">标为已核验</button>`)
+        : `<span class="wk-flag" title="你保存/生成的综述页"><span class="status-dot" aria-hidden="true"></span>我保存的</span>`;
       const vb = $("#wiki-verify");
       if (vb) vb.addEventListener("click", async () => {
         vb.disabled = true; vb.textContent = "标记中…";
         try {
           const r = await jpost("/wiki/verify", { page_id: p.id });
           const at = (r && r.verified_at) || "";
-          flag.innerHTML = `<span class="wk-flag ok" title="已于 ${esc(at)} 人工核验">✅ 已核验</span>`;
+          flag.innerHTML = `<span class="wk-flag ok" title="已于 ${esc(at)} 人工核验"><span class="status-dot" aria-hidden="true"></span>已核验</span>`;
           // 同步列表内存态，让「只看未核验」过滤即刻正确，不用重拉
           (WK.pages || []).forEach((pg) => { if (pg.id === p.id) pg.verified_at = at; });
           if (wikiLoaded) renderWikiList();
         } catch (e) {
-          vb.disabled = false; vb.textContent = "✓ 标为已核验";
+          vb.disabled = false; vb.textContent = "标为已核验";
           flashToast("标记核验失败：" + (e.message || e));
         }
       });
@@ -2596,9 +2596,9 @@
       : p.by_agent
       // W3：核验过的 agent 页在列表里也转 ✅，与详情弹窗口径一致
       ? (p.verified_at
-          ? `<span class="wk-flag ok" title="已于 ${esc(p.verified_at)} 人工核验">✅ 已核验</span>`
-          : `<span class="wk-flag agent" title="agent 写回、未经人工核验">🤖 未核验</span>`)
-      : `<span class="wk-flag" title="你保存/生成的综述页">📝 我保存的</span>`;
+          ? `<span class="wk-flag ok" title="已于 ${esc(p.verified_at)} 人工核验"><span class="status-dot" aria-hidden="true"></span>已核验</span>`
+          : `<span class="wk-flag agent" title="agent 写回、未经人工核验"><span class="status-dot" aria-hidden="true"></span>未核验</span>`)
+      : `<span class="wk-flag" title="你保存/生成的综述页"><span class="status-dot" aria-hidden="true"></span>我保存的</span>`;
     const stale = p.stale ? `<span class="wk-flag stale" title="有新论文可能影响此综述，建议重生">⚠ 可能已过时</span>` : "";
     // 整卡可点即打开；整理主题与删除收进「…」，让列表优先服务阅读。
     div.className += " wk-card-click";
@@ -2834,7 +2834,7 @@
     GV.on = !GV.on;
     $("#wk-list").hidden = GV.on;
     $("#wk-graph").hidden = !GV.on;
-    $("#wk-view").textContent = GV.on ? "📋 列表" : "🕸 关系图";
+    $("#wk-view").textContent = GV.on ? "返回列表" : "关系图";
     if (GV.on) await drawGraph();
     else if (GV.raf) { cancelAnimationFrame(GV.raf); GV.raf = 0; }
   }
@@ -2936,9 +2936,10 @@
     const sort = $("#wk-sort"); if (sort) sort.addEventListener("change", () => { WK.sort = sort.value; renderWikiList(); });
     const ag = $("#wk-agent"); if (ag) ag.addEventListener("change", () => { WK.agentOnly = ag.checked; renderWikiList(); });
     const nt = $("#wk-theme-new"); if (nt) nt.addEventListener("click", createWikiTheme);
-    const lint = $("#wk-lint"); if (lint) lint.addEventListener("click", runLint);
+    const closeWikiMore = () => { const more = document.querySelector(".wk-more"); if (more) more.open = false; };
+    const lint = $("#wk-lint"); if (lint) lint.addEventListener("click", () => { closeWikiMore(); runLint(); });
     // EN-F3：时间线按钮 + 弹层关闭（Esc/遮罩关闭统一走 W2 的通用弹窗处理，见「W2」段）
-    const tl = $("#wk-timeline"); if (tl) tl.addEventListener("click", openTimeline);
+    const tl = $("#wk-timeline"); if (tl) tl.addEventListener("click", () => { closeWikiMore(); openTimeline(); });
     const tlc = $("#wk-tl-close"); if (tlc) tlc.addEventListener("click", () => ($("#wk-tl-modal").hidden = true));
     const view = $("#wk-view"); if (view) view.addEventListener("click", toggleGraph);
     const hist = $("#wiki-hist"); if (hist) hist.addEventListener("click", () => toggleWikiHistory(hist.dataset.id));

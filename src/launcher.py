@@ -233,14 +233,46 @@ def _tint_titlebar_async():
                     # DWMWA_CAPTION_COLOR=35：直接给标题栏底色，与内容近似（Win11 22000+；老系统忽略）
                     cap = ctypes.c_int(0x00F7F7F7 if light else 0x001C1C1E)   # 浅≈#F7F7F7 / 深≈#1E1C1C
                     dwm.DwmSetWindowAttribute(hwnd, 35, ctypes.byref(cap), ctypes.sizeof(cap))
-                    # #1b：设应用图标，替换 pythonw 默认的 Python 图标（失败静默）
+                    # 分别按当前窗口 DPI 加载大小图标。不能把 cx/cy=0 得到的同一个 HICON
+                    # 同时塞给 ICON_SMALL / ICON_BIG：Windows 可能先选 16px 帧，再把它放大到
+                    # 任务栏尺寸，结果即使 ICO 含 20/24/32/40px 帧也会发糊。
                     try:
                         ico = _ensure_icon()
                         if ico:
-                            hicon = user32.LoadImageW(None, ico, 1, 0, 0, 0x00000010)   # IMAGE_ICON, LR_LOADFROMFILE
-                            if hicon:
-                                user32.SendMessageW(hwnd, 0x0080, 0, hicon)   # WM_SETICON, ICON_SMALL
-                                user32.SendMessageW(hwnd, 0x0080, 1, hicon)   # WM_SETICON, ICON_BIG
+                            from ctypes import wintypes
+
+                            load_image = user32.LoadImageW
+                            load_image.argtypes = [wintypes.HINSTANCE, wintypes.LPCWSTR,
+                                                   wintypes.UINT, ctypes.c_int, ctypes.c_int,
+                                                   wintypes.UINT]
+                            load_image.restype = wintypes.HANDLE
+                            send_message = user32.SendMessageW
+                            send_message.argtypes = [wintypes.HWND, wintypes.UINT,
+                                                     wintypes.WPARAM, wintypes.LPARAM]
+                            send_message.restype = wintypes.LPARAM
+
+                            dpi = 96
+                            try:
+                                dpi = int(user32.GetDpiForWindow(hwnd)) or 96
+                            except Exception:
+                                pass
+
+                            def icon_metric(index):
+                                try:
+                                    return int(user32.GetSystemMetricsForDpi(index, dpi))
+                                except Exception:
+                                    return int(user32.GetSystemMetrics(index))
+
+                            small = load_image(None, ico, 1,
+                                               icon_metric(49), icon_metric(50),
+                                               0x00000010)  # IMAGE_ICON, LR_LOADFROMFILE
+                            large = load_image(None, ico, 1,
+                                               icon_metric(11), icon_metric(12),
+                                               0x00000010)
+                            if small:
+                                send_message(hwnd, 0x0080, 0, int(small))  # WM_SETICON, ICON_SMALL
+                            if large:
+                                send_message(hwnd, 0x0080, 1, int(large))  # WM_SETICON, ICON_BIG
                     except Exception:
                         pass
                     return

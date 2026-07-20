@@ -311,35 +311,52 @@
           <h2>综述库</h2>
           <p>把积累下来的综合按研究主题整理，像翻自己的专题书架。</p>
         </div>
-        <button id="wk-gen-toggle" class="primary-btn" title="手动生成一页概念/主题综述">＋ 生成综述</button>
+        <button id="wk-gen-toggle" class="primary-btn" title="手动生成一页概念/主题综述">
+          <span class="ui-icon" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></span>
+          生成综述
+        </button>
       </div>
       <!-- EN-F2：建议横幅——新深索的文献可能影响已有综述页（/wiki/suggestions），由 JS 填充，空则不渲染 -->
       <div id="wk-suggest" class="wk-suggest" hidden></div>
       <div class="wk-bar">
         <div class="wk-tools">
-          <label class="wk-search"><span aria-hidden="true">⌕</span><input id="wk-search" type="search" placeholder="搜索综述标题" /></label>
-          <select id="wk-kind" title="按类型筛选">
-            <option value="">全部类型</option>
-            <option value="answer">📝 对话沉淀</option>
-            <option value="concept">🧩 概念综述</option>
-            <option value="topic">🗂 主题综述</option>
-            <option value="digest">📚 资料汇编</option>
-            <option value="outline">🧭 选题框架</option>
-            <option value="entity">👤 实体页</option>
-            <option value="overview">🧭 总论页</option>
-          </select>
-          <select id="wk-sort" title="综述排序">
-            <option value="new">最近更新</option>
-            <option value="title">标题 A–Z</option>
-            <option value="sources">来源数量</option>
-          </select>
-          <label class="wk-agent-only"><input type="checkbox" id="wk-agent" /> 只看 🤖 未核验</label>
-          <span class="wk-tools-sp"></span>
-          <button class="ag-refresh" data-act="refresh-wiki" title="重新加载综述列表 + 建议横幅（外部 AI 助手新建/改写综述后，点这里就能看到，不用重开应用）">🔄 刷新</button>
-          <button id="wk-lint" class="ghost" title="体检：孤儿页 / 过时页 / 断链 / 来源错误 / 重复标题">🩺 体检</button>
-          <!-- EN-F3：时间线——谁在什么时候建/改了哪页（git log 优先，退快照记录） -->
-          <button id="wk-timeline" class="ghost" title="综述库演化时间线：每一页在什么时候被谁（🤖/👤）建立或修改">🕘 时间线</button>
-          <button id="wk-view" class="ghost" title="切换列表 / 关系图">🕸 关系图</button>
+          <div class="wk-filter-group">
+            <label class="wk-search">
+              <span class="ui-icon" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none"><circle cx="7" cy="7" r="4" stroke="currentColor" stroke-width="1.5"/><path d="m10 10 3 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></span>
+              <input id="wk-search" type="search" placeholder="搜索综述标题" />
+            </label>
+            <select id="wk-kind" title="按类型筛选">
+              <option value="">全部类型</option>
+              <option value="answer">对话沉淀</option>
+              <option value="concept">概念综述</option>
+              <option value="topic">主题综述</option>
+              <option value="digest">资料汇编</option>
+              <option value="outline">选题框架</option>
+              <option value="entity">实体页</option>
+              <option value="overview">总论页</option>
+            </select>
+            <select id="wk-sort" title="综述排序">
+              <option value="new">最近更新</option>
+              <option value="title">标题 A–Z</option>
+              <option value="sources">来源数量</option>
+            </select>
+            <label class="wk-agent-only"><input type="checkbox" id="wk-agent" /><span class="wk-status-dot" aria-hidden="true"></span>只看未核验</label>
+          </div>
+          <div class="wk-action-group">
+            <button class="ag-refresh wk-icon-btn" data-act="refresh-wiki" title="重新加载综述列表和建议">
+              <span class="ui-icon" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none"><path d="M12.6 5.3A5.3 5.3 0 1 0 13 9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M10.2 2.8h2.9v2.9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+              刷新
+            </button>
+            <button id="wk-view" class="ghost wk-view-btn" title="切换列表 / 关系图">关系图</button>
+            <details class="wk-more">
+              <summary><span aria-hidden="true">•••</span>更多工具</summary>
+              <div class="wk-more-menu">
+                <button id="wk-lint" class="ghost" title="体检：孤儿页 / 过时页 / 断链 / 来源错误 / 重复标题">体检综述库</button>
+                <!-- EN-F3：时间线——谁在什么时候建/改了哪页（git log 优先，退快照记录） -->
+                <button id="wk-timeline" class="ghost" title="综述库演化时间线：每一页在什么时候被谁建立或修改">查看时间线</button>
+              </div>
+            </details>
+          </div>
         </div>
       </div>
       <!-- 生成综述：默认收起。推荐用 Agent 生成（效果更好），这里只作网页端兜底入口 -->
@@ -356,7 +373,7 @@
       <div id="wk-lint-panel" class="wk-lint-panel" hidden></div>
       <div class="wk-library">
         <aside class="wk-themes-pane" aria-label="综述主题">
-          <div class="wk-themes-head"><span>研究主题</span><button id="wk-theme-new" title="新建自定义主题">＋</button></div>
+          <div class="wk-themes-head"><span>研究主题</span><button id="wk-theme-new" title="新建自定义主题" aria-label="新建自定义主题"><svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button></div>
           <div id="wk-themes" class="wk-themes"></div>
           <p class="wk-themes-tip">来源相近的综述会自动归类；你也可以新建主题并手动固定。</p>
         </aside>
