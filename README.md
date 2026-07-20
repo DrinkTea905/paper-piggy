@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="src/web/PaperPiggy.png" width="128" alt="PaperPiggy 图标">
+
 # 🐷 论文小猪 · PaperPiggy
 
 **把你的文献库，变成 AI 能真正读懂、并且不会瞎编的研究助手**
@@ -146,7 +148,7 @@ Windows 10/11 64 位。无需预装 Python 或 VC++ 运行库。缺 WebView2 时
 ### 国内下载慢？配个镜像
 
 应用从 GitHub 下载（首启的模型、应用内更新的增量包），国内连 GitHub 偶尔超时。
-通常的**应用内更新**只下载约 1MB 的增量包；需要完整安装器的版本除外。下面的镜像配置只用于
+通常的**应用内更新**只下载几 MB 的增量包；需要完整安装器的版本除外。下面的镜像配置只用于
 增量包，完整安装器仍从官方 GitHub Release 下载：
 
 1. 每次发版时，把 Release 里的 `paper-piggy-app-<版本>.zip` 和同名 `.sha256`（就这两个小文件）

@@ -10,6 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import config as C
 import requests
+from icon_utils import ensure_multi_size_ico
 
 
 def _ts():
@@ -159,27 +160,56 @@ def _system_light():
 
 
 def _ensure_icon():
-    """把 web/PaperPiggy.png 封成 .ico（纯 stdlib，PNG-in-ICO），供窗口/任务栏图标用。返回 ico 路径或 None。"""
+    """从图标真源生成标准多尺寸 ICO，并同步分发包根图标。"""
     try:
         png = C.APP / "web" / "PaperPiggy.png"
         ico = C.DATA / "PaperPiggy.ico"
-        # 源 PNG 更新时必须重建；否则已生成的 PaperPiggy.ico 会让新版图标永远不生效。
-        if (ico.exists() and ico.stat().st_size > 0 and png.exists()
-                and ico.stat().st_mtime >= png.stat().st_mtime):
-            return str(ico)
         if not png.exists():
             return None
-        import struct
-        data = png.read_bytes()
-        w = int.from_bytes(data[16:20], "big"); h = int.from_bytes(data[20:24], "big")
-        bw = 0 if w >= 256 else w; bh = 0 if h >= 256 else h   # 0 表示 256
-        hdr = struct.pack("<HHH", 0, 1, 1)                     # ICONDIR: reserved,type=icon,count
-        entry = struct.pack("<BBBBHHII", bw, bh, 0, 0, 1, 32, len(data), 22)  # ICONDIRENTRY
-        C.DATA.mkdir(parents=True, exist_ok=True)
-        ico.write_bytes(hdr + entry + data)
+        _, rebuilt = ensure_multi_size_ico(png, ico)
+
+        # 应用内更新只替换 app/，不会动安装目录根的 PaperPiggy.ico。
+        # 分发目录可写时同步根图标，桌面/开始菜单快捷方式与卸载项便能收到新版。
+        root = C.APP.parent
+        is_bundle = ((root / "run_localkb.py").exists()
+                     or (root / "python" / "python.exe").exists()
+                     or (root / "portable.txt").exists())
+        root_rebuilt = False
+        if is_bundle:
+            try:
+                _, root_rebuilt = ensure_multi_size_ico(png, root / "PaperPiggy.ico")
+            except Exception as e:
+                _logline(f"安装目录图标同步跳过：{repr(e)}")
+        if rebuilt or root_rebuilt:
+            _refresh_shell_icons()
         return str(ico)
-    except Exception:
+    except Exception as e:
+        _logline(f"应用图标生成失败：{repr(e)}")
         return None
+
+
+def _refresh_shell_icons():
+    """通知 Windows Explorer 图标资源已变化；失败不影响启动。"""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        ctypes.windll.shell32.SHChangeNotify(0x08000000, 0x0000, None, None)
+    except Exception:
+        pass
+
+
+def _set_app_user_model_id():
+    """给任务栏分组稳定身份，避免继续沿用 pythonw 的默认图标。"""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+            "PaperPiggy.PaperPiggy"
+        )
+    except Exception:
+        pass
 
 
 def _tint_titlebar_async():
@@ -318,6 +348,8 @@ def _stop_server(pid, proc):
 
 
 def main():
+    _set_app_user_model_id()
+    _ensure_icon()
     _check_path_ascii()
     proc = None
     logf = None

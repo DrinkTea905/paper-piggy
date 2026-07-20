@@ -61,6 +61,7 @@
 #define AppNameEn      "PaperPiggy"
 #define AppPublisher   "DrinkTea905"
 #define AppURL         "https://github.com/DrinkTea905/paper-piggy"
+#define AppUserModelID "PaperPiggy.PaperPiggy"
 ; 快捷方式**直接指向 pythonw.exe**，不经过 PaperPiggy.vbs（见文件头 §启动器：别再走 .vbs）
 #define AppLauncher    "python\pythonw.exe"
 #define AppScript      "run_localkb.py"
@@ -88,7 +89,7 @@ LicenseFile=..\LICENSE
 OutputDir=..\dist-installer
 ; 不叫 setup.exe（见 §安装包命名）
 OutputBaseFilename=PaperPiggy-{#AppVersion}-win64
-; .ico 由 build_installer.py 的 ensure_icon() 从 web/PaperPiggy.png 现封（仓库里只有 .png）
+; .ico 由 build_installer.py 从 web/PaperPiggy.png 强制重建为 16–256px 多尺寸图标
 SetupIconFile=PaperPiggy.ico
 UninstallDisplayIcon={app}\PaperPiggy.ico
 UninstallDisplayName={#AppName} {#AppVersion}
@@ -141,10 +142,10 @@ Source: "MicrosoftEdgeWebview2Setup.exe"; DestDir: "{tmp}"; Flags: deleteafterin
 
 [Icons]
 Name: "{group}\{#AppName}";        Filename: "{app}\{#AppLauncher}"; Parameters: """{app}\{#AppScript}"""; \
-    WorkingDir: "{app}"; IconFilename: "{app}\PaperPiggy.ico"
+    WorkingDir: "{app}"; IconFilename: "{app}\PaperPiggy.ico"; AppUserModelID: "{#AppUserModelID}"
 Name: "{group}\卸载 {#AppName}";   Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#AppName}";  Filename: "{app}\{#AppLauncher}"; Parameters: """{app}\{#AppScript}"""; \
-    WorkingDir: "{app}"; IconFilename: "{app}\PaperPiggy.ico"; Tasks: desktopicon
+    WorkingDir: "{app}"; IconFilename: "{app}\PaperPiggy.ico"; AppUserModelID: "{#AppUserModelID}"; Tasks: desktopicon
 
 [Run]
 ; 缺 WebView2 时静默安装（/silent /install）。装不上也不阻断安装流程——

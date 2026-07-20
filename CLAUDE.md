@@ -223,7 +223,7 @@ $env:LOCALKB_MODELS = 'D:\00Zotero知识库\rag\data\models'
 | 期刊评级规则 | `journal_grading/` + `journal_grading/期刊引用权重分级方案.md` |
 | wiki 页面规约 | `wiki_store.WIKI_MD_SEED`（改了**必须** bump `SCHEMA_VERSION`，见 MAINTENANCE） |
 | Agent 工作流 | `agent_ws._WF_*` 常量 |
-| 应用图标 | `web/PaperPiggy.png`（`.ico` 由 launcher 运行时生成） |
+| 应用图标 | `web/PaperPiggy.png`（唯一真源；多尺寸 `.ico` 由构建器/launcher 自动生成） |
 | **数据落点** | `config._bootstrap_bundle_env()`。`run_localkb.py` 只是 `import config` 借道 —— 它曾经自己复刻过一份 HOME 解析，两处各算各的，是「启动器和 MCP 认两个数据目录」的漂移源。**别再复制出去。** |
 | Agent 工作区落点 | `agent_ws.base_dir()`（= `C.DATA.parent`，与 folder/zotero 模式无关） |
 | **哪些数据要备份** | `backup.py` 的 `CORE_IN_DATA` / `INDEX_IN_DATA` / `NEVER_IN_DATA` / `SPECIAL_IN_DATA`。**新增任何 `C.DATA / "xxx"` 都必须在这四个清单里落座**，否则 `check_guides ⑥` 直接中止打包 |

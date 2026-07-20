@@ -144,24 +144,16 @@ def ensure_webview2():
 def ensure_icon():
     r"""生成 installer\PaperPiggy.ico 供 Inno 用。
 
-    仓库里只有 web\PaperPiggy.png —— .ico 一直是 launcher 运行时现封的（PNG-in-ICO），
-    没有静态 .ico 文件。这里用同一套纯 stdlib 逻辑在构建期封一份出来。
+    web\PaperPiggy.png 是唯一真源；每次构建都强制重建标准多尺寸 ICO，
+    绝不复用上次出包留下的旧图标。
     """
     ico = HERE / "PaperPiggy.ico"
-    if ico.exists() and ico.stat().st_size > 0:
-        return ico
     png = SRC / "web" / "PaperPiggy.png"
     if not png.exists():
         raise SystemExit(f"[installer] ✗ 找不到 {png}（应用图标的真源）")
-
-    import struct
-    data = png.read_bytes()
-    # ICONDIR: reserved=0, type=1(icon), count=1
-    hdr = struct.pack("<HHH", 0, 1, 1)
-    # ICONDIRENTRY: w=0/h=0 表示 256px；PNG 数据直接内嵌（PNG-in-ICO，Vista+ 支持）
-    entry = struct.pack("<BBBBHHII", 0, 0, 0, 0, 1, 32, len(data), 6 + 16)
-    ico.write_bytes(hdr + entry + data)
-    print(f"[installer] 图标已生成：{ico}（从 web/PaperPiggy.png 封成 PNG-in-ICO）")
+    from icon_utils import ensure_multi_size_ico
+    ensure_multi_size_ico(png, ico, force=True)
+    print(f"[installer] 图标已生成：{ico}（16–256px 多尺寸 ICO）")
     return ico
 
 

@@ -80,7 +80,7 @@ NEVER_IN_DATA = [
     "backups",               # 备份自己（别套娃）
     "stats_cache.json",      # 仪表盘预聚合缓存，可重算
     "jieba_legal_dict.txt",  # extract 会重新生成
-    "PaperPiggy.ico",        # launcher 运行时现封
+    "PaperPiggy.ico",        # launcher 从图标真源生成的多尺寸窗口/任务栏图标
 ]
 # ④ 特殊：不是「拷文件」，而是读出来剥掉 API key 再写进包（见 _sanitized_settings）
 SPECIAL_IN_DATA = ["settings.json"]
