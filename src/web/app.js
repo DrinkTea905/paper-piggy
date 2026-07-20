@@ -1560,7 +1560,7 @@
     </div>`;
   }
 
-  // 库总览·新手指引 全屏浮层：点开＝四步图（agentGuideCard）+ 详细图文章节（#home-guide 静态在 index.html）
+  // 库总览·新手指引：左上角小猪头像是常驻入口；首次显示一次锚定提示。
   function openHomeGuide() {
     const g = $("#home-guide"); if (!g) return;
     const vis = $("#hg-visual");
@@ -1574,6 +1574,15 @@
   }
   function closeHomeGuide() { const g = $("#home-guide"); if (g) g.hidden = true; }
   (function wireHomeGuide() {
+    const opener = $("#brand-guide"), tip = $("#brand-guide-tip"), tipClose = $("#brand-guide-tip-close");
+    const tipKey = "localkb.brandGuideTipSeen";
+    const dismissTip = () => {
+      if (tip) tip.hidden = true;
+      try { localStorage.setItem(tipKey, "1"); } catch (_) {}
+    };
+    if (opener) opener.addEventListener("click", () => { dismissTip(); openHomeGuide(); });
+    if (tipClose) tipClose.addEventListener("click", dismissTip);
+    try { if (tip && localStorage.getItem(tipKey) !== "1") tip.hidden = false; } catch (_) { if (tip) tip.hidden = false; }
     const c = $("#home-guide-close"); if (c) c.addEventListener("click", closeHomeGuide);
     const t2a = $("#hg-to-agent"); if (t2a) t2a.addEventListener("click", () => { closeHomeGuide(); switchTab("agent"); });
     document.addEventListener("keydown", (e) => { const g = $("#home-guide"); if (e.key === "Escape" && g && !g.hidden) closeHomeGuide(); });
@@ -1683,11 +1692,8 @@
       ? `<div class="dash-lint" id="dash-lint" role="button" tabindex="0" title="上次体检：${esc(wl.checked_at || "未知时间")}。点击去综述库查看体检详情">🩺 综述库有 <b>${num(wl.issues)}</b> 处待理顺（孤立页 / 过时页 / 断链等）→</div>`
       : "";
     $("#dash").innerHTML = header + lintLine
-      + `<div class="dash-grid dash-2col">${overviewCard(d)}</div>`
-      // 新手指引改为「点开＝全屏图文教程」，首页保持清爽（详细内容在 #home-guide 浮层）
-      + `<button class="dash-teach-open" id="dash-teach-open" type="button"><span class="dto-ic">📖</span><span class="dto-tx"><b>新手指引</b><small>四步把小猪养成你的专属知识库 · 图文详解</small></span><span class="dto-cta">点开 →</span></button>`;
+      + `<div class="dash-grid dash-2col">${overviewCard(d)}</div>`;
     // 事件
-    const dto = $("#dash-teach-open"); if (dto) dto.addEventListener("click", openHomeGuide);
     const seeD = $("#dash-see-deep"); if (seeD) seeD.addEventListener("click", () => _goDeepBrowse("yes"));
     const goD = $("#dash-go-deep"); if (goD) goD.addEventListener("click", async () => {
       goD.textContent = "正在开始全量深索…";

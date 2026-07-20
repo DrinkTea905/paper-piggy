@@ -61,8 +61,15 @@
       <svg class="theme-moon" viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M16.4 12.5A6.9 6.9 0 0 1 7.5 3.6 7 7 0 1 0 16.4 12.5Z"/></svg>
     </button>
     <div class="brand">
-      <img src="/static/PaperPiggy.png" class="brand-logo brand-logo-light" alt="" />
-      <img src="/static/PaperPiggy-battle.png" class="brand-logo brand-logo-dark" alt="" />
+      <button id="brand-guide" class="brand-guide" type="button" aria-label="打开新手指引" title="打开新手指引">
+        <img src="/static/PaperPiggy.png" class="brand-logo brand-logo-light" alt="" />
+        <img src="/static/PaperPiggy-battle.png" class="brand-logo brand-logo-dark" alt="" />
+        <span class="brand-guide-badge" aria-hidden="true">📖</span>
+      </button>
+      <div id="brand-guide-tip" class="brand-guide-tip" role="status" hidden>
+        <span>点小猪，随时打开新手指引</span>
+        <button id="brand-guide-tip-close" type="button" aria-label="知道了">知道了</button>
+      </div>
       <span class="brand-word">PaperPiggy</span><span id="status" class="status">连接中…</span>
     </div>
     <nav class="tabs">
@@ -109,7 +116,7 @@
       <div class="dash-loading">加载库统计中…</div>
     </div>
 
-    <!-- ══ 库总览·新手指引 全屏浮层（点首页「📖 新手指引」打开，✕/Esc 关）══ -->
+    <!-- ══ 库总览·新手指引 全屏浮层（点左上角小猪头像打开，✕/Esc 关）══ -->
     <!-- ⚠ 维护铁律：功能更新时这份新手指引也要同步更新（记忆 localkb-agent-7point-redesign 已记）。 -->
     <div class="ag-guide" id="home-guide" hidden>
       <div class="ag-guide-head">
@@ -185,7 +192,7 @@
           <div class="ag-ch-n">8</div>
           <div class="ag-ch-c">
             <h3>小贴士</h3>
-            <p class="ag-note">· 顶栏这几个页签<b>可以拖动调整顺序</b>，把最常用的放前面。<br>· 想重看这份指引：随时点首页「📖 新手指引」；想重走安装向导：「⚙ 设置」里有入口。<br>· 深索是慢功夫——先深索你最关心方向的文献，问答立刻更扎实。</p>
+            <p class="ag-note">· 顶栏这几个页签<b>可以拖动调整顺序</b>，把最常用的放前面。<br>· 想重看这份指引：随时点左上角的<b>小猪头像</b>；想重走安装向导：「⚙ 设置」里有入口。<br>· 深索是慢功夫——先深索你最关心方向的文献，问答立刻更扎实。</p>
           </div>
         </section>
 
@@ -413,14 +420,24 @@
   <!-- Agent 页面板（MCP 接入引导：真实命令 + 工具表 + prompt 示例） -->
   <main id="panel-agent" class="panel" data-panel="agent" hidden>
     <div class="agent-page">
-      <!-- 极简标题栏（跨满一行） -->
+      <!-- Agent 顶栏：定位 → 服务状态 → 使用指引，三段顺序固定 -->
       <section class="ag-hero">
-        <div class="ag-hero-ic">🤖</div>
-        <div class="ag-hero-txt">
-          <h2>AI 助手驱动你的知识库</h2>
-          <p>成品、专属资料库、定时任务都在你本机、人类可读；换任何 AI 助手都能接着用。</p>
+        <div class="ag-hero-intro">
+          <div class="ag-hero-ic">🤖</div>
+          <div class="ag-hero-txt">
+            <h2>AI 助手驱动你的知识库</h2>
+            <p>成品、专属资料库、定时任务都在你本机、人类可读；换任何 AI 助手都能接着用。</p>
+          </div>
         </div>
         <div class="ag-run" id="ag-run"><span class="ag-dot"></span><span id="ag-run-txt">检查服务状态…</span></div>
+        <button class="ag-guide-open ag-hero-guide" id="ag-guide-open" type="button">
+          <span class="ag-guide-ic">🧭</span>
+          <span class="ag-guide-txt">
+            <b>Agent 使用指引</b>
+            <small>接入 · 使用 · 成果位置 · 安全边界</small>
+          </span>
+          <span class="ag-guide-cta">查看 →</span>
+        </button>
       </section>
 
       <!-- 应用更新不会覆盖用户改过的工作流/规约：有新版旁本时在这里显式要求处理。 -->
@@ -465,15 +482,6 @@
         <p class="ag-note ag-tasks-note">任务定义存在「资料库 › 定时任务」（换 AI 助手也能读、照着重建）；成果落「交付物 › 定时任务」；每跑完一次，AI 会依时效内容更新综述库。<br><small>说明：定时触发由你的 AI 助手在它自己的日程里执行——本应用不联网、不含大模型，只负责登记、展示与把成果入库。</small></p>
       </section>
 
-      <!-- 🧭 教程入口（点开＝全屏完整教程；接入 / 用法 / 能力 / 安全都在里面）——保持主页清爽 -->
-      <button class="ag-guide-open ag-full" id="ag-guide-open" type="button">
-        <span class="ag-guide-ic">🧭</span>
-        <span class="ag-guide-txt">
-          <b>这套「AI 助手驱动知识库」是怎么帮你的？</b>
-          <small>第一次用、或想搞懂它到底能干啥 → 点开看完整教程：怎么接入、怎么用、成果去哪、能力清单、安全边界</small>
-        </span>
-        <span class="ag-guide-cta">点开教程 →</span>
-      </button>
     </div>
 
     <!-- ══ 全屏教程浮层（默认隐藏，点 🧭 打开）——层层递进，覆盖 agent 功能方方面面 ══ -->
