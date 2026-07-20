@@ -35,6 +35,9 @@ button { line-height: 1.2; }
 }
 .brand { font-weight: 750; font-size: 16px; color: var(--brand); display: flex; align-items: center; gap: 9px; white-space: nowrap; }
 .brand-logo { width: 36px; height: 36px; border-radius: 10px; clip-path: inset(0 round 22%); object-fit: contain; filter: drop-shadow(0 3px 6px rgba(44,52,64,.18)); }
+.brand-logo-dark { display: none; }
+:root[data-theme="dark"] .brand-logo-light { display: none; }
+:root[data-theme="dark"] .brand-logo-dark { display: block; }
 .status { font-size: 11px; font-weight: 600; padding: 2px 9px; border-radius: 10px; background: #334155; color: #cbd5e1; white-space: nowrap; }
 .status.ok { background: #064e3b; color: #6ee7b7; }
 .status.warn { background: #78350f; color: #fcd34d; }
@@ -1641,3 +1644,22 @@ input:focus, select:focus, textarea:focus, #q:focus, #chat-q:focus,
   .wk-search { width: 100%; max-width: none; flex-basis: 100%; }
   .wk-action-group { width: 100%; overflow-x: auto; padding-bottom: 2px; }
 }
+
+/* 两处资料工具区在同一水平线上完成：宽屏完整展示，窄屏只在工具区内部横向滚动。 */
+.bl-bar { overflow-x: auto; overflow-y: hidden; }
+.bl-bar > .bl-summary-row { display: block; min-width: max-content; }
+.bl-one-row { min-width: max-content; display: flex; align-items: center; gap: 10px; }
+.bl-one-row .bl-title { flex: 0 0 auto; margin-right: 4px; }
+.bl-one-row .bl-filter-row { display: flex; flex: 0 0 auto; align-items: center; gap: 8px; }
+.bl-one-row .bl-filter-row select { flex: 0 0 auto; width: 160px; }
+.bl-one-row #bl-type-filter, .bl-one-row #bl-label-filter { width: 178px; }
+.bl-one-row #bl-sort { width: 132px; }
+.bl-one-row .bl-batch-actions { flex: 0 0 auto; margin-left: 4px; flex-wrap: nowrap; }
+
+.wk-page-head { min-width: 0; flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden; padding-bottom: 2px; }
+.wk-page-head h2 { flex: 0 0 auto; }
+.wk-page-head .wk-bar { width: auto; max-width: none; flex: 1 0 auto; margin: 0; }
+.wk-page-head .wk-tools { width: auto; max-width: none; flex-direction: row; align-items: center; flex-wrap: nowrap; }
+.wk-page-head .wk-filter-group { flex: 0 0 auto; align-items: center; flex-wrap: nowrap; }
+.wk-page-head .wk-search { width: clamp(240px, 28vw, 420px); max-width: 420px; flex: 0 0 auto; }
+.wk-page-head .wk-action-group { width: auto; flex: 0 0 auto; overflow: visible; padding-bottom: 0; justify-content: flex-start; }

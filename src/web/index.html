@@ -27,6 +27,9 @@
     #boot .boot-box { text-align: center; max-width: 400px; padding: 24px; }
     #boot .boot-pig { width: 64px; height: 64px; margin: 0 auto; }
     #boot .boot-pig img { display: block; width: 100%; height: 100%; object-fit: contain; border-radius: 18px; clip-path: inset(0 round 22%); }
+    #boot .boot-logo-dark { display: none; }
+    :root[data-theme="dark"] #boot .boot-logo-light { display: none; }
+    :root[data-theme="dark"] #boot .boot-logo-dark { display: block; }
     #boot .boot-spin { width: 32px; height: 32px; margin: 18px auto 14px; border: 3px solid #ece7ea;
       border-top-color: #d85b7c; border-radius: 50%; animation: boot-spin .8s linear infinite; }
     @keyframes boot-spin { to { transform: rotate(360deg); } }
@@ -42,7 +45,10 @@
   <!-- 启动遮罩：盖住整屏直到 /health.loading 变 false（库目录读取完成），再淡出。见 app.js bootWatch()。 -->
   <div id="boot" class="boot">
     <div class="boot-box">
-      <div class="boot-pig"><img src="/static/PaperPiggy-battle.png" alt="" /></div>
+      <div class="boot-pig">
+        <img class="boot-logo-light" src="/static/PaperPiggy.png" alt="" />
+        <img class="boot-logo-dark" src="/static/PaperPiggy-battle.png" alt="" />
+      </div>
       <div class="boot-spin" aria-hidden="true"></div>
       <div class="boot-h">正在启动 PaperPiggy…</div>
       <div id="boot-msg" class="boot-msg">正在连接本地服务…</div>
@@ -54,7 +60,11 @@
       <svg class="theme-sun" viewBox="0 0 20 20" fill="none" aria-hidden="true"><circle cx="10" cy="10" r="3.4"/><path d="M10 2.2v1.7M10 16.1v1.7M2.2 10h1.7M16.1 10h1.7M4.5 4.5l1.2 1.2M14.3 14.3l1.2 1.2M15.5 4.5l-1.2 1.2M5.7 14.3l-1.2 1.2"/></svg>
       <svg class="theme-moon" viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M16.4 12.5A6.9 6.9 0 0 1 7.5 3.6 7 7 0 1 0 16.4 12.5Z"/></svg>
     </button>
-    <div class="brand"><img src="/static/PaperPiggy-battle.png" class="brand-logo" alt="" /><span class="brand-word">PaperPiggy</span><span id="status" class="status">连接中…</span></div>
+    <div class="brand">
+      <img src="/static/PaperPiggy.png" class="brand-logo brand-logo-light" alt="" />
+      <img src="/static/PaperPiggy-battle.png" class="brand-logo brand-logo-dark" alt="" />
+      <span class="brand-word">PaperPiggy</span><span id="status" class="status">连接中…</span>
+    </div>
     <nav class="tabs">
       <button class="tab active" data-tab="dashboard" aria-label="库总览"><span aria-hidden="true">📊</span><span class="tab-label">库总览</span></button>
       <button class="tab" data-tab="browse" aria-label="文献"><span aria-hidden="true">📚</span><span class="tab-label">文献</span></button>
@@ -244,7 +254,50 @@
         <div id="browse-view" class="library-browse-view">
           <div class="bl-bar">
             <div class="bl-summary-row">
+              <div class="bl-one-row">
               <div class="bl-title"><span id="bl-name">全部</span><span id="bl-count" class="bl-count"></span></div>
+              <div class="bl-filter-row" aria-label="筛选与排序">
+                <select id="bl-deep-filter" title="筛选文献">
+                  <option value="" data-label="全部">全部状态</option>
+                  <optgroup label="深索状态">
+                    <option value="yes" data-label="📄 已深索">📄 已深索</option>
+                    <option value="no" data-label="📋 未深索">📋 未深索</option>
+                  </optgroup>
+                  <optgroup label="正文来源">
+                    <option value="ocr" data-label="🔎 本地 OCR">🔎 本地 OCR</option>
+                    <option value="native" data-label="📃 原生文字层">📃 原生文字层</option>
+                  </optgroup>
+                  <optgroup label="检索摘要">
+                    <option value="summary_yes" data-label="🧬 摘要有效">🧬 摘要有效</option>
+                    <option value="summary_invalid" data-label="🟠 摘要异常">🟠 摘要异常</option>
+                    <option value="summary_no" data-label="⚪ 摘要缺失">⚪ 摘要缺失</option>
+                  </optgroup>
+                </select>
+                <select id="bl-type-filter" title="按识别后的真实文献性质筛选">
+                  <option value="">全部文献性质</option>
+                  <option value="journal_article">期刊论文</option>
+                  <option value="book">书籍</option>
+                  <option value="book_section">书章</option>
+                  <option value="thesis">学位论文</option>
+                  <option value="legal_source">法源</option>
+                  <option value="case">案例</option>
+                  <option value="standard">标准</option>
+                  <option value="report">报告与白皮书</option>
+                  <option value="preprint">预印本</option>
+                  <option value="conference_paper">会议论文</option>
+                  <option value="dataset">数据集</option>
+                  <option value="web">网页与其他</option>
+                </select>
+                <select id="bl-label-filter" title="按客观标签筛选">
+                  <option value="">全部客观标签</option>
+                </select>
+                <select id="bl-sort" title="排序；综合推荐考虑来源评价、年份和全文可用性">
+                  <option value="ingested" selected>最新入库</option>
+                  <option value="year">年份最新</option>
+                  <option value="recommend">综合推荐</option>
+                  <option value="match" hidden>匹配程度</option>
+                </select>
+              </div>
               <div class="bl-batch-actions">
                 <label class="bl-sel-all"><input type="checkbox" id="bl-selall" /> 全选</label>
                 <button id="bl-addcat" class="ghost2b" disabled title="把勾选的文献加入某个「手动分类」；也可右键文献卡，或拖到左侧手动分类">＋ 加入分类</button>
@@ -252,48 +305,7 @@
                 <button class="ag-refresh" data-act="refresh-browse" title="重新扫描文献列表、分类和计数（新入库或后台深索后使用）">🔄 刷新</button>
               </div>
             </div>
-            <div class="bl-filter-row" aria-label="筛选与排序">
-              <select id="bl-deep-filter" title="筛选文献">
-                <option value="" data-label="全部">全部状态</option>
-                <optgroup label="深索状态">
-                  <option value="yes" data-label="📄 已深索">📄 已深索</option>
-                  <option value="no" data-label="📋 未深索">📋 未深索</option>
-                </optgroup>
-                <optgroup label="正文来源">
-                  <option value="ocr" data-label="🔎 本地 OCR">🔎 本地 OCR</option>
-                  <option value="native" data-label="📃 原生文字层">📃 原生文字层</option>
-                </optgroup>
-                <optgroup label="检索摘要">
-                  <option value="summary_yes" data-label="🧬 摘要有效">🧬 摘要有效</option>
-                  <option value="summary_invalid" data-label="🟠 摘要异常">🟠 摘要异常</option>
-                  <option value="summary_no" data-label="⚪ 摘要缺失">⚪ 摘要缺失</option>
-                </optgroup>
-              </select>
-              <select id="bl-type-filter" title="按识别后的真实文献性质筛选">
-                <option value="">全部文献性质</option>
-                <option value="journal_article">期刊论文</option>
-                <option value="book">书籍</option>
-                <option value="book_section">书章</option>
-                <option value="thesis">学位论文</option>
-                <option value="legal_source">法源</option>
-                <option value="case">案例</option>
-                <option value="standard">标准</option>
-                <option value="report">报告与白皮书</option>
-                <option value="preprint">预印本</option>
-                <option value="conference_paper">会议论文</option>
-                <option value="dataset">数据集</option>
-                <option value="web">网页与其他</option>
-              </select>
-              <select id="bl-label-filter" title="按客观标签筛选">
-                <option value="">全部客观标签</option>
-              </select>
-              <select id="bl-sort" title="排序；综合推荐考虑来源评价、年份和全文可用性">
-                <option value="ingested" selected>最新入库</option>
-                <option value="year">年份最新</option>
-                <option value="recommend">综合推荐</option>
-                <option value="match" hidden>匹配程度</option>
-              </select>
-            </div>
+          </div>
           </div>
           <div id="bl-active-filters" class="bl-active-filters" hidden></div>
           <div id="empty-dropzone" class="empty-dropzone" hidden>
@@ -321,15 +333,9 @@
   <main id="panel-wiki" class="panel" data-panel="wiki" hidden>
     <div class="wiki-page">
       <div class="wk-page-head">
-        <div>
-          <h2>综述库</h2>
-          <p>Agent 生成的综合会按研究主题整理在这里，便于阅读、核验和持续维护。</p>
-        </div>
-      </div>
-      <!-- EN-F2：建议横幅——新深索的文献可能影响已有综述页（/wiki/suggestions），由 JS 填充，空则不渲染 -->
-      <div id="wk-suggest" class="wk-suggest" hidden></div>
-      <div class="wk-bar">
-        <div class="wk-tools">
+        <h2>综述库</h2>
+        <div class="wk-bar">
+          <div class="wk-tools">
           <div class="wk-filter-group">
             <label class="wk-search">
               <span class="ui-icon" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none"><circle cx="7" cy="7" r="4" stroke="currentColor" stroke-width="1.5"/><path d="m10 10 3 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></span>
@@ -367,8 +373,11 @@
               </div>
             </details>
           </div>
+          </div>
         </div>
       </div>
+      <!-- EN-F2：建议横幅——新深索的文献可能影响已有综述页（/wiki/suggestions），由 JS 填充，空则不渲染 -->
+      <div id="wk-suggest" class="wk-suggest" hidden></div>
       <div id="wk-msg" class="msg"></div>
       <div id="wk-lint-panel" class="wk-lint-panel" hidden></div>
       <div class="wk-library">
