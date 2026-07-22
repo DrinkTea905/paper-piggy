@@ -146,9 +146,9 @@
         <section class="ag-ch">
           <div class="ag-ch-n">3</div>
           <div class="ag-ch-c">
-            <h3>第二步 · 让文献可深读（① 深索 → ② 检索摘要）</h3>
+            <h3>第二步 · 让文献可深读、也更容易被找到</h3>
             <p class="ag-note"><b>① 深索</b>＝把全文附件拆成可检索的小段。<b>只有深索过的文献</b>才能被精读、定位原文、跨篇综合；未深索的只有题录 + 摘要。PDF 定位到页码，EPUB 定位到章节，DOCX / Markdown 定位到标题段落，TXT 定位到行号。在「📚 文献」里挑文献深索，建议慢慢把常用的喂完——<b>可放后台跑，不影响使用</b>。PDF 没有文字层时，PaperPiggy 会自动在本机 OCR，只把识别文字存入索引，不改原文件。</p>
-            <p class="ag-note"><b>② 检索摘要</b>（深索之后的一步）——再给每篇深索文献配一段 ~150 字 AI 摘要（⚙ 设置 → 建库 → 检索摘要），<b>让检索更容易找准这篇</b>。摘要会先过质量检查；乱码、重复失控或过期占位摘要不算完成。文献页同一个筛选器可查看<b>摘要有效 / 异常 / 缺失</b>，也可对单篇修复或生成；还可让 Agent 跑深索时顺带生成（省 API 额度），或在库总览批量处理。</p>
+            <p class="ag-note"><b>② 检索摘要</b>是深索后的检索增强：给整篇文献配一段 ~150 字 AI 摘要，<b>让系统更容易先找到这篇</b>。没有检索摘要，已深索的全文仍能精读和引用，只是整篇召回可能不够稳定。它不是题录里的原文摘要，也不能替代深索。可在「⚙ 设置 → 建库 → 检索摘要」选择交给 Agent，或让 PaperPiggy 自动生成。</p>
           </div>
         </section>
 
@@ -583,7 +583,7 @@
           <div class="ag-ch-c">
             <h3>深索：让回答回溯到原文位置</h3>
             <p class="ag-note"><b>已深索</b>的文献 AI 能读到带原文位置的正文；<b>未深索</b>的只有题录 + 摘要。想某方向问答更扎实，先去「📚 文献」深索它（拆成可检索的小段，可后台慢慢跑，不影响使用）。PDF 没有文字层的页面会自动做<b>本地 OCR</b>；不上传文献、不修改原文件。附件丢失或无法读取会分开提示；文献页筛选器可按正文来源和深索状态查看，每项直接显示当前范围的篇数。</p>
-            <p class="ag-note">💡 <b>第②步：检索摘要</b>——深索完，让 AI 给每篇写一段检索摘要（⚙ 设置 → 建库 → 检索摘要），<b>检索更容易命中这篇</b>。摘要必须通过质量检查才算完成；文献页可筛选“摘要有效 / 异常 / 缺失”。选择“交给 Agent 生成”后，让 Agent 维护知识库时，它会读取正文、修复可处理的缺失/异常摘要并重嵌入；不会改走服务端摘要生成 API。</p>
+            <p class="ag-note">💡 <b>可选增强：检索摘要</b>——深索完，可让 AI 给每篇写一段检索摘要（⚙ 设置 → 建库 → 检索摘要），<b>检索更容易命中这篇</b>；不生成也不影响读取和引用已深索全文。摘要必须通过质量检查才算完成；文献页可筛选“摘要有效 / 异常 / 缺失”。选择“交给 Agent 生成”后，让 Agent 维护知识库时，它会读取正文、修复可处理的缺失/异常摘要并重嵌入；不会改走 PaperPiggy 自动生成摘要的 API。</p>
             <p class="ag-note">🔎 Agent 做<b>发现型检索</b>时会优先铺开不同文献，每篇最多带回 2 段，避免一篇文献挤满结果；选定关键来源后，再做<b>定向深读 / 论断核验</b>，此时可以读取该篇更多证据。内置“写论文与综述”“跨学科发散与补文献”工作流已经按这个顺序执行。</p>
             <div id="ag-deep" class="ag-deep">读取深索进度…</div>
           </div>
@@ -693,22 +693,23 @@
       <!-- UX9：锚点 id 供「去配 Key」类入口 scrollIntoView 直达 -->
       <div class="set-section" id="sec-engine">
         <h4>🔎 检索引擎</h4>
-        <p class="hint">检索用的向量引擎。填一个 SiliconFlow 免费 Key，检索 / 对话 / 深索摘要 / 抽题录全局共用。⚠️ 建过库后换引擎（本地↔API 或换模型）旧向量不兼容，点「应用检索引擎」会自动重建。</p>
+        <p class="hint">检索需要<b>嵌入 + 重排</b>两类专用模型，不是普通聊天 API。云端检索推荐 SiliconFlow，因为它同时提供 PaperPiggy 已适配的两类免费模型；DeepSeek、Kimi 等普通对话 API 不能直接替代检索引擎。⚠️ 建过库后换引擎或模型，旧向量不兼容，应用时会自动重建。</p>
         <label class="eng-mode"><input type="radio" name="eng-backend" value="local" /> 🔒 本地模型（离线，需 ~1.2GB 模型）</label>
-        <label class="eng-mode"><input type="radio" name="eng-backend" value="api" /> ☁️ API（SiliconFlow 等 OpenAI 兼容，免费免下载）</label>
+        <label class="eng-mode"><input type="radio" name="eng-backend" value="api" /> ☁️ SiliconFlow 云端检索（推荐，当前免费、免下载）</label>
         <div id="eng-api">
-          <p class="hint">👉 没有 Key？去 <a href="https://account.siliconflow.cn/zh/login" target="_blank" rel="noopener">SiliconFlow（硅基流动）</a> 登录领免费额度，填这一个即可全局复用。</p>
+          <p class="hint">👉 没有 Key？去 <a href="https://account.siliconflow.cn/zh/login" target="_blank" rel="noopener">SiliconFlow（硅基流动）</a> 登录领取。它默认也可供 PaperPiggy 自动生成检索摘要；对话和摘要以后仍可另选 AI 厂商。</p>
           <p class="hint">💰 <b>强烈建议往 SiliconFlow 充 ¥1</b>：账户余额为 0 时，<b>连免费模型（bge-m3）也会报 403 失败</b>，
              深索/检索会莫名跑不动；充 ¥1 后免费模型即可一直正常用（免费额度不扣这 ¥1）。<code>.cn</code> 和 <code>.com</code> 账号不互通。</p>
-          <label>Base URL <input id="eng-base" placeholder="https://api.siliconflow.cn/v1" /></label>
           <label>API Key <input id="eng-key" type="password" placeholder="填过就不用再填，留空即可" /></label>
-          <details>
-            <summary>高级：嵌入 / 重排模型（一般不用改）</summary>
+          <details class="eng-custom">
+            <summary>高级：其他同时支持嵌入与重排的服务</summary>
+            <p class="hint">仅供明确知道服务商同时兼容 <code>/embeddings</code> 和 <code>/rerank</code> 的用户。普通 DeepSeek / Kimi / OpenAI 对话 Key 不能填在这里。</p>
+            <label>Base URL <input id="eng-base" placeholder="https://api.siliconflow.cn/v1" /></label>
             <label>嵌入模型 <input id="eng-embed" placeholder="BAAI/bge-m3" /></label>
             <label>重排模型 <input id="eng-rerank" placeholder="BAAI/bge-reranker-v2-m3" /></label>
           </details>
           <div class="set-errbtns">
-            <button id="eng-test" class="ghost">测试连接</button>
+            <button id="eng-test" class="ghost">测试嵌入与重排</button>
             <button id="eng-save" class="ghost">应用检索引擎</button>
             <span id="eng-msg" class="hint"></span>
           </div>
@@ -734,7 +735,7 @@
         </label>
         <p class="hint" id="ret-mem-msg">释放只影响临时内存，不会删除文献、索引或设置；下次检索会自动重新加载。</p>
         <p class="hint">怎么选：内存紧张建议 5–10 分钟；经常连续检索建议 30–60 分钟；选“不自动释放”会减少等待，
-          但本地模型和索引会持续占用更多内存。释放后第一次检索需要重新准备，本地模型通常比 API 模式等得更久。</p>
+          但本地模型和索引会持续占用更多内存。释放后第一次检索需要重新准备，本地模型通常比云端检索等得更久。</p>
       </div>
 
       <div class="set-section" id="sec-discipline">
@@ -754,27 +755,42 @@
 
       <div class="set-section">
         <!-- UX11：去掉「检索前缀/召回」黑话，说人话 -->
-        <h4>🧬 检索摘要（知识库建设第②步·让检索更容易找准每篇）</h4>
-        <p class="hint">深索（第①步）把全文附件拆成小段可检索；<b>检索摘要（第②步）</b>再给每篇深索文献配一段 ~150 字 AI 摘要当检索前缀，更易被搜到。只有通过质量检查的摘要才计为完成；异常项会提示修复，不会自动改写。这里选<b>由谁来生成</b>（一点即存）：</p>
+        <h4>🧬 检索摘要（深索后的检索增强）</h4>
+        <p class="hint"><b>① 深索</b>提取全文并拆成可检索小段，让文献能精读和定位原文；<b>② 检索摘要</b>再给整篇文献配一段 ~150 字 AI 摘要，让系统更容易先找到这篇。没有摘要不影响读取已经深索的全文；它也不是题录里的原文摘要，不能替代深索。这里选择由谁生成：</p>
         <div class="sac-gen">
           <label class="sac-gen-opt"><input type="radio" name="sac-gen" value="agent" />
             <span><b>交给 Agent 生成</b>（推荐）<br><small>在对话里让 Claude Code / Codex 跑深索或维护知识库时，它读取正文、自己写摘要并完成重嵌入——不调用服务端摘要生成 API、质量更好。在应用内直接点「深索」仍不会自动补摘要。</small></span></label>
           <label class="sac-gen-opt"><input type="radio" name="sac-gen" value="server" />
-            <span><b>服务端自动生成</b>（用你配的 API Key，耗额度）<br><small>在应用内点深索时，后端调 SiliconFlow 等自动补摘要，全自动、无需 Agent 参与。</small></span></label>
+            <span><b>PaperPiggy 自动生成</b><br><small>在应用内完成深索后自动写摘要并重新嵌入。可复用检索引擎的 SiliconFlow Key，也可选择其他 AI 厂商和模型。</small></span></label>
           <label class="sac-gen-opt"><input type="radio" name="sac-gen" value="off" />
-            <span><b>不生成</b><br><small>深索只把全文拆成可检索的小段，不额外生成摘要。</small></span></label>
+            <span><b>暂不生成</b><br><small>深索仍会正常完成，以后可随时补生成；整篇文献的召回可能不够稳定。</small></span></label>
+        </div>
+        <div id="sac-server-options" class="sac-server-options" hidden>
+          <label class="sac-source-opt"><input type="radio" name="sac-source" value="reuse" />
+            <span><b>复用检索引擎的 SiliconFlow Key</b>（推荐）<br><small>使用 <code>Qwen/Qwen2.5-7B-Instruct</code>，模型简单、生成快，SiliconFlow 当前标为免费；价格以后以服务商页面为准。</small></span></label>
+          <div id="sac-reuse-status" class="hint"></div>
+          <label class="sac-source-opt"><input type="radio" name="sac-source" value="custom" />
+            <span><b>使用其他 AI 厂商</b>（通常按量收费）<br><small>可选 DeepSeek、Kimi、智谱、OpenAI 或自定义兼容服务，并自行指定模型；只影响检索摘要，不改变检索引擎。</small></span></label>
+          <div id="sac-custom-fields" class="sac-custom-fields" hidden>
+            <label>服务商
+              <select id="sac-provider">
+                <option value="deepseek">DeepSeek</option>
+                <option value="kimi">Kimi（月之暗面）</option>
+                <option value="zhipu">智谱 AI</option>
+                <option value="openai">OpenAI</option>
+                <option value="custom">自定义 OpenAI 兼容服务</option>
+              </select>
+            </label>
+            <label id="sac-base-row">Base URL <input id="sac-base" placeholder="https://api.deepseek.com/v1" /></label>
+            <label>API Key <input id="sac-key" type="password" placeholder="填写所选 AI 厂商的 Key" /></label>
+            <label>模型 <input id="sac-model" placeholder="deepseek-chat" /></label>
+            <div class="set-errbtns">
+              <button id="sac-custom-save" class="ghost">保存并测试（调用 1 次）</button>
+              <span id="sac-custom-msg" class="hint"></span>
+            </div>
+          </div>
         </div>
         <div id="sac-status" class="sac-status hint"></div>
-        <details class="sac-adv">
-          <summary>高级：单独指定摘要用的服务商 / key / 模型（可选）</summary>
-          <label>Base URL <input id="sac-base" placeholder="不用填，会复用检索引擎的 API" /></label>
-          <label>API Key <input id="sac-key" type="password" placeholder="不用填，会复用检索引擎的 key" /></label>
-          <label>模型 <input id="sac-model" placeholder="Qwen/Qwen2.5-7B-Instruct（免费）" /></label>
-          <div class="set-errbtns">
-            <button id="sac-adv-save" class="ghost">保存高级设置</button>
-            <span id="sac-adv-msg" class="hint"></span>
-          </div>
-        </details>
       </div>
 
       <div class="set-section">
@@ -884,7 +900,7 @@
           清空后按提示点顶栏「⟳ 更新知识库」重建题录+语义（会<b>自动去重、按“只导入有全文附件”重新导入</b>），
           再到首页点「深索全部」重新深索。</p>
         <p class="hint"><b class="danger-text">⚠ 向量索引会被丢弃、需要重新嵌入</b>（1400 篇要几十分钟到几小时、
-          API 模式还要再花一次嵌入的钱）。<b>强烈建议先在上面「💾 立即备份」打一份</b>（勾上“包含向量索引”），
+          云端检索还要重新调用一次嵌入接口）。<b>强烈建议先在上面「💾 立即备份」打一份</b>（勾上“包含向量索引”），
           万一想反悔能整包恢复。旧的提取/切块会移到一个备份目录、可手动捞回，但向量表是直接丢弃的。</p>
         <div class="set-errbtns">
           <button id="rb-open" class="ghost danger">🧹 清空索引…</button>
@@ -1079,12 +1095,12 @@
         <div class="wizard-logo">📚</div>
         <div>
           <h2>欢迎使用本地知识库</h2>
-          <p class="wizard-sub">把你的 Zotero 文库变成一个能秒级检索、可视化、可对话的本地知识库。全程离线，隐私不出本机。</p>
+          <p class="wizard-sub">把你的 Zotero 文库变成一个能秒级检索、可视化、可对话的本地知识库。核心数据保存在本机；是否上传待检索文本，取决于你选择本地还是云端检索。</p>
         </div>
       </div>
       <ol class="wizard-steps">
         <li data-step="1" class="active"><span class="dot">1</span>欢迎 · 环境</li>
-        <li data-step="2"><span class="dot">2</span>配 Key · 引擎</li>
+        <li data-step="2"><span class="dot">2</span>选择检索方式</li>
         <li data-step="3"><span class="dot">3</span>连接文库</li>
         <li data-step="4"><span class="dot">4</span>建立索引</li>
       </ol>

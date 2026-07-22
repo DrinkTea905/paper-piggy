@@ -207,7 +207,7 @@
   function applySourceCopy() {
     if (APP.source !== "folder") return;
     const sub = document.querySelector(".wizard-sub");
-    if (sub) sub.textContent = "把一个文件夹里的全文文件变成能秒级检索、可视化、可对话的本地知识库。支持 PDF、EPUB、DOCX、Markdown、TXT，全程离线。";
+    if (sub) sub.textContent = "把一个文件夹里的全文文件变成能秒级检索、可视化、可对话的本地知识库。支持 PDF、EPUB、DOCX、Markdown、TXT；核心数据保存在本机。";
     const bt = $("#btn-build");
     if (bt) bt.title = "加了新全文文件后点一次即在后台增量更新（也可直接拖进窗口即时入库）。想定时自动更新？到 ⚙ 设置里开。";
   }
@@ -340,7 +340,7 @@
     setTimeout(() => { try { checkUpdate(true); } catch (e) {} }, 2500);
   }
 
-  // ── 深索摘要（SAC）覆盖：在每个「深索进度」旁并显「其中 M 篇有检索摘要」+ 补生成入口 ──
+  // ── 检索摘要（SAC）覆盖：在每个「深索进度」旁并显「其中 M 篇有检索摘要」+ 补生成入口 ──
   // st 需含 deep_done / sac_done / sac_invalid / sac_missing / sac_backfill。
   // 异常摘要不计完成；只在用户点修复/补生成时才重写并重嵌入。
   function sacFrag(st) {
@@ -356,7 +356,7 @@
     } else if (gap > 0) {
       const detail = [invalid ? `${num(invalid)} 篇摘要异常` : "", missing ? `${num(missing)} 篇缺失` : ""].filter(Boolean).join("，");
       s += ` <span class="sac-gap">（${detail}，不计完成）</span>`
-        + ` <a class="sac-bf-btn" data-act="sac-backfill" role="button" tabindex="0" title="第②步：修复异常摘要、补生成缺失摘要并重嵌入。需 API key，只处理这些篇，可后台跑。">🧬 修复 / 补生成摘要</a>`;
+        + ` <a class="sac-bf-btn" data-act="sac-backfill" role="button" tabindex="0" title="修复异常摘要、补生成缺失摘要并重嵌入。使用设置里的自动生成来源，只处理这些篇，可后台跑。">🧬 修复 / 补生成摘要</a>`;
     } else {
       s += ` ✓`;
     }
@@ -376,14 +376,14 @@
   async function startSacBackfill() {
     if (_sacBfBusy) return;
     const ok = await uiConfirm(
-      "将修复质量检查未通过的摘要，并为缺失摘要的已深索文献补生成摘要，再重新嵌入这些篇（摘要只有重嵌入后才对检索生效）。用你配的 API key 生成；只处理这些篇，其它文献不受影响；可放后台跑。",
+      "将修复质量检查未通过的摘要，并为缺失摘要的已深索文献补生成摘要，再重新嵌入这些篇（摘要只有重嵌入后才对检索生效）。使用“设置 → 建库 → 检索摘要”里选择的自动生成来源；只处理这些篇，其它文献不受影响；可放后台跑。",
       { title: "修复 / 补生成检索摘要？", okText: "开始处理" });
     if (!ok) return;
     _sacBfBusy = true;
     try {
       const r = await jpost("/index/sac_backfill", {});
       if (r && r.ok === false) {
-        flashToast(r.msg || (r.need_key ? "需要先配 API key。" : r.busy ? "已有任务在跑，稍后再试。" : "无法开始补生成。"));
+        flashToast(r.msg || (r.need_key ? "请先配置自动生成摘要所用的 AI。" : r.busy ? "已有任务在跑，稍后再试。" : "无法开始补生成。"));
       } else if (r && r.started === false) {
         flashToast(r.msg || "无需补生成。");
       } else {
@@ -439,7 +439,7 @@
   async function genSummaryOne(key, badge) {
     const repairing = !!(badge && badge.classList.contains("invalid"));
     const ok = await uiConfirm(
-      `${repairing ? "重新生成" : "生成"}这篇的 AI 检索摘要（知识库建设第②步）：用你的 API key 生成 ~150 字摘要并重嵌入这一篇，让语义检索更容易命中它。可放后台跑。`,
+      `${repairing ? "重新生成" : "生成"}这篇的 AI 检索摘要：使用设置里选择的自动生成来源，生成 ~150 字摘要并重嵌入这一篇，让语义检索更容易命中它。可放后台跑。`,
       { title: repairing ? "修复这篇的异常摘要？" : "为这篇生成检索摘要？", okText: repairing ? "修复" : "生成" });
     if (!ok) return;
     const original = badge ? badge.textContent : "⚪ 无摘要";
@@ -448,7 +448,7 @@
     try {
       const r = await jpost("/index/sac_backfill", { keys: [key] });
       if (r && r.ok === false) {
-        flashToast(r.msg || (r.need_key ? "需要先配 API key。" : "已有任务在跑，稍后再试。")); restore();
+        flashToast(r.msg || (r.need_key ? "请先配置自动生成摘要所用的 AI。" : "已有任务在跑，稍后再试。")); restore();
       } else if (r && r.started === false) {
         flashToast(r.msg || "这篇已有摘要。"); restore();
       } else {
@@ -3268,7 +3268,7 @@
     }
     return p.has_summary
       ? `<span class="tag sac has" role="button" tabindex="0" title="点开查看这篇的 AI 检索摘要">🧬 摘要有效</span>`
-      : `<span class="tag sac none" role="button" tabindex="0" title="点此为这篇生成 AI 检索摘要（知识库建设第②步；让检索更容易命中，需 API key，会重嵌入这一篇，可后台跑）">⚪ 摘要缺失</span>`;
+      : `<span class="tag sac none" role="button" tabindex="0" title="点此用设置里的自动生成来源补检索摘要；会重嵌入这一篇，可后台跑">⚪ 摘要缺失</span>`;
   }
   function deepBadge(p) {
     const failure = extractFailureBadge(p);
@@ -4446,11 +4446,19 @@
   function engApiVisible(be) { const box = $("#eng-api"); if (box) box.hidden = (be !== "api"); }
   async function loadEngine() {
     $("#eng-msg").textContent = "";
-    // /setup/detect 只回 backend + 是否已设 key；base/模型名用标准默认（改过高级项的可自行重填）
+    // 回填高级项，避免保存设置时把用户明确配置过的兼容服务静默改回默认。
     $("#eng-base").value = "https://api.siliconflow.cn/v1";
     $("#eng-embed").value = ""; $("#eng-rerank").value = ""; $("#eng-key").value = "";
     let be = "local", keySet = false, last4 = "";
-    try { const d = await jget("/setup/detect"); be = d.backend === "api" ? "api" : "local"; keySet = !!d.api_key_set; last4 = d.api_key_last4 || ""; } catch (e) {}
+    try {
+      const d = await jget("/setup/detect");
+      be = d.backend === "api" ? "api" : "local"; keySet = !!d.api_key_set; last4 = d.api_key_last4 || "";
+      $("#eng-base").value = d.api_base || "https://api.siliconflow.cn/v1";
+      $("#eng-embed").value = d.api_embed_model === "BAAI/bge-m3" ? "" : (d.api_embed_model || "");
+      $("#eng-rerank").value = d.api_rerank_model === "BAAI/bge-reranker-v2-m3" ? "" : (d.api_rerank_model || "");
+      const adv = document.querySelector("#eng-api details.eng-custom");
+      if (adv && !String($("#eng-base").value).toLowerCase().includes("siliconflow")) adv.open = true;
+    } catch (e) {}
     const r = document.querySelector(`input[name=eng-backend][value=${be}]`); if (r) r.checked = true;
     // K3：已设置时用掩码占位「••••••1234（留空＝不改）」，让用户知道填过；留空提交＝不改
     $("#eng-key").placeholder = keySet ? ((last4 ? maskKey(last4) + " " : "") + "你之前已经填过 API 了，留空即可、不用改") : "去 cloud.siliconflow.cn 领免费 key";
@@ -4475,8 +4483,8 @@
       const r = await jpost("/setup/test_api", { base: b.base, key: b.key, embed_model: b.embed_model, rerank_model: b.rerank_model });
       if (r && r.ok) { msg.className = "hint ok"; msg.textContent = `✓ 连接成功，向量维度 ${num(r.dim)}，延迟 ${num(r.latency_ms)}ms`; }
       // BF23：textContent 本身不解析 HTML，再套 esc() 会把 & < > 显示成 &amp; 等实体（双重转义）
-      else { msg.className = "hint warn"; msg.textContent = "连接失败：" + ((r && r.msg) || "未知错误"); }
-    } catch (e) { msg.className = "hint warn"; msg.textContent = "连接失败：" + e.message; }
+      else { msg.className = "hint warn"; msg.textContent = "连接失败：" + ((r && r.msg) || "未知错误") + "。请确认该服务同时支持嵌入与重排；普通对话 API 不能使用。"; }
+    } catch (e) { msg.className = "hint warn"; msg.textContent = "连接失败：" + e.message + "。请确认该服务同时支持嵌入与重排；普通对话 API 不能使用。"; }
     finally { btn.disabled = false; }
   });
   // 换引擎后旧向量不兼容 → 应用时强制重建索引，并显示「正在重建中」
@@ -4519,78 +4527,122 @@
     finally { btn.disabled = false; }
   });
 
-  // ── 深索摘要（SAC）：K2（副本#7）三选一 generator=server|agent|off ──
-  // BF21：key 输入框的 dirty 标记——只有用户动过才把 key 放进请求体（空串＝清除落盘）；
-  // 没动过就不带 key 字段，避免每次保存高级设置都把已存 key 清掉/覆盖
-  let sacKeyDirty = false;
+  // ── 检索摘要：生成方（Agent / PaperPiggy / 暂不）+ 自动生成的明确凭据来源 ──
+  let sacKeyDirty = false, sacState = null;
   { const sk = $("#sac-key"); if (sk) sk.addEventListener("input", () => { sacKeyDirty = true; }); }
-  // 当前选中的生成方式（读单选按钮）
   function sacGen() { return (document.querySelector("input[name=sac-gen]:checked") || {}).value || "off"; }
-  // 依据 generator + effective_ready 显示状态行
-  function renderSacStatus(gen, effectiveReady) {
-    const el = $("#sac-status");
+  function sacSource() { return (document.querySelector("input[name=sac-source]:checked") || {}).value || "reuse"; }
+  function applySacProvider(name, force) {
+    const p = PROVIDERS[name] || PROVIDERS.custom;
+    const baseRow = $("#sac-base-row");
+    if (baseRow) baseRow.hidden = name !== "custom";
+    if (force || !$("#sac-base").value.trim()) $("#sac-base").value = p.base || "";
+    if (force || !$("#sac-model").value.trim()) $("#sac-model").value = p.model || "";
+  }
+  function syncSacPanels() {
+    const gen = sacGen(), source = sacSource();
+    $("#sac-server-options").hidden = gen !== "server";
+    $("#sac-custom-fields").hidden = gen !== "server" || source !== "custom";
+  }
+  function renderSacStatus(s) {
+    sacState = s || sacState || {};
+    const gen = sacState.generator || sacGen(), source = sacState.source || sacSource();
+    const el = $("#sac-status"), reuse = $("#sac-reuse-status");
+    if (reuse) {
+      reuse.className = "hint " + (sacState.reuse_ready ? "ok" : "warn");
+      reuse.textContent = sacState.reuse_ready
+        ? `✓ 已找到检索引擎的 SiliconFlow Key${sacState.reuse_key_last4 ? "（" + maskKey(sacState.reuse_key_last4) + "）" : ""}，将使用 ${sacState.reuse_model || "Qwen/Qwen2.5-7B-Instruct"}。`
+        : "⚠ 尚未找到可复用的 SiliconFlow Key。请先在“设置 → 检索 → 检索引擎”配置，或改选其他 AI 厂商。";
+    }
+    syncSacPanels();
     if (gen === "off") {
-      el.className = "sac-status hint"; el.textContent = "已关闭：深索时不生成摘要。";
+      el.className = "sac-status hint"; el.textContent = "已选择暂不生成：深索仍会正常完成，以后可随时补摘要。";
     } else if (gen === "agent") {
-      el.className = "sac-status hint ok"; el.textContent = "✓ 交给 Agent：深索或维护知识库时，由 Claude Code / Codex 生成并修复摘要，不调用服务端摘要生成 API。";
-    } else if (effectiveReady) {
-      el.className = "sac-status hint ok"; el.textContent = "✓ 服务端自动：深索时会自动生成摘要前缀（用你配的 API key）。";
+      el.className = "sac-status hint ok"; el.textContent = "✓ 交给 Agent：它会读正文、生成或修复摘要并重新嵌入，不调用 PaperPiggy 的摘要 API。";
+    } else if (sacState.effective_ready) {
+      el.className = "sac-status hint ok";
+      el.textContent = source === "reuse"
+        ? "✓ PaperPiggy 自动生成：复用 SiliconFlow Key 和当前免费的简单模型。"
+        : `✓ PaperPiggy 自动生成：使用 ${PROVIDER_NAMES[sacState.provider] || sacState.provider || "其他 AI 厂商"} / ${sacState.model || "自选模型"}（费用由服务商收取）。`;
     } else {
-      el.className = "sac-status hint warn"; el.textContent = "⚠ 服务端自动模式需先在检索引擎里配 API key，或在下方“高级”单独填 key。";
+      el.className = "sac-status hint warn";
+      el.textContent = source === "reuse"
+        ? "⚠ 自动生成尚未就绪：缺少可复用的 SiliconFlow Key。"
+        : "⚠ 自动生成尚未就绪：请填写并测试所选 AI 厂商的 Key 和模型。";
     }
   }
   async function loadSac() {
-    // 先给个中性态，避免上次残留
     $("#sac-status").className = "sac-status hint";
     $("#sac-status").textContent = "";
     try {
       const s = await jget("/setup/sac");
-      // 迁移兼容：后端未回 generator 时，用老的 enabled 推断（true→server，false→off）
       const gen = s.generator || (s.enabled ? "server" : "off");
-      const r = document.querySelector(`input[name=sac-gen][value=${gen}]`); if (r) r.checked = true;
-      $("#sac-base").value = s.base || "";
-      $("#sac-model").value = s.model || "";
-      // K3：key 是密码，后端只回末4位；已设则用掩码占位，不回填明文
-      const last4 = s.key_last4 || s.sac_key_last4 || "";
+      let source = s.source === "custom" ? "custom" : "reuse";
+      const gr = document.querySelector(`input[name=sac-gen][value=${gen}]`); if (gr) gr.checked = true;
+      const sr = document.querySelector(`input[name=sac-source][value=${source}]`); if (sr) sr.checked = true;
+      let provider = s.provider || "deepseek";
+      if (!PROVIDERS[provider] || provider === "siliconflow") provider = "custom";
+      $("#sac-provider").value = provider;
+      // 复用路径没有独立厂商配置；展开“其他厂商”时先给出所选厂商的正常默认值，
+      // 避免把 SiliconFlow 的 Base URL 配上 DeepSeek 模型这一类混搭带进去。
+      $("#sac-base").value = source === "custom" ? (s.base || PROVIDERS[provider].base || "") : (PROVIDERS[provider].base || "");
+      $("#sac-model").value = source === "custom" ? (s.model || PROVIDERS[provider].model || "") : (PROVIDERS[provider].model || "");
+      applySacProvider(provider, false);
+      const last4 = s.key_last4 || "";
       $("#sac-key").value = "";
-      sacKeyDirty = false;   // BF21：程序回填不算用户改动
+      sacKeyDirty = false;
       $("#sac-key").placeholder = s.key_set
-        ? ((last4 ? maskKey(last4) + " " : "") + "你之前已经填过了，留空即可（不填则复用检索引擎的 key）")
-        : "不用填，会自动复用检索引擎的 key";
-      renderSacStatus(gen, !!s.effective_ready);
+        ? ((last4 ? maskKey(last4) + " " : "") + "已保存，留空不改")
+        : "填写所选 AI 厂商的 Key";
+      renderSacStatus(s);
     } catch (e) {
       $("#sac-status").className = "sac-status hint warn";
       $("#sac-status").textContent = "状态加载失败：" + e.message;
     }
   }
-  // 三选一切换：立即 POST 保存 generator，并用返回的 effective_ready 刷新状态行
   $$("input[name=sac-gen]").forEach((radio) => radio.addEventListener("change", async () => {
-    const gen = sacGen();
     try {
-      const r = await jpost("/setup/sac", { generator: gen });
-      renderSacStatus(gen, !!(r && r.effective_ready));
+      const r = await jpost("/setup/sac", { generator: sacGen() });
+      renderSacStatus(r);
     } catch (e) {
       $("#sac-status").className = "sac-status hint warn";
       $("#sac-status").textContent = "保存失败：" + e.message;
     }
   }));
-  // 高级：单独保存 base / key / model（随当前 generator 一起提交，只传填了的字段）
-  $("#sac-adv-save").addEventListener("click", async () => {
-    const msg = $("#sac-adv-msg");
-    const gen = sacGen();
-    const body = { generator: gen };
-    const base = $("#sac-base").value.trim(), model = $("#sac-model").value.trim(), key = $("#sac-key").value.trim();
-    // BF21：base/model 每次照发（空串＝清空落盘，后端已按 is not None 判）；key 只有用户动过输入框才发，
-    // 动过且为空串＝明确清除——之前「填了清不掉」就是因为空值一律不发
-    body.base = base; body.model = model;
-    if (sacKeyDirty) body.key = key;
-    msg.textContent = "保存中…";
+  $$("input[name=sac-source]").forEach((radio) => radio.addEventListener("change", async () => {
+    syncSacPanels();
     try {
-      const r = await jpost("/setup/sac", body);
-      renderSacStatus(gen, !!(r && r.effective_ready));
-      msg.textContent = "已保存 ✓";
-      await loadSac();   // BF21：以后端落盘结果回显校验（顺带清空明文输入、重置 dirty）
-    } catch (e) { msg.textContent = "保存失败：" + e.message; }
+      const r = await jpost("/setup/sac", { generator: "server", source: sacSource() });
+      renderSacStatus(r);
+    } catch (e) { $("#sac-status").textContent = "保存失败：" + e.message; }
+  }));
+  $("#sac-provider").addEventListener("change", () => {
+    applySacProvider($("#sac-provider").value, true);
+    $("#sac-key").value = "";
+    $("#sac-key").placeholder = "更换服务商后请填写新的 Key";
+    sacKeyDirty = true;
+  });
+  $("#sac-custom-save").addEventListener("click", async () => {
+    const msg = $("#sac-custom-msg"), provider = $("#sac-provider").value;
+    const base = $("#sac-base").value.trim(), model = $("#sac-model").value.trim(), key = $("#sac-key").value.trim();
+    if (!base || !model) { msg.className = "hint warn"; msg.textContent = "请填写 Base URL 和模型。"; return; }
+    if (!key && (!sacState || !sacState.key_set || provider !== sacState.provider)) {
+      msg.className = "hint warn"; msg.textContent = "请填写所选 AI 厂商的 API Key。"; return;
+    }
+    const body = { generator: "server", source: "custom", provider, base, model };
+    if (sacKeyDirty) body.key = key;
+    msg.className = "hint"; msg.textContent = "保存并测试中…（会调用 1 次所选模型）";
+    try {
+      const saved = await jpost("/setup/sac", body);
+      const tested = await jpost("/setup/test_sac", {});
+      if (tested && tested.ok) {
+        msg.className = "hint ok"; msg.textContent = `✓ 测试成功，延迟 ${num(tested.latency_ms)}ms`;
+      } else {
+        msg.className = "hint warn"; msg.textContent = "测试失败：" + ((tested && tested.msg) || "未知错误");
+      }
+      renderSacStatus(saved);
+      await loadSac();
+    } catch (e) { msg.className = "hint warn"; msg.textContent = "保存或测试失败：" + e.message; }
   });
 
   // ── 错误日志（查看 / 复制 / 清空）──
@@ -4679,7 +4731,7 @@
   //  首启向导（Onboarding）
   // ══════════════════════════════════════════
   // backend: 引擎选择的临时态（local 默认；api 模式记录表单与「是否测通」）
-  const WZ = { detect: null, step: 1, backend: "local", api: { base: "https://api.siliconflow.cn/v1", key: "", embed_model: "BAAI/bge-m3", rerank_model: "BAAI/bge-reranker-v2-m3" }, apiTested: false };
+  const WZ = { detect: null, step: 1, backend: "local", api: { base: "https://api.siliconflow.cn/v1", key: "", embed_model: "BAAI/bge-m3", rerank_model: "BAAI/bge-reranker-v2-m3" }, apiSaved: false, apiTested: false };
   function setStep(n) {
     WZ.step = n;
     $$(".wizard-steps li").forEach((li) => {
@@ -4710,70 +4762,12 @@
       <div class="wz-actions">
         <button class="primary" id="wz1-next">下一步 →</button>
       </div>`;
-    $("#wz1-next").addEventListener("click", renderStepKey);
-  }
-
-  // 第 2 步（新）：领一个免费 SiliconFlow key —— 很多功能（对话/AI摘要/抽题录/找相似）用它的免费模型就够
-  function renderStepKey() {
-    setStep(2);
-    const cur = (WZ.api && WZ.api.key) || "";
-    $("#wizard-body").innerHTML =
-      `<div class="wz-note">强烈建议先领一个 <b>免费的 SiliconFlow（硅基流动）Key</b>。填这一个，PaperPiggy 的很多小功能——
-        对话、深索时自动生成 AI 摘要、文件夹模式自动读题录、点标题「找相似」——都能用它的<b>免费模型</b>跑起来。
-        <br>（认真做研究更推荐把库接进 Agent，见后面「🤖 Agent」页；这个 Key 是给应用内小功能兜底用的。）</div>
-      <div class="wz-field">
-        <label>SiliconFlow API Key（可选，但强烈建议）</label>
-        <input id="wzk-key" type="password" value="${esc(cur)}" placeholder="去 https://account.siliconflow.cn/zh/login 登录领免费额度" />
-      </div>
-      <p class="wz-mini">👉 <a href="https://account.siliconflow.cn/zh/login" target="_blank" rel="noopener">点此打开 SiliconFlow 登录页领 Key</a>。也可以先跳过，之后在「⚙ 设置」里补。</p>
-      <div class="wz-actions-inline">
-        <button class="ghost2c" id="wzk-test">测试连接（把要用的免费模型测一遍）</button>
-        <span id="wzk-test-msg" class="wz-test-msg"></span>
-      </div>
-      <div id="wzk-msg"></div>
-      <div class="wz-actions">
-        <button class="ghost2c wz-back" id="wzk-back">← 上一步</button>
-        <button class="primary" id="wzk-next">下一步：配置检索引擎 →</button>
-      </div>`;
-    $("#wzk-test").addEventListener("click", async () => {
-      const k = $("#wzk-key").value.trim(), msg = $("#wzk-test-msg");
-      if (!k) { msg.className = "wz-test-msg err"; msg.textContent = "请先填 Key"; return; }
-      msg.className = "wz-test-msg"; msg.textContent = "测试中…";
-      try {
-        const r = await jpost("/setup/test_api", { base: (WZ.api && WZ.api.base) || "https://api.siliconflow.cn/v1", key: k,
-          embed_model: (WZ.api && WZ.api.embed_model) || "BAAI/bge-m3", rerank_model: (WZ.api && WZ.api.rerank_model) || "BAAI/bge-reranker-v2-m3" });
-        if (r && r.ok) {
-          if (WZ.api) WZ.api.key = k; WZ.apiTested = true;
-          msg.className = "wz-test-msg ok";
-          msg.textContent = `✓ 免费模型可用（向量维度 ${num(r.dim)}，延迟 ${num(r.latency_ms)}ms）。下一步会自动用 API 引擎、无需再测。`;
-        // BF23：textContent 去 esc（否则报错里的 & < > 显示成 &amp; 等实体）
-        } else { WZ.apiTested = false; msg.className = "wz-test-msg err"; msg.textContent = "连接失败：" + ((r && r.msg) || "未知错误"); }
-      } catch (e) { WZ.apiTested = false; msg.className = "wz-test-msg err"; msg.textContent = "连接失败：" + e.message; }
-    });
-    $("#wzk-back").addEventListener("click", renderStep1);
-    $("#wzk-next").addEventListener("click", async () => {
-      const k = $("#wzk-key").value.trim();
-      if (k) {
-        try {
-          await jpost("/setup/backend", { backend: WZ.backend, key: k });  // 只存 key，不改后端
-          WZ.api.key = k; if (WZ.detect) WZ.detect.meta_ready = true; APP.metaReady = true;
-          // 对话页也用这个 key（siliconflow）
-          const c = cfg(); c.provider = c.provider || "siliconflow"; c.api_key = c.api_key || k; saveCfg(c);
-        } catch (e) {
-          // R15：保存失败则停在本步显示错误、不前进（否则 renderStep2 整块重绘会抹掉刚写的提示）
-          $("#wzk-msg").innerHTML = `<div class="wz-err">保存失败：${esc(e.message)}。请检查网络后重试，或清空此框跳过（之后在设置里补）。</div>`;
-          return;
-        }
-      }
-      renderStep2();
-    });
+    $("#wz1-next").addEventListener("click", renderStep2);
   }
 
   // ── 第 2 步：选择检索引擎（本地 / API 二选一）──
   function renderStep2() {
     setStep(2);
-    // 上一步填了 SiliconFlow Key → 默认用 API 引擎（免下模型、免再测）
-    if (WZ.api && WZ.api.key && WZ.backend !== "api") WZ.backend = "api";
     const a = WZ.api;
     const localSel = WZ.backend === "local";
     $("#wizard-body").innerHTML =
@@ -4788,43 +4782,32 @@
         <label class="wz-engine ${localSel ? "" : "sel"}" data-be="api">
           <input type="radio" name="wz-backend" value="api" ${localSel ? "" : "checked"} />
           <div class="wz-engine-body">
-            <div class="wz-engine-h">☁️ API 模式 <span class="wz-badge-save">省空间</span></div>
-            <div class="wz-engine-d">接入 SiliconFlow 等 OpenAI 兼容 API 做嵌入+重排，免费、免下载；检索时联网，文本会发给该服务商</div>
+            <div class="wz-engine-h">☁️ SiliconFlow 云端检索 <span class="wz-badge-rec">推荐</span> <span class="wz-badge-save">当前免费</span></div>
+            <div class="wz-engine-d">免下载模型；用固定的 BGE 嵌入与重排模型完成检索。检索时联网，待检索文本会发给 SiliconFlow。</div>
           </div>
         </label>
       </div>
       <div id="wz-api-form" class="wz-api-form" ${localSel ? "hidden" : ""}>
+        <div class="wz-note"><b>为什么这里指定 SiliconFlow？</b><br>
+          检索引擎同时需要“嵌入”和“重排”两个模型；普通 AI 对话接口通常不提供这两项。
+          PaperPiggy 已为 SiliconFlow 配好当前免费的 BGE 模型，只需填写 Key。DeepSeek、Kimi、OpenAI 等对话 Key 不能填在这里。</div>
         <div class="wz-field">
-          <label>服务商 Base URL</label>
-          <input id="wz-api-base" value="${esc(a.base)}" placeholder="https://api.siliconflow.cn/v1" />
+          <label>SiliconFlow API Key</label>
+          <input id="wz-api-key" type="password" value="${esc(a.key)}" placeholder="${WZ.apiSaved ? "Key 已保存，留空即可" : "去 SiliconFlow 控制台创建 Key"}" />
         </div>
-        <div class="wz-field">
-          <label>API Key</label>
-          <input id="wz-api-key" type="password" value="${esc(a.key)}" placeholder="去 https://cloud.siliconflow.cn/account/ak 领免费 key" />
-        </div>
-        <details class="wz-adv">
-          <summary>高级：模型名（一般不用改）</summary>
-          <div class="wz-field">
-            <label>嵌入模型</label>
-            <input id="wz-api-embed" value="${esc(a.embed_model)}" placeholder="BAAI/bge-m3" />
-          </div>
-          <div class="wz-field">
-            <label>重排模型</label>
-            <input id="wz-api-rerank" value="${esc(a.rerank_model)}" placeholder="BAAI/bge-reranker-v2-m3" />
-          </div>
-        </details>
+        <p class="wz-mini">👉 <a href="https://cloud.siliconflow.cn/account/ak" target="_blank" rel="noopener">打开 SiliconFlow 控制台创建 Key</a>。模型当前免费，但账户仍需保持可用；余额为 0 时平台可能拒绝请求。</p>
         <div class="wz-actions-inline">
-          <button class="ghost2c" id="wz-api-test">测试连接</button>
+          <button class="ghost2c" id="wz-api-test">测试嵌入与重排</button>
           <span id="wz-api-test-msg" class="wz-test-msg"></span>
         </div>
-        <p class="wz-mini">若你在「对话」里也用 SiliconFlow，同一个 key 即可。</p>
+        <p class="wz-mini">建库后，“PaperPiggy 自动生成摘要”也可以复用这个 Key，使用简单的免费模型；若想自选更强模型，可在设置里单独选择其他 AI 厂商。</p>
       </div>
       <div id="wz2-msg"></div>
       <div class="wz-actions">
         <button class="ghost2c wz-back" id="wz2-back">← 上一步</button>
         <button class="primary" id="wz2-next">下一步 →</button>
       </div>`;
-    $("#wz2-back").addEventListener("click", renderStepKey);
+    $("#wz2-back").addEventListener("click", renderStep1);
 
     // 单选切换：更新选中态 + 展开/收起 API 表单
     const syncBackend = () => {
@@ -4836,19 +4819,14 @@
       $("#wz-api-form").hidden = be !== "api";
     };
     $$("input[name=wz-backend]").forEach((r) => r.addEventListener("change", syncBackend));
-    // 上一步已用该 Key 测通 → 提示免测（apiTested 已为 true，下一步不会拦）
-    if (WZ.apiTested && WZ.api && WZ.api.key) {
-      const tm0 = $("#wz-api-test-msg"); if (tm0) { tm0.className = "wz-test-msg ok"; tm0.textContent = "✓ 已用上一步的 Key 测通，无需再测。"; }
-    }
-
     // 表单输入回写 WZ.api；改动后视为「未测通」
     const readApiForm = () => {
-      WZ.api.base = $("#wz-api-base").value.trim();
+      WZ.api.base = "https://api.siliconflow.cn/v1";
       WZ.api.key = $("#wz-api-key").value.trim();
-      WZ.api.embed_model = $("#wz-api-embed").value.trim() || "BAAI/bge-m3";
-      WZ.api.rerank_model = $("#wz-api-rerank").value.trim() || "BAAI/bge-reranker-v2-m3";
+      WZ.api.embed_model = "BAAI/bge-m3";
+      WZ.api.rerank_model = "BAAI/bge-reranker-v2-m3";
     };
-    ["#wz-api-base", "#wz-api-key", "#wz-api-embed", "#wz-api-rerank"].forEach((sel) => {
+    ["#wz-api-key"].forEach((sel) => {
       const el = $(sel); if (el) el.addEventListener("input", () => { readApiForm(); WZ.apiTested = false; });
     });
 
@@ -4856,13 +4834,12 @@
     $("#wz-api-test").addEventListener("click", async () => {
       readApiForm();
       const btn = $("#wz-api-test"), msg = $("#wz-api-test-msg");
-      if (!WZ.api.key) { msg.className = "wz-test-msg err"; msg.textContent = "请先填 API Key"; return; }
+      if (!WZ.api.key && !WZ.apiSaved) { msg.className = "wz-test-msg err"; msg.textContent = "请先填 API Key"; return; }
       btn.disabled = true; msg.className = "wz-test-msg"; msg.textContent = "测试中…";
       try {
-        const r = await jpost("/setup/test_api", {
-          base: WZ.api.base, key: WZ.api.key,
-          embed_model: WZ.api.embed_model, rerank_model: WZ.api.rerank_model,
-        });
+        const testBody = { base: WZ.api.base, embed_model: WZ.api.embed_model, rerank_model: WZ.api.rerank_model };
+        if (WZ.api.key) testBody.key = WZ.api.key;
+        const r = await jpost("/setup/test_api", testBody);
         if (r && r.ok) {
           WZ.apiTested = true;
           msg.className = "wz-test-msg ok";
@@ -4885,17 +4862,19 @@
       $("#wz2-msg").innerHTML = "";
       if (WZ.backend === "api") {
         readApiForm();
-        if (!WZ.api.key) { $("#wz2-msg").innerHTML = `<div class="wz-err">请先填写 API Key，或选择本地模式。</div>`; return; }
+        if (!WZ.api.key && !WZ.apiSaved) { $("#wz2-msg").innerHTML = `<div class="wz-err">请先填写 API Key，或选择本地模式。</div>`; return; }
         if (!WZ.apiTested) { $("#wz2-msg").innerHTML = `<div class="wz-err">请先点「测试连接」确认 key 可用，再继续。</div>`; return; }
       }
       const btn = $("#wz2-next"); btn.disabled = true;
       const body = WZ.backend === "api"
-        ? { backend: "api", base: WZ.api.base, key: WZ.api.key, embed_model: WZ.api.embed_model, rerank_model: WZ.api.rerank_model }
+        ? { backend: "api", base: WZ.api.base, embed_model: WZ.api.embed_model, rerank_model: WZ.api.rerank_model }
         : { backend: "local" };
+      if (WZ.backend === "api" && WZ.api.key) body.key = WZ.api.key;  // 留空保留已保存 Key
       try {
         const r = await jpost("/setup/backend", body);
         // 同步本地 detect 缓存，供第 1/4 步与后续判断
-        if (WZ.detect) { WZ.detect.backend = (r && r.backend) || WZ.backend; WZ.detect.api_key_set = !!(r && r.api_key_set); }
+        WZ.apiSaved = !!(r && r.api_key_set);
+        if (WZ.detect) { WZ.detect.backend = (r && r.backend) || WZ.backend; WZ.detect.api_key_set = WZ.apiSaved; }
         renderStep3();
       } catch (e) {
         $("#wz2-msg").innerHTML = `<div class="wz-err">保存失败：${esc(e.message)}</div>`;
@@ -5116,7 +5095,7 @@
   function renderStep4() {
     setStep(4);
     const readyHtml =
-      `<div class="wz-note">检索引擎已就绪 ✓${WZ.backend === "api" ? "（API 模式，无需本地模型）" : "（本地模型已在）"}。可直接进入下一步。</div>
+      `<div class="wz-note">检索引擎已就绪 ✓${WZ.backend === "api" ? "（SiliconFlow 云端检索，无需本地模型）" : "（本地模型已在）"}。可直接进入下一步。</div>
       <div class="wz-actions">
         <button class="ghost2c wz-back" id="wz4-back">← 上一步</button>
         <button class="primary" id="wz4-next">下一步：建立索引 →</button>
@@ -5140,7 +5119,7 @@
       if (st && st.present) { bindReady(); return; }
       const missing = (st && st.missing) || [];
       $("#wz4-inner").innerHTML =
-        `<div class="wz-note">本地模式需下载约 <b>1.2GB</b> 模型（仅此一次），下载后全程离线、隐私不出本机。
+        `<div class="wz-note">本地模式需下载约 <b>1.2GB</b> 模型（仅此一次），下载后检索无需联网，待检索文本不出本机。
           ${missing.length ? `<br><span class="wz-subtle">待下载：${esc(missing.join("、"))}</span>` : ""}</div>
         <div id="wz4-prog" class="wz-dl" hidden>
           <div class="wz-dl-head"><span id="wz4-dl-name">准备中…</span><span id="wz4-dl-pct">0%</span></div>
@@ -5351,6 +5330,10 @@
       applySourceCopy();
       // 用后端当前后端选择初始化向导态（默认 local）
       if (d.backend === "api" || d.backend === "local") WZ.backend = d.backend;
+      WZ.apiSaved = !!d.api_key_set;
+      WZ.api.base = d.api_base || "https://api.siliconflow.cn/v1";
+      WZ.api.embed_model = d.api_embed_model || "BAAI/bge-m3";
+      WZ.api.rerank_model = d.api_rerank_model || "BAAI/bge-reranker-v2-m3";
       // R16：空文件夹进入后不建索引→无 manifest→d.indexed 恒 false 会每次重弹向导。
       // 用本机 onboarded 标记兜底：已走完向导的就不再弹，改走老用户回访路径。
       const onboarded = (() => { try { return localStorage.getItem("localkb.onboarded") === "1"; } catch (e) { return false; } })();

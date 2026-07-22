@@ -21,6 +21,52 @@ GOOD = ("本文研究程序正义如何影响当事人对裁判的接受，采�
 
 
 class SacQualityTests(unittest.TestCase):
+    def test_old_independent_summary_key_migrates_to_custom_source(self):
+        old = {"sac": {"generator": "server", "enabled": True,
+                       "base": "https://api.deepseek.com/v1", "key": "sk-old", "model": "deepseek-chat"}}
+        with mock.patch.object(S, "load", return_value=old):
+            conf = S.sac_conf()
+        self.assertEqual(conf["source"], "custom")
+        self.assertEqual(conf["key"], "sk-old")
+
+    def test_summary_without_independent_key_defaults_to_reuse(self):
+        old = {"sac": {"generator": "server", "enabled": True, "key": ""}}
+        with mock.patch.object(S, "load", return_value=old):
+            conf = S.sac_conf()
+        self.assertEqual(conf["source"], "reuse")
+
+    def test_reuse_summary_uses_only_siliconflow_retrieval_key(self):
+        with mock.patch.object(S, "sac_conf", return_value={"generator": "server", "source": "reuse"}), \
+                mock.patch.object(S, "api_conf", return_value={
+                    "base": "https://api.siliconflow.cn/v1", "key": "sf-key",
+                    "embed_model": "BAAI/bge-m3", "rerank_model": "BAAI/bge-reranker-v2-m3",
+                }):
+            conf = SAC._conf()
+        self.assertEqual(conf["key"], "sf-key")
+        self.assertEqual(conf["model"], "Qwen/Qwen2.5-7B-Instruct")
+
+        with mock.patch.object(S, "sac_conf", return_value={"generator": "server", "source": "reuse"}), \
+                mock.patch.object(S, "api_conf", return_value={
+                    "base": "https://api.deepseek.com/v1", "key": "deepseek-key",
+                }):
+            conf = SAC._conf()
+        self.assertEqual(conf["key"], "")
+
+    def test_custom_summary_keeps_selected_vendor_model(self):
+        custom = {"generator": "server", "source": "custom", "provider": "deepseek",
+                  "base": "https://api.deepseek.com/v1", "key": "ds-key", "model": "deepseek-chat"}
+        with mock.patch.object(S, "sac_conf", return_value=custom), \
+                mock.patch.object(S, "api_conf") as api_conf:
+            conf = SAC._conf()
+        self.assertEqual(conf, custom)
+        api_conf.assert_not_called()
+
+    def test_summary_ui_exposes_two_direct_auto_generation_sources(self):
+        html = (SRC / "web" / "index.html").read_text(encoding="utf-8")
+        self.assertIn("复用检索引擎的 SiliconFlow Key", html)
+        self.assertIn("使用其他 AI 厂商", html)
+        self.assertNotIn("高级：单独指定摘要", html)
+
     def test_gate_accepts_concise_useful_summary_and_rejects_known_corruption_shapes(self):
         self.assertTrue(SAC.validate_summary(GOOD)[0])
         bad = [

@@ -302,7 +302,7 @@ button:disabled { opacity: .6; cursor: default; }
 .bk-item .ghost { border: 1px solid var(--line); background: transparent; color: var(--muted); padding: 5px 12px; border-radius: 8px; cursor: pointer; font-size: 12.5px; }
 .bk-item .ghost.danger:hover { border-color: #b91c1c; color: #b91c1c; }
 
-/* 深索摘要（SAC）小节 */
+/* 检索摘要（SAC）小节 */
 .sac-toggle { display: flex; align-items: center; gap: 8px; margin: 8px 0 4px; font-size: 13px; color: var(--fg); cursor: pointer; }
 .sac-toggle input { width: 16px; height: 16px; margin: 0; flex: 0 0 auto; cursor: pointer; }
 /* 自动更新：按天+时刻调度行 */
@@ -323,9 +323,16 @@ button:disabled { opacity: .6; cursor: default; }
 .eng-mode input { width: auto; margin-top: 0; flex: 0 0 auto; cursor: pointer; }
 #eng-api { margin-top: 6px; }
 #eng-api > details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; margin: 6px 0; }
-.sac-adv { margin-top: 12px; }
-.sac-adv summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
-.sac-adv[open] summary { margin-bottom: 4px; }
+.sac-server-options { margin: 10px 0 2px 24px; padding: 10px 12px; border-left: 3px solid var(--accent); background: rgba(15,118,110,.035); border-radius: 0 8px 8px 0; }
+.sac-source-opt { display: flex; align-items: flex-start; gap: 8px; margin: 7px 0; line-height: 1.45; cursor: pointer; }
+.sac-source-opt input { width: auto; margin: 3px 0 0; flex: 0 0 auto; }
+.sac-source-opt small { color: var(--muted); }
+.sac-custom-fields { margin: 8px 0 12px 24px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); }
+.sac-custom-fields > label { display: block; margin: 8px 0; }
+@media (max-width: 720px) {
+  .sac-server-options { margin-left: 0; }
+  .sac-custom-fields { margin-left: 0; }
+}
 
 /* ══════════ 库总览（仪表盘） ══════════ */
 .dash { flex: 1; overflow-y: auto; padding: 20px; }
