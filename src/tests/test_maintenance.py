@@ -18,6 +18,39 @@ import wiki_store as W  # noqa: E402
 
 
 class MaintenanceAuditTests(unittest.TestCase):
+    def test_compatible_deep_rule_change_is_accepted_without_rebuild(self):
+        old_deep = "961aa2cde7626605ccdd366aac8501469388d4c661252787661995153a41af30"
+        new_deep = "acfdf51ca9e89f975d16e4d1d19babaadf21fe40b8d36df655fadec10a470252"
+        with tempfile.TemporaryDirectory() as td:
+            manifest = Path(td) / "index_manifest.json"
+            manifest.write_text(json.dumps({"pipeline_fingerprints": {
+                "light": "same-light", "deep": old_deep, "semantic": "same-semantic",
+            }}), encoding="utf-8")
+            with mock.patch.object(UH.C, "INDEX_MANIFEST", manifest), \
+                    mock.patch.object(UH, "pipeline_fingerprints", return_value={
+                        "light": "same-light", "deep": new_deep, "semantic": "same-semantic",
+                    }):
+                result = UH.index_health()
+                saved = json.loads(manifest.read_text(encoding="utf-8"))
+        self.assertEqual("current", result["state"])
+        self.assertIn("无需重新深索", result["detail"])
+        self.assertEqual(new_deep, saved["pipeline_fingerprints"]["deep"])
+
+    def test_unknown_deep_rule_change_still_requires_full_rebuild(self):
+        with tempfile.TemporaryDirectory() as td:
+            manifest = Path(td) / "index_manifest.json"
+            manifest.write_text(json.dumps({"pipeline_fingerprints": {
+                "light": "same-light", "deep": "unknown-old", "semantic": "same-semantic",
+            }}), encoding="utf-8")
+            with mock.patch.object(UH.C, "INDEX_MANIFEST", manifest), \
+                    mock.patch.object(UH, "pipeline_fingerprints", return_value={
+                        "light": "same-light", "deep": "unknown-new", "semantic": "same-semantic",
+                    }):
+                result = UH.index_health()
+        self.assertEqual("stale", result["state"])
+        self.assertTrue(result["full_rebuild"])
+        self.assertEqual("清空并从头重建索引", result["action"])
+
     def test_light_rule_change_requires_only_metadata_refresh(self):
         with tempfile.TemporaryDirectory() as td:
             manifest = Path(td) / "index_manifest.json"
