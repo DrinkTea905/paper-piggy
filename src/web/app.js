@@ -1550,21 +1550,21 @@
       <div class="ht-head">
         <img class="ht-mascot" src="/static/PaperPiggy.png" alt="PaperPiggy">
         <div class="ht-head-txt">
-          <div class="ht-h">四步，把小猪养成你的<span class="hl">专属知识库</span></div>
-          <div class="ht-sub">越喂越聪明 —— 喂文献进去，它替你精读、检索、写综述</div>
+          <div class="ht-h">四步，用 Agent 驱动你的<span class="hl">专属知识库</span></div>
+          <div class="ht-sub">你说明研究目标，Agent 负责检索、深读、核验与维护</div>
         </div>
         <button class="primary-btn ht-cta" id="dg-go">怎么接入 AI 助手 →</button>
       </div>
       <div class="flow">
-        ${step("s1", "1", "📥", "喂饱小猪 · 深索＋摘要", "先把全文附件<b>深索</b>成可读小段，再配<b>检索摘要</b>帮助准确命中文献；都能按需筛选、放后台慢慢完成。")}
+        ${step("s1", "1", "📥", "完成基础建库", "连接 <b>Zotero</b> 或全文文件夹，建立题录与语义索引。")}
         ${arrow}
-          ${step("s2", "2", "🔍", "秒级检索", "抛一个研究问题，全库<b>秒找</b>相关文献与原文段落，按来源评价权重排序、回溯到页码/章节/段落。")}
+          ${step("s2", "2", "🤖", "连接 Agent", "在 Agent 页复制本机接入命令，让 <b>Claude Code / Codex</b> 使用你的知识库。")}
         ${arrow}
-        ${step("s3", "3", "🤖", "Agent 驱动", "把库接进 <b>Claude Code / Codex</b>，让 AI 替你查库、读原文位置 —— 尤其半自动研究助手，边问边写。")}
+        ${step("s3", "3", "🔎", "布置研究任务", "说明问题、范围、交付物与证据标准，由 Agent 安排检索、深索和核验。")}
         ${arrow}
-        ${step("s4", "4", "📚", "定时养库", "把问答与综述沉淀成 <b>wiki</b>、定期维护综述库 —— 知识越用越厚，复用越来越省。")}
+        ${step("s4", "4", "📚", "积累研究成果", "把成品保存到<b>交付物</b>，把可复用结论写入<b>综述库</b>，持续维护项目记忆。")}
       </div>
-      <div class="ht-foot"><span class="pig">🐷</span> 喂得越勤，小猪越懂你 —— 让 PaperPiggy 成为你的专属知识库 ✨</div>
+      <div class="ht-foot"><span class="pig">🐷</span> PaperPiggy 提供知识引擎，Agent 承担研究流程 ✨</div>
     </div>`;
   }
 

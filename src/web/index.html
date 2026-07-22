@@ -120,7 +120,7 @@
     <!-- ⚠ 维护铁律：功能更新时这份新手指引也要同步更新（记忆 localkb-agent-7point-redesign 已记）。 -->
     <div class="ag-guide" id="home-guide" hidden>
       <div class="ag-guide-head">
-        <div class="ag-guide-title">📖 新手指引 · 把 PaperPiggy 养成你的专属知识库</div>
+        <div class="ag-guide-title">📖 新手指引 · 用 Agent 驱动你的专属知识库</div>
         <button class="ag-guide-close" id="home-guide-close" type="button">✕ 关闭</button>
       </div>
       <div class="ag-guide-body">
@@ -129,70 +129,67 @@
         <section class="ag-ch">
           <div class="ag-ch-n">1</div>
           <div class="ag-ch-c">
-            <h3>PaperPiggy 是什么</h3>
-            <p>它是你的<b>本地文献知识库</b>：把论文全文喂进来（支持 PDF、EPUB、DOCX、Markdown、TXT），它替你<b>精读、秒级检索、定位原文、写综述</b>。<b>文献始终留在你电脑上</b>，不上传任何服务器。</p>
-            <p class="ag-note">三种用法，由轻到重：① 在应用里直接<b>检索</b>；② 用内置<b>对话</b>问（填一个大模型 Key）；③ 接进 <b>🤖 AI 助手</b>（Claude Code 等），让它替你系统性地查库、写作、养库。</p>
+            <h3>主线 · PaperPiggy + Agent</h3>
+            <p>PaperPiggy 是 Agent 的<b>文献知识引擎</b>。它管理题录、全文、原文位置、检索摘要和综述库；Agent 负责检查知识库、检索文献、精读原文、核验论断、整理成果和持续维护。</p>
+            <p class="ag-note">你负责说明研究问题、范围、交付物和证据标准。Agent 负责选择工具、安排步骤，并把可复用成果保存到本机的交付物、综述库和项目记忆中。</p>
           </div>
         </section>
 
         <section class="ag-ch">
           <div class="ag-ch-n">2</div>
           <div class="ag-ch-c">
-            <h3>第一步 · 把文献喂进来</h3>
-            <p class="ag-note">两种来源，二选一（首次会有向导带你走）：<br>· <b>Zotero</b>：直接读你的 Zotero 库，新增文献后自动增量入库。<br>· <b>文件夹</b>：把 PDF、EPUB、DOCX、Markdown 或 TXT 放进一个文件夹（或直接拖进窗口），AI 自动抽题录入库。<br>入库后<b>题录秒建</b>，马上能按标题 / 作者 / 摘要搜到。</p>
+            <h3>完成基础建库</h3>
+            <p class="ag-note">首次向导依次完成：<br>· 选择<b>本地检索</b>或 <b>SiliconFlow 云端检索</b>；<br>· 连接 <b>Zotero</b>，或选择一个装有 PDF、EPUB、DOCX、Markdown、TXT 的文件夹；<br>· 建立题录和语义索引。<br>第一版索引可用后即可连接 Agent，全文深索可以按课题分批完成。</p>
           </div>
         </section>
 
         <section class="ag-ch">
           <div class="ag-ch-n">3</div>
           <div class="ag-ch-c">
-            <h3>第二步 · 让文献可深读、也更容易被找到</h3>
-            <p class="ag-note"><b>① 深索</b>＝把全文附件拆成可检索的小段。<b>只有深索过的文献</b>才能被精读、定位原文、跨篇综合；未深索的只有题录 + 摘要。PDF 定位到页码，EPUB 定位到章节，DOCX / Markdown 定位到标题段落，TXT 定位到行号。在「📚 文献」里挑文献深索，建议慢慢把常用的喂完——<b>可放后台跑，不影响使用</b>。PDF 没有文字层时，PaperPiggy 会自动在本机 OCR，只把识别文字存入索引，不改原文件。</p>
-            <p class="ag-note"><b>② 检索摘要</b>是深索后的检索增强：给整篇文献配一段 ~150 字 AI 摘要，<b>让系统更容易先找到这篇</b>。没有检索摘要，已深索的全文仍能精读和引用，只是整篇召回可能不够稳定。它不是题录里的原文摘要，也不能替代深索。可在「⚙ 设置 → 建库 → 检索摘要」选择交给 Agent，或让 PaperPiggy 自动生成。</p>
+            <h3>连接 Agent</h3>
+            <p class="ag-note">打开顶部「🤖 Agent」页，选择 Claude Code、Codex 或通用 MCP 客户端，复制应用生成的本机接入命令，在 Agent 会话中运行。接入后先让 Agent 查看知识库状态并搜索一个库内主题。</p>
+            <p class="ag-note"><button class="ag-link ag-linkbtn" id="hg-to-agent" type="button">→ 打开 Agent 页与完整接入指引</button></p>
           </div>
         </section>
 
         <section class="ag-ch">
           <div class="ag-ch-n">4</div>
           <div class="ag-ch-c">
-            <h3>第三步 · 检索与提问</h3>
-        <p class="ag-note">· <b>「📚 文献」</b>：默认按题名、作者、期刊、年份、DOI 或 ISBN 查题录；切到“全文与相关内容”，可用研究问题检索相关文献和原文段落，并回溯到页码、章节、段落或行号。左侧分类和右侧筛选都留在同一页。<br>· <b>「💬 对话」</b>：不想自己翻，就用大白话问，它读你的库回答、每句可回溯到原文位置（需在对话页填一个大模型 API Key，硅基流动等有免费额度）。</p>
+            <h3>布置第一项研究任务</h3>
+            <p class="ag-note">把四件事说清楚：<b>研究问题、资料范围、交付物、证据标准</b>。例如：<br>“研究自动化行政中的说明理由义务。先检查库内覆盖情况，再按理论基础、制度方案和反对意见分组；精读代表文献，关键判断给出原文位置，最后生成三级提纲并列出资料缺口。”</p>
           </div>
         </section>
 
         <section class="ag-ch">
           <div class="ag-ch-n">5</div>
           <div class="ag-ch-c">
-            <h3>第四步 · 养库（越用越厚）</h3>
-            <p class="ag-note">好答案不该说完就忘。它能把结论沉淀成<b>「📖 综述库」</b>——带页码引用、可复用、下次直接命中。综述会按来源自动归入研究主题，也能新建自己的主题手动整理；还能记住你的偏好与进度（<b>记忆</b>），甚至定期帮你搜集动态（<b>定时任务</b>）。喂得越勤，小猪越懂你。</p>
+            <h3>让 Agent 安排深索与检索摘要</h3>
+            <p class="ag-note"><b>深索</b>把全文拆成可检索片段，并保留页码、章节、标题段落或行号。扫描版 PDF 会在本机完成 OCR。<b>检索摘要</b>帮助系统识别整篇文献的主题，不是原文摘要，也不替代深索。</p>
+            <p class="ag-note">让 Agent 围绕当前课题挑选最相关的一批文献，分批完成深索和检索摘要。大型文库可在电脑空闲时逐步扩展。</p>
           </div>
         </section>
 
         <section class="ag-ch">
           <div class="ag-ch-n">6</div>
           <div class="ag-ch-c">
-            <h3>内置「对话」 vs 「🤖 Agent」，怎么选？</h3>
-            <div class="ag-trio">
-              <div class="ag-trio-i"><b>💬 内置对话</b><span>随手问答、带页码；一次看少量来源；答案默认不自动沉淀。轻量、开箱即用。</span></div>
-              <div class="ag-trio-i"><b>🤖 接 AI 助手</b><span>跨会话累积、系统化综述、写回交付物 / 综述 / 记忆、定时任务。更强，适合做研究、写论文。</span></div>
-            </div>
-            <p class="ag-note">两条路都可用，按需选。想深入用 Agent，去「🤖 Agent」页点开那里的完整教程。<button class="ag-link ag-linkbtn" id="hg-to-agent" type="button">→ 去看 Agent 教程</button></p>
+            <h3>让成果进入交付物和综述库</h3>
+            <p class="ag-note">论文初稿、资料汇编、报告等成品保存在<b>交付物</b>；研究方法、项目记忆、参考格式和定时任务保存在<b>资料库</b>；需要长期复用和更新的结论进入<b>综述库</b>。综述页保留来源、核验状态和版本历史。</p>
           </div>
         </section>
 
         <section class="ag-ch">
           <div class="ag-ch-n">7</div>
           <div class="ag-ch-c">
-            <h3>自动更新、备份与隐私</h3>
-        <p class="ag-note">· <b>自动更新知识库</b>：在「⚙ 设置 → 建库 → 自动更新知识库」可设按天定时增量入库（默认每天 7:00）；也能随时点顶栏「⟳ 手动更新知识库」。<br>· <b>应用出新版</b>（和上面的"更新知识库"不是一回事）：顶栏右上角会亮「🎁 有新版」，点它去设置一键升级；不想每次启动联网检查，可在「⚙ 设置 → 应用 → 应用更新」关掉「启动时自动检查」。<br>· <b>检索内存</b>：检索模型和倒排索引只在用到时加载，默认连续 10 分钟没检索就自动释放；可在「⚙ 设置 → 检索 → 检索内存」改成 5 分钟、1 小时或不自动释放。释放只腾内存，不删任何数据。<br>· <b>备份</b>：「⚙ 设置 → 数据与维护 → 备份与恢复」把<b>丢了就再也没有的东西</b>（综述、Agent 写的论文与记忆、收藏夹、来源评价数据）打成一个 zip。<b>想要云备份</b>：把备份位置指到 OneDrive / 坚果云的文件夹里——同步一个静态 zip 是安全的。⛔ 但<b>别把整个数据目录丢进云盘</b>：向量索引是持续读写的数据库，云盘同步它早晚会把索引搞坏。<br>· <b>隐私</b>：<b>全程本地</b>，文献不出你的电脑；大模型 Key 只存本机浏览器与本地服务内存，不上传第三方（除你自己选的模型服务商）。备份包<b>默认不含</b> API 密钥（要含得自己勾选）。</p>
+            <h3>让 Agent 维护知识库</h3>
+            <p class="ag-note">在 Zotero 加入一批文献后，可以直接说：<br>“维护我的 PaperPiggy 知识库。检查新增题录、全文附件、深索、OCR、检索摘要、待更新综述、孤儿页、断链和过时内容；安全事项直接处理，需要研究判断的事项集中说明。”</p>
           </div>
         </section>
 
         <section class="ag-ch">
           <div class="ag-ch-n">8</div>
           <div class="ag-ch-c">
-            <h3>小贴士</h3>
-            <p class="ag-note">· 顶栏这几个页签<b>可以拖动调整顺序</b>，把最常用的放前面。<br>· 想重看这份指引：随时点左上角的<b>小猪头像</b>；想重走安装向导：「⚙ 设置」里有入口。<br>· 深索是慢功夫——先深索你最关心方向的文献，问答立刻更扎实。</p>
+            <h3>人工控制台、备份与隐私</h3>
+            <p class="ag-note">· <b>文献页</b>用于浏览分类、查看处理状态、人工挑选文献和打开原文。<br>· <b>综述库</b>用于阅读、核验、查看历史和回滚。<br>· <b>设置 → 数据与维护</b>可把综述、Agent 交付物、资料库、分类和人工数据备份为 zip；云备份请同步这个静态备份包。<br>· 本地检索的待检索文本留在电脑上；SiliconFlow 云端检索和所选 AI 服务会接收完成对应任务所需的文本。API Key 保存在本机设置中。</p>
           </div>
         </section>
 
@@ -491,7 +488,7 @@
           <div class="ag-ch-n">1</div>
           <div class="ag-ch-c">
             <h3>它是什么（一分钟看懂）</h3>
-            <p>一句话：<b>你的文献始终留在本机</b>；把库接进一个 AI 助手（Claude Code 等），它就能替你<b>查库、定位原文、写回成果</b>；成果也全部落在你本机、人类可读，<b>换任何 AI 助手都能接着用</b>。</p>
+            <p>一句话：<b>原始文献与知识库保存在本机</b>；把库接进一个 AI 助手（Claude Code 等），它就能替你<b>查库、定位原文、写回成果</b>；成果也落在你本机、人类可读，<b>换任何 AI 助手都能接着用</b>。云端检索和 AI 助手会接收完成对应任务所需的文本。</p>
             <div class="ag-philo-flow">
               <span class="ag-philo-step"><b>文献留本机</b><small>全文附件 / Zotero 只读，AI 不改</small></span>
               <span class="ag-philo-arr">→</span>
@@ -603,7 +600,7 @@
           <div class="ag-ch-n">8</div>
           <div class="ag-ch-c">
             <h3>它会怎么动你的库（权限与安全）</h3>
-            <p class="ag-note">默认<b>只读检索 + 另存综合</b>，<b>绝不改动</b>你的原始文献 / 索引 / Zotero；写回的综述标 🤖 未核验、不覆盖你的内容、可一键删；<b>全程本地</b>，文献不出你的电脑。下面是 AI 必须遵守的写回规约文件（可打开查看它被约束成什么样）：</p>
+            <p class="ag-note">默认<b>只读检索 + 另存综合</b>，<b>绝不改动</b>你的原始文献 / 索引 / Zotero；写回的综述标 🤖 未核验、不覆盖你的内容、可一键删。原始文献与写回成果保存在本机；云端检索和 AI 助手会接收完成对应任务所需的文本。下面是 AI 必须遵守的写回规约文件（可打开查看它被约束成什么样）：</p>
             <div class="ag-code"><code id="ag-schema"></code><button class="ag-copy" data-copy="ag-schema">复制路径</button></div>
             <p class="ag-note">💡 想更快看懂？「📚 专属资料库」里有一份通俗摘要 <code>AI写综述遵守的规约.md</code>（五条核心 + 指向上面这份完整规约）。</p>
           </div>
@@ -762,12 +759,9 @@
             <span><b>交给 Agent 生成</b>（推荐）<br><small>在对话里让 Claude Code / Codex 跑深索或维护知识库时，它读取正文、自己写摘要并完成重嵌入——不调用服务端摘要生成 API、质量更好。在应用内直接点「深索」仍不会自动补摘要。</small></span></label>
           <label class="sac-gen-opt"><input type="radio" name="sac-gen" value="server" />
             <span><b>PaperPiggy 自动生成</b><br><small>在应用内完成深索后自动写摘要并重新嵌入。可复用检索引擎的 SiliconFlow Key，也可选择其他 AI 厂商和模型。</small></span></label>
-          <label class="sac-gen-opt"><input type="radio" name="sac-gen" value="off" />
-            <span><b>暂不生成</b><br><small>深索仍会正常完成，以后可随时补生成；整篇文献的召回可能不够稳定。</small></span></label>
-        </div>
-        <div id="sac-server-options" class="sac-server-options" hidden>
+          <div id="sac-server-options" class="sac-server-options" hidden>
           <label class="sac-source-opt"><input type="radio" name="sac-source" value="reuse" />
-            <span><b>复用检索引擎的 SiliconFlow Key</b>（推荐）<br><small>使用 <code>Qwen/Qwen2.5-7B-Instruct</code>，模型简单、生成快，SiliconFlow 当前标为免费；价格以后以服务商页面为准。</small></span></label>
+            <span><b>复用检索引擎的 SiliconFlow Key</b><br><small>使用 <code>Qwen/Qwen2.5-7B-Instruct</code>，模型简单、生成快，SiliconFlow 当前标为免费；价格以后以服务商页面为准。</small></span></label>
           <div id="sac-reuse-status" class="hint"></div>
           <label class="sac-source-opt"><input type="radio" name="sac-source" value="custom" />
             <span><b>使用其他 AI 厂商</b>（通常按量收费）<br><small>可选 DeepSeek、Kimi、智谱、OpenAI 或自定义兼容服务，并自行指定模型；只影响检索摘要，不改变检索引擎。</small></span></label>
@@ -789,6 +783,9 @@
               <span id="sac-custom-msg" class="hint"></span>
             </div>
           </div>
+          </div>
+          <label class="sac-gen-opt"><input type="radio" name="sac-gen" value="off" />
+            <span><b>暂不生成</b><br><small>深索仍会正常完成，以后可随时补生成；整篇文献的召回可能不够稳定。</small></span></label>
         </div>
         <div id="sac-status" class="sac-status hint"></div>
       </div>

@@ -66,6 +66,21 @@ class SacQualityTests(unittest.TestCase):
         self.assertIn("复用检索引擎的 SiliconFlow Key", html)
         self.assertIn("使用其他 AI 厂商", html)
         self.assertNotIn("高级：单独指定摘要", html)
+        self.assertNotIn("复用检索引擎的 SiliconFlow Key</b>（推荐）", html)
+        self.assertLess(html.index('value="server"'), html.index('id="sac-server-options"'))
+        self.assertLess(html.index('id="sac-server-options"'), html.index('value="off"'))
+
+    def test_home_guide_uses_agent_as_the_mainline(self):
+        html = (SRC / "web" / "index.html").read_text(encoding="utf-8")
+        guide = html[html.index('id="home-guide"'):html.index('id="panel-browse"')]
+        headings = ["主线 · PaperPiggy + Agent", "连接 Agent", "布置第一项研究任务",
+                    "让 Agent 安排深索与检索摘要", "让成果进入交付物和综述库",
+                    "让 Agent 维护知识库"]
+        for heading in headings:
+            self.assertIn(heading, guide)
+        self.assertEqual(sorted(guide.index(heading) for heading in headings),
+                         [guide.index(heading) for heading in headings])
+        self.assertNotIn("内置「对话」 vs", guide)
 
     def test_gate_accepts_concise_useful_summary_and_rejects_known_corruption_shapes(self):
         self.assertTrue(SAC.validate_summary(GOOD)[0])
