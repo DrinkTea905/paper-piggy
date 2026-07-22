@@ -12,6 +12,12 @@
 [![Downloads](https://img.shields.io/github/downloads/DrinkTea905/paper-piggy/total.svg)](https://github.com/DrinkTea905/paper-piggy/releases)
 [![Stars](https://img.shields.io/github/stars/DrinkTea905/paper-piggy.svg)](https://github.com/DrinkTea905/paper-piggy/stargazers)
 
+
+### 📘 第一次使用？
+
+**[打开《PaperPiggy 从零开始新手教程》→](https://drinktea905.github.io/paper-piggy-guide/)**
+
+从下载安装到建立知识库，再到检索、深索、综述库和 AI 助手，按章节一步步操作。
 </div>
 
 ---
