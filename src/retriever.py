@@ -10,6 +10,7 @@ import sys, json, time, threading, os, re
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import config as C
+import document_formats as DF
 from textutil import tokenize, load_legal_synonyms
 
 import lancedb
@@ -111,7 +112,7 @@ def _load_catalog_locked():
         with open(C.PAPERS_JSONL, encoding="utf-8") as f:
             for line in f:
                 if line.strip():
-                    _p = json.loads(line); pp[_p["key"]] = _p
+                    _p = DF.normalize_record(json.loads(line)); pp[_p["key"]] = _p
         M["papers"] = pp
     _build_statute_map()   # EN-L5：full 模式同样要有 key→statute_status（输出徽标+已废止降权）
     _load_wiki_index()
@@ -125,7 +126,7 @@ def _load_light_catalog():
         with open(C.PAPERS_JSONL, encoding="utf-8") as f:
             for line in f:
                 if line.strip():
-                    p = json.loads(line)
+                    p = DF.normalize_record(json.loads(line))
                     papers[p["key"]] = p
     M["papers"] = papers
     _build_statute_map()
@@ -473,7 +474,7 @@ def _wiki_meta(r):
     return (M.get("wiki") or {}).get(wid, {})
 
 def _page_cite(r):
-    """全文块引用：优先官方页码，退回 PDF 内页码。wiki 行给"本地综合"引用 + 过时提示。"""
+    """全文块引用：PDF 用页码；其他格式用章节/段落定位，绝不伪造页码。"""
     if _is_wiki(r):
         wm = _wiki_meta(r)
         n = len(wm.get("sources", []))
@@ -489,7 +490,14 @@ def _page_cite(r):
     if r.get("year"):   parts.append(f"({r['year']})")
     s = " ".join(parts) + f"《{r.get('title','')}》"
     if r.get("journal"): s += f"，{r['journal']}"
-    # Phase A：全文块引用用「期刊印刷页码」（读者翻期刊看到的那页），而非 PDF 顺序页/整篇范围。
+    paper = (M.get("papers") or {}).get(r.get("key"), {})
+    fmt = paper.get("fulltext_format") or ("pdf" if r.get("has_pdf") else "")
+    if fmt and fmt != "pdf":
+        locator = DF.locator_label(fmt, r.get("page"), r.get("heading"))
+        if locator:
+            s += f"，{locator}"
+        return s.strip()
+    # PDF 全文块优先用期刊印刷页码，退回 PDF 顺序页/整篇范围。
     pg = ""
     if r.get("page") is not None and r.get("key"):
         try:
@@ -556,6 +564,8 @@ def search_full(query, topk, sort, keys=None, max_per_key=None):
     for r, sc, tier, wr in top:
         cid = r.get("chunk_id", "")
         deep = (r.get("row_type") != "meta")
+        paper = (M.get("papers") or {}).get(r.get("key", ""), {})
+        fmt = paper.get("fulltext_format") or ("pdf" if r.get("has_pdf") else "")
         d = {
             "chunk_id": cid, "score": round(sc, 4),
             "journal_tier": tier, "tier_rank": JT.rank_of(tier),
@@ -566,6 +576,9 @@ def search_full(query, topk, sort, keys=None, max_per_key=None):
             "row_type": r.get("row_type", "chunk"),
             "depth": "full" if deep else "abstract",
             "has_pdf": r.get("has_pdf", True),
+            "has_fulltext": bool(paper.get("has_fulltext", r.get("has_pdf", True))),
+            "fulltext_format": fmt,
+            "locator": DF.locator_label(fmt, r.get("page"), r.get("heading")) if deep else "",
             "heading": r.get("heading", ""),
             # EN-L2/L5：itemtype 供引注模板分派（statute/report），statute_status 是
             # 法条时效徽标（契约11：""｜"已修订"｜"已废止"；按 papers.jsonl 现算，不动表 schema）
@@ -580,6 +593,8 @@ def search_full(query, topk, sort, keys=None, max_per_key=None):
             d["is_wiki"] = True
             d["depth"] = "synthesis"           # 综合页非 PDF 全文块
             d["has_pdf"] = False
+            d["has_fulltext"] = False
+            d["fulltext_format"] = ""
             d["generated_at"] = wm.get("generated_at", "")
             d["generated_by"] = wm.get("generated_by", "")
             d["stale"] = bool(wm.get("stale"))
@@ -637,6 +652,8 @@ def _neighbors_loaded(key, topk=8):
         sim = round(1.0 - float(h.get("_distance", 0.0)), 4)   # cosine 距离→相似度
         tier = _tier_of(r)
         deep = (r.get("row_type") != "meta")
+        paper = (M.get("papers") or {}).get(k, {})
+        fmt = paper.get("fulltext_format") or ("pdf" if r.get("has_pdf") else "")
         d = {
             "chunk_id": h.get("chunk_id"), "score": sim,
             "journal_tier": tier, "tier_rank": JT.rank_of(tier),
@@ -647,6 +664,9 @@ def _neighbors_loaded(key, topk=8):
             "row_type": r.get("row_type", "chunk"),
             "depth": "full" if deep else "abstract",
             "has_pdf": r.get("has_pdf", True),
+            "has_fulltext": bool(paper.get("has_fulltext", r.get("has_pdf", True))),
+            "fulltext_format": fmt,
+            "locator": DF.locator_label(fmt, r.get("page"), r.get("heading")) if deep else "",
             "heading": r.get("heading", ""),
             # EN-L2/L5：与 search_full 输出保持同构（前端复用 resultCard）
             "itemtype": r.get("itemtype", ""),
@@ -798,6 +818,8 @@ def search_light(query, topk, sort, keys=None):
             "doi": p.get("doi", ""), "page": None, "key": p.get("key", ""),
             "official_pages": p.get("official_pages", ""),
             "row_type": "meta", "depth": "abstract", "has_pdf": p.get("has_pdf", False),
+            "has_fulltext": p.get("has_fulltext", False),
+            "fulltext_format": p.get("fulltext_format", ""), "locator": "",
             "heading": "",
             # EN-L2/L5：itemtype/时效徽标（light 行直接来自 papers.jsonl，字段现成）
             "itemtype": p.get("itemtype", ""),

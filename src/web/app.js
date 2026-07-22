@@ -118,6 +118,12 @@
 
   const esc = (s) => (s || "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
   const num = (n) => (n == null ? "0" : Number(n).toLocaleString("zh-CN"));
+  const hasFulltext = (x) => !!(x && (x.has_fulltext != null ? x.has_fulltext : x.has_pdf));
+  const withFulltext = (x) => Number((x && (x.with_fulltext != null ? x.with_fulltext : x.with_pdf)) || 0);
+  const noFulltext = (x) => Number((x && (x.no_fulltext != null ? x.no_fulltext : x.no_pdf)) || 0);
+  const fulltextLabel = (x) => ({ pdf: "PDF", epub: "EPUB", docx: "DOCX", markdown: "Markdown", txt: "TXT" }[
+    String((x && x.fulltext_format) || "").toLowerCase()
+  ] || "全文");
 
   // 全局浮层提示（右下角，自动消失）——用于跨页通知（如深索完成），不依赖当前所在 tab
   let _toastTimer = null;
@@ -201,9 +207,9 @@
   function applySourceCopy() {
     if (APP.source !== "folder") return;
     const sub = document.querySelector(".wizard-sub");
-    if (sub) sub.textContent = "把一个文件夹里的 PDF 变成能秒级检索、可视化、可对话的本地知识库。全程离线，隐私不出本机。";
+    if (sub) sub.textContent = "把一个文件夹里的全文文件变成能秒级检索、可视化、可对话的本地知识库。支持 PDF、EPUB、DOCX、Markdown、TXT，全程离线。";
     const bt = $("#btn-build");
-    if (bt) bt.title = "加了新 PDF 后点一次即在后台增量更新（也可直接把 PDF 拖进窗口即时入库）。想定时自动更新？到 ⚙ 设置里开。";
+    if (bt) bt.title = "加了新全文文件后点一次即在后台增量更新（也可直接拖进窗口即时入库）。想定时自动更新？到 ⚙ 设置里开。";
   }
 
   // ── 顶栏状态 pill（读 /health：mode=null|light|full）+ 常驻进度条（读 /index/status）──
@@ -250,14 +256,14 @@
     }
     else if (!h.mode) { s.textContent = "未建库"; s.className = "status warn"; }
     else {
-      const withPdf = st ? (st.with_pdf || 0) : 0;
+      const withPdf = withFulltext(st);
       const deep = st ? (st.deep_done || 0) : 0;
       if (withPdf > 0) {
         s.textContent = `已深索 ${num(deep)}/${num(withPdf)} 篇`;
-        s.title = `共 ${num(papers)} 篇文献；${num(withPdf)} 篇有 PDF 可深索，已深索 ${num(deep)} 篇（可精读、页级引用）` + sacText(st);
+        s.title = `共 ${num(papers)} 篇文献；${num(withPdf)} 篇有全文附件可深索，已深索 ${num(deep)} 篇（可精读并回溯原文位置）` + sacText(st);
       } else {
         s.textContent = `已索引 ${num(papers)} 篇`;
-        s.title = `${num(papers)} 篇题录即时可搜（暂无 PDF 可深索）`;
+        s.title = `${num(papers)} 篇题录即时可搜（暂无全文附件可深索）`;
       }
       s.className = "status ok";
     }
@@ -472,7 +478,8 @@
   function extractCounts(st) {
     const c = (st && st.extract_status_counts) || {};
     const hasStructured = Object.keys(c).length > 0;
-    const missing = c.missing_pdf || 0, invalid = c.invalid_pdf || 0;
+    const missing = (c.missing_pdf || 0) + (c.missing_file || 0);
+    const invalid = (c.invalid_pdf || 0) + (c.invalid_file || 0);
     const failed = c.ocr_failed || 0, pending = c.ocr_pending || 0;
     return { missing, invalid, failed, pending,
       blocked: hasStructured ? missing + invalid + failed : ((st && st.deep_no_text) || 0) };
@@ -481,19 +488,19 @@
     const x = extractCounts(st), bits = [];
     if (x.pending) bits.push(`${num(x.pending)} 篇待/正在本地 OCR`);
     if (x.missing) bits.push(`${num(x.missing)} 篇附件缺失`);
-    if (x.invalid) bits.push(`${num(x.invalid)} 篇 PDF 无法打开`);
+    if (x.invalid) bits.push(`${num(x.invalid)} 篇全文附件无法读取`);
     if (x.failed) bits.push(`${num(x.failed)} 篇 OCR 未识别`);
     return bits.join("，");
   }
   function extractState(r) { return ((r && r.extract_status) || {}).status || ""; }
   function extractBlocked(r) {
     const s = extractState(r);
-    return r && (r.no_text || s === "missing_pdf" || s === "invalid_pdf" || s === "ocr_failed");
+    return r && (r.no_text || s === "missing_pdf" || s === "invalid_pdf" || s === "missing_file" || s === "invalid_file" || s === "ocr_failed");
   }
   function updateProgress(st) {
     const bar = $("#idx-progress");
     const papers = st.papers || 0, meta = st.meta_done || 0;
-    const withPdf = st.with_pdf || 0, deep = st.deep_done || 0;
+    const withPdf = withFulltext(st), deep = st.deep_done || 0;
     const stage = st.stage || "";
     // F4：仅 building 且 stage==="deep" 才算「深索中」（增量更新 all / 队列空时不误报）
     const deepBusy = st.building && stage === "deep";
@@ -502,7 +509,7 @@
     let done, total, txt;
     // F4：只在 stage==="deep" 时才叫「深索中」——增量更新(stage=all)/队列空闲时不再误报「深索中 0%」
     if (deepBusy) {
-      // 深索（把有 PDF 的文献全文拆成可检索的小段）
+      // 深索（把有全文附件的文献拆成可检索的小段）
       const blocked = extractCounts(st).blocked;
       if (withPdf > 0 && (deep + blocked) >= withPdf) {
         // 可处理正文已嵌完，其余是明确的附件/OCR失败终态；整库深索还有最后一步：
@@ -555,7 +562,7 @@
     try {
       const q = await jget("/index/queue");
       DP.paused = !!q.paused;
-      const deep = q.deep_done || 0, withPdf = q.with_pdf || 0;
+      const deep = q.deep_done || 0, withPdf = withFulltext(q);
       const pending = q.pending || 0, inflight = q.in_flight || 0;
       const building = !!q.building, stage = q.stage || "";
       const xc = extractCounts(q);
@@ -586,17 +593,17 @@
       } else {
         stat = `深索队列已空 · ` + (undeep > 0
           ? `待深索 <b>${num(undeep)}</b> 篇（可在「浏览」页勾选后深索）`
-          : `全部 PDF 已深索 ✓`);
+          : `全部全文附件已深索 ✓`);
         const issueText = extractCountsText(q);
         if (issueText) stat += ` · ${issueText}`;
-        if (xc.blocked > 0) stat += ` · <a href="#" id="dp-retry-nt" title="修好附件或 PDF 后，清除失败状态与旧产物再重试">🔁 重试 ${num(xc.blocked)} 篇提取失败文献</a>`;
+        if (xc.blocked > 0) stat += ` · <a href="#" id="dp-retry-nt" title="修好全文附件后，清除失败状态与旧产物再重试">🔁 重试 ${num(xc.blocked)} 篇提取失败文献</a>`;
         listEmpty = "暂无正在深索的文献"; eta = "";
       }
       $("#dp-stat").innerHTML = stat + sacFrag(q);
       const rnt = $("#dp-retry-nt");
       if (rnt) rnt.addEventListener("click", async (ev) => {
         ev.preventDefault();
-        if (!(await uiConfirm("将清除附件缺失、PDF 无法打开或 OCR 未识别文献的失败状态与旧提取产物。请先确认附件已修好；之后可在「浏览」页重新深索，本地 OCR 会自动运行。不会改动原 PDF。", { title: "重试 PDF 提取失败文献？", okText: "清除并可重试" }))) return;
+        if (!(await uiConfirm("将清除全文附件缺失、无法读取或 PDF OCR 未识别文献的失败状态与旧提取产物。请先确认附件已修好；之后可在「浏览」页重新深索。不会改动原文件。", { title: "重试全文提取失败文献？", okText: "清除并可重试" }))) return;
         try { const r = await jpost("/index/retry_no_text", {}); flashToast(r.msg || `已清除 ${num(r.cleared || 0)} 篇。`); deepPanelPoll(); }
         catch (e) { flashToast("重试失败：" + (e.message || e)); }
       });
@@ -997,8 +1004,8 @@
   function weightBadge(r) { return ""; }
   function extractFailureBadge(r) {
     const s = extractState(r), rec = (r && r.extract_status) || {};
-    if (s === "missing_pdf") return `<span class="tag nopdf" title="记录里有 PDF，但附件文件已不在磁盘上；请先在 Zotero 中修复路径">📎 附件缺失</span>`;
-    if (s === "invalid_pdf") return `<span class="tag nopdf" title="PDF 无法打开，可能损坏、未同步完整或被占用">⚠ PDF无法打开</span>`;
+    if (s === "missing_pdf" || s === "missing_file") return `<span class="tag nopdf" title="记录里的全文附件已不在磁盘上；请先在 Zotero 中修复路径">📎 附件缺失</span>`;
+    if (s === "invalid_pdf" || s === "invalid_file") return `<span class="tag nopdf" title="全文附件无法读取，可能损坏、未同步完整、格式异常或被占用">⚠ 附件无法读取</span>`;
     if (s === "ocr_failed") return `<span class="tag nopdf" title="本地 OCR 已运行，但没有识别出有效文字；可检查 PDF 后重试">⚠ OCR未识别</span>`;
     if (!s && r && r.no_text) return `<span class="tag nopdf" title="旧版提取失败记录；更新状态后会显示具体原因">⚠ 正文提取失败</span>`;
     if (rec.empty_pages > 0 && (s === "ok_native" || s === "ok_ocr"))
@@ -1009,13 +1016,13 @@
     if (r.is_wiki) return "";                       // wiki 行用专属徽标（wikiBadge），不显示深度标
     const failure = extractFailureBadge(r);
     if (extractBlocked(r)) return failure;
-    if (r.depth === "full") return `<span class="tag full">📄 已深索</span>` + failure + (r.has_summary ? `<span class="tag sac" title="已生成并通过质量检查，检索更容易命中这篇">🧬 摘要有效</span>` : "");
+    if (r.depth === "full") return `<span class="tag full">📄 ${esc(fulltextLabel(r))} · 已深索</span>` + failure + (r.has_summary ? `<span class="tag sac" title="已生成并通过质量检查，检索更容易命中这篇">🧬 摘要有效</span>` : "");
     // F12：有 PDF 的未深索命中→可点击深索；无 PDF 的纯题录不给深索入口（避免点了无效）
-    if (r.has_pdf) {
+    if (hasFulltext(r)) {
       const pending = extractState(r) === "ocr_pending";
-      return `<span class="tag abstract deep-one" data-key="${esc(r.key || "")}" role="button" tabindex="0" title="${pending ? "点此继续深索并自动运行本地 OCR；不会上传或改写原 PDF" : "点此深索该篇：全文拆成可检索的小段后可精读到页码"}"><span class="lbl-idle">${pending ? "🔎 待本地OCR" : "📋 未深索"}</span><span class="lbl-hover">⚡ ${pending ? "开始OCR" : "深索该篇"}</span></span>`;
+      return `<span class="tag abstract deep-one" data-key="${esc(r.key || "")}" role="button" tabindex="0" title="${pending ? "点此继续深索并自动运行本地 OCR；不会上传或改写原 PDF" : "点此深索该篇：全文拆成可检索的小段后可回溯原文位置"}"><span class="lbl-idle">${pending ? "🔎 待本地OCR" : `📋 ${esc(fulltextLabel(r))} · 未深索`}</span><span class="lbl-hover">⚡ ${pending ? "开始OCR" : "深索该篇"}</span></span>`;
     }
-    return `<span class="tag nopdf" title="无 PDF，只有题录（题名·作者·年份·期刊）">🚫 无全文 / 仅题录</span>`;
+    return `<span class="tag nopdf" title="无受支持全文附件，只有题录（题名·作者·年份·期刊）">🚫 无全文 / 仅题录</span>`;
   }
   // 综合层徽标：命中的是"已存综合"页（可能已过时；来源可展开回溯到论文页码）。
   // agent 经 MCP 写回、未核验的页标 🤖，方便一眼锁定该复看/剔除的对象；人自己保存的标 📝。
@@ -1056,7 +1063,7 @@
     if (r.heading) ctxTitleBits.push(esc(r.heading));
     const ctxHead = "📖 该片段所在整段原文" + (ctxTitleBits.length ? " · " + ctxTitleBits.join(" · ") : "");
     // C2：深索结果（有 key、非 wiki）可一键打开原文 PDF 核对页码
-    const openPdf = (!r.is_wiki && r.key && r.depth === "full") ? `<button class="ghost2 open-pdf" title="用系统默认阅读器打开这篇的原文 PDF">📄 打开原文</button>` : "";
+    const openPdf = (!r.is_wiki && r.key && r.depth === "full") ? `<button class="ghost2 open-pdf" title="用系统默认阅读器打开这篇的原文文件">📄 打开原文</button>` : "";
     div.innerHTML =
       `<div class="card-head"><span class="idx">#${i}</span>${wikiBadge(r)}${tierBadge(r)}${statuteBadge(r)}${weightBadge(r)}${depthTag(r)}</div>` +   // EN-F5：检索卡带法条时效徽标
       `<div class="cite">${esc(r.title || r.citation || "")}</div>` +
@@ -1095,8 +1102,8 @@
     const old = btn ? btn.textContent : null;
     if (btn) { btn.disabled = true; btn.textContent = "打开中…"; }
     try {
-      const r = await jpost("/open_pdf", { key });
-      if (!r || !r.ok) flashToast("打不开原文：" + ((r && r.msg) || "未找到 PDF"));
+      const r = await jpost("/open_source", { key });
+      if (!r || !r.ok) flashToast("打不开原文：" + ((r && r.msg) || "未找到全文附件"));
     } catch (e) { flashToast("打不开原文：" + (e.message || e)); }
     finally { if (btn) { btn.disabled = false; if (old != null) btn.textContent = old; } }
   }
@@ -1330,26 +1337,26 @@
       ${bars}${labels}</svg>`;
   }
 
-  // 覆盖：堆叠横条（有PDF / 无PDF）+ 无摘要标注
+  // 覆盖：堆叠横条（有全文附件 / 无全文附件）+ 无摘要标注
   function coverageCard(cov) {
     const total = cov.total || 0;
-    const withPdf = cov.with_pdf || 0, noPdf = cov.no_pdf || 0, noAbs = cov.no_abstract || 0, metaIdx = cov.meta_indexed || 0;
+    const withPdf = withFulltext(cov), noPdf = noFulltext(cov), noAbs = cov.no_abstract || 0, metaIdx = cov.meta_indexed || 0;
     const pw = total ? (withPdf / total) * 100 : 0;
     const stacked = `<svg viewBox="0 0 100 8" preserveAspectRatio="none" style="width:100%;height:16px;border-radius:8px">
-      <rect x="0" y="0" width="${pw.toFixed(2)}" height="8" fill="#16a085"><title>有PDF：${withPdf} 篇</title></rect>
-      <rect x="${pw.toFixed(2)}" y="0" width="${(100 - pw).toFixed(2)}" height="8" fill="#cbd5e1"><title>无PDF：${noPdf} 篇</title></rect></svg>`;
+      <rect x="0" y="0" width="${pw.toFixed(2)}" height="8" fill="#16a085"><title>有全文附件：${withPdf} 篇</title></rect>
+      <rect x="${pw.toFixed(2)}" y="0" width="${(100 - pw).toFixed(2)}" height="8" fill="#cbd5e1"><title>无全文附件：${noPdf} 篇</title></rect></svg>`;
     return `<div class="dcard span2"><h4>入库覆盖</h4>
-      <p class="dcard-sub">题录已索引 ${num(metaIdx)} 篇；有 PDF 的可深索到页码级</p>
+      <p class="dcard-sub">题录已索引 ${num(metaIdx)} 篇；有全文附件的可深索并回溯原文位置</p>
       <div class="cov-nums">
         <div class="n"><b>${num(total)}</b><span>总篇数</span></div>
-        <div class="n"><b style="color:#16a085">${num(withPdf)}</b><span>有 PDF</span></div>
-        <div class="n"><b style="color:#94a3b8">${num(noPdf)}</b><span>无 PDF</span></div>
+        <div class="n"><b style="color:#16a085">${num(withPdf)}</b><span>有全文附件</span></div>
+        <div class="n"><b style="color:#94a3b8">${num(noPdf)}</b><span>无全文附件</span></div>
         <div class="n"><b style="color:#b45309">${num(noAbs)}</b><span>无摘要</span></div>
       </div>
       ${stacked}
       <div class="cov-legend">
-        <span><i style="background:#16a085"></i>有 PDF ${total ? Math.round(withPdf / total * 100) : 0}%</span>
-        <span><i style="background:#cbd5e1"></i>无 PDF ${total ? Math.round(noPdf / total * 100) : 0}%</span>
+        <span><i style="background:#16a085"></i>有全文 ${total ? Math.round(withPdf / total * 100) : 0}%</span>
+        <span><i style="background:#cbd5e1"></i>无全文 ${total ? Math.round(noPdf / total * 100) : 0}%</span>
         <span><i style="background:#f59e0b"></i>无摘要 ${num(noAbs)} 篇（仅题录）</span>
       </div></div>`;
   }
@@ -1410,8 +1417,8 @@
       const t = (r.title || "").slice(0, 52) + ((r.title || "").length > 52 ? "…" : "");
       let btn;
       if (r.deep) btn = `<span class="rc-tag done">已深索</span>`;
-      else if (r.has_pdf) btn = `<button class="rc-deep" data-key="${esc(r.key || "")}">深索</button>`;
-      else btn = `<span class="rc-tag nopdf" title="无 PDF，无法深索">无PDF</span>`;
+      else if (hasFulltext(r)) btn = `<button class="rc-deep" data-key="${esc(r.key || "")}">深索</button>`;
+      else btn = `<span class="rc-tag nopdf" title="无全文附件，无法深索">无全文</span>`;
       return `<li><div class="rc-main"><div class="rt">${esc(t)}</div><div class="rd">${esc(r.ingested_at || "")}</div></div>${btn}</li>`;
     };
     const head = recent.slice(0, 3).map(row).join("");
@@ -1511,7 +1518,7 @@
     const wai = (d.by_lang || []).find((x) => /外/.test(x.lang)) || {};
     const compose = `<div class="ov-compose">
       <span><b>${num(cov.meta_indexed)}</b>总篇</span>
-      <span><b>${num(cov.with_pdf)}</b>有PDF</span>
+      <span><b>${num(withFulltext(cov))}</b>有全文附件</span>
       ${zh.n ? `<span><b>${num(zh.n)}</b>中文</span>` : ""}
       ${wai.n ? `<span><b>${num(wai.n)}</b>外文</span>` : ""}
     </div>`;
@@ -1549,11 +1556,11 @@
         <button class="primary-btn ht-cta" id="dg-go">怎么接入 AI 助手 →</button>
       </div>
       <div class="flow">
-        ${step("s1", "1", "📥", "喂饱小猪 · 深索＋摘要", "先把 PDF <b>深索</b>成可读小段，再配<b>检索摘要</b>帮助准确命中文献；都能按需筛选、放后台慢慢完成。")}
+        ${step("s1", "1", "📥", "喂饱小猪 · 深索＋摘要", "先把全文附件<b>深索</b>成可读小段，再配<b>检索摘要</b>帮助准确命中文献；都能按需筛选、放后台慢慢完成。")}
         ${arrow}
-          ${step("s2", "2", "🔍", "秒级检索", "抛一个研究问题，全库<b>秒找</b>相关文献与原文段落，按来源评价权重排序、精确到印刷页码。")}
+          ${step("s2", "2", "🔍", "秒级检索", "抛一个研究问题，全库<b>秒找</b>相关文献与原文段落，按来源评价权重排序、回溯到页码/章节/段落。")}
         ${arrow}
-        ${step("s3", "3", "🤖", "Agent 驱动", "把库接进 <b>Claude Code / Codex</b>，让 AI 替你查库、读页码 —— 尤其半自动研究助手，边问边写。")}
+        ${step("s3", "3", "🤖", "Agent 驱动", "把库接进 <b>Claude Code / Codex</b>，让 AI 替你查库、读原文位置 —— 尤其半自动研究助手，边问边写。")}
         ${arrow}
         ${step("s4", "4", "📚", "定时养库", "把问答与综述沉淀成 <b>wiki</b>、定期维护综述库 —— 知识越用越厚，复用越来越省。")}
       </div>
@@ -1608,11 +1615,11 @@
   // 全文深索进度卡（读 /index/status；点击跳到浏览 tab 的「仅题录」筛选）
   function deepProgressCard(st) {
     if (!st) return "";
-    const withPdf = st.with_pdf || 0, deep = st.deep_done || 0;
+    const withPdf = withFulltext(st), deep = st.deep_done || 0;
     if (withPdf <= 0) {
       return `<div class="dcard span2 deep-prog">
         <h4>深索进度</h4>
-        <p class="dcard-sub">有 PDF 的文献全文拆成可检索的小段后，回答可精确到页码</p>
+        <p class="dcard-sub">有全文附件的文献拆成可检索的小段后，回答可回溯到页码、章节、段落或行号</p>
         <div class="hbar deep-prog-bar"><span class="track"><span class="fill" style="width:0%;background:#16a085"></span></span><span class="val">0%</span></div>
         <p class="deep-prog-txt">暂无可深索文献</p></div>`;
     }
@@ -1625,15 +1632,15 @@
     const clickable = remain > 0;
     const bar = `<span class="track"><span class="fill" style="width:${barPct}%;background:#16a085"></span></span>`;
     const txt = (remain > 0
-      ? `已深索 <b>${num(deep)}</b> / 有PDF ${num(withPdf)} 篇，还有 ${num(remain)} 篇可深索`
+      ? `已深索 <b>${num(deep)}</b> / 有全文附件 ${num(withPdf)} 篇，还有 ${num(remain)} 篇可深索`
       : (blocked > 0
-          ? `已深索 <b>${num(deep)}</b> / 有PDF ${num(withPdf)} 篇；可处理正文已完成（${extractCountsText(st)}）`
-          : `已深索 <b>${num(deep)}</b> / 有PDF ${num(withPdf)} 篇，已全部深索完成 ✓`)) + sacFrag(st);
+          ? `已深索 <b>${num(deep)}</b> / 有全文附件 ${num(withPdf)} 篇；可处理正文已完成（${extractCountsText(st)}）`
+          : `已深索 <b>${num(deep)}</b> / 有全文附件 ${num(withPdf)} 篇，已全部深索完成 ✓`)) + sacFrag(st);
     // 查看「已深索了哪些」（跳到浏览的「已深索」筛选）。整卡可点→浏览挑未深索去深索。
     const seeLink = deep > 0 ? `<span class="deep-prog-see" id="deep-prog-see">查看已深索 ${num(deep)} 篇 →</span>` : "";
     return `<div class="dcard span2 deep-prog${clickable ? " clickable" : ""}"${clickable ? ' id="deep-prog-card"' : ""}>
       <h4>深索进度</h4>
-      <p class="dcard-sub">只有<b>深索过</b>的文献才能被精读、页级引用、跨篇综合；未深索的仅题录可搜。</p>
+      <p class="dcard-sub">只有<b>深索过</b>的文献才能被精读、定位引用、跨篇综合；未深索的仅题录可搜。</p>
       <div class="hbar deep-prog-bar">${bar}<span class="val">${pctLabel}</span></div>
       <p class="deep-prog-txt">${txt}${seeLink}</p></div>`;
   }
@@ -1653,7 +1660,7 @@
     const cov = d.coverage || {};
     const health = d.health || {};
     const st = status || {};
-    const withPdf = st.with_pdf || 0, deep = st.deep_done || 0;
+    const withPdf = withFulltext(st), deep = st.deep_done || 0;
     const xc = extractCounts(st), blocked = xc.blocked;
     const remain = Math.max(0, withPdf - deep - blocked);
     const processed = Math.min(withPdf, deep + blocked);
@@ -1673,7 +1680,7 @@
     const header = `<div class="dash-hero">
       <div class="dh-left">
         <div class="dh-title">${esc(health.one_liner || "知识库总览")}</div>
-        <div class="dh-sub">题录 ${num(cov.meta_indexed)} 篇 · 有 PDF ${num(cov.with_pdf)} 篇 · 已深索 ${num(cov.deep_indexed)} 篇</div>
+        <div class="dh-sub">题录 ${num(cov.meta_indexed)} 篇 · 有全文附件 ${num(withFulltext(cov))} 篇 · 已深索 ${num(cov.deep_indexed)} 篇</div>
         <button class="dash-refresh" data-act="refresh-dash" title="重新扫描进度与最近入库（后台深索/生成摘要在跑、或外部 AI 助手改了库，点这里就能看到最新，不用重开应用）">🔄 刷新</button>
       </div>
       <div class="dh-deep">
@@ -1681,9 +1688,9 @@
           <div class="dh-deep-h"><b>① 深索</b><span>${pctLabel}</span></div>
           <div class="hbar dh-bar"><span class="track"><span class="fill" style="width:${barPct}%;background:#7ee0b8"></span></span></div>
           <div class="dh-deep-txt">${withPdf === 0 ? "暂无可深索文献。" : (remain > 0
-              ? `把 PDF 全文拆成可检索的小段，回答才能精确到页码。已深索 <b>${num(deep)}</b>/${num(withPdf)} 篇，还有 ${num(remain)} 篇。`
+              ? `把全文附件拆成可检索的小段，回答才能回溯到原文位置。已深索 <b>${num(deep)}</b>/${num(withPdf)} 篇，还有 ${num(remain)} 篇。`
                : (blocked > 0
-                   ? `可处理正文已完成 ✓ —— ${extractCountsText(st)}。修好附件或 PDF 后可在「深索详情」重试；OCR 全程本地运行。`
+                   ? `可处理正文已完成 ✓ —— ${extractCountsText(st)}。修好全文附件后可在「深索详情」重试；PDF OCR 全程本地运行。`
                   : `已全部深索完成 ✓`))}
             ${deep > 0 ? `<a class="dh-link" id="dash-see-deep">查看已深索 ${num(deep)} 篇 →</a>` : ""}
             ${remain > 0 ? `<a class="dh-link" id="dash-go-deep">深索全部未深索文献 →</a>` : ""}
@@ -1700,7 +1707,7 @@
                        ? `有效摘要 <b>${num(sac)}</b>/${num(deep)} 篇；${[sacInvalid ? `<b>${num(sacInvalid)}</b> 篇异常` : "", sacMissing ? `<b>${num(sacMissing)}</b> 篇缺失` : ""].filter(Boolean).join("，")}。异常摘要不计完成；修复并重嵌入后才会替换旧前缀。 <a class="sac-bf-btn" data-act="sac-backfill" role="button" tabindex="0" title="修复异常摘要、补生成缺失摘要并重嵌入，需 API key，只处理这些篇，可后台跑。">🧬 修复 / 补生成摘要</a>`
                        : `全部摘要已通过质量检查 ✓`))}</div>
         </div>
-        ${(remain > 0 || sacGap > 0) ? `<div class="dh-deep-note">① 深索＝把 PDF 拆成可检索小段（能精读、引页码、跨篇综合）；② 检索摘要＝再给每篇配段 AI 摘要当检索前缀（更易被命中）。都可放后台慢慢跑，不影响使用。</div>` : ""}
+        ${(remain > 0 || sacGap > 0) ? `<div class="dh-deep-note">① 深索＝把全文附件拆成可检索小段（能精读、定位原文、跨篇综合）；② 检索摘要＝再给每篇配段 AI 摘要当检索前缀（更易被命中）。都可放后台慢慢跑，不影响使用。</div>` : ""}
       </div></div>`;
     // EN-F1：综述库体检角标——/stats 带 wiki_lint（后端读 data/state/wiki_lint.json；没有该键=没体检过，不显示）。
     // gist 点名 drift（综述与库脱节）是头号失败模式——有待理顺项时在首页给一条显眼入口，点击直达体检面板
@@ -1970,7 +1977,7 @@
       if (APP.importOnlyPdf && !$("#bt-onlypdf-note")) {
         const note = document.createElement("div");
         note.id = "bt-onlypdf-note"; note.className = "bt-hint";
-        note.textContent = "已设为「只导入有 PDF」：下面分类的篇数是 Zotero 原始数量，没有 PDF 的条目未进库。";
+        note.textContent = "已设为「只导入有全文附件」：下面分类的篇数是 Zotero 原始数量，没有受支持全文附件的条目未进库。";
         box.parentNode.insertBefore(note, box);
       }
       browseLoaded = true;   // 仅收藏夹加载成功才置位；失败保持 false，切回自动重试
@@ -2108,7 +2115,7 @@
       const r = await jpost(`/kb/categories/${encodeURIComponent(cid)}/members`, { keys });
       const bits = [`已加入 ${num((r.added || []).length)} 篇`];
       if (r.queued) bits.push(`其中 ${num(r.queued)} 篇有全文，已排队深索`);
-      if ((r.no_pdf || []).length) bits.push(`${num(r.no_pdf.length)} 篇无 PDF，仅题录、不可深读`);
+      if ((r.no_pdf || []).length) bits.push(`${num(r.no_pdf.length)} 篇无全文附件，仅题录、不可深读`);
       if ((r.already_deep || []).length) bits.push(`${num(r.already_deep.length)} 篇已深索`);
       if ((r.already || []).length) bits.push(`${num(r.already.length)} 篇此前已在分类`);
       toast(bits.join("；") + "。");
@@ -2340,7 +2347,7 @@
               `<span class="ws-band" title="${esc(gradingTip(s))}">${esc(bandDisplay(s))}${s.manual ? " · 手动" : ""}</span></span>` +
             `<span class="ws-txt">[${i + 1}] ${esc(s.citation || s.key)}</span>` +
             `<span class="ws-btns">` +
-              (s.key ? `<button class="ghost2 ws-pdf" title="用系统阅读器打开这篇 PDF 原文">📄 打开原文</button>` : "") +
+              (s.key ? `<button class="ghost2 ws-pdf" title="用系统阅读器打开这篇原文文件">📄 打开原文</button>` : "") +
               (s.key ? `<button class="ghost2 ws-sim" title="在库里找与这篇相似的文献">🔍 找相似</button>` : "") +
             `</span>` +
           `</div>`).join("")
@@ -2352,9 +2359,9 @@
         ev.stopPropagation();
         pdf.disabled = true;
         try {
-          const r = await jpost("/open_pdf", { key: k });
+          const r = await jpost("/open_source", { key: k });
           // UX10：非阻断性失败用浮层提示，不再弹浏览器灰框 alert
-          if (r && r.ok === false) flashToast(r.msg || "打开失败：这篇可能没有 PDF 原文。");
+          if (r && r.ok === false) flashToast(r.msg || "打开失败：这篇可能没有全文附件。");
         } catch (e) { flashToast("打开原文失败：" + (e.message || e)); }
         finally { pdf.disabled = false; }
       });
@@ -2488,7 +2495,7 @@
         const conf = (r.confidence != null) ? `（把握 ${Math.round(Number(r.confidence) * 100)}%）` : "";
         const evs = (r.evidence || []).map((ev) => {
           const pg = (ev.printed_page != null && ev.printed_page !== "") ? `第 ${esc(String(ev.printed_page))} 页`
-                   : ((ev.pdf_page != null && ev.pdf_page !== "") ? `PDF 第 ${esc(String(ev.pdf_page))} 页` : "");
+                   : (ev.locator ? esc(String(ev.locator)) : ((ev.pdf_page != null && ev.pdf_page !== "") ? `PDF 第 ${esc(String(ev.pdf_page))} 页` : ""));
           return `<div class="wv-ev"><div class="wv-ev-t">${esc(ev.title || ev.citation || ev.key || "")}${pg ? ` · <span class="pg">${pg}</span>` : ""}</div>` +
             (ev.quote ? `<div class="wv-ev-q">「${esc(ev.quote)}」</div>` : "") + `</div>`;
         }).join("");
@@ -2960,13 +2967,13 @@
   async function loadAgentDeep() {
     try {
       const st = await jget("/index/status");
-      const withPdf = st.with_pdf || 0, deep = st.deep_done || 0, xc = extractCounts(st);
+      const withPdf = withFulltext(st), deep = st.deep_done || 0, xc = extractCounts(st);
       const pct = withPdf ? Math.round((Math.min(withPdf, deep + xc.blocked) / withPdf) * 100) : 0;
       $("#ag-deep").innerHTML = withPdf
-        ? `已深索 <b>${num(deep)}</b> / 有 PDF ${num(withPdf)} 篇（${pct}%）。` +
+        ? `已深索 <b>${num(deep)}</b> / 有全文附件 ${num(withPdf)} 篇（${pct}%）。` +
           ((deep + xc.blocked) < withPdf ? ` <a class="ag-link" id="ag-godeep">去「浏览」深索更多 →</a>`
             : (xc.blocked > 0 ? ` 可处理正文已完成 ✓（${extractCountsText(st)}）` : ` 已全部深索完成 ✓`)) + sacFrag(st)
-        : `暂无可深索文献（库里没有带 PDF 的文献，或尚未建库）。`;
+        : `暂无可深索文献（库里没有带受支持全文附件的文献，或尚未建库）。`;
       const g = $("#ag-godeep");
       if (g) g.addEventListener("click", () => switchTab("browse"));
     } catch (e) { $("#ag-deep").textContent = "读取深索进度失败：" + e.message; }
@@ -3266,13 +3273,13 @@
   function deepBadge(p) {
     const failure = extractFailureBadge(p);
     if (extractBlocked(p)) return failure;
-    if (p.deep) return `<span class="tag full">📄 已深索</span>` + failure + sacBadge(p);
+    if (p.deep) return `<span class="tag full">📄 ${esc(fulltextLabel(p))} · 已深索</span>` + failure + sacBadge(p);
     // F11：有 PDF 的未深索徽标可点击深索（hover 变「深索该篇」）
-    if (p.has_pdf) {
+    if (hasFulltext(p)) {
       const pending = extractState(p) === "ocr_pending";
-      return `<span class="tag abstract deep-one" data-key="${esc(p.key)}" role="button" tabindex="0" title="${pending ? "点此继续深索并自动运行本地 OCR；不会上传或改写原 PDF" : "点此深索该篇（后台排队，不影响你继续操作）"}"><span class="lbl-idle">${pending ? "🔎 待本地OCR" : "📋 未深索"}</span><span class="lbl-hover">⚡ ${pending ? "开始OCR" : "深索该篇"}</span></span>`;
+      return `<span class="tag abstract deep-one" data-key="${esc(p.key)}" role="button" tabindex="0" title="${pending ? "点此继续深索并自动运行本地 OCR；不会上传或改写原 PDF" : "点此深索该篇（后台排队，不影响你继续操作）"}"><span class="lbl-idle">${pending ? "🔎 待本地OCR" : `📋 ${esc(fulltextLabel(p))} · 未深索`}</span><span class="lbl-hover">⚡ ${pending ? "开始OCR" : "深索该篇"}</span></span>`;
     }
-    return `<span class="tag nopdf" title="无 PDF，只有题录（题名·作者·年份·期刊）">🚫 无全文 / 仅题录</span>`;  // T5：与「未深索」区分
+    return `<span class="tag nopdf" title="无受支持全文附件，只有题录（题名·作者·年份·期刊）">🚫 无全文 / 仅题录</span>`;  // T5：与「未深索」区分
   }
   // 文件夹模式：AI 抽的题录待人工核对
   function reviewBadge(p) {
@@ -3289,7 +3296,7 @@
       `<div class="bcard-body">` +
         `<div class="bcard-head">${tierBadge(p)}${statuteBadge(p)}${deepBadge(p)}${reviewBadge(p)}` +   // EN-F5：浏览卡带法条时效徽标
           // UX4：直接开原文 PDF（复用检索卡的 /open_pdf 通道）；无 PDF 禁用。标题点击仍保持「找相似」不动
-          `<button class="bcard-open" title="${p.has_pdf ? "用系统阅读器打开这篇的 PDF 原文" : "无 PDF，无法打开原文"}"${p.has_pdf ? "" : " disabled"}>📄 打开</button>` +
+          `<button class="bcard-open" title="${hasFulltext(p) ? `用系统阅读器打开这篇的 ${fulltextLabel(p)} 原文` : "无全文附件，无法打开原文"}"${hasFulltext(p) ? "" : " disabled"}>📄 打开</button>` +
           `<button class="bcard-addcat" title="加入「手动分类」">＋分类</button></div>` +   // D1：可见入口
         `<div class="bcard-title" title="点标题：查找相似文献">${esc(p.title || "(无标题)")}</div>` +
         metaRow(p) +
@@ -3322,7 +3329,7 @@
     div.querySelector(".bcard-title").addEventListener("click", () => findSimilar(p.key, p.title || ""));
     // UX4：「📄 打开」——系统阅读器打开原文（stopPropagation 防触发标题/右键行为）
     const ob = div.querySelector(".bcard-open");
-    if (ob && p.has_pdf) ob.addEventListener("click", (e) => { e.stopPropagation(); openPdfByKey(p.key, ob); });
+    if (ob && hasFulltext(p)) ob.addEventListener("click", (e) => { e.stopPropagation(); openPdfByKey(p.key, ob); });
     // D1：卡片上的「＋分类」按钮——右击的多选集优先，否则只这一篇
     const ac = div.querySelector(".bcard-addcat");
     if (ac) ac.addEventListener("click", (e) => {
@@ -3352,7 +3359,7 @@
   function refreshSelUI() {
     const n = BR.selected.size;
     // 待本地 OCR 可以进入深索；只排除附件缺失、坏 PDF、OCR 已失败的终态。
-    const deepN = BR.papers.filter((p) => BR.selected.has(p.key) && p.has_pdf && !p.deep && !extractBlocked(p)).length;
+    const deepN = BR.papers.filter((p) => BR.selected.has(p.key) && hasFulltext(p) && !p.deep && !extractBlocked(p)).length;
     $("#bl-sel-n").textContent = num(deepN);
     $("#bl-deep-sel").disabled = deepN === 0;
     const _a = $("#bl-addcat"); if (_a) _a.disabled = n === 0;
@@ -3533,7 +3540,7 @@
 
   // 触发对一批 key 的深索
   async function deepIndexKeys(keys, btn) {
-    if (!keys.length) { $("#bl-msg").textContent = "没有可深索的文献（需有 PDF 且尚未深索）。"; return; }
+    if (!keys.length) { $("#bl-msg").textContent = "没有可深索的文献（需有受支持全文附件且尚未深索）。"; return; }
     if (btn) btn.disabled = true;
     try {
       // C7：手动深索走持久队列，撞锁自动排队；后端返回 {ok:true,queued:n}
@@ -3561,7 +3568,7 @@
     try {
       const r = await jpost("/index/deep", { scope: "keys:" + key });
       if (r && r.ok === false) { flashToast("已有任务在跑，稍后再试。"); reset(); return; }
-      if (r && r.queued === 0) { flashToast("这篇可能已在深索，或附件/PDF 当前不可读，未新增任务。"); reset(); }
+      if (r && r.queued === 0) { flashToast("这篇可能已在深索，或全文附件当前不可读，未新增任务。"); reset(); }
       else { localStorage.removeItem("localkb.deepDismissed"); flashToast("已开始后台深索这篇，进度见顶部。"); poll(); }
     } catch (e) { flashToast("启动深索失败：" + (e.message || e)); reset(); }
   }
@@ -3586,7 +3593,7 @@
     loadPapers();
   });
   $("#bl-deep-sel").addEventListener("click", () => {
-    const keys = BR.papers.filter((p) => BR.selected.has(p.key) && p.has_pdf && !p.deep && !extractBlocked(p)).map((p) => p.key);
+    const keys = BR.papers.filter((p) => BR.selected.has(p.key) && hasFulltext(p) && !p.deep && !extractBlocked(p)).map((p) => p.key);
     deepIndexKeys(keys, $("#bl-deep-sel"));
   });
   // D1：工具栏「＋ 加入分类」——对当前勾选集打开加入分类菜单
@@ -3786,7 +3793,7 @@
       loadDiscipline(); // 回填来源评价学科下拉
     loadAutoUpdate(); // 回填自动更新开关/间隔
     loadRetrievalMemory(); // 回填检索组件的空闲释放时间与当前状态
-    loadOnlyPdf();    // 回填「只导入有 PDF」开关
+    loadOnlyPdf();    // 回填「只导入有全文附件」开关（旧函数名保留兼容）
     loadBackup();     // 回填备份位置/自动备份，并列出已有备份包
     checkUpdate(true); // 静默查一次新版（用缓存、失败不吭声），有新版才显示升级面板
     loadMirror();     // 回填国内镜像地址
@@ -3809,8 +3816,8 @@
         if (dsRow) dsRow.hidden = false;
         if (ds) ds.checked = !!s.delete_sync;
         if (note) note.textContent = s.delete_sync
-          ? "🗑 已开启同步删除：文件夹里删掉的 PDF 下次更新会从库中清出。"
-          : "🗑 未开启同步删除：文件夹里删掉的 PDF 仍留在库中（防误删）。要清出请勾选上面。";
+          ? "🗑 已开启同步删除：文件夹里删掉的全文文件下次更新会从库中清出。"
+          : "🗑 未开启同步删除：文件夹里删掉的全文文件仍留在库中（防误删）。要清出请勾选上面。";
         if (pb) pb.hidden = true;
       } else {
         if (dsRow) dsRow.hidden = true;
@@ -3889,7 +3896,7 @@
     });
   })();
 
-  // 只导入有 PDF（Zotero 模式）：设置里开关，改后需点「手动更新知识库」重建题录索引
+  // 只导入有全文附件（Zotero 模式）：旧设置键保留，改后需点「手动更新知识库」重建题录索引
   async function loadOnlyPdf() {
     const cb = $("#set-onlypdf"); if (!cb) return;
     try { const d = await jget("/setup/detect"); cb.checked = !!d.import_only_pdf; } catch (e) {}
@@ -3901,8 +3908,8 @@
       try {
         await jpost("/setup/import_only_pdf", { only_pdf: cb.checked });
         if (msg) msg.textContent = (cb.checked
-          ? "已设为只导入有 PDF 的文献。"
-          : "已允许导入纯题录（无 PDF 的也进库）。") + "点顶栏「手动更新知识库」重建题录索引即生效。";
+          ? "已设为只导入有全文附件的文献。"
+          : "已允许导入纯题录（无受支持全文附件的也进库）。") + "点顶栏「手动更新知识库」重建题录索引即生效。";
       } catch (e) { if (msg) msg.textContent = "保存失败：" + e.message; }
     });
   })();
@@ -4693,7 +4700,7 @@
         <span class="v ${ok ? "ok" : "miss"}">${ok ? esc(String(val)) : (missTxt || "未检测到")}</span></li>`;
     };
     const noZoteroHint = !d.zotero_dir
-      ? `<div class="wz-note">未检测到 Zotero —— 没关系，第 3 步可选「文件夹模式」，直接放 PDF 建库。</div>` : "";
+      ? `<div class="wz-note">未检测到 Zotero —— 没关系，第 3 步可选「文件夹模式」，直接放 PDF、EPUB、DOCX、Markdown 或 TXT 建库。</div>` : "";
     $("#wizard-body").innerHTML =
       `<div class="wz-note">只需 4 步、几分钟，就能把你的文库变成可秒级检索、可对话的本地知识库。先看看环境：</div>
       <ul class="wz-check">
@@ -4918,7 +4925,7 @@
           <input type="radio" name="wz-src" value="folder" ${zSel ? "" : "checked"} />
           <div class="wz-engine-body">
             <div class="wz-engine-h">📁 文件夹模式 <span class="wz-badge-save">无需 Zotero</span></div>
-            <div class="wz-engine-d">指定一个文件夹放 PDF，系统用 AI 自动读出题名、作者、年份、期刊等信息。适合没装 Zotero、手上就是一堆 PDF 的你。</div>
+            <div class="wz-engine-d">指定一个文件夹放 PDF、EPUB、DOCX、Markdown 或 TXT，系统用 AI 自动读出题名、作者、年份、期刊等信息。适合没装 Zotero、手上就是一批全文文件的你。</div>
           </div>
         </label>
       </div>
@@ -4941,9 +4948,9 @@
         <label>Zotero 数据目录（含 zotero.sqlite，留空自动探测）</label>
         <input id="wz-zdir" value="${esc(d.zotero_dir || "")}" placeholder="如 D:\\Zotero（留空则自动探测）" />
       </div>
-      <div class="wz-note">连接会直接读取 Zotero 的 zotero.sqlite 里每一条文献（含没有 PDF 的纯题录），<b>不修改</b>你的 Zotero 数据。</div>
+      <div class="wz-note">连接会直接读取 Zotero 的 zotero.sqlite 里每一条文献（含没有受支持全文附件的纯题录），<b>不修改</b>你的 Zotero 数据。</div>
       <label class="sac-toggle" style="margin:6px 0"><input type="checkbox" id="wz-onlypdf" ${(WZ.detect && WZ.detect.import_only_pdf) ? "checked" : ""} />
-        <span>只导入有 PDF 的文献（没有 PDF 的纯题录不进库；之后可在设置里改）</span></label>
+        <span>只导入有全文附件的文献（支持 PDF、EPUB、DOCX、Markdown、TXT；没有这些附件的纯题录不进库；之后可在设置里改）</span></label>
       <div id="wz3c-msg"></div>
       <div class="wz-actions">
         <button class="ghost2c wz-back" id="wz3-back">← 上一步</button>
@@ -4951,14 +4958,14 @@
       </div>`;
     $("#wz3-back").addEventListener("click", renderStep2);
     const _op = $("#wz-onlypdf");
-    // F1：连接结果按「只导入有 PDF」勾选状态区分「全库总数 / 将实际入库数」，避免显示 2110、实际入库 1443 的误导
+    // F1：连接结果按「只导入有全文附件」勾选状态区分「全库总数 / 将实际入库数」。
     const zoteroConnectedMsg = (r, tail) => {
       const only = _op ? _op.checked : !!(WZ.detect && WZ.detect.import_only_pdf);
-      const total = r.entries, wp = r.with_pdf;
+      const total = r.entries, wp = withFulltext(r);
       let s = `✅ 已连接 Zotero，共 ${num(total)} 条文献`;
       if (only && wp != null) {
         const skip = (r.no_pdf != null) ? r.no_pdf : (total - wp);
-        s += `，其中 <b>${num(wp)}</b> 条有 PDF、将只导入这些${skip > 0 ? `（${num(skip)} 条纯题录已按你的选择跳过）` : ""}`;
+        s += `，其中 <b>${num(wp)}</b> 条有受支持全文附件、将只导入这些${skip > 0 ? `（${num(skip)} 条纯题录已按你的选择跳过）` : ""}`;
       }
       return `<div class="wz-result">${s}。${tail}</div>`;
     };
@@ -5005,14 +5012,14 @@
     if (!def) { try { def = (await jget("/setup/folder_default")).default_dir || ""; } catch (e) {} }
     $("#wz-src-body").innerHTML =
       `<div class="wz-field">
-        <label>知识库文件夹（PaperPiggy 会用它来放你的 PDF）</label>
+        <label>知识库文件夹（PaperPiggy 会用它来放你的全文文件）</label>
         <div class="wz-folder-pick">
           <input id="wz-folder-dir" value="${esc(def)}" placeholder="如 D:\\我的论文库" />
           ${nativePick ? `<button class="ghost2c" id="wz-folder-browse">浏览…</button>` : ""}
         </div>
-        <p class="wz-mini">默认就用应用自己的文件夹（上面这个路径）。点下面「📂 打开文件夹放 PDF」会创建并直接打开它，把论文拖进去即可。</p>
+        <p class="wz-mini">默认就用应用自己的文件夹（上面这个路径）。点下面「📂 打开全文文件夹」会创建并直接打开它，把论文拖进去即可。</p>
         <div class="wz-actions-inline">
-          <button class="ghost2c" id="wz-folder-open">📂 打开文件夹放 PDF</button>
+          <button class="ghost2c" id="wz-folder-open">📂 打开全文文件夹</button>
           <span id="wz-folder-cnt" class="wz-test-msg"></span>
         </div>
       </div>
@@ -5038,7 +5045,7 @@
         if (dir) await jpost("/setup/folder", { folder_dir: dir });
         const r = await jpost("/setup/open_folder", {});
         const cnt = $("#wz-folder-cnt");
-        if (cnt) cnt.textContent = "已打开文件夹，把 PDF 拖进去后回来点「建立文件夹库」。";
+        if (cnt) cnt.textContent = "已打开文件夹，把受支持全文文件拖进去后回来点「建立文件夹库」。";
       } catch (e) { const cnt = $("#wz-folder-cnt"); if (cnt) cnt.textContent = "打开失败：" + e.message; }
     });
     $("#wz3f-connect").addEventListener("click", async () => {
@@ -5050,7 +5057,7 @@
         WZ.srcChoice = "folder"; WZ.folderDir = dir; WZ.folderConnected = r;
         APP.source = "folder"; APP.folderDir = dir; APP.srcLoaded = true; applySourceCopy();
         const n = num(r.entries || 0);
-        $("#wz3f-msg").innerHTML = `<div class="wz-result">✅ 已建立文件夹库，发现 ${n} 个 PDF${r.entries ? "" : "（空文件夹也没关系，稍后把 PDF 拖进窗口就会自动入库）"}。点「下一步」继续。</div>`;
+        $("#wz3f-msg").innerHTML = `<div class="wz-result">✅ 已建立文件夹库，发现 ${n} 个受支持全文文件${r.entries ? "" : "（空文件夹也没关系，稍后把全文文件拖进窗口就会自动入库）"}。点「下一步」继续。</div>`;
         const act = btn.parentNode;
         if (act) {
           act.innerHTML = `<button class="ghost2c wz-back" id="wz3f-back2">← 上一步</button><button class="primary" id="wz3f-next2">下一步：建立索引 →</button>`;
@@ -5065,7 +5072,7 @@
     // 从后续步骤回退时：本会话已建过文件夹库 → 直接恢复「下一步」态
     if (WZ.folderConnected) {
       const n0 = num(WZ.folderConnected.entries || 0);
-      $("#wz3f-msg").innerHTML = `<div class="wz-result">✅ 已建立文件夹库，发现 ${n0} 个 PDF。点「下一步」继续。</div>`;
+      $("#wz3f-msg").innerHTML = `<div class="wz-result">✅ 已建立文件夹库，发现 ${n0} 个受支持全文文件。点「下一步」继续。</div>`;
       const cb1 = $("#wz3f-connect"), act1 = cb1 && cb1.parentNode;
       if (act1) {
         act1.innerHTML = `<button class="ghost2c wz-back" id="wz3f-back2">← 上一步</button><button class="primary" id="wz3f-next2">下一步：建立索引 →</button>`;
@@ -5080,12 +5087,12 @@
     const box = $("#wz-meta-dep"); if (!box) return;
     const hasKey = (WZ.backend === "api" && WZ.api.key) || (WZ.detect && WZ.detect.meta_ready) || APP.metaReady;
     if (hasKey) {
-      box.innerHTML = `<div class="wz-note wz-note-ok">🤖 <b>题录抽取已就绪</b>：入库时会用你配置的 API Key，自动从 PDF 正文读出题名 / 作者 / 年份 / 期刊 / 摘要。</div>`;
+      box.innerHTML = `<div class="wz-note wz-note-ok">🤖 <b>题录抽取已就绪</b>：入库时会用你配置的 API Key，自动从全文文件读出题名 / 作者 / 年份 / 期刊 / 摘要。</div>`;
       return;
     }
     box.innerHTML = `
       <div class="wz-note wz-note-warn">⚠️ <b>还差一步：配一个 AI 的 API Key</b><br>
-        文件夹里的 PDF 没有题名、作者等信息，需要 AI 从正文里读出来。推荐用 <b>SiliconFlow（硅基流动）</b>，
+        文件夹里的全文文件没有结构化题名、作者等信息，需要 AI 从正文里读出来。推荐用 <b>SiliconFlow（硅基流动）</b>，
         有免费模型、几分钟就能配好。不配也能入库，但文献只会显示文件名，检索和分类会大打折扣。</div>
       <div class="wz-field"><label>API Key（SiliconFlow）</label>
         <input id="wz-meta-key" type="password" placeholder="去 https://cloud.siliconflow.cn/account/ak 领免费 key" /></div>
@@ -5222,8 +5229,8 @@
     const emptyFolder = isFolder && (entries === 0);
     const note = isFolder
       ? (emptyFolder
-          ? `<div class="wz-note">文件夹还是空的——没关系，进去后把 PDF 拖进窗口就会自动入库。也可以先放好 PDF 再点下面。</div>`
-          : `<div class="wz-note">下一步会<b>逐篇读出每个 PDF 的题录</b>（题名/作者/年份/期刊），再建索引。
+          ? `<div class="wz-note">文件夹还是空的——没关系，进去后把全文文件拖进窗口就会自动入库。也可以先放好文件再点下面。</div>`
+          : `<div class="wz-note">下一步会<b>逐篇读出每个全文文件的题录</b>（题名/作者/年份/期刊），再建索引。
               比 Zotero 慢一些（每篇要让 AI 读一次），${entries != null ? `约 <b>${num(entries)}</b> 篇，` : ""}可以放着，完成后自动可搜。</div>`)
       : `<div class="wz-note">下一步<b>建立索引</b>：把每篇的「标题+摘要+关键词」建成可搜索索引。
           <b>0 等待、秒级完成</b>，完成后检索框和库总览立刻可用。${entries != null ? ` 待索引约 <b>${num(entries)}</b> 篇。` : ""}</div>`;
@@ -5273,9 +5280,9 @@
           return;
         }
         const papers = r.meta_indexed != null ? r.meta_indexed : (r.total || 0);
-        const wp = r.with_pdf || 0;
+        const wp = withFulltext(r);
         jpost("/index/semantic", {}).catch((e) => reportErr(e && e.message, "wizard auto-semantic"));
-        $("#wz5-msg").innerHTML = `<div class="wz-result">🎉 已索引 ${num(papers)} 篇（其中 ${num(wp)} 篇有 PDF 可深索）<br><span class="wz-subtle">检索质量已在后台自动提升，可直接进入使用。</span></div>`;
+        $("#wz5-msg").innerHTML = `<div class="wz-result">🎉 已索引 ${num(papers)} 篇（其中 ${num(wp)} 篇有全文附件可深索）<br><span class="wz-subtle">检索质量已在后台自动提升，可直接进入使用。</span></div>`;
         btn.outerHTML = `<button class="primary" id="wz5-enter">进入知识库 →</button>`;
         // C2：进入后强制重载库总览，刷掉冷启动残留的失败态
         $("#wz5-enter").addEventListener("click", () => { closeWizard(); poll(); dashLoaded = false; loadDashboard("loud"); maybeDeepInvite(); });
@@ -5295,7 +5302,7 @@
     let st = lastIdxStatus;
     if (!st) { try { st = await jget("/index/status"); lastIdxStatus = st; } catch (e) { return; } }
     if (st.mode !== "full") return;                       // 语义层未就绪不弹
-    const withPdf = st.with_pdf || 0, deep = st.deep_done || 0, blocked = extractCounts(st).blocked;
+    const withPdf = withFulltext(st), deep = st.deep_done || 0, blocked = extractCounts(st).blocked;
     if (!(withPdf > 0 && (deep + blocked) < withPdf)) return;
     renderDeepInvite(deep, withPdf, st.building && st.stage === "deep", st);
   }
@@ -5306,8 +5313,8 @@
     card.className = "deep-invite";
     card.innerHTML =
       `<div class="di-ic">📄</div>
-      <div class="di-txt"><b>深索让回答精确到页码</b>
-        <span>已深索 <b>${num(deep)}</b>/<b>${num(withPdf)}</b> 篇有 PDF 的文献。把剩余文献的全文拆成可检索的小段，可后台进行。${sacFrag(st)}</span></div>
+      <div class="di-txt"><b>深索让回答回溯到原文位置</b>
+        <span>已深索 <b>${num(deep)}</b>/<b>${num(withPdf)}</b> 篇有全文附件的文献。把剩余文献的全文拆成可检索的小段，可后台进行。${sacFrag(st)}</span></div>
       <div class="di-btns"><button class="go">深索全库</button><button class="later">以后再说</button></div>`;
     $("#results").parentNode.insertBefore(card, $("#results"));
     card.querySelector(".later").addEventListener("click", () => {
@@ -5397,8 +5404,8 @@
     poll();
   }
   async function ingestFiles(fileList) {
-    const files = Array.from(fileList || []).filter((f) => /\.pdf$/i.test(f.name));
-    if (!files.length) { toast("只支持拖入 PDF 文件"); return; }
+    const files = Array.from(fileList || []).filter((f) => /\.(pdf|epub|docx|md|markdown|txt)$/i.test(f.name));
+    if (!files.length) { toast("只支持 PDF、EPUB、DOCX、Markdown、TXT 文件（不支持 HTML）"); return; }
     showIngestPanel(files.length);
     try {
       const payload = { files: [] };
@@ -5441,7 +5448,7 @@
       if (!isFileDrag(e)) return;
       e.preventDefault(); dragDepth = 0; if (overlay) overlay.hidden = true;
       if (APP.source === "folder") { ingestFiles((e.dataTransfer && e.dataTransfer.files) || []); }
-      else { flashToast("Zotero 模式不支持直接拖入 PDF。请在 Zotero 里添加文献后，点顶栏「⟳ 更新知识库」。"); }
+      else { flashToast("Zotero 模式不支持直接拖入文件。请在 Zotero 里添加受支持全文附件后，点顶栏「⟳ 更新知识库」。"); }
     });
     // 文件选择器兜底（拖拽不生效时 100% 可用）
     const inp = $("#ingest-file-input");

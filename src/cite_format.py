@@ -9,6 +9,7 @@ EN-L2：按 itemtype 分派模板——statute→「《法名》（YYYY年）第
 「机构：《报告名》（YYYY年），第X页」；itemtype 不认识时回退期刊式（老行为不变）。
 """
 import re
+import document_formats as DF
 
 # EN-L2：条号（汉字数字或阿拉伯数字），从命中 chunk 的 heading 里抽（EN-L1 切块时已置为条号）
 _RE_ARTICLE = re.compile(r'第[一二三四五六七八九十百千零〇\d]+条')
@@ -30,6 +31,14 @@ def _statute_cite(hit, heading=""):
     return s
 
 
+def _locator(hit):
+    fmt = (hit.get("fulltext_format") or ("pdf" if hit.get("has_pdf") else "")).lower()
+    if fmt and fmt != "pdf":
+        return hit.get("locator") or DF.locator_label(fmt, hit.get("page"), hit.get("heading"))
+    pg = _printed_display(hit.get("key"), hit.get("page")) or (hit.get("official_pages") or "")
+    return f"第{pg}页" if pg else ""
+
+
 def _report_cite(hit):
     """EN-L2：报告/白皮书引注「机构：《报告名》（YYYY年），第X页」。
        机构取 author 首位（Zotero report 的机构作者通常填在 creators），
@@ -40,9 +49,9 @@ def _report_cite(hit):
     s = (f"{org}：" if org else "") + (f"《{title}》" if title else "")
     if yr and yr not in (hit.get("title") or ""):
         s += f"（{yr}年）"
-    pg = _printed_display(hit.get("key"), hit.get("page")) or (hit.get("official_pages") or "")
-    if pg:
-        s += f"，第{pg}页"
+    loc = _locator(hit)
+    if loc:
+        s += f"，{loc}"
     return s
 
 
@@ -85,7 +94,7 @@ def compact(hit, heading=""):
     author = _first_author(hit.get("author"))
     title = _clean_title(hit.get("title"))
     journal = (hit.get("journal") or "").strip()
-    pg = _printed_display(hit.get("key"), hit.get("page")) or (hit.get("official_pages") or "")
+    loc = _locator(hit)
     parts = []
     if author:
         parts.append(author)
@@ -93,8 +102,8 @@ def compact(hit, heading=""):
     inner = "".join(parts)
     if journal:
         inner += f"，{journal}"
-    if pg:
-        inner += f"，第{pg}页"
+    if loc:
+        inner += f"，{loc}"
     return f"[{inner}]"
 
 
@@ -112,10 +121,13 @@ def footnote(hit, year="", issue="", heading=""):
     title = _clean_title(hit.get("title"))
     journal = (hit.get("journal") or "").strip()
     yr = str(year or hit.get("year") or "").strip()
-    pg = _printed_display(hit.get("key"), hit.get("page")) or (hit.get("official_pages") or "")
-    # 期号：优先传入，否则从 page_map issue 解析
+    loc = _locator(hit)
+    # 期号：优先传入；仅 PDF 能从页码映射补全
     iss = issue
-    if not iss:
+    fulltext_format = str(
+        hit.get("fulltext_format") or ("pdf" if hit.get("has_pdf") else "")
+    ).strip().lower()
+    if not iss and fulltext_format == "pdf":
         try:
             import page_map as PM
             iss = (PM.printed(hit.get("key"), hit.get("page")) or {}).get("issue") or ""
@@ -135,7 +147,7 @@ def footnote(hit, year="", issue="", heading=""):
         s += f"第{period}期"
     elif journal:
         s += "第__期（待补期号）"
-    if pg:
-        s += f"，第{pg}页"
+    if loc:
+        s += f"，{loc}"
     s += "。"
     return s

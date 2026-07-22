@@ -504,7 +504,7 @@ def suggest_sources(topic, topk=20, llm=None):
         it["library_key"] = library_key or ""
         if not library_key:
             missing.append(it)
-    # 库内错配：有 PDF 但未深索的相关篇
+    # 库内错配：有全文附件但未深索的相关篇
     mismatch = []
     try:
         import retriever as R, textutil as T
@@ -514,7 +514,7 @@ def suggest_sources(topic, topk=20, llm=None):
             deepk = set(ek.read_text(encoding="utf-8").split())
         for h in hits:
             k = h.get("key", "")
-            if k and h.get("has_pdf") and T.safe_name(k) not in deepk:
+            if k and h.get("has_fulltext", h.get("has_pdf")) and T.safe_name(k) not in deepk:
                 mismatch.append({"key": k, "title": h.get("title", ""), "citation": h.get("citation", "")})
     except Exception:
         pass

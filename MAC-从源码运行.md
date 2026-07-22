@@ -12,7 +12,7 @@
 
 - **Python 3.12**（`python3 --version` 看一下；没有就用 [python.org](https://www.python.org/downloads/) 或 `brew install python@3.12`）
 - **git**（`git --version`；没有会提示装 Xcode Command Line Tools，装上即可 —— 顺带 wiki 版本历史也靠它）
-- **Zotero**（可选）：想让它读你的 Zotero 文库就装；只想丢一个装满 PDF 的文件夹进去则不需要
+- **Zotero**（可选）：想让它读你的 Zotero 文库就装；只想丢一个装满 PDF、EPUB、DOCX、Markdown 或 TXT 的文件夹进去则不需要
 
 ## 2. 拉代码 + 装依赖
 

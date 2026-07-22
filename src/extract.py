@@ -1,20 +1,24 @@
 # -*- coding: utf-8 -*-
 """
-F 档 · 提取：从 papers.jsonl 中【有 PDF】的篇提取逐页文本 → data/extracted/<stem>.json。
-数据源 = index_light 生成的 papers.jsonl（含 pdf_path / collections / official_pages / itemtype 等）。
+F 档 · 提取：从 papers.jsonl 中【有可读全文】的篇提取定位单元 → data/extracted/<stem>.json。
+数据源 = index_light 生成的 papers.jsonl（含 fulltext_path / fulltext_format / collections 等）。
 --scope 决定深索范围（支持"选择性深索"）：
-    all                 全部有 PDF 的
+    all                 全部有可读全文的
     collection:<path>   某收藏夹（papers 的 collections 含该 path）
     keys:K1,K2,...       指定若干篇（前端勾选/按推荐深索）
 断点续跑：已提取的跳过。ThreadPool（避开本机多进程 spawn 坑）。
 用法: python extract.py [--scope all] [--workers 4] [--limit N]
 """
-import sys, os, json, argparse, time, threading
+import sys, os, json, argparse, time, threading, re, zipfile, posixpath
+from html.parser import HTMLParser
+from urllib.parse import unquote
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 sys.path.insert(0, str(Path(__file__).parent))
 import config as C
 import deep_extract_status as DES
+import document_formats as DF
 
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -23,7 +27,8 @@ except Exception:
     pass
 
 META_FIELDS = ("title", "author", "year", "journal", "doi", "langid",
-               "official_pages", "itemtype", "journal_tier", "has_pdf")
+               "official_pages", "itemtype", "journal_tier", "has_pdf",
+               "has_fulltext", "fulltext_format")
 
 # PDF 逐页取文本：用 pypdfium2（Google PDFium 的绑定，BSD-3/Apache-2.0）。
 #
@@ -227,13 +232,260 @@ def _extract_pages(pdf, _tries=3, max_pages=None, ocr_mode="off", ocr_engine=Non
     return _extract_document(pdf, _tries=_tries, max_pages=max_pages,
                              ocr_mode=ocr_mode, ocr_engine=ocr_engine)["pages"]
 
+
+_ZIP_TOTAL_LIMIT = 250 * 1024 * 1024
+_ZIP_MEMBER_LIMIT = 40 * 1024 * 1024
+
+
+def _check_zip_limits(zf):
+    """拒绝明显的 zip bomb；EPUB/DOCX 均是不可信的 ZIP 容器。"""
+    total = 0
+    for info in zf.infolist():
+        total += int(info.file_size or 0)
+        if info.file_size > _ZIP_MEMBER_LIMIT or total > _ZIP_TOTAL_LIMIT:
+            raise ValueError("压缩文档展开后过大，已拒绝读取")
+
+
+class _HTMLText(HTMLParser):
+    """仅用于 EPUB 容器内部的 XHTML；独立 HTML 文件仍不属于支持格式。"""
+    _BREAK = {"p", "div", "section", "article", "li", "br", "tr", "h1", "h2", "h3", "h4", "h5", "h6"}
+    _IGNORE = {"script", "style", "svg", "math", "noscript"}
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.parts, self.ignore_depth, self.heading_depth = [], 0, 0
+        self.heading_parts = []
+
+    def handle_starttag(self, tag, attrs):
+        tag = tag.lower()
+        if tag in self._IGNORE:
+            self.ignore_depth += 1
+        if tag in self._BREAK and self.parts and self.parts[-1] != "\n":
+            self.parts.append("\n")
+        if tag in {"h1", "h2", "h3"}:
+            self.heading_depth += 1
+
+    def handle_endtag(self, tag):
+        tag = tag.lower()
+        if tag in self._IGNORE and self.ignore_depth:
+            self.ignore_depth -= 1
+        if tag in self._BREAK and self.parts and self.parts[-1] != "\n":
+            self.parts.append("\n")
+        if tag in {"h1", "h2", "h3"} and self.heading_depth:
+            self.heading_depth -= 1
+
+    def handle_data(self, data):
+        if self.ignore_depth:
+            return
+        s = re.sub(r"[\t\r\f\v ]+", " ", data or "")
+        if not s.strip():
+            return
+        self.parts.append(s)
+        if self.heading_depth and len("".join(self.heading_parts)) < 160:
+            self.heading_parts.append(s)
+
+    def result(self):
+        text = "".join(self.parts)
+        text = re.sub(r" *\n *", "\n", text)
+        text = re.sub(r"\n{3,}", "\n\n", text).strip()
+        heading = re.sub(r"\s+", " ", "".join(self.heading_parts)).strip()[:120]
+        return text, heading
+
+
+def _local_name(tag):
+    return str(tag or "").split("}")[-1]
+
+
+def _extract_epub(epub, max_units=None):
+    pages = []
+    with zipfile.ZipFile(epub) as zf:
+        _check_zip_limits(zf)
+        container = ET.fromstring(zf.read("META-INF/container.xml"))
+        rootfile = next((e.attrib.get("full-path") for e in container.iter()
+                         if _local_name(e.tag) == "rootfile" and e.attrib.get("full-path")), "")
+        if not rootfile:
+            raise ValueError("EPUB 缺少 OPF 根文件")
+        opf = ET.fromstring(zf.read(rootfile))
+        manifest = {}
+        for e in opf.iter():
+            if _local_name(e.tag) == "item" and e.attrib.get("id") and e.attrib.get("href"):
+                manifest[e.attrib["id"]] = (e.attrib["href"], e.attrib.get("media-type", ""))
+        spine = [e.attrib.get("idref") for e in opf.iter()
+                 if _local_name(e.tag) == "itemref" and e.attrib.get("idref")]
+        base = posixpath.dirname(rootfile)
+        for idref in spine:
+            if max_units and len(pages) >= max_units:
+                break
+            href, media = manifest.get(idref, ("", ""))
+            if not href or (media and "html" not in media and "xml" not in media):
+                continue
+            member = posixpath.normpath(posixpath.join(base, unquote(href.split("#", 1)[0])))
+            if member.startswith("../"):
+                continue
+            raw = zf.read(member)
+            parser = _HTMLText()
+            parser.feed(raw.decode("utf-8", errors="replace"))
+            text, heading = parser.result()
+            if not text:
+                continue
+            n = len(pages) + 1
+            label = heading or f"EPUB 第 {n} 章节"
+            pages.append({"page": n, "text": text, "source": "epub", "confidence": 1.0,
+                          "heading": heading, "locator_type": "chapter", "locator_label": label})
+    if not pages:
+        raise ValueError("EPUB 未提取到可读正文")
+    return pages
+
+
+def _extract_docx(docx_path, max_units=None):
+    # 先用 zipfile 做体积预检，再交给项目已安装的 python-docx。
+    with zipfile.ZipFile(docx_path) as zf:
+        _check_zip_limits(zf)
+    from docx import Document
+    doc = Document(str(docx_path))
+    blocks = list(doc.iter_inner_content()) if hasattr(doc, "iter_inner_content") else list(doc.paragraphs)
+    pages, heading, buf = [], "", []
+
+    def flush():
+        nonlocal buf
+        text = "\n".join(x for x in buf if x.strip()).strip()
+        if text:
+            n = len(pages) + 1
+            label = heading or f"DOCX 第 {n} 节"
+            pages.append({"page": n, "text": text, "source": "docx", "confidence": 1.0,
+                          "heading": heading, "locator_type": "section", "locator_label": label})
+        buf = []
+
+    for block in blocks:
+        if max_units and len(pages) >= max_units:
+            break
+        if hasattr(block, "rows"):
+            rows = []
+            for row in block.rows:
+                vals = [re.sub(r"\s+", " ", cell.text or "").strip() for cell in row.cells]
+                if any(vals):
+                    rows.append("\t".join(vals))
+            if rows:
+                buf.append("\n".join(rows))
+            continue
+        text = (getattr(block, "text", "") or "").strip()
+        style = str(getattr(getattr(block, "style", None), "name", "") or "")
+        if text and style.lower().startswith("heading"):
+            flush()
+            heading = text[:120]
+            buf.append(text)
+        elif text:
+            buf.append(text)
+    flush()
+    if max_units:
+        pages = pages[:max_units]
+    if not pages:
+        raise ValueError("DOCX 未提取到可读正文")
+    return pages
+
+
+def _decode_text_file(file_path):
+    raw = Path(file_path).read_bytes()
+    if b"\x00" in raw[:4096] and not (raw.startswith(b"\xff\xfe") or raw.startswith(b"\xfe\xff")):
+        raise ValueError("文本文件疑似二进制内容")
+    for enc in ("utf-8-sig", "utf-16", "gb18030"):
+        try:
+            return raw.decode(enc)
+        except UnicodeError:
+            continue
+    return raw.decode("utf-8", errors="replace")
+
+
+def _extract_markdown(md_path, max_units=None):
+    text = _decode_text_file(md_path)
+    pages, heading, buf = [], "", []
+    for line in text.splitlines():
+        m = re.match(r"^\s{0,3}(#{1,6})\s+(.+?)\s*$", line)
+        if m:
+            if buf:
+                body = "\n".join(buf).strip()
+                if body:
+                    n = len(pages) + 1
+                    pages.append({"page": n, "text": body, "source": "markdown", "confidence": 1.0,
+                                  "heading": heading, "locator_type": "section",
+                                  "locator_label": heading or f"Markdown 第 {n} 节"})
+                    if max_units and len(pages) >= max_units:
+                        break
+            heading, buf = m.group(2).strip()[:120], [line]
+        else:
+            buf.append(line)
+    if (not max_units or len(pages) < max_units) and buf:
+        body = "\n".join(buf).strip()
+        if body:
+            n = len(pages) + 1
+            pages.append({"page": n, "text": body, "source": "markdown", "confidence": 1.0,
+                          "heading": heading, "locator_type": "section",
+                          "locator_label": heading or f"Markdown 第 {n} 节"})
+    if not pages:
+        raise ValueError("Markdown 未提取到可读正文")
+    return pages
+
+
+def _extract_txt(txt_path, max_units=None):
+    lines = _decode_text_file(txt_path).splitlines()
+    pages, start = [], 0
+    while start < len(lines):
+        if max_units and len(pages) >= max_units:
+            break
+        end = min(len(lines), start + 200)
+        # 尽量在空行边界切分，避免一段话被截断。
+        if end < len(lines):
+            for i in range(end, max(start + 1, end - 30), -1):
+                if not lines[i - 1].strip():
+                    end = i
+                    break
+        body = "\n".join(lines[start:end]).strip()
+        if body:
+            n = len(pages) + 1
+            pages.append({"page": n, "text": body, "source": "txt", "confidence": 1.0,
+                          "heading": "", "locator_type": "lines",
+                          "locator_label": f"第 {start + 1}–{end} 行",
+                          "line_start": start + 1, "line_end": end})
+        start = max(end, start + 1)
+    if not pages:
+        raise ValueError("TXT 未提取到可读正文")
+    return pages
+
+
+def _extract_source_document(source_path, source_format="", max_units=None,
+                             ocr_mode="off", ocr_engine=None, on_ocr_pending=None):
+    """统一提取入口；返回结构继续使用 pages 兼容旧切块/Agent API。"""
+    fmt = source_format or DF.detect_format(source_path)
+    if fmt == "pdf":
+        result = _extract_document(source_path, max_pages=max_units, ocr_mode=ocr_mode,
+                                   ocr_engine=ocr_engine, on_ocr_pending=on_ocr_pending)
+        for pg in result["pages"]:
+            pg.setdefault("locator_type", "page")
+            pg.setdefault("locator_label", f"PDF 第 {pg.get('page')} 页")
+            pg.setdefault("heading", "")
+        result["document_format"] = "pdf"
+        return result
+    extractors = {
+        "epub": _extract_epub,
+        "docx": _extract_docx,
+        "markdown": _extract_markdown,
+        "txt": _extract_txt,
+    }
+    if fmt not in extractors:
+        raise ValueError(f"不支持的全文格式：{fmt or Path(source_path).suffix}")
+    pages = extractors[fmt](source_path, max_units=max_units)
+    return {"pages": pages, "total_pages": len(pages), "native_pages": len(pages),
+            "ocr_pages": 0, "empty_pages": 0, "ocr_confidence": None,
+            "ocr_errors": [], "document_format": fmt}
+
 def load_papers():
     if not C.PAPERS_JSONL.exists():
         return []
-    return [json.loads(l) for l in open(C.PAPERS_JSONL, encoding="utf-8") if l.strip()]
+    return [DF.normalize_record(json.loads(l))
+            for l in open(C.PAPERS_JSONL, encoding="utf-8") if l.strip()]
 
 def filter_scope(papers, scope):
-    todo = [p for p in papers if p.get("has_pdf") and p.get("pdf_path")]
+    todo = [p for p in papers if p.get("has_fulltext") and p.get("fulltext_path")]
     if not scope or scope == "all":
         return todo
     if scope.startswith("collection:"):
@@ -252,6 +504,8 @@ def _prev_ok(out):
         return None
 
 def extract_one(p):
+    # 兼容直接调用本函数的旧客户端/单测：旧记录只有 pdf_path/has_pdf。
+    p = DF.normalize_record(dict(p))
     out = C.EXTRACTED / f"{p['stem']}.json"
     if out.exists() and out.stat().st_size > 0:
         prev = _prev_ok(out)
@@ -260,21 +514,22 @@ def extract_one(p):
         # 别再因『产物文件已存在』把修好的 PDF 永久跳过（BF：Zotero 链接附件/OneDrive 占用等瞬时错误）。
         if prev is None or prev:
             return "skip"
-        _pdf = p.get("pdf_path")
-        if not (_pdf and os.path.exists(_pdf)):
-            return "skip"     # PDF 仍不可读，重抽无意义（避免每轮空转坏 PDF）
+        _source = p.get("fulltext_path")
+        if not (_source and os.path.exists(_source)):
+            return "skip"     # 附件仍不可读，重抽无意义（避免每轮空转）
         # 落到下面重抽
-    pdf = p.get("pdf_path")
+    source_path = p.get("fulltext_path")
+    source_format = p.get("fulltext_format") or DF.detect_format(source_path)
     meta = {k: p.get(k) for k in META_FIELDS}
     meta["collections"] = p.get("collections", [])
     rec = {"key": p["key"], "stem": p["stem"], "meta": meta, "pages": [],
-           "ok": False, "status": "ocr_pending"}
-    if not pdf or not os.path.exists(pdf):
-        rec["error"] = "no_pdf_on_disk"
-        rec["status"] = "missing_pdf"
+           "ok": False, "status": "ocr_pending", "document_format": source_format}
+    if not source_path or not os.path.exists(source_path):
+        rec["error"] = "no_source_on_disk"
+        rec["status"] = "missing_pdf" if source_format == "pdf" else "missing_file"
         out.write_text(json.dumps(rec, ensure_ascii=False), encoding="utf-8")
         try:
-            DES.set_status(p["stem"], "missing_pdf", error=rec["error"], total_pages=0,
+            DES.set_status(p["stem"], rec["status"], error=rec["error"], total_pages=0,
                            native_pages=0, ocr_pages=0, empty_pages=0, ocr_confidence=None)
         except Exception:
             pass
@@ -287,7 +542,8 @@ def extract_one(p):
                                            - stats.get("native_pages", 0)),
                            ocr_confidence=None)
 
-        result = _extract_document(pdf, ocr_mode="empty_pages", on_ocr_pending=_pending)
+        result = _extract_source_document(source_path, source_format=source_format,
+                                          ocr_mode="empty_pages", on_ocr_pending=_pending)
         rec["pages"] = result["pages"]
         for fld in ("total_pages", "native_pages", "ocr_pages", "empty_pages",
                     "ocr_confidence"):
@@ -299,7 +555,9 @@ def extract_one(p):
         elif result["empty_pages"]:
             rec["error"] = f"OCR 后仍有 {result['empty_pages']} 页没有识别出有效文字"
         rec["ok"] = len(rec["pages"]) > 0
-        if result["ocr_pages"]:
+        if source_format != "pdf":
+            rec["status"] = "ok_text" if rec["ok"] else "invalid_file"
+        elif result["ocr_pages"]:
             rec["status"] = "ok_ocr"
         elif rec["ok"]:
             rec["status"] = "ok_native"
@@ -317,10 +575,10 @@ def extract_one(p):
         return "ocr" if result["ocr_pages"] else ("ok" if rec["ok"] else "empty")
     except Exception as e:
         rec["error"] = f"{type(e).__name__}: {e}"
-        rec["status"] = "invalid_pdf"
+        rec["status"] = "invalid_pdf" if source_format == "pdf" else "invalid_file"
         try:
             out.write_text(json.dumps(rec, ensure_ascii=False), encoding="utf-8")
-            DES.set_status(p["stem"], "invalid_pdf", error=rec["error"], total_pages=0,
+            DES.set_status(p["stem"], rec["status"], error=rec["error"], total_pages=0,
                            native_pages=0, ocr_pages=0, empty_pages=0,
                            ocr_confidence=None)
         except Exception:
@@ -356,10 +614,10 @@ def main():
         # 对同一本扫描件反复烧 CPU。ocr_pending（旧版本迁来的）则必须自动重试。
         if old_rec.get("status") == "ocr_failed":
             return False
-        pdf = p.get("pdf_path")       # 失败产物：仅当 PDF 现在可读才重抽
-        return bool(pdf and os.path.exists(pdf))
+        source_path = p.get("fulltext_path")       # 失败产物：仅当附件现在可读才重抽
+        return bool(source_path and os.path.exists(source_path))
     todo = [p for p in todo if _needs(p)]
-    print(f"[extract] scope={args.scope}  待提取 {len(todo)} 篇（有 PDF、未提取或失败可重抽）", flush=True)
+    print(f"[extract] scope={args.scope}  待提取 {len(todo)} 篇（有可读全文、未提取或失败可重抽）", flush=True)
 
     t0 = time.time(); done = {}
     with ThreadPoolExecutor(max_workers=args.workers) as ex:

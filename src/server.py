@@ -9,6 +9,7 @@ import sys, os, json, time, threading, subprocess, traceback, re
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import config as C
+import document_formats as DF
 import retriever as R
 import llm as L
 import wiki_store as W
@@ -96,7 +97,7 @@ def clear_errors():
         pass
     return {"ok": True}
 
-# ── 自动更新：源变化(Zotero 新条目/文件夹新 PDF)时后台【按天+指定时刻】增量更新 ──
+# ── 自动更新：源变化（Zotero 新条目/文件夹新全文文件）时后台【按天+指定时刻】增量更新 ──
 AUTO = {"sig": None, "last": 0, "last_check": 0.0, "last_build": 0.0, "last_result": ""}
 _AUTO_STATE_FILE = C.STATE / "auto_update_state.json"
 
@@ -151,9 +152,9 @@ def _source_signature():
         import settings as S
         if S.source() == "folder":
             import folder_source as FS
-            pdfs = FS.scan(S.folder_dir())
-            mt = max((Path(p).stat().st_mtime for p in pdfs), default=0)
-            return f"folder:{len(pdfs)}:{int(mt)}"
+            files = FS.scan(S.folder_dir())
+            mt = max((Path(p).stat().st_mtime for p in files), default=0)
+            return f"folder:{len(files)}:{int(mt)}"
         import zotero_source as Z
         dd = Z.detect_data_dir()
         sq = (Path(dd) / "zotero.sqlite") if dd else None
@@ -359,7 +360,7 @@ def purge_deleted():
     if src == "folder":
         ok = _run_build("folder")
         return {"ok": ok, "mode": "folder",
-                "msg": "已触发文件夹增量更新——删除的 PDF 会在本次更新中自动清出。" if ok else "有任务在跑，稍后再试。"}
+                "msg": "已触发文件夹增量更新——删除的全文文件会在本次更新中自动清出。" if ok else "有任务在跑，稍后再试。"}
     # zotero 模式
     try:
         import zotero_source as Z
@@ -654,7 +655,7 @@ class ConnectQ(BaseModel):
 
 @app.post("/setup/connect")
 def setup_connect(q: ConnectQ):
-    """校验数据源并返回条目数。source=folder → 选/建文件夹并计 PDF 数；否则读 zotero.sqlite。"""
+    """校验数据源并返回条目数。source=folder → 计可读全文文件；否则读 zotero.sqlite。"""
     import settings as S
     # BF17b：建库子进程正在读源（zotero 临时副本/受管文件夹），此时切换数据源会与之互踩
     if BUILD["running"]:
@@ -683,12 +684,16 @@ def setup_connect(q: ConnectQ):
         if Z.available(q.zotero_dir):
             papers = Z.load_papers(q.zotero_dir)
             n = len(papers)
-            with_pdf = sum(1 for p in papers if p.get("has_pdf"))   # F1：向导计数区分「全库 / 将入库」
+            with_fulltext = sum(1 for p in papers if p.get("has_fulltext"))
+            by_format = {fmt: sum(1 for p in papers if p.get("fulltext_format") == fmt)
+                         for fmt in DF.FORMAT_PRIORITY}
             # BF2：用户手选的 zotero 数据目录此前校验完即丢，重启后 zotero_source 又退回自动探测；
             # 空串=没手选（沿用自动探测），键名 zotero_dir 与 settings.DEFAULT / zotero_source 约定一致。
             S.save({"source": "zotero", "zotero_dir": q.zotero_dir or ""})
             return {"ok": True, "source": "zotero.sqlite", "entries": n,
-                    "with_pdf": with_pdf, "no_pdf": n - with_pdf,
+                    "with_fulltext": with_fulltext, "no_fulltext": n - with_fulltext,
+                    "with_pdf": sum(1 for p in papers if p.get("has_pdf")),
+                    "by_fulltext_format": by_format,
                     "dir": q.zotero_dir or str(Z.detect_data_dir())}
     except Exception as e:
         log_error("setup/connect zotero", repr(e))
@@ -721,7 +726,8 @@ def setup_folder(q: FolderQ):
         mr = FM.available()
     except Exception:
         mr = False
-    return {"ok": True, "folder_dir": str(p.resolve()), "pdf_count": n, "folder_meta_ready": mr}
+    return {"ok": True, "folder_dir": str(p.resolve()), "file_count": n,
+            "pdf_count": n, "folder_meta_ready": mr}
 
 def _default_papers_dir():
     """文件夹模式的建议默认目录：应用自己的数据目录旁 <HOME>/papers（DATA=HOME/data）。"""
@@ -739,14 +745,14 @@ class ImportOptQ(BaseModel):
 
 @app.post("/setup/import_only_pdf")
 def setup_import_only_pdf(q: ImportOptQ):
-    """Zotero 模式：是否只导入有 PDF 的条目（切换后需重建即时索引才生效）。"""
+    """兼容旧路由名：是否只导入有可读取全文附件的题录。"""
     import settings as S
     S.save({"import_only_pdf": bool(q.only_pdf)})
     return {"ok": True, "only_pdf": bool(q.only_pdf)}
 
 @app.post("/setup/open_folder")
 def setup_open_folder():
-    """在系统文件管理器里打开受管文件夹（副本#7：跳转让用户直接放 PDF）。"""
+    """在系统文件管理器里打开受管文件夹。"""
     import settings as S
     d = S.folder_dir() or _default_papers_dir()
     try:
@@ -1025,7 +1031,7 @@ def _reset_vectors_for_reembed():
 def _reset_index_full():
     """『清空并重建』：把全部索引产物移到一个可恢复的 stash + drop 向量表，让下次「更新知识库」
        从头重建。重建时题录会重新**去重**（合并「已深索、在现有库上删不掉」的重复副本）、并按
-       「只导 PDF」严格重新导入。
+       「只导入有全文附件」严格重新导入。
        **只清索引产物**，明确**保留**：综述 wiki / 收藏夹分类 / 期刊分级 / 检索摘要 SAC /
        页码映射 pagemap / 设置 / 0_Agent 工作区（人写的、花过 API 钱的、或重解析 PDF 很贵的）。
        stash 里放的是纯文件产物（chunks/extracted/bm25/state/manifest），重建确认无误后用户可删；
@@ -1105,7 +1111,7 @@ def index_reset(q: ResetIndexQ = None):
             BUILD["running"] = False; BUILD["stage"] = ""
     if r.get("ok"):
         r["msg"] = ("索引已清空（旧的提取/切块/向量已移到 " + r["stash"] + "，确认重建无误后可自行删除）。"
-                    "下一步：① 点顶栏『⟳ 更新知识库』重建题录+语义层（会自动去重、按只导 PDF 重新导入）；"
+                    "下一步：① 点顶栏『⟳ 更新知识库』重建题录+语义层（会自动去重、按只导入有全文附件重新导入）；"
                     "② 完成后到首页或『浏览』点『深索全部』重新深索。")
     else:
         r["msg"] = "清空未完全成功（详见 failed）。可重启应用后重试；已移走的产物在 " + r.get("stash", "") + "。"
@@ -1357,19 +1363,26 @@ def index_status():
     extract_counts = _deep_extract_counts()
     # 旧字段保留给旧前端：语义改为“当前无法进入深索的终态”，不再谎称全是扫描件。
     deep_no_text = sum(extract_counts.get(s, 0)
-                       for s in ("missing_pdf", "invalid_pdf", "ocr_failed"))
+                       for s in ("missing_pdf", "invalid_pdf", "missing_file",
+                                 "invalid_file", "ocr_failed"))
     with _Q_LOCK:
         q_pending = len(QUEUE["pending"]); q_inflight = len(QUEUE["in_flight"])
     return {
         "mode": R.STATE.get("mode"), "ready": R.STATE.get("ready", False),
         "light_done": manifest.get("light_done", False), "source": manifest.get("source"),
-        "papers": manifest.get("papers", 0), "with_pdf": manifest.get("with_pdf", 0),
+        "papers": manifest.get("papers", 0),
+        "with_fulltext": manifest.get("with_fulltext", manifest.get("with_pdf", 0)),
+        "with_pdf": manifest.get("with_pdf", 0),
+        "by_fulltext_format": manifest.get("by_fulltext_format", {}),
         "meta_done": meta_done, "deep_done": deep, "deep_no_text": deep_no_text,
         "extract_status_counts": extract_counts,
         "ocr_pending": extract_counts.get("ocr_pending", 0),
         "ocr_failed": extract_counts.get("ocr_failed", 0),
         "missing_pdf": extract_counts.get("missing_pdf", 0),
         "invalid_pdf": extract_counts.get("invalid_pdf", 0),
+        "missing_file": extract_counts.get("missing_file", 0),
+        "invalid_file": extract_counts.get("invalid_file", 0),
+        "ok_text": extract_counts.get("ok_text", 0),
         # 深索摘要（SAC）：sac_done=已深索且有摘要的篇数；sac_generator=生成方(off/agent/server)；
         # sac_backfill=补生成摘要后台任务的实时进度（前端据此显示进度/禁用重复触发）。
         "sac_done": sac_done, "sac_invalid": sac_invalid, "sac_missing": sac_missing,
@@ -1401,12 +1414,14 @@ def stats_ep():
         dk = _deep_keys()
         s["coverage"]["deep_indexed"] = len(dk)
         s["coverage"]["sac_indexed"] = len(dk & _summary_keys())   # 已深索里有检索摘要的篇数
-    # 最近入库补 has_pdf/deep（供前端三态深索按钮，F45/副本#13）
+    # 最近入库补全文状态（供前端三态深索按钮）
     try:
         pap = _load_papers(); deepk = _deep_keys()
         for r in s.get("recent", []):
             p = pap.get(r.get("key"))
             r["has_pdf"] = bool(p.get("has_pdf")) if p else False
+            r["has_fulltext"] = bool(p.get("has_fulltext")) if p else False
+            r["fulltext_format"] = p.get("fulltext_format", "") if p else ""
             r["deep"] = is_deep(r.get("key"), deepk)
     except Exception as e:
         # BF18：静默 pass 会把 papers.jsonl 损坏等真故障吞成「最近入库按钮不对」，至少记一笔
@@ -1457,7 +1472,7 @@ def _load_papers():
         d = {}
         for line in open(C.PAPERS_JSONL, encoding="utf-8"):
             if line.strip():
-                p = json.loads(line); d[p["key"]] = p
+                p = DF.normalize_record(json.loads(line)); d[p["key"]] = p
         _PC["data"] = d; _PC["mtime"] = mt
     return _PC["data"]
 
@@ -1529,7 +1544,8 @@ def _deep_no_text_keys():
     """
     items = _deep_extract_items()
     blocked = {stem for stem, rec in items.items()
-               if rec.get("status") in ("missing_pdf", "invalid_pdf", "ocr_failed")}
+               if rec.get("status") in ("missing_pdf", "invalid_pdf", "missing_file",
+                                        "invalid_file", "ocr_failed")}
     # 尚未迁移的极端情况仍尊重旧标记；正常启动会先 reconcile_legacy。
     nt = C.STATE / "deep_no_text.txt"
     if nt.exists() and not items:
@@ -1591,7 +1607,7 @@ def _dedup_deep_marks():
             log_error("dedup deep marks", repr(e))
 
 def _rec_score(p, g=None):
-    """值得读打分：期刊权重为主 + 新近度 + 有 PDF（可深读）。
+    """值得读打分：期刊权重为主 + 新近度 + 有全文附件（可深读）。
        学科感知权重(g)优先（0–1→0–10），缺则回退旧离散 tier_rank（峰值同为 ~12）。"""
     if g and g.get("weight") is not None:
         s = g["weight"] * 10.0
@@ -1603,7 +1619,7 @@ def _rec_score(p, g=None):
         yr = 0
     if yr >= 2015:
         s += min(3.0, (yr - 2015) * 0.3)
-    if p.get("has_pdf"):
+    if p.get("has_fulltext"):
         s += 1.0
     return round(s, 2)
 
@@ -1877,7 +1893,9 @@ def deep_queue_status():
     eta_seconds = int(remaining * spp) if (spp and remaining) else None
     extract_counts = _deep_extract_counts()
     return {"pending": pending, "in_flight": in_flight, "paused": paused,
-            "deep_done": deep_done, "with_pdf": manifest.get("with_pdf", 0),
+            "deep_done": deep_done,
+            "with_fulltext": manifest.get("with_fulltext", manifest.get("with_pdf", 0)),
+            "with_pdf": manifest.get("with_pdf", 0),
             "sac_done": sac_done, "sac_invalid": sac_invalid, "sac_missing": sac_missing,
             "sac_backfill": dict(BACKFILL),   # 深索摘要覆盖 + 补生成进度
             "deep_no_text": len(_deep_no_text_keys()),   # 旧前端兼容：当前不可继续的提取终态数
@@ -1886,6 +1904,8 @@ def deep_queue_status():
             "ocr_failed": extract_counts.get("ocr_failed", 0),
             "missing_pdf": extract_counts.get("missing_pdf", 0),
             "invalid_pdf": extract_counts.get("invalid_pdf", 0),
+            "missing_file": extract_counts.get("missing_file", 0),
+            "invalid_file": extract_counts.get("invalid_file", 0),
             "eta_seconds": eta_seconds, "items": items,
             # 兼容旧前端字段
             "in_flight_keys": inflight_keys,
@@ -1944,7 +1964,7 @@ def kb_categories_list():
     for c in cats:
         live = [k for k in c.get("keys", []) if k in papers]
         deep = sum(1 for k in live if is_deep(k, deepk))
-        nopdf = sum(1 for k in live if not papers[k].get("has_pdf"))
+        nopdf = sum(1 for k in live if not papers[k].get("has_fulltext"))
         pend = sum(1 for k in live if k in qset)
         out.append({"id": c["id"], "name": c["name"], "source": c.get("source", "user"),
                     "count": len(live), "deep_count": deep, "no_pdf": nopdf,
@@ -2021,7 +2041,7 @@ def kb_cat_add_members(cid: str, q: KbMembersQ):
             continue
         if is_deep(k, deepk):
             already_deep.append(k)
-        elif p.get("has_pdf"):
+        elif p.get("has_fulltext"):
             will_deep.append(k)
         else:
             no_pdf.append(k)
@@ -2669,6 +2689,8 @@ def paper_detail(key: str):
         "collections": p.get("collections", []),
         "official_pages": p.get("official_pages", ""),
         "has_pdf": bool(p.get("has_pdf", False)),
+        "has_fulltext": bool(p.get("has_fulltext", False)),
+        "fulltext_format": p.get("fulltext_format", ""),
         "deep": _isdeep,
         "no_text": stem in _deep_no_text_keys(),
         "extract_status": extract_status,
@@ -2699,9 +2721,10 @@ def paper_detail(key: str):
     return result
 
 @app.get("/cite/{key}")
-def cite_paper(key: str, page: Optional[int] = None, style: str = "footnote", heading: Optional[str] = None):
+def cite_paper(key: str, page: Optional[int] = None, position: Optional[int] = None,
+               locator: Optional[str] = None, style: str = "footnote", heading: Optional[str] = None):
     """EN-A2（契约5，G2 引注引擎出口）：薄封装 cite_format——格式由规则做、绝不交 LLM。
-       只透传 style 与 page；statute/report 模板由 cite_format 按 itemtype 自动分派。
+       page 保留作 PDF 兼容参数；position/locator 用于非 PDF 的章节、段落或行号定位。
        heading（可选）：法条条号（如「第201条」）——不传时对 statute 按 (key,page) 反查该页 chunk 的 heading 自动补。
        missing_fields 让 agent 知道哪些字段缺了该去补题录，而不是让它自己瞎编。"""
     if style not in ("footnote", "compact"):
@@ -2712,18 +2735,20 @@ def cite_paper(key: str, page: Optional[int] = None, style: str = "footnote", he
     import cite_format as CF
     import page_map as PM
     hit = dict(p)                      # papers.jsonl 字段名与检索结果 hit 一致，直接当 hit 用
-    hit["page"] = page
+    pos = page if page is not None else position
+    hit["page"] = pos
+    hit["locator"] = (locator or "").strip()
     # 法条条号：优先用调用方传入的 heading；否则 statute + page 给定时，从命中 chunk 行按 (key,page) 反查该页 heading。
     head = (heading or "").strip()
-    if not head and page is not None and (p.get("itemtype") or "").strip() == "statute":
+    if not head and pos is not None and (p.get("itemtype") or "").strip() == "statute":
         try:
-            head = R.find_statute_heading(key, page)
+            head = R.find_statute_heading(key, pos)
         except Exception as e:
             log_error("cite heading lookup", repr(e))
     formatted = CF.footnote(hit, heading=head) if style == "footnote" else CF.compact(hit, heading=head)
     # 印刷页展示串 + 推算标记：只有映射真产出了推算值才算 estimated（没映射不算）
     printed_disp, page_estimated = "", False
-    if page is not None:
+    if page is not None and p.get("fulltext_format") == "pdf":
         try:
             pm = PM.printed(key, page) or {}
             printed_disp = pm.get("display") or ""
@@ -2735,7 +2760,8 @@ def cite_paper(key: str, page: Optional[int] = None, style: str = "footnote", he
     # 缺字段按 itemtype 分派（与 cite_format 的模板字段一一对应）
     it = (p.get("itemtype") or "").strip()
     miss = []
-    has_pg = bool(printed_disp or (p.get("official_pages") or "").strip())
+    has_pg = bool(printed_disp or (p.get("official_pages") or "").strip()
+                  or hit.get("locator") or (pos is not None and p.get("fulltext_format") != "pdf"))
     if it == "statute":
         if not (p.get("title") or "").strip(): miss.append("title")
         # 与 cite_format._statute_cite 同口径：法规标题惯例「（2018修正）」不含「年」字，判四位数字
@@ -2753,7 +2779,8 @@ def cite_paper(key: str, page: Optional[int] = None, style: str = "footnote", he
                 miss.append(f)
         if not has_pg:
             miss.append("page")        # 手册脚注式没页码是硬伤，必须让 agent 知道
-    return {"ok": True, "key": key, "style": style, "page": page,
+    return {"ok": True, "key": key, "style": style, "page": page, "position": pos,
+            "locator": hit.get("locator", ""), "fulltext_format": p.get("fulltext_format", ""),
             "printed_page": printed_disp, "itemtype": it,
             "formatted": formatted, "missing_fields": miss,
             "page_estimated": page_estimated}
@@ -2765,7 +2792,7 @@ class LocateQuoteQ(BaseModel):
 
 @app.post("/research/locate_quote")
 def research_locate_quote(q: LocateQuoteQ):
-    """EN-A3（契约6）：在提取全文里定位一段引文 → 哪篇/PDF第几页/印刷第几页。
+    """EN-A3（契约6）：在提取全文里定位一段引文 → 哪篇及原文位置；PDF 另带印刷页码。
        key 给定只搜单篇；否则全库（cap 500 篇，截断会在结果里注明）。"""
     try:
         import textloc as TL
@@ -2800,12 +2827,12 @@ class LocalPathQ(BaseModel):
 
 @app.post("/ingest/local_path")
 def ingest_local_path(q: LocalPathQ):
-    """EN-A5（契约8）：按本地绝对路径把一个 PDF 收进受管文件夹并触发增量建库——
+    """EN-A5（契约8）：按本地绝对路径把一份受支持全文收进受管文件夹并触发增量建库——
        agent 替用户"把桌面上这篇收进库里"的入库闭环。仅文件夹模式；Zotero 模式的
        入库动作属于 Zotero（改它的库文件是越权），400 提示走 Zotero。"""
     import settings as S, hashlib as _hl, shutil
     if S.source() != "folder":
-        return JSONResponse({"detail": "Zotero 模式请把 PDF 附到 Zotero 条目上（Zotero 是它库的唯一主人），"
+        return JSONResponse({"detail": "Zotero 模式请把全文附件附到 Zotero 条目上（支持 PDF、EPUB、DOCX、Markdown、TXT；Zotero 是它库的唯一主人），"
                                        "随后等自动更新或点「更新知识库」即可入库。"}, status_code=400)
     folder = S.folder_dir()
     if not folder:
@@ -2815,11 +2842,11 @@ def ingest_local_path(q: LocalPathQ):
     if not str(src) or not src.is_absolute():
         return JSONResponse({"detail": "只接受绝对路径"}, status_code=400)
     if src.is_dir():
-        return JSONResponse({"detail": "只接受单个 PDF 文件，不接受目录"}, status_code=400)
+        return JSONResponse({"detail": "只接受单个全文文件，不接受目录"}, status_code=400)
     if not src.exists():
         return JSONResponse({"detail": f"文件不存在：{src}"}, status_code=400)
-    if src.suffix.lower() != ".pdf":
-        return JSONResponse({"detail": "只支持 .pdf 文件"}, status_code=400)
+    if not DF.supported_file(src):
+        return JSONResponse({"detail": "只支持 PDF、EPUB、DOCX、Markdown、TXT 文件（不支持 HTML）"}, status_code=400)
     try:
         data = src.read_bytes()
     except Exception as e:
@@ -2829,7 +2856,8 @@ def ingest_local_path(q: LocalPathQ):
     # sha1 查重（同 /ingest/files 的 R2 思路：先按大小粗筛，同大小才读盘算 sha1，大库不卡）
     h = _hl.sha1(data).hexdigest()
     dup = None
-    for pth in fp.rglob("*.pdf"):
+    for rec in FS.scan(folder):
+        pth = Path(rec.get("fulltext_path") or rec.get("source_path") or "")
         try:
             if pth.stat().st_size != len(data):
                 continue
@@ -2840,7 +2868,7 @@ def ingest_local_path(q: LocalPathQ):
     if dup is not None:
         return {"ok": True, "status": "duplicate", "key": FS.stable_key(folder, str(dup)),
                 "building": False, "need_review": True,
-                "hint": f"内容相同的 PDF 已在库中（{dup.name}），未重复入库。"}
+                "hint": f"内容相同的全文文件已在库中（{dup.name}），未重复入库。"}
     dst = _dedupe_name(fp / src.name)     # 同名不同容 → 加序号，绝不覆盖既有文件
     try:
         shutil.copy2(str(src), str(dst))
@@ -3017,6 +3045,8 @@ def papers(collection: Optional[str] = None, topic: Optional[int] = None,
                 "explain", "manual",
             )},
             "official_pages": p.get("official_pages", ""), "has_pdf": p.get("has_pdf", False),
+            "has_fulltext": p.get("has_fulltext", False),
+            "fulltext_format": p.get("fulltext_format", ""),
             "collections": p.get("collections", []),
             "needs_review": bool(p.get("needs_review", False)),   # folder 模式：AI 抽的题录待核对
             "no_text": stem in notextk,
@@ -3083,20 +3113,20 @@ def set_paper_tier(q: TierOverrideQ):
                                "weight": None, "rank": p.get("tier_rank", 6),
                                "needs_review": False}}
 
-# ── 打开原文 PDF（C2/D4：页级引注可回到原文核对）─────────────
+# ── 打开主全文附件 ─────────────────────────────────────────
 class OpenPdfQ(BaseModel):
     key: str
 
-@app.post("/open_pdf")
+@app.post("/open_source")
+@app.post("/open_pdf")              # 兼容旧前端/客户端
 def open_pdf(q: OpenPdfQ):
-    """用系统默认阅读器打开某篇的原文 PDF（供深索结果卡「📄 打开原文」）。
-       pdf_path 取自 papers.jsonl（zotero/folder 两种源建库时都已落该字段）。"""
+    """用系统默认应用打开某篇的主全文附件。"""
     p = _load_papers().get(q.key)
     if not p:
         return JSONResponse({"ok": False, "msg": "无此文献"}, status_code=404)
-    path = (p.get("pdf_path") or "").strip()
+    path = (p.get("fulltext_path") or "").strip()
     if not path or not Path(path).exists():
-        return JSONResponse({"ok": False, "msg": "未找到原文 PDF 文件（可能仅题录、或文件已移动/未随库）"}, status_code=200)
+        return JSONResponse({"ok": False, "msg": "未找到主全文附件（可能仅题录、或文件已移动/未同步）"}, status_code=200)
     try:
         if sys.platform == "win32":
             os.startfile(path)  # noqa
@@ -3104,7 +3134,7 @@ def open_pdf(q: OpenPdfQ):
             subprocess.Popen(["open", path])
         else:
             subprocess.Popen(["xdg-open", path])
-        return {"ok": True, "path": path}
+        return {"ok": True, "path": path, "format": p.get("fulltext_format", "")}
     except Exception as e:
         log_error("open_pdf", repr(e))
         return JSONResponse({"ok": False, "msg": f"打开失败：{e}"}, status_code=200)
@@ -3117,9 +3147,9 @@ def open_pdf(q: OpenPdfQ):
 # ══════════════════════════════════════════════════════════════════
 @app.get("/source/{key}")
 def read_source(key: str, from_page: int = 1, to_page: int = 0, max_chars: int = 20000):
-    """按 PDF 顺序页返回该篇提取正文（每页附印刷页码）。
+    """按位置序号返回正文；PDF 带页码，其他格式带章节/段落/行号定位。
 
-    诚实降级：读不到时明确区分「无此篇 / 只有题录无 PDF / 尚未深索 / 扫描件无文字」，
+    诚实降级：读不到时明确区分「无此篇 / 只有题录无全文附件 / 尚未深索 / 扫描件无文字」，
     各给 reason + 可执行的 detail——绝不返回空串让 agent 以为这篇没内容。"""
     import textutil as T
     papers = _load_papers()
@@ -3128,10 +3158,11 @@ def read_source(key: str, from_page: int = 1, to_page: int = 0, max_chars: int =
         return JSONResponse({"ok": False, "reason": "not_found",
                              "detail": f"知识库中没有 key={key} 的文献。可先用 /papers 或 list_sources 枚举。"},
                             status_code=404)
+    p = DF.normalize_record(dict(p))
     title = p.get("title", "")
-    if not p.get("has_pdf"):
-        return {"ok": False, "reason": "no_pdf", "key": key, "title": title,
-                "detail": "该篇只有题录、没有 PDF 原文，读不到全文。"}
+    if not p.get("has_fulltext"):
+        return {"ok": False, "reason": "no_fulltext", "key": key, "title": title,
+                "detail": "该篇只有题录、没有可读取的全文附件。"}
 
     stem = p.get("stem") or T.safe_name(key)
     f = C.EXTRACTED / f"{stem}.json"
@@ -3152,6 +3183,8 @@ def read_source(key: str, from_page: int = 1, to_page: int = 0, max_chars: int =
         details = {
             "missing_pdf": "该篇记录的 PDF 附件已不在磁盘上，请先在 Zotero 中修复附件路径。",
             "invalid_pdf": "该 PDF 无法打开，可能已损坏、未同步完整或被其他程序占用。",
+            "missing_file": "该篇记录的全文附件已不在磁盘上，请先在 Zotero 中修复附件路径。",
+            "invalid_file": "该全文附件无法读取，可能已损坏、未同步完整或格式不规范。",
             "ocr_pending": "该篇正在等待本地 OCR，完成深索后即可读取正文。",
             "ocr_failed": "本地 OCR 已运行，但没有识别出有效文字；可检查 PDF 后重试。",
         }
@@ -3182,11 +3215,16 @@ def read_source(key: str, from_page: int = 1, to_page: int = 0, max_chars: int =
             truncated, next_page = True, n
             break
         used += len(txt)
-        pr = PM.printed(key, n) if PM else {}
-        out.append({"pdf_page": n, "printed_page": (pr or {}).get("display", ""), "text": txt})
+        fmt = rec.get("document_format") or p.get("fulltext_format") or "pdf"
+        pr = PM.printed(key, n) if PM and fmt == "pdf" else {}
+        out.append({"position": n, "pdf_page": n if fmt == "pdf" else None,
+                    "printed_page": (pr or {}).get("display", ""),
+                    "locator": DF.locator_label(fmt, n, pg.get("heading"), pg.get("locator_label")),
+                    "text": txt})
 
     return {"ok": True, "key": key, "title": title,
             "author": p.get("author", ""), "year": p.get("year", ""), "journal": p.get("journal", ""),
+            "fulltext_format": rec.get("document_format") or p.get("fulltext_format") or "pdf",
             "n_pages_total": last_page, "returned_pages": len(out),
             "chars": used, "truncated": truncated, "next_page": next_page,
             "pages": out}
@@ -3326,7 +3364,7 @@ def _run_build(stage, extra=None, on_done=None):
 @app.post("/build")
 def build_ep():
     # 文件夹模式必须走 stage=folder（含 folder_ingest 的 LLM 抽题录），否则手动「更新知识库」
-    # 只跑 all 管线、跳过题录抽取，新 PDF 永远停留在文件名占位题录（与自动更新循环同一分派）。
+    # 只跑 all 管线、跳过题录抽取，新全文文件永远停留在文件名占位题录（与自动更新循环同一分派）。
     import settings as S
     stage = "folder" if S.source() == "folder" else "all"
     return {"ok": _run_build(stage)}
@@ -3390,10 +3428,10 @@ def build_status():
 
 @app.post("/index/retry_no_text")
 def retry_no_text():
-    """兼容旧路由名：清除 PDF 提取失败终态与旧产物，让用户修好附件后重新深索。"""
+    """兼容旧路由名：清除全文附件提取失败终态与旧产物，让用户修好附件后重新深索。"""
     notext = _deep_no_text_keys()   # safe_name(stem) 集合
     if not notext:
-        return {"ok": True, "cleared": 0, "msg": "当前没有待重试的 PDF 提取失败篇。"}
+        return {"ok": True, "cleared": 0, "msg": "当前没有待重试的全文附件提取失败篇。"}
     papers = _load_papers()
     keys = [k for k, p in papers.items()
             if (p.get("stem") or T.safe_name(k)) in notext]
@@ -3456,7 +3494,7 @@ class IngestQ(BaseModel):
 
 @app.post("/ingest/files")
 def ingest_files(q: IngestQ):
-    """拖入/选择的 PDF（base64）复制进受管文件夹 → 去重 → 后台 folder build（抽题录+索引）。
+    """拖入/选择的支持格式文件复制进受管文件夹 → 去重 → 后台 folder build。
        用 JSON base64 而非 multipart，避免分发版缺 python-multipart。"""
     import settings as S, hashlib as _hl, base64 as _b64
     if S.source() != "folder":
@@ -3468,9 +3506,11 @@ def ingest_files(q: IngestQ):
         return JSONResponse({"ok": False, "msg": "正在建库/入库中，请稍后再拖入", "building": True}, status_code=409)
     fp = Path(folder)
     # R2：先按文件大小建索引，只有大小撞车的候选才按需算 sha1（并缓存），
-    # 避免每拖一篇就把受管文件夹里每个 PDF 全量读盘算 sha1（大库会卡几十秒~几分钟）。
+    # 避免每拖一篇就把受管文件夹里每个全文文件全量读盘算 sha1。
     size_index = {}          # size -> [paths]
-    for p in fp.rglob("*.pdf"):
+    import folder_source as FS
+    for raw in FS.scan(str(fp)):
+        p = Path(raw)
         try:
             size_index.setdefault(p.stat().st_size, []).append(p)
         except Exception:
@@ -3494,9 +3534,9 @@ def ingest_files(q: IngestQ):
         return False
     added, skipped, failed = [], [], []
     for f in (q.files or []):
-        name = f.name or "untitled.pdf"
-        if not name.lower().endswith(".pdf"):
-            failed.append({"name": name, "reason": "非 PDF"}); continue
+        name = f.name or "untitled"
+        if not DF.supported_file(name):
+            failed.append({"name": name, "reason": "不支持的格式"}); continue
         try:
             data = _b64.b64decode((f.content_b64 or "").split(",")[-1])
             if _is_dup(data):
@@ -3614,7 +3654,7 @@ def _deep_agent_run(q: DeepAgentQ):
     # ② 选下一批 pending-deep（有PDF、未深索、非扫描件），阻塞跑 deep_prepare(extract+chunk)
     papers = _load_papers(); deepk = _deep_keys(); notext = _deep_no_text_keys()
     cand = [p for p in papers.values()
-            if p.get("has_pdf") and not is_deep(p["key"], deepk)
+            if p.get("has_fulltext") and not is_deep(p["key"], deepk)
             and T.safe_name(p["key"]) not in notext]
     batch_n = max(1, int(q.batch or 15))
     batch = cand[:batch_n]
@@ -3632,7 +3672,9 @@ def _deep_agent_run(q: DeepAgentQ):
     manifest = json.loads(C.INDEX_MANIFEST.read_text(encoding="utf-8")) if C.INDEX_MANIFEST.exists() else {}
     # ③ 汇总返回。finished=没有更多待处理（末批：summaries 已提交且无新篇也能收尾）
     return {"ok": True, "wrote": wrote, "to_summarize": to_summarize,
-            "done": len(_deep_keys()), "with_pdf": manifest.get("with_pdf", 0),
+            "done": len(_deep_keys()),
+            "with_fulltext": manifest.get("with_fulltext", manifest.get("with_pdf", 0)),
+            "with_pdf": manifest.get("with_pdf", 0),
             "remaining": max(0, len(cand) - len(batch)),
             "finished": (len(batch) == 0)}
 

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""深索 PDF 提取状态的结构化 sidecar。
+"""深索全文附件提取状态的结构化 sidecar。
 
 旧版只有 ``state/deep_no_text.txt`` 一个集合，因而把附件丢失、坏 PDF 和真扫描件
 都显示成「扫描件」。本文件保留逐篇、机器可读的真实终态；旧集合仅作旧前端兼容。
@@ -15,7 +15,7 @@ import config as C
 STATUS_FILE = C.STATE / "deep_extract_status.json"
 VALID_STATUSES = frozenset({
     "missing_pdf", "invalid_pdf", "ocr_pending", "ocr_failed",
-    "ok_native", "ok_ocr",
+    "missing_file", "invalid_file", "ok_native", "ok_ocr", "ok_text",
 })
 _LOCK = threading.Lock()
 
@@ -46,7 +46,7 @@ def _write(items):
 def set_status(stem, status, **details):
     """原子更新一篇状态并返回写入的记录。"""
     if status not in VALID_STATUSES:
-        raise ValueError(f"未知 PDF 提取状态：{status}")
+        raise ValueError(f"未知全文提取状态：{status}")
     rec = {"status": status}
     for key in ("error", "total_pages", "native_pages", "ocr_pages",
                 "empty_pages", "ocr_confidence"):
@@ -113,7 +113,7 @@ def reconcile_legacy():
             except Exception:
                 pass
             err = str(rec.get("error") or "")
-            if err == "no_pdf_on_disk":
+            if err in ("no_pdf_on_disk", "no_source_on_disk"):
                 status = "missing_pdf"
             elif ("PdfiumError" in err or "data format" in err.lower()
                   or "invalid pdf" in err.lower()):

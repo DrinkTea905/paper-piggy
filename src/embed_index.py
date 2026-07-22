@@ -114,7 +114,8 @@ def main():
         files = files[:args.limit]
     # missing/invalid 是附件问题而非扫描件；ocr_failed 已真实跑过 OCR，等用户显式重试。
     terminal_extract_fail = {stem for stem, rec in extract_status.items()
-                             if rec.get("status") in ("missing_pdf", "invalid_pdf", "ocr_failed")}
+                             if rec.get("status") in ("missing_pdf", "invalid_pdf",
+                                                      "missing_file", "invalid_file", "ocr_failed")}
     todo = [f for f in files if f.stem not in done and f.stem not in no_text
             and f.stem not in terminal_extract_fail]
     bm25_exists = (C.BM25_DIR / "bm25_ids.json").exists()

@@ -130,7 +130,7 @@
           <div class="ag-ch-n">1</div>
           <div class="ag-ch-c">
             <h3>PaperPiggy 是什么</h3>
-            <p>它是你的<b>本地文献知识库</b>：把论文 PDF 喂进来，它替你<b>精读、秒级检索、按页码引用、写综述</b>。<b>文献始终留在你电脑上</b>，不上传任何服务器。</p>
+            <p>它是你的<b>本地文献知识库</b>：把论文全文喂进来（支持 PDF、EPUB、DOCX、Markdown、TXT），它替你<b>精读、秒级检索、定位原文、写综述</b>。<b>文献始终留在你电脑上</b>，不上传任何服务器。</p>
             <p class="ag-note">三种用法，由轻到重：① 在应用里直接<b>检索</b>；② 用内置<b>对话</b>问（填一个大模型 Key）；③ 接进 <b>🤖 AI 助手</b>（Claude Code 等），让它替你系统性地查库、写作、养库。</p>
           </div>
         </section>
@@ -139,7 +139,7 @@
           <div class="ag-ch-n">2</div>
           <div class="ag-ch-c">
             <h3>第一步 · 把文献喂进来</h3>
-            <p class="ag-note">两种来源，二选一（首次会有向导带你走）：<br>· <b>Zotero</b>：直接读你的 Zotero 库，新增文献后自动增量入库。<br>· <b>文件夹</b>：把 PDF 放进一个文件夹（或直接拖进窗口），AI 自动抽题录入库。<br>入库后<b>题录秒建</b>，马上能按标题 / 作者 / 摘要搜到。</p>
+            <p class="ag-note">两种来源，二选一（首次会有向导带你走）：<br>· <b>Zotero</b>：直接读你的 Zotero 库，新增文献后自动增量入库。<br>· <b>文件夹</b>：把 PDF、EPUB、DOCX、Markdown 或 TXT 放进一个文件夹（或直接拖进窗口），AI 自动抽题录入库。<br>入库后<b>题录秒建</b>，马上能按标题 / 作者 / 摘要搜到。</p>
           </div>
         </section>
 
@@ -147,7 +147,7 @@
           <div class="ag-ch-n">3</div>
           <div class="ag-ch-c">
             <h3>第二步 · 让文献可深读（① 深索 → ② 检索摘要）</h3>
-            <p class="ag-note"><b>① 深索</b>＝把 PDF 全文拆成可检索的小段。<b>只有深索过的文献</b>才能被精读、页级引用、跨篇综合；未深索的只有题录 + 摘要。在「📚 文献」里挑文献深索，建议慢慢把常用的喂完——<b>可放后台跑，不影响使用</b>。遇到没有文字层的扫描页时，PaperPiggy 会自动在本机 OCR，只把识别文字存入索引，不改原 PDF。文献页可分别查看<b>已/未深索、本地 OCR、原生文字层</b>，也能按真实文献性质和客观标签筛选。</p>
+            <p class="ag-note"><b>① 深索</b>＝把全文附件拆成可检索的小段。<b>只有深索过的文献</b>才能被精读、定位原文、跨篇综合；未深索的只有题录 + 摘要。PDF 定位到页码，EPUB 定位到章节，DOCX / Markdown 定位到标题段落，TXT 定位到行号。在「📚 文献」里挑文献深索，建议慢慢把常用的喂完——<b>可放后台跑，不影响使用</b>。PDF 没有文字层时，PaperPiggy 会自动在本机 OCR，只把识别文字存入索引，不改原文件。</p>
             <p class="ag-note"><b>② 检索摘要</b>（深索之后的一步）——再给每篇深索文献配一段 ~150 字 AI 摘要（⚙ 设置 → 建库 → 检索摘要），<b>让检索更容易找准这篇</b>。摘要会先过质量检查；乱码、重复失控或过期占位摘要不算完成。文献页同一个筛选器可查看<b>摘要有效 / 异常 / 缺失</b>，也可对单篇修复或生成；还可让 Agent 跑深索时顺带生成（省 API 额度），或在库总览批量处理。</p>
           </div>
         </section>
@@ -156,7 +156,7 @@
           <div class="ag-ch-n">4</div>
           <div class="ag-ch-c">
             <h3>第三步 · 检索与提问</h3>
-        <p class="ag-note">· <b>「📚 文献」</b>：默认按题名、作者、期刊、年份、DOI 或 ISBN 查题录；切到“全文与相关内容”，可用研究问题检索相关文献和原文段落，精确到印刷页码。左侧分类和右侧筛选都留在同一页。<br>· <b>「💬 对话」</b>：不想自己翻，就用大白话问，它读你的库回答、每句可回溯到来源页（需在对话页填一个大模型 API Key，硅基流动等有免费额度）。</p>
+        <p class="ag-note">· <b>「📚 文献」</b>：默认按题名、作者、期刊、年份、DOI 或 ISBN 查题录；切到“全文与相关内容”，可用研究问题检索相关文献和原文段落，并回溯到页码、章节、段落或行号。左侧分类和右侧筛选都留在同一页。<br>· <b>「💬 对话」</b>：不想自己翻，就用大白话问，它读你的库回答、每句可回溯到原文位置（需在对话页填一个大模型 API Key，硅基流动等有免费额度）。</p>
           </div>
         </section>
 
@@ -317,10 +317,10 @@
           <div id="bl-active-filters" class="bl-active-filters" hidden></div>
           <div id="empty-dropzone" class="empty-dropzone" hidden>
             <div class="ed-ic">📥</div>
-            <div class="ed-h">把 PDF 拖到这里，自动入库</div>
+            <div class="ed-h">把全文文件拖到这里，自动入库</div>
             <div class="ed-d">系统会把文件复制进你的知识库文件夹，并用 AI 读出题名、作者、年份等信息。</div>
             <div id="ed-nokey" class="ed-nokey" hidden>还没配 AI Key —— 现在入库只有文件名。<a id="ed-gokey" class="ag-link">去配置</a></div>
-            <button id="ed-pick" class="primary-btn">或点击选择 PDF…</button>
+            <button id="ed-pick" class="primary-btn">或点击选择全文文件…</button>
           </div>
           <div id="bl-msg" class="msg"></div>
           <div id="bl-list" class="bl-list"></div>
@@ -491,11 +491,11 @@
           <div class="ag-ch-n">1</div>
           <div class="ag-ch-c">
             <h3>它是什么（一分钟看懂）</h3>
-            <p>一句话：<b>你的文献始终留在本机</b>；把库接进一个 AI 助手（Claude Code 等），它就能替你<b>查库、读到印刷页码、写回成果</b>；成果也全部落在你本机、人类可读，<b>换任何 AI 助手都能接着用</b>。</p>
+            <p>一句话：<b>你的文献始终留在本机</b>；把库接进一个 AI 助手（Claude Code 等），它就能替你<b>查库、定位原文、写回成果</b>；成果也全部落在你本机、人类可读，<b>换任何 AI 助手都能接着用</b>。</p>
             <div class="ag-philo-flow">
-              <span class="ag-philo-step"><b>文献留本机</b><small>PDF / Zotero 只读，AI 不改</small></span>
+              <span class="ag-philo-step"><b>文献留本机</b><small>全文附件 / Zotero 只读，AI 不改</small></span>
               <span class="ag-philo-arr">→</span>
-              <span class="ag-philo-step"><b>AI 查库读页码</b><small>混合检索，精确到印刷页</small></span>
+              <span class="ag-philo-step"><b>AI 查库定位原文</b><small>PDF 页码或章节/段落/行号</small></span>
               <span class="ag-philo-arr">→</span>
               <span class="ag-philo-step"><b>写回三处</b><small>📦 交付物 · 📖 综述 · 🧠 记忆</small></span>
               <span class="ag-philo-arr">→</span>
@@ -542,7 +542,7 @@
           <div class="ag-ch-n">3</div>
           <div class="ag-ch-c">
             <h3>接好后怎么用（直接说大白话）</h3>
-            <p class="ag-note">不用记命令、也不用先学工具——<b>用大白话说你要干什么</b>，它自己查库、读印刷页码、写回综合。已经给你备好<b>三条开箱即用的工作流</b>；请求命中时 Agent 必须先读取对应工作流再开工。只要你提到“维护”，它会全量审查、直接处理简单事项，只把真正需要决策的部分交给你：</p>
+            <p class="ag-note">不用记命令、也不用先学工具——<b>用大白话说你要干什么</b>，它自己查库、定位原文、写回综合。已经给你备好<b>三条开箱即用的工作流</b>；请求命中时 Agent 必须先读取对应工作流再开工。只要你提到“维护”，它会全量审查、直接处理简单事项，只把真正需要决策的部分交给你：</p>
             <div class="ag-trio">
               <div class="ag-trio-i"><b>✍️ 写论文与综述</b><span>端到端帮你写：查库 → 提纲 → 起草 → 按页码核验引注 → 沉淀。说「基于我的库写一篇关于…的综述」。</span></div>
               <div class="ag-trio-i"><b>🔭 跨学科发散与补文献</b><span>写作前打开理论视野：把窄题接到邻近学科、政治学 / 心理学等，理出该补的（尤其外文）文献。说「帮我把…这个题发散一下、看该补哪些文献」。</span></div>
@@ -581,8 +581,8 @@
         <section class="ag-ch">
           <div class="ag-ch-n">6</div>
           <div class="ag-ch-c">
-            <h3>深索：让回答精确到页码</h3>
-            <p class="ag-note"><b>已深索</b>的文献 AI 能读到精确页码的正文；<b>未深索</b>的只有题录 + 摘要。想某方向问答更扎实，先去「📚 文献」深索它（拆成可检索的小段，可后台慢慢跑，不影响使用）。没有文字层的页面会自动做<b>本地 OCR</b>；不上传文献、不修改原 PDF。附件丢失或 PDF 损坏会分开提示；文献页筛选器可按正文来源和深索状态查看，每项直接显示当前范围的篇数。</p>
+            <h3>深索：让回答回溯到原文位置</h3>
+            <p class="ag-note"><b>已深索</b>的文献 AI 能读到带原文位置的正文；<b>未深索</b>的只有题录 + 摘要。想某方向问答更扎实，先去「📚 文献」深索它（拆成可检索的小段，可后台慢慢跑，不影响使用）。PDF 没有文字层的页面会自动做<b>本地 OCR</b>；不上传文献、不修改原文件。附件丢失或无法读取会分开提示；文献页筛选器可按正文来源和深索状态查看，每项直接显示当前范围的篇数。</p>
             <p class="ag-note">💡 <b>第②步：检索摘要</b>——深索完，让 AI 给每篇写一段检索摘要（⚙ 设置 → 建库 → 检索摘要），<b>检索更容易命中这篇</b>。摘要必须通过质量检查才算完成；文献页可筛选“摘要有效 / 异常 / 缺失”。选择“交给 Agent 生成”后，让 Agent 维护知识库时，它会读取正文、修复可处理的缺失/异常摘要并重嵌入；不会改走服务端摘要生成 API。</p>
             <p class="ag-note">🔎 Agent 做<b>发现型检索</b>时会优先铺开不同文献，每篇最多带回 2 段，避免一篇文献挤满结果；选定关键来源后，再做<b>定向深读 / 论断核验</b>，此时可以读取该篇更多证据。内置“写论文与综述”“跨学科发散与补文献”工作流已经按这个顺序执行。</p>
             <div id="ag-deep" class="ag-deep">读取深索进度…</div>
@@ -755,7 +755,7 @@
       <div class="set-section">
         <!-- UX11：去掉「检索前缀/召回」黑话，说人话 -->
         <h4>🧬 检索摘要（知识库建设第②步·让检索更容易找准每篇）</h4>
-        <p class="hint">深索（第①步）把 PDF 拆成小段可检索；<b>检索摘要（第②步）</b>再给每篇深索文献配一段 ~150 字 AI 摘要当检索前缀，更易被搜到。只有通过质量检查的摘要才计为完成；异常项会提示修复，不会自动改写。这里选<b>由谁来生成</b>（一点即存）：</p>
+        <p class="hint">深索（第①步）把全文附件拆成小段可检索；<b>检索摘要（第②步）</b>再给每篇深索文献配一段 ~150 字 AI 摘要当检索前缀，更易被搜到。只有通过质量检查的摘要才计为完成；异常项会提示修复，不会自动改写。这里选<b>由谁来生成</b>（一点即存）：</p>
         <div class="sac-gen">
           <label class="sac-gen-opt"><input type="radio" name="sac-gen" value="agent" />
             <span><b>交给 Agent 生成</b>（推荐）<br><small>在对话里让 Claude Code / Codex 跑深索或维护知识库时，它读取正文、自己写摘要并完成重嵌入——不调用服务端摘要生成 API、质量更好。在应用内直接点「深索」仍不会自动补摘要。</small></span></label>
@@ -781,7 +781,7 @@
         <h4>🔄 自动更新知识库</h4>
         <label class="sac-toggle">
           <input type="checkbox" id="au-enabled" />
-          <span>在 Zotero 新增文献 / 文件夹新放 PDF 后，后台定时增量更新（只补题录并提升检索质量，深索仍手动）</span>
+          <span>在 Zotero 新增文献 / 文件夹新放受支持全文文件后，后台定时增量更新（只补题录并提升检索质量，深索仍手动）</span>
         </label>
         <div class="au-sched">
           <label class="au-int">每 <input type="number" id="au-days" min="1" max="30" step="1" value="1" /> 天</label>
@@ -794,7 +794,7 @@
         <p class="hint" id="au-msg">默认每天早 7:00 增量更新；关掉就只能用顶栏「⟳ 手动更新知识库」。</p>
         <label class="sac-toggle" id="au-delsync-row" hidden>
           <input type="checkbox" id="au-delsync" />
-          <span>🗑 同步删除（文件夹模式）：把<b>移出</b>受管文件夹的 PDF 下次更新时从库中移除。<b>默认关</b>，防误删临时挪走的文件。</span>
+          <span>🗑 同步删除（文件夹模式）：把<b>移出</b>受管文件夹的全文文件下次更新时从库中移除。<b>默认关</b>，防误删临时挪走的文件。</span>
         </label>
         <div class="au-del">
           <span class="hint" id="au-del-note"></span>
@@ -802,9 +802,9 @@
         </div>
         <label class="sac-toggle">
           <input type="checkbox" id="set-onlypdf" />
-          <span>只导入有 PDF 的文献（Zotero 里没有 PDF 的纯题录不进库）</span>
+          <span>只导入有全文附件的文献</span>
         </label>
-        <p class="hint" id="onlypdf-msg">改这项后，点顶栏「手动更新知识库」重建题录索引即生效。</p>
+        <p class="hint" id="onlypdf-msg">Zotero 条目至少要有 PDF、EPUB、DOCX、Markdown 或 TXT；没有可读取全文附件的纯题录不进库。多附件按 PDF → EPUB → DOCX → Markdown → TXT 选主全文。改后点顶栏「手动更新知识库」生效。</p>
       </div>
           </div>
 
@@ -881,7 +881,7 @@
           它<b>只清索引</b>：全文提取、切块、向量、bm25、深索进度标记、整库状态。<br>
               ✅ <b>明确保留</b>：综述 wiki、收藏夹分类、来源评价数据、检索摘要（花过 API 钱的）、
           页码映射、你的设置、<code>0_Agent</code> 工作区。<br>
-          清空后按提示点顶栏「⟳ 更新知识库」重建题录+语义（会<b>自动去重、按“只导 PDF”重新导入</b>），
+          清空后按提示点顶栏「⟳ 更新知识库」重建题录+语义（会<b>自动去重、按“只导入有全文附件”重新导入</b>），
           再到首页点「深索全部」重新深索。</p>
         <p class="hint"><b class="danger-text">⚠ 向量索引会被丢弃、需要重新嵌入</b>（1400 篇要几十分钟到几小时、
           API 模式还要再花一次嵌入的钱）。<b>强烈建议先在上面「💾 立即备份」打一份</b>（勾上“包含向量索引”），
@@ -1052,16 +1052,16 @@
   <!-- 右键 / 分类菜单浮层（加入分类▸ / 重命名 / 删除） -->
   <div id="ctx-menu" class="ctx-menu" hidden></div>
 
-  <!-- 文件夹模式：整窗拖入 PDF 遮罩 -->
+  <!-- 文件夹模式：整窗拖入受支持全文文件遮罩 -->
   <div id="drop-overlay" class="drop-overlay" hidden>
-    <div class="drop-inner"><div class="drop-ic">📥</div><div class="drop-h">松开鼠标，把 PDF 加入知识库</div></div>
+    <div class="drop-inner"><div class="drop-ic">📥</div><div class="drop-h">松开鼠标，把全文文件加入知识库</div><div>PDF · EPUB · DOCX · Markdown · TXT</div></div>
   </div>
 
   <!-- 文件夹模式：入库进度弹窗 -->
   <div id="ingest-modal" class="modal" hidden>
     <div class="modal-box">
       <h3>正在入库</h3>
-      <p class="hint" id="ingest-sub">正在把 PDF 复制进知识库并用 AI 抽取题录…</p>
+      <p class="hint" id="ingest-sub">正在把全文文件复制进知识库并用 AI 抽取题录…</p>
       <div class="hbar"><span class="track"><span id="ingest-fill" class="fill" style="width:0%;background:var(--accent)"></span></span></div>
       <div id="ingest-detail" class="hint"></div>
       <div id="ingest-result"></div>
@@ -1070,7 +1070,7 @@
   </div>
 
   <!-- 隐藏的文件选择器（拖拽不生效时的可靠兜底） -->
-  <input id="ingest-file-input" type="file" accept="application/pdf" multiple hidden />
+  <input id="ingest-file-input" type="file" accept=".pdf,.epub,.docx,.md,.markdown,.txt,application/pdf,application/epub+zip,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/markdown" multiple hidden />
 
   <!-- 首启向导（Onboarding） -->
   <div id="wizard" class="wizard" hidden>

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-文件夹模式：用 LLM 从 PDF 首 1-2 页文本抽题录（严格 JSON + 兜底）。
+文件夹模式：用 LLM 从全文文件开头抽题录（严格 JSON + 兜底）。
 key 复用逻辑仿 sac._conf：folder_meta.key 空时自动复用 sac / api 的 key（一个 key 通吃）。
 无法确定的字段留空；解析失败/超时 → 返回空 meta + needs_review（上层退文件名 title）。
 """
@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 import settings as S
 import llm as L
 
-SYS = ("你是文献题录抽取器。下面是一篇学术文献PDF的首1-2页文本。"
+SYS = ("你是文献题录抽取器。下面是一篇学术文献全文附件开头的文本。"
        "只输出一个JSON对象，字段：title(题名), author(作者，多个用'; '分隔), "
        "year(4位年份字符串), journal(期刊/出版物名), official_pages(正式页码如'1-20'，无则空), "
        "abstract(摘要，无则空), itemtype(journalArticle/book/bookSection/thesis/report/statute/case/"

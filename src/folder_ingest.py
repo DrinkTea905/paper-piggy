@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-文件夹模式 build 步骤：扫 folder_dir → 对"新/未抽"的 PDF 抽首 1-2 页 → LLM 抽题录 →
+文件夹模式 build 步骤：扫 folder_dir → 对"新/未抽"的全文文件取开头 → LLM 抽题录 →
 写 meta_cache（幂等/增量/并发/断点续跑）。必须先于 index_light 跑（folder 模式下 papers.jsonl 元数据依赖它）。
 无 key 时正常退出（returncode 0，退回文件名题名），不阻断 LIGHT。
 用法: python folder_ingest.py [--workers 3] [--limit N]
@@ -13,6 +13,7 @@ import config as C
 import settings as S
 import folder_source as FS
 import folder_meta as FM
+import document_formats as DF
 from textutil import safe_name
 
 try:
@@ -132,8 +133,8 @@ def _purge_key_artifacts(keys):
             pass
 
 
-def _head_text(pdf, key):
-    """取首 1-2 页文本：若深索已提取过整篇则读缓存前2页，否则现抽首2页。"""
+def _head_text(source_path, key):
+    """取前两个定位单元：若深索已提取过整篇则读缓存，否则轻量现抽。"""
     ex = C.EXTRACTED / f"{safe_name(key)}.json"
     if ex.exists() and ex.stat().st_size > 0:
         try:
@@ -143,17 +144,17 @@ def _head_text(pdf, key):
     else:
         try:
             import extract as E
-            # 题录只需要首两页。必须把上限传进提取器，不能先处理整本再 [:2]；
-            # 且此阶段明确关闭 OCR，避免文件夹初建题录意外 OCR 整本。扫描件仍退文件名题名，
-            # 用户随后主动深索时才走本地页级 OCR。
-            pages = E._extract_pages(pdf, max_pages=2, ocr_mode="off")
+            # 题录只需要开头两个单元；PDF 在此阶段明确关闭 OCR，避免初建题录意外 OCR 整本。
+            pages = E._extract_source_document(
+                source_path, source_format=DF.detect_format(source_path),
+                max_units=2, ocr_mode="off")["pages"]
         except Exception:
             pages = []
     return "\n".join((p.get("text", "") if isinstance(p, dict) else str(p)) for p in pages[:2]).strip()
 
 
-def ingest_one(folder, pdf, cache):
-    key = FS.stable_key(folder, pdf)
+def ingest_one(folder, source_path, cache):
+    key = FS.stable_key(folder, source_path)
     with _CACHE_LOCK:                                   # R4：持锁读，避免与其它 worker/存盘竞争
         _entry = cache.get(key) or {}
         _has_meta = bool(_entry.get("meta"))
@@ -162,7 +163,7 @@ def ingest_one(folder, pdf, cache):
     if _has_meta and not _no_text:
         # BF10：skip 前比对 sha1——同路径文件被替换（key 不变、内容变）时，旧题录/旧索引
         # 全是别篇文章的，必须作废重抽。旧条目没存 sha1 维持原跳过行为（不强制重抽全部老库）。
-        if not _old_sha or _file_sha1(pdf) == _old_sha:
+        if not _old_sha or _file_sha1(source_path) == _old_sha:
             return "skip"
         with _CACHE_LOCK:                               # R4：持锁写
             cache.pop(key, None)
@@ -173,21 +174,23 @@ def ingest_one(folder, pdf, cache):
         # BF：曾判无正文（扫描件）的条目——存了 sha1 且内容未变则跳过（重抽仍无正文，白费）；
         # sha1 变了或旧条目没存 sha1（老版本 no_text 未记 sha1）时重试一次：内容若已可抽则
         # 升级成正式题录，否则回写 no_text（这次补上 sha1，下次即可秒判未变而跳过）。
-        if _old_sha and _file_sha1(pdf) == _old_sha:
+        if _old_sha and _file_sha1(source_path) == _old_sha:
             return "skip"
         with _CACHE_LOCK:                               # R4：持锁写
             cache.pop(key, None)
-    text = _head_text(pdf, key)
+    text = _head_text(source_path, key)
     if not text:
         with _CACHE_LOCK:                               # R4：持锁写
-            cache[key] = {"meta": {"title": Path(pdf).stem}, "file": pdf, "sha1": _file_sha1(pdf),
+            cache[key] = {"meta": {"title": Path(source_path).stem}, "file": source_path,
+                          "format": DF.detect_format(source_path), "sha1": _file_sha1(source_path),
                           "needs_review": True, "note": "no_text", "extracted_at": _now()}
         return "empty"
     meta, needs_review, err = FM.extract_meta(text)
     if not meta.get("title"):
-        meta["title"] = Path(pdf).stem
+        meta["title"] = Path(source_path).stem
     with _CACHE_LOCK:                                   # R4：持锁写
-        cache[key] = {"meta": meta, "file": pdf, "sha1": _file_sha1(pdf),
+        cache[key] = {"meta": meta, "file": source_path, "format": DF.detect_format(source_path),
+                      "sha1": _file_sha1(source_path),
                       "needs_review": needs_review, "extracted_at": _now(), "err": err}
     return "ok" if not err else "fallback"
 
@@ -202,12 +205,12 @@ def main():
     if not folder or not Path(folder).exists():
         print("[folder] 未配置受管文件夹，跳过", flush=True)
         return
-    pdfs = FS.scan(folder)
+    pdfs = FS.scan(folder)  # 兼容旧局部变量名；内容是五类受支持全文文件。
     cache = _load_cache()
     # 增量：删除的文件从 cache 剔除
     live = {FS.stable_key(folder, p) for p in pdfs}
     gone = [k for k in list(cache) if k not in live]
-    # C3/D4-4：默认**不**同步删除——移出受管文件夹的 PDF 可能只是临时挪走，静默清出索引风险大。
+    # C3/D4-4：默认**不**同步删除——移出受管文件夹的全文文件可能只是临时挪走，静默清出索引风险大。
     # 仅当用户在「设置→建库→自动更新知识库」里勾了「同步删除」才清；否则只记一笔、保留索引。
     del_sync = bool(S.load().get("auto_update", {}).get("delete_sync", False))
     if gone and not del_sync:

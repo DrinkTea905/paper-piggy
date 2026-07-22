@@ -59,7 +59,7 @@
 | 首启向导流程 | `index.html` `.wizard-steps`(:786) + `app.js` `renderStep1`(:3494) ~ `renderStep5`(:4025) + `src/README.md` 的「第一次使用」段 | ❌ 人肉 |
 | 「🧹 清空并从头重建索引」(`#sec-rebuild` + `POST /index/reset`，破坏性、须 confirm) | 设置页就地说明是主文案；**动它必对齐 `backup.py` 的 CORE/INDEX「移哪些·保留哪些」口径**；破坏性操作要在指引里提示"先备份" | ❌ 人肉 |
 | 顶栏自动更新徽标（`#up-badge`、设置页 `#up-autocheck`、`app.js renderUpdateBadge()`） | 两个 localStorage 键 `localkb.autoUpdateCheck`(默认开)/`localkb.updateDismissed`(按版本忽略)；文案要与「知识库自动更新」明确**区分**（同名不同物，见 CHANGELOG v1.0.1 提醒） | ❌ 人肉 |
-| PDF 提取 / OCR 状态或文案 | 同步 `deep_extract_status.VALID_STATUSES`、`server.py` 的状态下发、`app.js` 的徽标/进度/重试文案，以及 `#home-guide` / `#ag-guide`。`ocr_pending` 必须能进入深索；`missing_pdf / invalid_pdf / ocr_failed` 才是阻塞终态 | ✅ OCR 单测覆盖核心；UI 文案仍需人肉 |
+| 全文格式 / 提取 / OCR 状态或文案 | 格式清单与优先级只改 `document_formats.py`；同步来源扫描、`deep_extract_status.VALID_STATUSES`、`server.py` 状态下发、`app.js` 徽标/进度/重试文案，以及 `#home-guide` / `#ag-guide`。PDF 的 `ocr_pending` 必须能进入深索；各种 `missing_* / invalid_* / ocr_failed` 是阻塞终态 | ✅ 五格式与 OCR 单测覆盖核心；UI 文案仍需人肉 |
 
 ### 1.5 其它
 
@@ -165,7 +165,7 @@ const n = (AG.cfg && AG.cfg.tool_count) || AG_TOOLS.length;   // 后端真值优
 - [ ] 我改了 MCP 工具吗？→ 跑 `gen_mcp_doc.py` 了吗？
 - [ ] UI 里有没有**硬编码的数量/清单**会因为这次改动而变错？（§2.2）
 - [ ] 新增/升级依赖了吗？→ 同步 lock + 第三方声明，并明确首版是否必须完整安装器
-- [ ] 改了 PDF/OCR 链路吗？→ 混合 PDF、附件缺失、坏 PDF、OCR 失败、旧状态迁移都测了吗？
+- [ ] 改了全文格式/PDF OCR 链路吗？→ 主附件优先级、五格式解析与定位、HTML 排除、混合 PDF、附件缺失、坏文件、OCR 失败、旧状态迁移都测了吗？
 - [ ] `CHANGELOG.md` 加一行了吗？
 
 ---

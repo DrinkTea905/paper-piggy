@@ -34,7 +34,7 @@ def main():
     CAT = ("收藏夹树", [PY, str(C.APP / "build_categories.py")])       # 只读 zotero.sqlite，无嵌入，秒级
     TOPICS = ("AI 主题", [PY, str(C.APP / "build_ai_topics.py")])      # 需要 meta 向量→放在 SEM 之后
     FOLDER_PREP = ("题录抽取", [PY, str(C.APP / "folder_ingest.py"), "--workers", str(args.workers)])  # folder 模式先补 meta_cache
-    EXTRACT = ("提取 PDF", [PY, str(C.APP / "extract.py"), "--scope", args.scope, "--workers", str(args.workers)] + lim)
+    EXTRACT = ("提取全文附件", [PY, str(C.APP / "extract.py"), "--scope", args.scope, "--workers", str(args.workers)] + lim)
     CHUNK   = ("结构切块", [PY, str(C.APP / "chunk.py")] + lim)
     EMBED   = ("嵌入+索引", [PY, str(C.APP / "embed_index.py"), "--batch", "32"] + only + lim)
     PAGEMAP = ("印刷页码映射", [PY, str(C.APP / "page_map.py"), "--all"])   # 研究助手地基：PDF页→期刊印刷页

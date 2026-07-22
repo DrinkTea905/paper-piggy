@@ -83,7 +83,8 @@ def audit_all(index_status=None):
         decision.append({"kind": "rebuild_index", "count": 1,
                          "action": index_health.get("action") or "重建索引"})
 
-    for key, label in (("missing_pdf", "附件缺失"), ("invalid_pdf", "PDF 损坏"),
+    for key, label in (("missing_pdf", "PDF 附件缺失"), ("invalid_pdf", "PDF 损坏"),
+                       ("missing_file", "全文附件缺失"), ("invalid_file", "全文附件无法读取"),
                        ("ocr_failed", "本地 OCR 失败")):
         n = int(idx.get(key) or 0)
         if n:

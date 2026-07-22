@@ -12,6 +12,7 @@ import config as C
 import lancedb
 from textutil import tokenize
 from dbutil import key_predicate
+import document_formats as DF
 
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -80,7 +81,8 @@ def main(batch=64):
     if not C.PAPERS_JSONL.exists():
         print("[semantic] 未找到 papers.jsonl，请先跑 index_light", flush=True)
         return
-    papers = [json.loads(l) for l in open(C.PAPERS_JSONL, encoding="utf-8") if l.strip()]
+    papers = [DF.normalize_record(json.loads(l))
+              for l in open(C.PAPERS_JSONL, encoding="utf-8") if l.strip()]
 
     db = lancedb.connect(str(C.LANCEDB_DIR))
     tbl = db.open_table(C.TABLE_NAME) if C.TABLE_NAME in db.table_names() else None
