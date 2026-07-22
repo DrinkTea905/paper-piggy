@@ -4,6 +4,10 @@
 > 这个应用有三套面向不同读者的指引，它们**不会自动跟着代码走**。历史上已经漂过一次
 > （`MCP接入说明.md` 写「28 个工具」，代码里实际 32 个），所以别指望「我记得改」。
 
+> **面向用户的功能或 UI 更新还必须固定检查四处发布面**：① 产品内「新手指引」；
+> ② 产品内「Agent 指引」；③ 主仓库 GitHub README；④ 独立教程仓库
+> `DrinkTea905/paper-piggy-guide`。逐处判断是否需要同步；不改也要在完成报告中说明理由。
+
 ---
 
 ## 0. 为什么会漂
@@ -55,7 +59,7 @@
 
 | 你改了 | 必须同步 | 校验 |
 |---|---|---|
-| 新增/改动 UI 功能（页签、按钮、流程） | `index.html` `#home-guide`(:87) 八章 + `#ag-guide`(:350) 十章 + `app.js` `agentGuideCard()`(:1207) 四步图 | ❌ 人肉（用 §3 的 checklist） |
+| 新增/改动 UI 功能（页签、按钮、流程） | ① `index.html` `#home-guide`(:87) 八章；② `#ag-guide`(:350) 十章；③ `app.js` `agentGuideCard()`(:1207) 四步图；④ 主仓库 `README.md`；⑤ 独立教程仓库 `DrinkTea905/paper-piggy-guide` 的相关章节。前两项是产品内两份指引，连同两个 GitHub 发布面必须逐处检查并报告 | ❌ 人肉（用 §3 的 checklist） |
 | 首启向导流程 | `index.html` `.wizard-steps`(:786) + `app.js` `renderStep1`(:3494) ~ `renderStep5`(:4025) + `src/README.md` 的「第一次使用」段 | ❌ 人肉 |
 | 「🧹 清空并从头重建索引」(`#sec-rebuild` + `POST /index/reset`，破坏性、须 confirm) | 设置页就地说明是主文案；**动它必对齐 `backup.py` 的 CORE/INDEX「移哪些·保留哪些」口径**；破坏性操作要在指引里提示"先备份" | ❌ 人肉 |
 | 顶栏自动更新徽标（`#up-badge`、设置页 `#up-autocheck`、`app.js renderUpdateBadge()`） | 两个 localStorage 键 `localkb.autoUpdateCheck`(默认开)/`localkb.updateDismissed`(按版本忽略)；文案要与「知识库自动更新」明确**区分**（同名不同物，见 CHANGELOG v1.0.1 提醒） | ❌ 人肉 |

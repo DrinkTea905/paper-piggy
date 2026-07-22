@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 
@@ -17,6 +18,21 @@ PREFLIGHT = INSTALLER / "mcp_preflight.iss"
 
 @unittest.skipUnless(sys.platform == "win32", "安装器预检只适用于 Windows")
 class InstallerMcpPreflightTests(unittest.TestCase):
+    def test_iscc_discovery_survives_missing_localappdata(self) -> None:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("paperpiggy_build_installer", INSTALLER / "build_installer.py")
+        module = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(module)
+        with mock.patch.dict(os.environ, {"USERPROFILE": str(Path.home())}, clear=False):
+            os.environ.pop("LOCALAPPDATA", None)
+            candidates = module._iscc_candidates()
+        self.assertEqual(
+            Path(candidates[0]),
+            Path.home() / "AppData" / "Local" / "Programs" / "Inno Setup 6" / "ISCC.exe",
+        )
+
     def test_installer_blocks_instead_of_killing(self) -> None:
         iss = ISS.read_text(encoding="utf-8")
         preflight = PREFLIGHT.read_text(encoding="utf-8")
@@ -37,8 +53,9 @@ class InstallerMcpPreflightTests(unittest.TestCase):
             self.assertNotIn(forbidden, combined)
 
     def test_wmi_preflight_compiles_and_runs_without_writing_install_dir(self) -> None:
+        local_appdata = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
         candidates = [
-            Path(os.environ.get("LOCALAPPDATA", "")) / "Programs/Inno Setup 6/ISCC.exe",
+            Path(local_appdata) / "Programs/Inno Setup 6/ISCC.exe",
             Path(r"C:\Program Files (x86)\Inno Setup 6\ISCC.exe"),
             Path(r"C:\Program Files\Inno Setup 6\ISCC.exe"),
         ]

@@ -2430,18 +2430,45 @@ def wiki_stale(page_id: str, q: WikiStaleQ):
 
 class WikiVerifyQ(BaseModel):
     page_id: str
+    verified: bool = True
 
 @app.post("/wiki/verify")
 def wiki_verify(q: WikiVerifyQ):
     """W3：人工核验盖章——页面 frontmatter/index/内存三处写 verified_at。
        只给 UI 用，不做成 MCP 工具（核验是人的动作，agent 不得给自己的产出盖章）。"""
     try:
-        r = W.set_verified(q.page_id)
-        return {"ok": True, "verified_at": r["verified_at"]}
+        r = W.set_verified(q.page_id, q.verified)
+        return {"ok": True, "verified": r["verified"], "verified_at": r["verified_at"]}
     except ValueError as e:
         return JSONResponse({"ok": False, "detail": str(e)}, status_code=404)
     except Exception as e:
         log_error("wiki/verify", repr(e), traceback.format_exc())
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
+
+class WikiHumanEditQ(BaseModel):
+    content: str
+
+@app.get("/wiki/edit/{page_id}")
+def wiki_editable_content(page_id: str):
+    """只返回可人工编辑的正文；frontmatter、标题、来源表与系统落款保持只读。"""
+    try:
+        return {"ok": True, "id": page_id, "content": W.editable_content(page_id)}
+    except ValueError as e:
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=404)
+    except Exception as e:
+        log_error("wiki/edit/read", repr(e), traceback.format_exc())
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
+
+@app.post("/wiki/edit/{page_id}")
+def wiki_edit_content(page_id: str, q: WikiHumanEditQ):
+    """人工修订正文；保存成功即视为已核验，并保留来源、互链与版本历史。"""
+    try:
+        r = W.edit_page_by_human(page_id, q.content)
+        return {"ok": True, "id": page_id, "verified_at": r.get("verified_at", "")}
+    except ValueError as e:
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
+    except Exception as e:
+        log_error("wiki/edit/write", repr(e), traceback.format_exc())
         return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
 
 @app.get("/wiki/backlinks")
@@ -2634,61 +2661,6 @@ def research_suggest(q: ResearchQ):
     except Exception as e:
         log_error("research/suggest_sources", repr(e), traceback.format_exc())
         return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
-
-def _export_docx(page_id: str):
-    """把 digest/outline wiki 页导出。有 python-docx 则出 .docx，否则退化为 .md（诚实降级）。
-       C3：末尾用 p['sources'] 追加一节「参考文献」（页级引用），产出可直接拿去写作。"""
-    p = W.get_page(page_id)
-    if not p:
-        return JSONResponse({"ok": False, "detail": "无此页"}, status_code=404)
-    sources = p.get("sources", []) or []
-    def _cite(s):
-        if isinstance(s, dict):
-            return s.get("citation") or s.get("key") or ""
-        return str(s)
-    try:
-        import docx  # python-docx
-        from docx import Document
-        doc = Document()
-        doc.add_heading(p.get("title", "资料汇编"), level=0)
-        for line in (p.get("markdown") or "").splitlines():
-            s = line.strip()
-            if s.startswith("### "):
-                doc.add_heading(s[4:], level=2)
-            elif s.startswith("## "):
-                doc.add_heading(s[3:], level=1)
-            elif s.startswith("# "):
-                doc.add_heading(s[2:], level=1)
-            elif s and not s.startswith("---"):
-                doc.add_paragraph(s)
-        if sources:
-            doc.add_heading("参考文献", level=1)
-            for i, s in enumerate(sources, 1):
-                doc.add_paragraph(f"{i}. {_cite(s)}")
-        out = C.WIKI_DIGEST_DIR / f"{page_id}.docx"
-        doc.save(str(out))
-        return FileResponse(str(out), filename=f"{page_id}.docx",
-                            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-    except ImportError:
-        # 降级：返回 markdown 文件（本机未装 python-docx）
-        md = p.get("markdown", "")
-        if sources:
-            md += "\n\n## 参考文献\n\n" + "\n".join(f"{i}. {_cite(s)}" for i, s in enumerate(sources, 1))
-        out = C.WIKI_DIGEST_DIR / f"{page_id}.md"
-        out.write_text(md, encoding="utf-8")
-        return FileResponse(str(out), filename=f"{page_id}.md", media_type="text/markdown")
-    except Exception as e:
-        log_error("research/export_docx", repr(e), traceback.format_exc())
-        return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
-
-@app.post("/research/export_docx/{page_id}")
-def research_export_docx(page_id: str):
-    return _export_docx(page_id)
-
-@app.get("/research/export_docx/{page_id}")
-def research_export_docx_get(page_id: str):
-    """C3：GET 版——前端用 <a href download> 直接触发下载。"""
-    return _export_docx(page_id)
 
 # ══════════════════════════════════════════════════════════════════
 #  EN-A：Agent 接入的服务端地基（蓝图 G1/G2/G4 + 入库闭环）

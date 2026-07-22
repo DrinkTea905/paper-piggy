@@ -766,7 +766,8 @@ def _norm_sources(sources):
     return [{"key": k, "citation": _resolve_citation(k, citation)} for k, citation in pending]
 
 
-def _persist_page(page_id, kind, title, subject, body, norm_sources, generated_by="", by_agent=False):
+def _persist_page(page_id, kind, title, subject, body, norm_sources, generated_by="", by_agent=False,
+                  human_edit=False):
     """写盘 + 更新 index.json + 嵌入入表。answer/concept/topic 三种页共用。返回 page-meta。
     by_agent=True 标记"agent 经 MCP 写回、未经人工核验"（前端标 🤖 徽章，供事后一键剔除）。
 
@@ -775,13 +776,13 @@ def _persist_page(page_id, kind, title, subject, body, norm_sources, generated_b
     （人有最终权威），agent 不能覆盖人的页。"""
     with _INDEX_LOCK:
         existing = index_map().get(page_id)
-        if existing and by_agent and not existing.get("by_agent"):
+        if existing and by_agent and not human_edit and not existing.get("by_agent"):
             raise WikiWriteDenied(
                 f"「{existing.get('title') or page_id}」是人工保存/核验过的综合页，agent 不得覆盖。"
                 f"请换一个标题，或先用 get_wiki_page({page_id}) 读它再决定。")
         # 已人工核验（verified_at）的页——即便原是 agent 页——同样不许 agent 覆盖；
         # 发现被新文献推翻应 mark_stale 标脏写理由，而非抹掉核验结论（护栏此前只挡「人写的页」，漏了「人核验过的 agent 页」）。
-        if existing and by_agent and existing.get("verified_at"):
+        if existing and by_agent and not human_edit and existing.get("verified_at"):
             raise WikiWriteDenied(
                 f"「{existing.get('title') or page_id}」已经人工核验，agent 不得覆盖。"
                 f"若它被新文献推翻，请用 mark_stale 标脏并写清理由。")
@@ -794,7 +795,9 @@ def _persist_page(page_id, kind, title, subject, body, norm_sources, generated_b
             "title": final_title,
             "subject": subject, "sources": norm_sources,
             "generated_at": _now(), "generated_by": generated_by or "",
-            "stale": False, "by_agent": bool(by_agent),
+            # 人工只改正文时保留 stale 与来源身份；普通重生/覆盖仍按原规则清 stale。
+            "stale": bool(existing.get("stale")) if human_edit and existing else False,
+            "by_agent": bool(by_agent),
             # 重生/覆盖时保留既有互链，别把 links 清零（波次2 set_wiki_links 会写它）
             "links": list((existing or {}).get("links") or []),
             # 主题是人的整理结果；重新生成正文不能把它移回自动分类。
@@ -817,7 +820,8 @@ def _persist_page(page_id, kind, title, subject, body, norm_sources, generated_b
             print(f"[wiki] 入表失败（仅存盘，重建索引后可检索）：{e}", file=sys.stderr, flush=True)
     meta["indexed"] = bool(indexed)
     meta["degraded"] = degraded
-    _snapshot(page_id, f"{'agent' if by_agent else '人'}写入 {kind} 页")
+    action = "人修订正文" if human_edit else f"{'agent' if by_agent else '人'}写入 {kind} 页"
+    _snapshot(page_id, action)
     return meta
 
 
@@ -1174,6 +1178,26 @@ def delete_theme(name):
     return {"deleted": name, "reset_pages": len(changed)}
 
 
+def _editable_body(markdown, meta):
+    """只取用户可编辑的正文，隐藏自动维护的 frontmatter、标题、研究问题、来源表与落款。"""
+    body = re.sub(r"^---[\s\S]*?\n---\n?", "", markdown or "").strip()
+    lines = body.splitlines()
+    title = (meta or {}).get("title", "").strip()
+    if lines and lines[0].strip() == f"# {title}":
+        lines.pop(0)
+        while lines and not lines[0].strip():
+            lines.pop(0)
+    if lines and re.match(r"^>\s*\*\*研究问题\*\*：", lines[0].strip()):
+        lines.pop(0)
+        while lines and not lines[0].strip():
+            lines.pop(0)
+    body = "\n".join(lines).strip()
+    body = re.split(r"\n---\n\s*\*\*参考来源\*\*", body, maxsplit=1)[0].strip()
+    body = re.sub(r"(?m)^\*（本页为本地综合，生成于 .*）\*\s*$", "", body).strip()
+    body = re.sub(r"(?m)^\*（⚠ .*）\*\s*$", "", body).strip()
+    return body
+
+
 def get_page(page_id):
     meta = index_map().get(page_id)
     if not meta:
@@ -1269,17 +1293,55 @@ def set_stale(page_id, stale=True, reason=""):
             "title": meta.get("title", ""), "kind": meta.get("kind")}
 
 
-def set_verified(page_id):
-    """W3：人工核验盖章——写 verified_at 时间戳，三处同步（index.json + .md frontmatter +
-       检索期内存 M["wiki"]，先例见 set_stale）。核验是人的动作，**不做成 MCP 工具**：
-       agent 不得给自己的产出盖「已核验」章（那会架空 by_agent 写权护栏）。"""
-    ts = _now()
+def editable_content(page_id):
+    """返回只含正文的 Markdown，供应用内人工编辑；系统元数据与来源表不暴露给编辑器。"""
+    page = get_page(page_id)
+    if not page:
+        raise ValueError(f"无此综合页 {page_id}")
+    return _editable_body(page.get("markdown", ""), page)
+
+
+def edit_page_by_human(page_id, content):
+    """人工修订正文并自动视为已核验；保留标题、来源、互链、stale 与 agent 来源身份。"""
+    body = (content or "").strip()
+    if not body:
+        raise ValueError("正文不能为空")
+    with _INDEX_LOCK:
+        existing = index_map().get(page_id)
+        if not existing:
+            raise ValueError(f"无此综合页 {page_id}")
+        current = dict(existing)
+    meta = _persist_page(
+        page_id,
+        current.get("kind", "answer"),
+        current.get("title", ""),
+        current.get("subject") or current.get("title") or page_id,
+        body,
+        list(current.get("sources") or []),
+        current.get("generated_by", ""),
+        by_agent=bool(current.get("by_agent")),
+        human_edit=True,
+    )
+    verified = set_verified(page_id, True)
+    meta["verified_at"] = verified["verified_at"]
+    return meta
+
+
+def set_verified(page_id, verified=True):
+    """人工切换核验状态，三处同步（index.json + .md frontmatter + 检索期内存）。
+
+    核验仍只由 UI 中的人操作，不暴露为 MCP 工具；取消核验时移除 verified_at。
+    """
+    ts = _now() if verified else ""
     with _INDEX_LOCK:
         idx = load_index()
         meta = next((p for p in idx.get("pages", []) if p.get("id") == page_id), None)
         if not meta:
             raise ValueError(f"无此综合页 {page_id}")
-        meta["verified_at"] = ts
+        if verified:
+            meta["verified_at"] = ts
+        else:
+            meta.pop("verified_at", None)
         _save_index(idx)
 
         # 同步 .md frontmatter（只动 frontmatter 区，避免误伤正文里的 --- 分隔线）
@@ -1290,7 +1352,10 @@ def set_verified(page_id):
                 end = txt.find("\n---", 3) if txt.startswith("---") else -1
                 if end >= 0:
                     head = txt[:end]
-                    if re.search(r"(?m)^verified_at:", head):
+                    if not verified:
+                        head = re.sub(r"(?m)^verified_at:.*\n?", "", head, count=1)
+                        new = head.rstrip() + txt[end:]
+                    elif re.search(r"(?m)^verified_at:", head):
                         head = re.sub(r"(?m)^verified_at:.*$", f"verified_at: {ts}", head, count=1)
                         new = head + txt[end:]
                     else:
@@ -1307,7 +1372,7 @@ def set_verified(page_id):
             R.M["wiki"][page_id]["verified_at"] = ts
     except Exception:
         pass
-    return {"id": page_id, "verified_at": ts,
+    return {"id": page_id, "verified": bool(verified), "verified_at": ts,
             "title": meta.get("title", ""), "kind": meta.get("kind")}
 
 

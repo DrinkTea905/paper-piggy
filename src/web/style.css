@@ -1373,11 +1373,17 @@ button.ov-chip:hover { border-color: var(--accent); color: var(--accent); }
 .ag-intro-list a { color: var(--accent); }
 .ag-intro-check { margin-bottom: 0; }
 
-/* C3 综述导出 Word 按钮（<a> 版，样式对齐 ghost/ghost2） */
-.wiki-export-btn { text-decoration: none; display: inline-flex; align-items: center; }
-a.wk-export { text-decoration: none; display: inline-flex; align-items: center; }
-a.wk-export:hover { border-color: var(--accent); color: var(--accent); }
 .wiki-flag { display: inline-flex; gap: 6px; margin: 2px 0 4px; }
+
+.wiki-editor { grid-column: 1 / -1; width: 100%; max-width: 720px; justify-self: center; }
+.wiki-editor textarea { box-sizing: border-box; width: 100%; min-height: 46vh; resize: vertical;
+  padding: 12px 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--card);
+  color: var(--fg); font: 14px/1.7 Consolas, "Microsoft YaHei", monospace; }
+.wiki-editor .hint { margin: 7px 0 0; }
+.wiki-editor-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
+.wiki-editor-actions button { padding: 7px 14px; border: none; border-radius: 7px; background: var(--accent);
+  color: #fff; font-weight: 600; cursor: pointer; }
+.wiki-editor-actions .ghost { background: transparent; border: 1px solid var(--line); color: var(--muted); }
 
 /* wiki-body 极简 markdown 渲染的排版（改用 innerHTML 后需要基本块级样式） */
 .wiki-body h1, .wiki-body h2, .wiki-body h3, .wiki-body h4, .wiki-body h5, .wiki-body h6 { margin: 12px 0 6px; line-height: 1.4; }

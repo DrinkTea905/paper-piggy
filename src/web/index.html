@@ -124,6 +124,7 @@
         <button class="ag-guide-close" id="home-guide-close" type="button">✕ 关闭</button>
       </div>
       <div class="ag-guide-body">
+        <p class="ag-note"><b>综述页可直接编辑：</b>打开任一综述，点「✏️ 编辑正文」即可随手修正；保存后自动视为已核验，也可再改回未核验。标题、参考来源和版本历史由 PaperPiggy 自动维护。</p>
         <div class="hg-visual" id="hg-visual"></div>
 
         <section class="ag-ch">
@@ -482,6 +483,7 @@
         <button class="ag-guide-close" id="ag-guide-close" type="button">✕ 关闭</button>
       </div>
       <div class="ag-guide-body">
+        <p class="ag-note"><b>人工接手综述：</b>AI 写回的综述可在应用里直接编辑正文；保存后自动标为已核验，之后也能改回未核验继续复查。</p>
 
         <!-- 第 1 章：它是什么 -->
         <section class="ag-ch">
@@ -993,6 +995,14 @@
       <div class="wiki-reader">
         <nav id="wiki-toc" class="wiki-toc" aria-label="本页目录" hidden></nav>
         <div id="wiki-body" class="wiki-body"></div>
+        <div id="wiki-editor" class="wiki-editor" hidden>
+          <textarea id="wiki-edit-text" spellcheck="true" aria-label="编辑综述正文"></textarea>
+          <p class="hint">可编辑正文 Markdown；标题、参考来源和系统记录由 PaperPiggy 自动维护。保存后直接视为已核验。</p>
+          <div class="wiki-editor-actions">
+            <button id="wiki-edit-cancel" class="ghost">取消</button>
+            <button id="wiki-edit-save">保存修改并核验</button>
+          </div>
+        </div>
       </div>
       <div id="wiki-sources" class="wiki-sources"></div>
       <!-- 互链（出链）与反向链接（入链）：把孤立的页变成可走的图 -->
@@ -1009,6 +1019,7 @@
       </div>
       <div class="modal-actions">
         <button id="wiki-hist" class="ghost" title="查看这一页的修改历史，可回滚">🕘 历史</button>
+        <button id="wiki-edit" class="ghost" title="直接修改这一页的正文；保存后视为已核验">✏️ 编辑正文</button>
         <button id="wiki-discard" class="ghost danger">🗑 删除此综述</button>
         <button id="wiki-close" class="ghost">关闭</button>
       </div>

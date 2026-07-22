@@ -36,12 +36,21 @@ OUT = ROOT / "dist-installer"
 
 sys.path.insert(0, str(SRC))
 
-ISCC_CANDIDATES = [
-    # winget 装的是 per-user，落在 %LOCALAPPDATA%\Programs（不是 Program Files）
-    os.path.join(os.environ.get("LOCALAPPDATA", ""), r"Programs\Inno Setup 6\ISCC.exe"),
-    r"C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
-    r"C:\Program Files\Inno Setup 6\ISCC.exe",
-]
+def _iscc_candidates():
+    """返回 ISCC 候选路径；即使受控 shell 没转发 LOCALAPPDATA 也能找到用户级安装。"""
+    local_appdata = os.environ.get("LOCALAPPDATA")
+    if not local_appdata:
+        user_home = os.environ.get("USERPROFILE") or str(Path.home())
+        local_appdata = str(Path(user_home) / "AppData" / "Local")
+    return [
+        # winget 装的是 per-user，落在 LocalAppData\Programs（不是 Program Files）。
+        str(Path(local_appdata) / "Programs" / "Inno Setup 6" / "ISCC.exe"),
+        r"C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
+        r"C:\Program Files\Inno Setup 6\ISCC.exe",
+    ]
+
+
+ISCC_CANDIDATES = _iscc_candidates()
 
 
 def app_version():

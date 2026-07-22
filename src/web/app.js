@@ -1028,9 +1028,12 @@
   // agent 经 MCP 写回、未核验的页标 🤖，方便一眼锁定该复看/剔除的对象；人自己保存的标 📝。
   function wikiBadge(r) {
     if (!r.is_wiki) return "";
+    if (r.verified_at) {
+      return `<span class="tag wiki" title="已人工核验，可在综述页改回未核验">✅ 综述页·已核验</span>`;
+    }
     return r.by_agent
       ? `<span class="tag wiki agent" title="agent 自动写回、未经人工核验；可点「🗑 不保存」剔除">🤖 综述页·未核验</span>`
-      : `<span class="tag wiki" title="本地综述页，可能已过时，请核对来源原文">📝 综述页</span>`;
+      : `<span class="tag wiki" title="本地综述页，尚未人工核验">📝 综述页·未核验</span>`;
   }
   // EN-F5：法条时效徽标——retriever 输出侧按 papers.jsonl 现算的 statute_status（""|已修订|已废止）。
   // 引已废止/已修订的法条是硬伤，红/橙醒目提示；样式对齐既有 tier 徽标（.badge）
@@ -2273,7 +2276,25 @@
     if (inCode) html += `<pre class="wk-code">${esc(code)}</pre>`;
     return html;
   }
+  function setWikiEditMode(editing) {
+    const editor = $("#wiki-editor");
+    if (editor) editor.hidden = !editing;
+    ["#wiki-body", "#wiki-sources", "#wiki-links", ".wiki-vtool"].forEach((sel) => {
+      const el = $(sel); if (el) el.hidden = !!editing;
+    });
+    const toc = $("#wiki-toc");
+    if (editing && toc) toc.hidden = true;
+    else if (!editing) renderWikiToc();
+    const edit = $("#wiki-edit");
+    const regen = $("#wiki-regen");
+    const hist = $("#wiki-hist");
+    if (edit) edit.hidden = !!editing || edit.dataset.disabled === "1";
+    if (regen) regen.hidden = !!editing || regen.style.display === "none";
+    if (hist) hist.hidden = !!editing;
+  }
+
   function renderWiki(p) {
+    setWikiEditMode(false);
     $("#wiki-title").textContent = p.title || "综述页";
     const stale = p.stale ? " · ⚠ 可能已过时" : "";
     // 降级页不显示「模型 fallback(no-key)」这种黑话——它对读者毫无意义，还让人以为是正常综述
@@ -2281,40 +2302,34 @@
     $("#wiki-meta").textContent = p.degraded
       ? `基于 ${(p.sources || []).length} 篇 · 生成于 ${(p.generated_at || "").slice(0, 10)}${themeMeta}${stale}`
       : `本地综述 · 基于 ${(p.sources || []).length} 篇 · 生成于 ${(p.generated_at || "").slice(0, 10)}${themeMeta} · 模型 ${p.generated_by || "未知"}${stale}`;
-    // unverified-flag-missing-in-modal：模态里也显示 🤖 未核验 / 📝 我保存的；降级页优先警示
-    // W3：agent 写回的页可人工核验——未核验给「标为已核验」按钮，核验后徽章转 ✅（frontmatter 落 verified_at）
+    // 人工核验支持双向切换；人工正文编辑保存后也会落 verified_at。
     const flag = $("#wiki-flag");
     if (flag) {
       flag.innerHTML = p.degraded
         ? `<span class="wk-flag degraded" title="${esc(p.degraded_reason || "")}">⚠ 证据清单（非 AI 综述）</span>`
-        : p.by_agent
-        ? (p.verified_at
-            ? `<span class="wk-flag ok" title="已于 ${esc(p.verified_at)} 人工核验"><span class="status-dot" aria-hidden="true"></span>已核验</span>`
-            : `<span class="wk-flag agent" title="agent 写回、未经人工核验，请核对来源原文"><span class="status-dot" aria-hidden="true"></span>未核验</span>` +
-              `<button id="wiki-verify" class="ghost2b wiki-verify" title="确认内容与来源无误后，把这一页标为已人工核验">标为已核验</button>`)
-        : `<span class="wk-flag" title="你保存/生成的综述页"><span class="status-dot" aria-hidden="true"></span>我保存的</span>`;
-      const vb = $("#wiki-verify");
-      if (vb) vb.addEventListener("click", async () => {
-        vb.disabled = true; vb.textContent = "标记中…";
+        : p.verified_at
+        ? `<span class="wk-flag ok" title="已于 ${esc(p.verified_at)} 人工核验"><span class="status-dot" aria-hidden="true"></span>已核验</span>` +
+          `<button id="wiki-verify" class="ghost2b wiki-verify" data-verified="1" title="撤销这一页的人工核验状态">改回未核验</button>`
+        : `<span class="wk-flag${p.by_agent ? " agent" : ""}" title="${p.by_agent ? "agent 写回、未经人工核验，请核对来源原文" : "尚未人工核验"}"><span class="status-dot" aria-hidden="true"></span>未核验</span>` +
+          `<button id="wiki-verify" class="ghost2b wiki-verify" data-verified="0" title="确认内容与来源无误后，把这一页标为已人工核验">标为已核验</button>`;
+      const verifyBtn = $("#wiki-verify");
+      if (verifyBtn) verifyBtn.addEventListener("click", async () => {
+        const nextVerified = verifyBtn.dataset.verified !== "1";
+        verifyBtn.disabled = true;
+        verifyBtn.textContent = nextVerified ? "标记中…" : "撤销中…";
         try {
-          const r = await jpost("/wiki/verify", { page_id: p.id });
-          const at = (r && r.verified_at) || "";
-          flag.innerHTML = `<span class="wk-flag ok" title="已于 ${esc(at)} 人工核验"><span class="status-dot" aria-hidden="true"></span>已核验</span>`;
-          // 同步列表内存态，让「只看未核验」过滤即刻正确，不用重拉
-          (WK.pages || []).forEach((pg) => { if (pg.id === p.id) pg.verified_at = at; });
+          const r = await jpost("/wiki/verify", { page_id: p.id, verified: nextVerified });
+          (WK.pages || []).forEach((pg) => {
+            if (pg.id === p.id) pg.verified_at = (r && r.verified_at) || "";
+          });
           if (wikiLoaded) renderWikiList();
+          renderWiki(await jget("/wiki/page/" + encodeURIComponent(p.id)));
         } catch (e) {
-          vb.disabled = false; vb.textContent = "标为已核验";
-          flashToast("标记核验失败：" + (e.message || e));
+          verifyBtn.disabled = false;
+          verifyBtn.textContent = nextVerified ? "标为已核验" : "改回未核验";
+          flashToast((nextVerified ? "标记" : "撤销") + "核验失败：" + (e.message || e));
         }
       });
-    }
-    // C3：研究助手产出的资料汇编(digest)/大纲(outline) 可一键导出 Word（有 python-docx 出 .docx，否则降级 .md），
-    // 产出可直接拿去写作。用 <a download> 直接触发下载（GET /research/export_docx/{id}）。此前该出口无任何入口=死机制。
-    if (flag && !p.degraded && (p.kind === "digest" || p.kind === "outline")) {
-      flag.innerHTML += `<a class="wk-flag" style="text-decoration:none;cursor:pointer" ` +
-        `href="/research/export_docx/${encodeURIComponent(p.id)}" download ` +
-        `title="导出为 Word 文档（含参考文献，可直接拿去写作）">⬇ 导出 Word</a>`;
     }
     // 降级页在正文顶部挂一条醒目横幅，说明它为什么不是综述、怎么交给 Agent 补救
     const banner = p.degraded
@@ -2379,6 +2394,12 @@
     // EN-F7：换页时清空上一页残留的核验输入与结果，避免张冠李戴
     const wvI = $("#wv-claim"); if (wvI) wvI.value = "";
     const wvR = $("#wv-result"); if (wvR) { wvR.hidden = true; wvR.innerHTML = ""; }
+    const editBtn = $("#wiki-edit");
+    if (editBtn) {
+      editBtn.dataset.id = p.id;
+      editBtn.dataset.disabled = p.degraded ? "1" : "0";
+      editBtn.hidden = !!p.degraded;
+    }
     $("#wiki-modal").hidden = false;
   }
   function renderWikiToc() {
@@ -2451,6 +2472,49 @@
       box.innerHTML = `<div class="wh-loading">读取历史失败：${esc(e.message || e)}</div>`;
     }
   }
+
+  (function wireWikiEditor() {
+    const edit = $("#wiki-edit"), editText = $("#wiki-edit-text");
+    const editSave = $("#wiki-edit-save"), editCancel = $("#wiki-edit-cancel");
+    if (edit) edit.addEventListener("click", async () => {
+      const id = edit.dataset.id;
+      if (!id || !editText) return;
+      edit.disabled = true;
+      try {
+        const r = await jget("/wiki/edit/" + encodeURIComponent(id));
+        editText.value = (r && r.content) || "";
+        editText.dataset.original = editText.value;
+        setWikiEditMode(true);
+        editText.focus();
+      } catch (e) {
+        flashToast("读取可编辑正文失败：" + (e.message || e));
+      } finally { edit.disabled = false; }
+    });
+    if (editCancel) editCancel.addEventListener("click", () => {
+      if (editText) editText.value = editText.dataset.original || "";
+      setWikiEditMode(false);
+    });
+    if (editSave) editSave.addEventListener("click", async () => {
+      const id = edit && edit.dataset.id;
+      const content = (editText && editText.value || "").trim();
+      if (!id || !content) { flashToast("正文不能为空。"); return; }
+      editSave.disabled = true;
+      const old = editSave.textContent;
+      editSave.textContent = "保存中…";
+      try {
+        const r = await jpost("/wiki/edit/" + encodeURIComponent(id), { content });
+        (WK.pages || []).forEach((pg) => { if (pg.id === id) pg.verified_at = (r && r.verified_at) || ""; });
+        if (wikiLoaded) renderWikiList();
+        renderWiki(await jget("/wiki/page/" + encodeURIComponent(id)));
+        flashToast("正文已保存，并标为已核验。");
+      } catch (e) {
+        flashToast("保存正文失败：" + (e.message || e));
+      } finally {
+        editSave.disabled = false;
+        editSave.textContent = old;
+      }
+    });
+  })();
 
   async function openWikiPage(id) {
     try { renderWiki(await jget("/wiki/page/" + encodeURIComponent(id))); }
@@ -2565,8 +2629,8 @@
     let list = [...WK.pages];
     if (WK.theme) list = list.filter((p) => (p.theme || "未分类") === WK.theme);
     if (WK.kind) list = list.filter((p) => (p.kind || "answer") === WK.kind);
-    // W3：「只看未核验」＝agent 写回且尚未人工核验（已核验的不再算待办）
-    if (WK.agentOnly) list = list.filter((p) => p.by_agent && !p.verified_at);
+    // 「只看未核验」覆盖所有尚未人工核验的正常综述页。
+    if (WK.agentOnly) list = list.filter((p) => !p.degraded && !p.verified_at);
     if (WK.search) {
       const q = WK.search.toLocaleLowerCase("zh-CN");
       list = list.filter((p) => (p.title || "").toLocaleLowerCase("zh-CN").includes(q));
@@ -2594,12 +2658,9 @@
     const kind = WK_KIND[p.kind || "answer"] || (p.kind || "");
     const prov = p.degraded
       ? `<span class="wk-flag degraded" title="${esc(p.degraded_reason || "")}">⚠ 证据清单（非 AI 综述）</span>`
-      : p.by_agent
-      // W3：核验过的 agent 页在列表里也转 ✅，与详情弹窗口径一致
-      ? (p.verified_at
-          ? `<span class="wk-flag ok" title="已于 ${esc(p.verified_at)} 人工核验"><span class="status-dot" aria-hidden="true"></span>已核验</span>`
-          : `<span class="wk-flag agent" title="agent 写回、未经人工核验"><span class="status-dot" aria-hidden="true"></span>未核验</span>`)
-      : `<span class="wk-flag" title="你保存/生成的综述页"><span class="status-dot" aria-hidden="true"></span>我保存的</span>`;
+      : p.verified_at
+      ? `<span class="wk-flag ok" title="已于 ${esc(p.verified_at)} 人工核验"><span class="status-dot" aria-hidden="true"></span>已核验</span>`
+      : `<span class="wk-flag${p.by_agent ? " agent" : ""}" title="${p.by_agent ? "agent 写回、未经人工核验" : "尚未人工核验"}"><span class="status-dot" aria-hidden="true"></span>未核验</span>`;
     const stale = p.stale ? `<span class="wk-flag stale" title="有新论文可能影响此综述，建议让 Agent 读取新增文献后更新">⚠ 可能已过时</span>` : "";
     // 整卡可点即打开；整理主题与删除收进「…」，让列表优先服务阅读。
     div.className += " wk-card-click";

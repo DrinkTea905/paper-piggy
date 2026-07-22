@@ -122,5 +122,42 @@ class WikiSuggestionQueueTests(unittest.TestCase):
                 self.assertEqual(next(x for x in history if x["key"] == "K0")["status"], "not_needed")
 
 
+class WikiHumanEditingTests(unittest.TestCase):
+    def test_editable_body_hides_system_wrapper_and_keeps_user_markdown(self):
+        meta = {"id": "p1", "kind": "digest", "title": "测试综述", "subject": "测试问题",
+                "sources": [{"key": "K1", "citation": "来源一"}], "generated_at": "2026-07-22T00:00:00",
+                "generated_by": "agent", "stale": False, "by_agent": True, "links": []}
+        rendered = W._render_md(meta, "测试问题", "## 小节\n\n正文 [1]", meta["sources"])
+        editable = W._editable_body(rendered, meta)
+        self.assertEqual(editable, "## 小节\n\n正文 [1]")
+        self.assertNotIn("参考来源", editable)
+        self.assertNotIn("generated_at", editable)
+
+    def test_human_edit_preserves_agent_origin_and_auto_verifies(self):
+        existing = {"id": "p1", "kind": "digest", "title": "测试综述", "subject": "测试问题",
+                    "sources": [{"key": "K1"}], "generated_by": "agent", "stale": True,
+                    "by_agent": True, "links": ["p2"]}
+        with mock.patch.object(W, "index_map", return_value={"p1": existing}), \
+                mock.patch.object(W, "_persist_page", return_value={"id": "p1"}) as persist, \
+                mock.patch.object(W, "set_verified", return_value={"verified_at": "2026-07-22T01:02:03"}) as verify:
+            result = W.edit_page_by_human("p1", "修正后的正文")
+        self.assertTrue(persist.call_args.kwargs["human_edit"])
+        self.assertTrue(persist.call_args.kwargs["by_agent"])
+        verify.assert_called_once_with("p1", True)
+        self.assertEqual(result["verified_at"], "2026-07-22T01:02:03")
+
+    def test_verified_state_can_be_cleared(self):
+        meta = {"id": "p1", "kind": "digest", "title": "测试综述", "verified_at": "old"}
+        with tempfile.TemporaryDirectory() as td, \
+                mock.patch.object(W, "load_index", return_value={"pages": [meta]}), \
+                mock.patch.object(W, "_save_index") as save_index, \
+                mock.patch.object(W, "page_path", return_value=Path(td) / "missing.md"):
+            result = W.set_verified("p1", False)
+        self.assertFalse(result["verified"])
+        self.assertEqual(result["verified_at"], "")
+        self.assertNotIn("verified_at", meta)
+        save_index.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()
