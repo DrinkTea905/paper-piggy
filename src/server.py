@@ -614,7 +614,8 @@ def setup_detect():
     import settings as S
     st = S.load()
     backend = st.get("backend", "local")
-    api_key_set = bool((st.get("api") or {}).get("key"))
+    api_conf = st.get("api") or {}
+    api_key_set = bool(api_conf.get("key"))
     models_local = (C.MODELS / "bge-m3-onnx" / "model_quantized.onnx").exists()
     reranker_local = (C.MODELS / "bge-reranker-v2-m3-onnx" / "model_quantized.onnx").exists()
     # 数据源：优先 settings.source（用户/向导已选），否则据 manifest / 探到 zotero 推断
@@ -637,8 +638,11 @@ def setup_detect():
         "folder_meta_ready": bool(meta_ready),
         "backend": backend,                        # local | api
         "api_key_set": api_key_set,
+        "api_base": api_conf.get("base") or "https://api.siliconflow.cn/v1",
+        "api_embed_model": api_conf.get("embed_model") or "BAAI/bge-m3",
+        "api_rerank_model": api_conf.get("rerank_model") or "BAAI/bge-reranker-v2-m3",
         # K3：各 key 末4位掩码（只回末4位、绝不回明文），供前端展示「已填 ••••1234」
-        "api_key_last4": _last4((st.get("api") or {}).get("key")),
+        "api_key_last4": _last4(api_conf.get("key")),
         "sac_key_last4": _last4((st.get("sac") or {}).get("key")),
         # 引擎就绪：本地模式看模型文件；API 模式看 key 是否已填
         "models_ready": models_local if backend == "local" else api_key_set,
@@ -1119,7 +1123,7 @@ def index_reset(q: ResetIndexQ = None):
 
 @app.post("/setup/backend")
 def setup_backend(q: BackendQ):
-    """保存检索引擎后端选择（本地/API）。API 模式存 SiliconFlow 等的 key。
+    """保存检索引擎后端选择（本地/SiliconFlow API）。高级设置仍兼容同时提供嵌入与重排的服务。
        引擎（后端 或 嵌入模型）变化且已有向量时：清进度+删表，让随后的重建用新引擎【全量】重嵌，
        避免新旧两套向量在同一张表里混用、dense 召回静默劣化（此前只发一句 warn、实际增量根本不重嵌）。"""
     import settings as S
@@ -1177,6 +1181,8 @@ def setup_test_api(q: BackendQ):
 class SacQ(BaseModel):
     enabled: Optional[bool] = None
     generator: Optional[str] = None       # K2：server（服务端用API Key）| agent（交给Agent）| off（不生成）
+    source: Optional[str] = None          # reuse（复用 SiliconFlow 检索 Key）| custom（另选文本生成厂商）
+    provider: Optional[str] = None
     base: Optional[str] = None
     key: Optional[str] = None
     model: Optional[str] = None
@@ -1185,15 +1191,19 @@ class SacQ(BaseModel):
 def get_sac():
     import settings as S, sac as SAC
     sc = S.sac_conf()
+    api = S.api_conf()
+    reuse_ready = bool(api.get("key") and "siliconflow" in (api.get("base") or "").lower())
     return {"enabled": bool(sc.get("enabled")), "generator": sc.get("generator"),
+            "source": sc.get("source"), "provider": sc.get("provider"),
             "base": sc.get("base"), "model": sc.get("model"),
             "key_set": bool(sc.get("key")), "key_last4": _last4(sc.get("key")),   # K3 掩码
+            "reuse_ready": reuse_ready, "reuse_key_last4": _last4(api.get("key")),
+            "reuse_model": S.DEFAULT["sac"]["model"],
             "effective_ready": SAC.enabled()}
 
 @app.post("/setup/sac")
 def setup_sac(q: SacQ):
-    """配置深索摘要生成方（K2 generator 三选一）。key 空时会自动复用 API 后端的 key。
-       generator=server→服务端自动生成；agent→交给 Agent（服务端不生成）；off→不生成。"""
+    """配置检索摘要生成方，以及 PaperPiggy 自动生成所用的明确凭据来源。"""
     import settings as S, sac as SAC
     patch = {}
     if q.generator in ("server", "agent", "off"):
@@ -1202,14 +1212,43 @@ def setup_sac(q: SacQ):
     elif q.enabled is not None:                           # 老前端只传 enabled 时的兼容路径
         patch["enabled"] = bool(q.enabled)
         patch["generator"] = "server" if q.enabled else "off"
+    if q.source in ("reuse", "custom"):
+        patch["source"] = q.source
+    if q.provider is not None:
+        patch["provider"] = q.provider
     # BF契约3：判空一律用 is not None——空字符串=用户清空该项要落盘；
     # 旧的 if q.base 会把"清空 base/model"静默吞掉（前端 base/model 每次都发，key 仅 dirty 才发）。
     if q.base is not None: patch["base"] = q.base
     if q.key is not None: patch["key"] = q.key
     if q.model is not None: patch["model"] = q.model
     S.save({"sac": patch})
+    return {"ok": True, **get_sac()}
+
+
+@app.post("/setup/test_sac")
+def test_sac():
+    """显式测试“其他 AI 厂商”摘要配置；只发起一次很短的文本生成调用。"""
+    import settings as S, sac as SAC
     sc = S.sac_conf()
-    return {"ok": True, "generator": sc.get("generator"), "effective_ready": SAC.enabled()}
+    if sc.get("source") != "custom":
+        return JSONResponse({"ok": False, "msg": "当前选择的是复用 SiliconFlow，无需单独测试摘要模型。"}, status_code=200)
+    conf = SAC._conf()
+    if not conf.get("key"):
+        return JSONResponse({"ok": False, "msg": "请先填写所选 AI 厂商的 API Key。"}, status_code=200)
+    if not conf.get("base") or not conf.get("model"):
+        return JSONResponse({"ok": False, "msg": "请检查服务商、Base URL 和模型名。"}, status_code=200)
+    try:
+        t0 = time.time()
+        sample = L.chat_once(
+            [{"role": "system", "content": "你是学术摘要测试器。只输出一段约80字中文摘要。"},
+             {"role": "user", "content": "样本文献研究程序正义与制度信任，采用访谈和案例比较，结论强调参与、尊重与理由说明。"}],
+            conf.get("base"), conf.get("key"), conf.get("model"), max_tokens=180, temperature=0.1, timeout=45,
+        )
+        if not str(sample or "").strip():
+            return JSONResponse({"ok": False, "msg": "模型返回了空内容，请检查模型名。"}, status_code=200)
+        return {"ok": True, "latency_ms": int((time.time() - t0) * 1000), "preview": str(sample).strip()[:180]}
+    except Exception as e:
+        return JSONResponse({"ok": False, "msg": f"摘要模型测试失败：{e}"}, status_code=200)
 
 # ── 期刊分级学科（整库锁定单学科；journal_grading 期刊权重引擎用）──
 class DiscQ(BaseModel):
@@ -3876,7 +3915,7 @@ def index_sac_backfill(q: SacBackfillQ = None):
     import sac as SAC
     if not SAC.key_available():
         return {"ok": False, "need_key": True,
-                "msg": "生成检索摘要需要 API key：请到 设置 → 检索 → 检索引擎 填一个 SiliconFlow 免费 Key（或在 设置 → 建库 → 检索摘要 → 高级 单独填），再来生成。"}
+                "msg": "生成检索摘要需要可用的 AI：请到 设置 → 建库 → 检索摘要，在“PaperPiggy 自动生成”下选择复用 SiliconFlow Key，或填写其他 AI 厂商的 Key 和模型。"}
     only = None
     if q and q.keys:
         only = {T.safe_name(k) for k in q.keys if k}

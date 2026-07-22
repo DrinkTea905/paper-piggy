@@ -377,7 +377,7 @@ server 侧 `GET /agent/tasks`（`server.py:649`）解析 `任务.md` 的 frontma
 
 ---
 
-## 8. SAC（深索摘要，`sac.py`）
+## 8. SAC（检索摘要，`sac.py`）
 
 **是什么**：用 LLM 给每篇文献生成 ~150 字中文摘要，作为**嵌入前缀**提升检索召回（`sac.py:3-7`）。
 存 `data/summaries/summaries.json`，键是 `safe_name(stem)`。
@@ -391,7 +391,7 @@ server 侧 `GET /agent/tasks`（`server.py:649`）解析 `任务.md` 的 frontma
 
 **三种 generator**（`settings.sac_conf()`，`settings.py:177-185`，字段 `generator ∈ server|agent|off`，老配置按 `enabled` 迁移）：
 
-- `server` —— 服务端用 API key 自动生成（`sac.enabled()` 仅在此档为真，`sac.py:63-68`）；
+- `server` —— PaperPiggy 自动生成（`sac.enabled()` 仅在此档为真）。`source=reuse` 时只复用检索引擎的 SiliconFlow Key，并固定使用当前默认的简单免费模型；`source=custom` 时使用摘要自己的 `provider/base/key/model`，可接 DeepSeek 等文本生成厂商。两条路径不能混用 Key；旧版已有独立摘要 Key 的配置迁移为 `custom`；
 - `agent` —— **服务端不生成**，摘要由 Agent 经 `POST /index/deep_agent`（`server.py:2896`）写进 `summaries.json`（`sac.write_summaries`，`sac.py:71`）。流程：`deep_prepare`（切块）→ 返回正文节选给 Agent → Agent 写摘要 → `deep_embed`（带摘要嵌入）。**这一档下应用内点普通深索是不产摘要的**；
 - `off` —— 不生成，退化为纯文本嵌入。
 
