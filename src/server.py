@@ -5,10 +5,11 @@
 两种用法：① 内置 chat（用户自备 LLM key）② 检索 API（任何 agent 调 /search，不需 key）。
 错误日志：后端异常 + 前端上报都写 logs/errors.log，GET /errors 可导出（方便反馈问题）。
 """
-import sys, os, json, time, threading, subprocess, traceback, re
+import sys, os, json, time, threading, subprocess, traceback, re, atexit
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import config as C
+import document_formats as DF
 import retriever as R
 import llm as L
 import wiki_store as W
@@ -23,11 +24,159 @@ app = FastAPI(title="本地知识库")
 #  proc/cancelled：整库深索(scope=all)跑在 subprocess 里，此前不留句柄 → 一旦开始无法停，
 #  可能空跑数小时并烧掉 API 额度。存下 Popen 供 POST /build/cancel 终止。
 BUILD = {"running": False, "stage": None, "log": [], "started": None, "rc": None,
-         "proc": None, "cancelled": False,
+         "proc": None, "job": None, "cancelled": False,
          "bulk": False}   # BF35：当前 deep 构建是否整库深索(scope=all)，队列批次为 False
 # B1：build 守卫锁——把「判 running + 置 True」做成原子并在调用线程内同步置位，
 # 杜绝多路触发并发起两个 build_all 子进程写坏同一 LanceDB/bm25/papers.jsonl。
 _BUILD_LOCK = threading.Lock()
+
+
+def _backup_running():
+    """BACKUP 在模块后部定义；通过 globals 安全查询，统一阻止维护任务互踩。"""
+    return bool((globals().get("BACKUP") or {}).get("running"))
+
+
+def _maintenance_busy_locked():
+    """调用方必须持有 _BUILD_LOCK。"""
+    if BUILD["running"]:
+        return "已有建库、深索或索引维护任务在运行，请稍后再试。"
+    if _backup_running():
+        return "正在备份或恢复数据，请等它结束后再试。"
+    return None
+
+
+class _WindowsJob:
+    """把一个 build 子进程及其后代绑进可终止的 Windows Job Object。
+
+    Job 句柄始终指向原对象，不依赖可能被系统复用的 PID。server 被正常或强制终止时，
+    句柄都会由系统关闭；KILL_ON_JOB_CLOSE 随即清理仍存活的 build_all 子进程树。
+    """
+    _KILL_ON_CLOSE = 0x00002000
+    _EXTENDED_LIMIT_INFO = 9
+
+    def __init__(self):
+        if sys.platform != "win32":
+            raise RuntimeError("Windows Job Object 只能在 Windows 使用")
+        import ctypes
+        from ctypes import wintypes
+
+        class _BasicLimit(ctypes.Structure):
+            _fields_ = [
+                ("PerProcessUserTimeLimit", ctypes.c_longlong),
+                ("PerJobUserTimeLimit", ctypes.c_longlong),
+                ("LimitFlags", wintypes.DWORD),
+                ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t),
+                ("ActiveProcessLimit", wintypes.DWORD),
+                ("Affinity", ctypes.c_size_t),
+                ("PriorityClass", wintypes.DWORD),
+                ("SchedulingClass", wintypes.DWORD),
+            ]
+
+        class _IoCounters(ctypes.Structure):
+            _fields_ = [
+                ("ReadOperationCount", ctypes.c_ulonglong),
+                ("WriteOperationCount", ctypes.c_ulonglong),
+                ("OtherOperationCount", ctypes.c_ulonglong),
+                ("ReadTransferCount", ctypes.c_ulonglong),
+                ("WriteTransferCount", ctypes.c_ulonglong),
+                ("OtherTransferCount", ctypes.c_ulonglong),
+            ]
+
+        class _ExtendedLimit(ctypes.Structure):
+            _fields_ = [
+                ("BasicLimitInformation", _BasicLimit),
+                ("IoInfo", _IoCounters),
+                ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                ("PeakJobMemoryUsed", ctypes.c_size_t),
+            ]
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+        kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+        kernel32.SetInformationJobObject.argtypes = [
+            wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+        kernel32.SetInformationJobObject.restype = wintypes.BOOL
+        kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+        kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+        kernel32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+        kernel32.TerminateJobObject.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+
+        handle = kernel32.CreateJobObjectW(None, None)
+        if not handle:
+            raise ctypes.WinError(ctypes.get_last_error())
+        info = _ExtendedLimit()
+        info.BasicLimitInformation.LimitFlags = self._KILL_ON_CLOSE
+        if not kernel32.SetInformationJobObject(
+                handle, self._EXTENDED_LIMIT_INFO, ctypes.byref(info), ctypes.sizeof(info)):
+            err = ctypes.get_last_error()
+            kernel32.CloseHandle(handle)
+            raise ctypes.WinError(err)
+        self._ctypes = ctypes
+        self._wintypes = wintypes
+        self._kernel32 = kernel32
+        self._handle = handle
+        self._lock = threading.Lock()
+
+    def assign(self, proc):
+        with self._lock:
+            if not self._handle:
+                raise RuntimeError("Job Object 已关闭")
+            ph = self._wintypes.HANDLE(int(proc._handle))
+            if not self._kernel32.AssignProcessToJobObject(self._handle, ph):
+                raise self._ctypes.WinError(self._ctypes.get_last_error())
+
+    def terminate(self, exit_code=1):
+        with self._lock:
+            if not self._handle:
+                return
+            if not self._kernel32.TerminateJobObject(self._handle, int(exit_code)):
+                raise self._ctypes.WinError(self._ctypes.get_last_error())
+
+    def close(self):
+        with self._lock:
+            handle, self._handle = self._handle, None
+            if handle:
+                self._kernel32.CloseHandle(handle)
+
+
+_ACTIVE_BUILD_JOBS = set()
+_ACTIVE_BUILD_JOBS_LOCK = threading.Lock()
+
+
+def _new_build_job():
+    if sys.platform != "win32":
+        return None
+    job = _WindowsJob()
+    with _ACTIVE_BUILD_JOBS_LOCK:
+        _ACTIVE_BUILD_JOBS.add(job)
+    return job
+
+
+def _close_build_job(job):
+    if job is None:
+        return
+    with _ACTIVE_BUILD_JOBS_LOCK:
+        _ACTIVE_BUILD_JOBS.discard(job)
+    job.close()
+
+
+def _close_all_build_jobs():
+    with _ACTIVE_BUILD_JOBS_LOCK:
+        jobs = list(_ACTIVE_BUILD_JOBS)
+        _ACTIVE_BUILD_JOBS.clear()
+    for job in jobs:
+        try:
+            job.close()  # KILL_ON_JOB_CLOSE：server 退出时不遗留 build 子孙进程
+        except Exception:
+            pass
+
+
+atexit.register(_close_all_build_jobs)
 # 补生成摘要（SAC backfill）后台任务状态：给「已深索但缺检索摘要」的篇补摘要 + 重嵌入。
 # running 期间禁止重复触发；phase=生成中/重嵌入中；前端经 /index/status 的 sac_backfill 读它。
 BACKFILL = {"running": False, "phase": "", "done": 0, "total": 0, "fail": 0, "msg": "", "at": 0.0}
@@ -96,7 +245,7 @@ def clear_errors():
         pass
     return {"ok": True}
 
-# ── 自动更新：源变化(Zotero 新条目/文件夹新 PDF)时后台【按天+指定时刻】增量更新 ──
+# ── 自动更新：源变化（Zotero 新条目/文件夹新全文文件）时后台【按天+指定时刻】增量更新 ──
 AUTO = {"sig": None, "last": 0, "last_check": 0.0, "last_build": 0.0, "last_result": ""}
 _AUTO_STATE_FILE = C.STATE / "auto_update_state.json"
 
@@ -151,9 +300,9 @@ def _source_signature():
         import settings as S
         if S.source() == "folder":
             import folder_source as FS
-            pdfs = FS.scan(S.folder_dir())
-            mt = max((Path(p).stat().st_mtime for p in pdfs), default=0)
-            return f"folder:{len(pdfs)}:{int(mt)}"
+            files = FS.scan(S.folder_dir())
+            mt = max((Path(p).stat().st_mtime for p in files), default=0)
+            return f"folder:{len(files)}:{int(mt)}"
         import zotero_source as Z
         dd = Z.detect_data_dir()
         sq = (Path(dd) / "zotero.sqlite") if dd else None
@@ -283,6 +432,7 @@ class AutoUpdateQ(BaseModel):
     at_time: Optional[str] = None
     catch_up_on_launch: Optional[bool] = None
     delete_sync: Optional[bool] = None       # C3：folder 模式是否同步删除（默认关）
+    confirm_delete_sync: bool = False        # 首次从关→开必须由调用方显式确认，不能只靠前端弹窗
     interval_min: Optional[int] = None       # 兼容旧前端字段（不再用于调度）
 
 def _auto_update_view():
@@ -313,7 +463,11 @@ def set_auto_update(q: AutoUpdateQ):
         h, m = _parse_hhmm(q.at_time)
         patch["at_time"] = f"{h:02d}:{m:02d}"
     if q.catch_up_on_launch is not None: patch["catch_up_on_launch"] = bool(q.catch_up_on_launch)
-    if q.delete_sync is not None: patch["delete_sync"] = bool(q.delete_sync)
+    if q.delete_sync is not None:
+        current = bool((S.load().get("auto_update") or {}).get("delete_sync", False))
+        if q.delete_sync and not current and not q.confirm_delete_sync:
+            raise HTTPException(status_code=400, detail="开启删除同步需要明确确认")
+        patch["delete_sync"] = bool(q.delete_sync)
     if q.interval_min is not None: patch["interval_min"] = max(5, int(q.interval_min))
     S.save({"auto_update": patch})
     return {"ok": True, **_auto_update_view()}
@@ -349,17 +503,26 @@ def set_retrieval_memory(q: RetrievalMemoryQ):
         R.release_retrieval_if_idle(mins * 60)
     return {"ok": True, **_retrieval_memory_view()}
 
+class PurgeDeletedQ(BaseModel):
+    preview: bool = False
+    confirm: bool = False
+
+
 @app.post("/setup/purge_deleted")
-def purge_deleted():
+def purge_deleted(q: PurgeDeletedQ = None):
     """删除同步：把「源里已删、库里还留着」的文献清出索引。
        folder 模式——删除同步在 stage=folder 增量构建里已内建，这里直接触发一次增量。
        zotero 模式——算差集手动清理（带安全阈值：读不到活库/一次要删过半则中止，防误抹整库）。"""
     import settings as S
+    q = q or PurgeDeletedQ()
     src = S.source()
     if src == "folder":
+        if not q.confirm:
+            return {"ok": False, "need_confirm": True, "mode": "folder", "would_remove": None,
+                    "msg": "将扫描受管文件夹，并从索引清理源文件已不存在的条目。确认后才会执行。"}
         ok = _run_build("folder")
         return {"ok": ok, "mode": "folder",
-                "msg": "已触发文件夹增量更新——删除的 PDF 会在本次更新中自动清出。" if ok else "有任务在跑，稍后再试。"}
+                "msg": "已触发文件夹增量更新——删除的全文文件会在本次更新中自动清出。" if ok else "有任务在跑，稍后再试。"}
     # zotero 模式
     try:
         import zotero_source as Z
@@ -371,12 +534,19 @@ def purge_deleted():
     indexed = set(_load_papers().keys())
     gone = [k for k in indexed if k not in live]
     if not gone:
-        return {"ok": True, "mode": "zotero", "removed": 0, "msg": "没有需要清理的已删除文献。"}
-    if len(gone) > max(20, len(indexed) // 2):
+        return {"ok": True, "mode": "zotero", "removed": 0, "would_remove": 0,
+                "msg": "没有需要清理的已删除文献。"}
+    # 两条安全阈值独立生效：超过 20 篇，或超过现有库一半，任一命中都拒绝自动清理。
+    if len(gone) > 20 or len(gone) > len(indexed) // 2:
         return JSONResponse({"ok": False, "removed": 0,
-            "msg": f"检测到 {len(gone)} 篇需清理（超过库的一半），已中止以防误删。请确认 Zotero 库完整后重试。"},
+            "would_remove": len(gone),
+            "msg": f"检测到 {len(gone)} 篇需清理（超过 20 篇或库的一半），已中止以防误删。请确认 Zotero 库完整后重试。"},
             status_code=400)
-    if BUILD["running"]:
+    if q.preview or not q.confirm:
+        return {"ok": False, "need_confirm": True, "mode": "zotero",
+                "would_remove": len(gone), "count": len(gone),
+                "msg": f"将从索引清理 {len(gone)} 篇 Zotero 中已删除的文献。确认后才会执行。"}
+    if BUILD["running"] or _backup_running():
         return JSONResponse({"ok": False, "msg": "有构建任务在跑，稍后再清理。"}, status_code=400)
     try:
         import folder_ingest as FI
@@ -472,13 +642,15 @@ def health():
     papers = len(R.M.get("papers", {}))          # 去重篇数（题录数，L/F 档都在内存）
     blocks = int(R.M.get("row_count", 0)) if mode == "full" else 0  # LanceDB 总行数；正文/向量不常驻 Python
     n = blocks if mode == "full" else papers     # 兼容旧字段
-    return {"ready": R.STATE.get("ready", False), "mode": mode,
+    return {"app": "paperpiggy", "service": "paperpiggy-local-api",
+            "ready": R.STATE.get("ready", False), "mode": mode,
+            "error": R.STATE.get("error"),
             "n": n, "papers": papers, "blocks": blocks, "building": BUILD["running"],
             "deep": len(_deep_keys()),          # F10：「全部文献」显示 已深索/总数
             "rev": _lib_rev(),                  # 库修订号（分域）：前端据此在库/综述/交付物变动后自动刷可见页
             "loading": _LOADING,                # 冷启动读取库目录期间为 True → 前端显示遮罩，完成后淡出
             "retrieval": R.retrieval_status(),  # 检索组件冷/热态；设置页据此解释内存策略
-            "pid": os.getpid()}                 # 本 server 进程 pid → launcher 关窗时按 pid taskkill /T 杀整棵树，根治 orphan 堆积
+            "pid": os.getpid()}                 # launcher 只在明确身份复核后，用已打开的进程句柄终止
 
 # ── Agent / MCP 接入信息（给应用内 Agent 页，吐出本机真实可用的接入命令）──
 @app.get("/agent/mcp-config")
@@ -613,7 +785,8 @@ def setup_detect():
     import settings as S
     st = S.load()
     backend = st.get("backend", "local")
-    api_key_set = bool((st.get("api") or {}).get("key"))
+    api_conf = st.get("api") or {}
+    api_key_set = bool(api_conf.get("key"))
     models_local = (C.MODELS / "bge-m3-onnx" / "model_quantized.onnx").exists()
     reranker_local = (C.MODELS / "bge-reranker-v2-m3-onnx" / "model_quantized.onnx").exists()
     # 数据源：优先 settings.source（用户/向导已选），否则据 manifest / 探到 zotero 推断
@@ -636,8 +809,11 @@ def setup_detect():
         "folder_meta_ready": bool(meta_ready),
         "backend": backend,                        # local | api
         "api_key_set": api_key_set,
+        "api_base": api_conf.get("base") or "https://api.siliconflow.cn/v1",
+        "api_embed_model": api_conf.get("embed_model") or "BAAI/bge-m3",
+        "api_rerank_model": api_conf.get("rerank_model") or "BAAI/bge-reranker-v2-m3",
         # K3：各 key 末4位掩码（只回末4位、绝不回明文），供前端展示「已填 ••••1234」
-        "api_key_last4": _last4((st.get("api") or {}).get("key")),
+        "api_key_last4": _last4(api_conf.get("key")),
         "sac_key_last4": _last4((st.get("sac") or {}).get("key")),
         # 引擎就绪：本地模式看模型文件；API 模式看 key 是否已填
         "models_ready": models_local if backend == "local" else api_key_set,
@@ -654,7 +830,7 @@ class ConnectQ(BaseModel):
 
 @app.post("/setup/connect")
 def setup_connect(q: ConnectQ):
-    """校验数据源并返回条目数。source=folder → 选/建文件夹并计 PDF 数；否则读 zotero.sqlite。"""
+    """校验数据源并返回条目数。source=folder → 计可读全文文件；否则读 zotero.sqlite。"""
     import settings as S
     # BF17b：建库子进程正在读源（zotero 临时副本/受管文件夹），此时切换数据源会与之互踩
     if BUILD["running"]:
@@ -683,12 +859,16 @@ def setup_connect(q: ConnectQ):
         if Z.available(q.zotero_dir):
             papers = Z.load_papers(q.zotero_dir)
             n = len(papers)
-            with_pdf = sum(1 for p in papers if p.get("has_pdf"))   # F1：向导计数区分「全库 / 将入库」
+            with_fulltext = sum(1 for p in papers if p.get("has_fulltext"))
+            by_format = {fmt: sum(1 for p in papers if p.get("fulltext_format") == fmt)
+                         for fmt in DF.FORMAT_PRIORITY}
             # BF2：用户手选的 zotero 数据目录此前校验完即丢，重启后 zotero_source 又退回自动探测；
             # 空串=没手选（沿用自动探测），键名 zotero_dir 与 settings.DEFAULT / zotero_source 约定一致。
             S.save({"source": "zotero", "zotero_dir": q.zotero_dir or ""})
             return {"ok": True, "source": "zotero.sqlite", "entries": n,
-                    "with_pdf": with_pdf, "no_pdf": n - with_pdf,
+                    "with_fulltext": with_fulltext, "no_fulltext": n - with_fulltext,
+                    "with_pdf": sum(1 for p in papers if p.get("has_pdf")),
+                    "by_fulltext_format": by_format,
                     "dir": q.zotero_dir or str(Z.detect_data_dir())}
     except Exception as e:
         log_error("setup/connect zotero", repr(e))
@@ -721,7 +901,8 @@ def setup_folder(q: FolderQ):
         mr = FM.available()
     except Exception:
         mr = False
-    return {"ok": True, "folder_dir": str(p.resolve()), "pdf_count": n, "folder_meta_ready": mr}
+    return {"ok": True, "folder_dir": str(p.resolve()), "file_count": n,
+            "pdf_count": n, "folder_meta_ready": mr}
 
 def _default_papers_dir():
     """文件夹模式的建议默认目录：应用自己的数据目录旁 <HOME>/papers（DATA=HOME/data）。"""
@@ -739,14 +920,14 @@ class ImportOptQ(BaseModel):
 
 @app.post("/setup/import_only_pdf")
 def setup_import_only_pdf(q: ImportOptQ):
-    """Zotero 模式：是否只导入有 PDF 的条目（切换后需重建即时索引才生效）。"""
+    """兼容旧路由名：是否只导入有可读取全文附件的题录。"""
     import settings as S
     S.save({"import_only_pdf": bool(q.only_pdf)})
     return {"ok": True, "only_pdf": bool(q.only_pdf)}
 
 @app.post("/setup/open_folder")
 def setup_open_folder():
-    """在系统文件管理器里打开受管文件夹（副本#7：跳转让用户直接放 PDF）。"""
+    """在系统文件管理器里打开受管文件夹。"""
     import settings as S
     d = S.folder_dir() or _default_papers_dir()
     try:
@@ -997,13 +1178,18 @@ def _reset_vectors_for_reembed():
     """换引擎：删掉旧引擎建的全部向量与嵌入进度，让下次 build 用新引擎【全量】重嵌。
        保留 extracted/chunks 产物（深索只需重嵌、不必重抽）。wiki 行会在 load_all 时由
        reindex_missing_pages 自动回灌。返回 True=已重置。"""
+    import shutil
+    progress_files = (C.META_EMBEDDED, C.STATE / "embedded_keys.txt")
+    staged = []
     try:
-        for f in (C.META_EMBEDDED, C.STATE / "embedded_keys.txt"):
-            try:
-                if f.exists():
-                    f.unlink()
-            except Exception as e:
-                log_error("reembed unlink", repr(e))
+        # 先把进度文件可逆地挪走。若 drop_table 失败，原样放回；绝不留下
+        # “旧表仍在但进度已删”的半切换状态。
+        stamp = f"{os.getpid()}-{int(time.time() * 1000)}"
+        for f in progress_files:
+            if f.exists():
+                tmp = f.with_name(f.name + f".backend-switch-{stamp}")
+                shutil.move(str(f), str(tmp))
+                staged.append((f, tmp))
         import lancedb
         db = lancedb.connect(str(C.LANCEDB_DIR))
         if C.TABLE_NAME in db.table_names():
@@ -1013,19 +1199,33 @@ def _reset_vectors_for_reembed():
             if C.INDEX_MANIFEST.exists():
                 man = json.loads(C.INDEX_MANIFEST.read_text(encoding="utf-8"))
                 man.pop("backend", None)
-                C.INDEX_MANIFEST.write_text(json.dumps(man, ensure_ascii=False, indent=2), encoding="utf-8")
-        except Exception:
-            pass
+                man.pop("embedding_identity", None)
+                tmp = C.INDEX_MANIFEST.with_suffix(".json.tmp")
+                tmp.write_text(json.dumps(man, ensure_ascii=False, indent=2), encoding="utf-8")
+                os.replace(tmp, C.INDEX_MANIFEST)
+        except Exception as e:
+            log_error("reset vectors manifest", repr(e))
+        for _, tmp in staged:
+            try:
+                tmp.unlink(missing_ok=True)
+            except Exception as e:
+                log_error("reset vectors cleanup", repr(e))
         return True
     except Exception as e:
         log_error("reset vectors for reembed", repr(e), traceback.format_exc())
+        for original, tmp in reversed(staged):
+            try:
+                if tmp.exists() and not original.exists():
+                    shutil.move(str(tmp), str(original))
+            except Exception as restore_error:
+                log_error("reset vectors rollback", repr(restore_error), traceback.format_exc())
         return False
 
 
 def _reset_index_full():
     """『清空并重建』：把全部索引产物移到一个可恢复的 stash + drop 向量表，让下次「更新知识库」
        从头重建。重建时题录会重新**去重**（合并「已深索、在现有库上删不掉」的重复副本）、并按
-       「只导 PDF」严格重新导入。
+       「只导入有全文附件」严格重新导入。
        **只清索引产物**，明确**保留**：综述 wiki / 收藏夹分类 / 期刊分级 / 检索摘要 SAC /
        页码映射 pagemap / 设置 / 0_Agent 工作区（人写的、花过 API 钱的、或重解析 PDF 很贵的）。
        stash 里放的是纯文件产物（chunks/extracted/bm25/state/manifest），重建确认无误后用户可删；
@@ -1095,8 +1295,9 @@ def index_reset(q: ResetIndexQ = None):
     if not (q and q.confirm):
         return {"ok": False, "need_confirm": True}
     with _BUILD_LOCK:
-        if BUILD["running"]:
-            return {"ok": False, "busy": True, "msg": "正在建索引，请等它结束或先停止，再清空。"}
+        busy = _maintenance_busy_locked()
+        if busy:
+            return {"ok": False, "busy": True, "msg": busy}
         BUILD["running"] = True; BUILD["stage"] = "reset"   # 占位防清空途中有 build 抢锁
     try:
         r = _reset_index_full()
@@ -1105,7 +1306,7 @@ def index_reset(q: ResetIndexQ = None):
             BUILD["running"] = False; BUILD["stage"] = ""
     if r.get("ok"):
         r["msg"] = ("索引已清空（旧的提取/切块/向量已移到 " + r["stash"] + "，确认重建无误后可自行删除）。"
-                    "下一步：① 点顶栏『⟳ 更新知识库』重建题录+语义层（会自动去重、按只导 PDF 重新导入）；"
+                    "下一步：① 点顶栏『⟳ 更新知识库』重建题录+语义层（会自动去重、按只导入有全文附件重新导入）；"
                     "② 完成后到首页或『浏览』点『深索全部』重新深索。")
     else:
         r["msg"] = "清空未完全成功（详见 failed）。可重启应用后重试；已移走的产物在 " + r.get("stash", "") + "。"
@@ -1113,34 +1314,49 @@ def index_reset(q: ResetIndexQ = None):
 
 @app.post("/setup/backend")
 def setup_backend(q: BackendQ):
-    """保存检索引擎后端选择（本地/API）。API 模式存 SiliconFlow 等的 key。
+    """保存检索引擎后端选择（本地/SiliconFlow API）。高级设置仍兼容同时提供嵌入与重排的服务。
        引擎（后端 或 嵌入模型）变化且已有向量时：清进度+删表，让随后的重建用新引擎【全量】重嵌，
        避免新旧两套向量在同一张表里混用、dense 召回静默劣化（此前只发一句 warn、实际增量根本不重嵌）。"""
     import settings as S
     old = S.load()
     old_backend = old.get("backend")
-    old_embed = (old.get("api") or {}).get("embed_model")
-    patch = {"backend": "api" if q.backend == "api" else "local"}
+    target_backend = "api" if q.backend == "api" else "local"
+    patch = {"backend": target_backend}
     api = {}
     if q.base: api["base"] = q.base
     if q.key is not None: api["key"] = q.key
     if q.embed_model: api["embed_model"] = q.embed_model
     if q.rerank_model: api["rerank_model"] = q.rerank_model
     if api: patch["api"] = api
-    st = S.save(patch)
-    new_backend = st.get("backend")
-    new_embed = (st.get("api") or {}).get("embed_model")
+    old_api = old.get("api") or {}
+    candidate = json.loads(json.dumps(old))
+    candidate["backend"] = target_backend
+    candidate_api = candidate.setdefault("api", {})
+    candidate_api.update(api)
     # 引擎变化 = 后端切换，或 API 模式下换了嵌入模型（维度可能不同，查询向量与表维度不符会直接报错）
-    engine_changed = (old_backend != new_backend) or (new_backend == "api" and old_embed and old_embed != new_embed)
+    engine_changed = S.embedding_identity(old) != S.embedding_identity(candidate)
     has_vectors = C.META_EMBEDDED.exists() or R.STATE.get("mode") == "full"
     reembed, had_deep, warn = False, 0, None
-    if engine_changed and has_vectors:
-        try:
-            had_deep = len(_deep_keys())
-        except Exception:
-            had_deep = 0
-        reembed = _reset_vectors_for_reembed()
-        warn = "检索引擎已切换：旧向量已清除，请重建索引以用新引擎全量重嵌。"
+    with _BUILD_LOCK:
+        busy = _maintenance_busy_locked()
+        if busy:
+            return {"ok": False, "busy": True, "msg": busy}
+        BUILD["running"] = True; BUILD["stage"] = "backend_switch"
+    try:
+        if engine_changed and has_vectors:
+            try:
+                had_deep = len(_deep_keys())
+            except Exception:
+                had_deep = 0
+            reembed = _reset_vectors_for_reembed()
+            if not reembed:
+                return {"ok": False, "backend": old_backend, "reembed": False,
+                        "msg": "旧向量未能安全清理，检索引擎设置未更改。请重启后重试。"}
+            warn = "检索引擎已切换：旧向量已清除，请重建索引以用新引擎全量重嵌。"
+        st = S.save(patch)
+    finally:
+        with _BUILD_LOCK:
+            BUILD["running"] = False; BUILD["stage"] = ""
     return {"ok": True, "backend": st.get("backend"), "reembed": reembed, "had_deep": had_deep,
             "api_key_set": bool((st.get("api") or {}).get("key")), "warn": warn}
 
@@ -1171,6 +1387,8 @@ def setup_test_api(q: BackendQ):
 class SacQ(BaseModel):
     enabled: Optional[bool] = None
     generator: Optional[str] = None       # K2：server（服务端用API Key）| agent（交给Agent）| off（不生成）
+    source: Optional[str] = None          # reuse（复用 SiliconFlow 检索 Key）| custom（另选文本生成厂商）
+    provider: Optional[str] = None
     base: Optional[str] = None
     key: Optional[str] = None
     model: Optional[str] = None
@@ -1179,15 +1397,19 @@ class SacQ(BaseModel):
 def get_sac():
     import settings as S, sac as SAC
     sc = S.sac_conf()
+    api = S.api_conf()
+    reuse_ready = bool(api.get("key") and "siliconflow" in (api.get("base") or "").lower())
     return {"enabled": bool(sc.get("enabled")), "generator": sc.get("generator"),
+            "source": sc.get("source"), "provider": sc.get("provider"),
             "base": sc.get("base"), "model": sc.get("model"),
             "key_set": bool(sc.get("key")), "key_last4": _last4(sc.get("key")),   # K3 掩码
+            "reuse_ready": reuse_ready, "reuse_key_last4": _last4(api.get("key")),
+            "reuse_model": S.DEFAULT["sac"]["model"],
             "effective_ready": SAC.enabled()}
 
 @app.post("/setup/sac")
 def setup_sac(q: SacQ):
-    """配置深索摘要生成方（K2 generator 三选一）。key 空时会自动复用 API 后端的 key。
-       generator=server→服务端自动生成；agent→交给 Agent（服务端不生成）；off→不生成。"""
+    """配置检索摘要生成方，以及 PaperPiggy 自动生成所用的明确凭据来源。"""
     import settings as S, sac as SAC
     patch = {}
     if q.generator in ("server", "agent", "off"):
@@ -1196,14 +1418,43 @@ def setup_sac(q: SacQ):
     elif q.enabled is not None:                           # 老前端只传 enabled 时的兼容路径
         patch["enabled"] = bool(q.enabled)
         patch["generator"] = "server" if q.enabled else "off"
+    if q.source in ("reuse", "custom"):
+        patch["source"] = q.source
+    if q.provider is not None:
+        patch["provider"] = q.provider
     # BF契约3：判空一律用 is not None——空字符串=用户清空该项要落盘；
     # 旧的 if q.base 会把"清空 base/model"静默吞掉（前端 base/model 每次都发，key 仅 dirty 才发）。
     if q.base is not None: patch["base"] = q.base
     if q.key is not None: patch["key"] = q.key
     if q.model is not None: patch["model"] = q.model
     S.save({"sac": patch})
+    return {"ok": True, **get_sac()}
+
+
+@app.post("/setup/test_sac")
+def test_sac():
+    """显式测试“其他 AI 厂商”摘要配置；只发起一次很短的文本生成调用。"""
+    import settings as S, sac as SAC
     sc = S.sac_conf()
-    return {"ok": True, "generator": sc.get("generator"), "effective_ready": SAC.enabled()}
+    if sc.get("source") != "custom":
+        return JSONResponse({"ok": False, "msg": "当前选择的是复用 SiliconFlow，无需单独测试摘要模型。"}, status_code=200)
+    conf = SAC._conf()
+    if not conf.get("key"):
+        return JSONResponse({"ok": False, "msg": "请先填写所选 AI 厂商的 API Key。"}, status_code=200)
+    if not conf.get("base") or not conf.get("model"):
+        return JSONResponse({"ok": False, "msg": "请检查服务商、Base URL 和模型名。"}, status_code=200)
+    try:
+        t0 = time.time()
+        sample = L.chat_once(
+            [{"role": "system", "content": "你是学术摘要测试器。只输出一段约80字中文摘要。"},
+             {"role": "user", "content": "样本文献研究程序正义与制度信任，采用访谈和案例比较，结论强调参与、尊重与理由说明。"}],
+            conf.get("base"), conf.get("key"), conf.get("model"), max_tokens=180, temperature=0.1, timeout=45,
+        )
+        if not str(sample or "").strip():
+            return JSONResponse({"ok": False, "msg": "模型返回了空内容，请检查模型名。"}, status_code=200)
+        return {"ok": True, "latency_ms": int((time.time() - t0) * 1000), "preview": str(sample).strip()[:180]}
+    except Exception as e:
+        return JSONResponse({"ok": False, "msg": f"摘要模型测试失败：{e}"}, status_code=200)
 
 # ── 期刊分级学科（整库锁定单学科；journal_grading 期刊权重引擎用）──
 class DiscQ(BaseModel):
@@ -1211,18 +1462,32 @@ class DiscQ(BaseModel):
 
 @app.get("/setup/discipline")
 def get_discipline():
-    """当前锁定学科 + 可选学科清单（供设置面板下拉）。personal=True 的是个人档（如 law_personal）。"""
+    """当前锁定学科 + 可选学科清单。娱乐命名只做显示别名，不复制规则配置。"""
     import settings as S
+    import grading_svc as GS
     cur = S.discipline()
     items = []
     try:
         import journal_grading as JG
         for did, meta in JG.load_data().disciplines().items():
             items.append({"id": did, "name": meta.get("name", did),
-                          "personal": did.endswith("_personal")})
+                          "personal": did.endswith("_personal"),
+                          "band_names": {b: GS.band_name(b, did) for b in GS.BAND_RANK}})
+        if any(x["id"] == "law_personal" for x in items):
+            items.append({
+                "id": "law_personal_fun", "name": "法学（开发者增强：夯到拉）",
+                "personal": True,
+                "band_names": {b: GS.band_name(b, "law_personal_fun") for b in GS.BAND_RANK},
+                "notice": "仅供娱乐：与“法学（开发者增强）”使用完全相同的目录、权重、排序、缓存和手动改档规则，只改变四档显示名。",
+                "alias_of": "law_personal",
+            })
     except Exception:
-        items = [{"id": cur, "name": cur, "personal": cur.endswith("_personal")}]
-    return {"current": cur, "disciplines": items}
+        items = [{"id": cur, "name": cur, "personal": cur.endswith("_personal"),
+                  "band_names": {b: GS.band_name(b, cur) for b in GS.BAND_RANK}}]
+    current_meta = next((x for x in items if x["id"] == cur), items[0] if items else {})
+    return {"current": cur, "disciplines": items,
+            "band_names": current_meta.get("band_names", {}),
+            "notice": current_meta.get("notice", "")}
 
 @app.post("/setup/discipline")
 def setup_discipline(q: DiscQ):
@@ -1230,6 +1495,9 @@ def setup_discipline(q: DiscQ):
        并后台预热新学科的分级分布缓存，让库总览/浏览稍后刷新即见新口径（不阻塞本请求）。"""
     import settings as S
     if q.discipline:
+        allowed = {x.get("id") for x in get_discipline().get("disciplines", [])}
+        if q.discipline not in allowed:
+            return JSONResponse({"detail": f"未知学科：{q.discipline}"}, status_code=400)
         S.save({"journal_discipline": q.discipline})
         try:
             import grading_svc as GS
@@ -1238,13 +1506,60 @@ def setup_discipline(q: DiscQ):
             log_error("discipline warm", repr(e))
     return {"ok": True, "current": S.discipline()}
 
+
+class GradingMappingQ(BaseModel):
+    mapping_id: str
+    band: Optional[str] = None
+
+
+@app.post("/grading/mapping")
+def set_grading_mapping(q: GradingMappingQ):
+    """调整当前学科的一项目录/性质映射；空 band 恢复自动，客观目录与客观标签不变。"""
+    try:
+        import grading_svc as GS
+        result = GS.set_mapping_override(q.mapping_id.strip(), (q.band or "").strip() or None)
+        GS.warm_async(_load_papers())
+        return {"ok": True, **result}
+    except ValueError as e:
+        return JSONResponse({"detail": str(e)}, status_code=400)
+    except Exception as e:
+        log_error("grading mapping", repr(e), traceback.format_exc())
+        return JSONResponse({"detail": f"保存映射失败：{e}"}, status_code=500)
+
+
+@app.post("/grading/mapping/reset")
+def reset_grading_mappings():
+    """恢复当前学科的全部出厂映射；不改索引、客观标签或单篇手动改档。"""
+    try:
+        import grading_svc as GS
+        result = GS.clear_mapping_overrides()
+        GS.warm_async(_load_papers())
+        return {"ok": True, **result}
+    except Exception as e:
+        log_error("grading mapping reset", repr(e), traceback.format_exc())
+        return JSONResponse({"detail": f"恢复默认失败：{e}"}, status_code=500)
+
 @app.post("/setup/reset")
 def setup_reset():
     """设置页「恢复默认」：settings.json 覆盖为默认（清 API/SAC key、学科回标准法学、后端回本地、
        检索组件空闲释放回到 10 分钟）。
        浏览器里的对话 LLM key 存 localStorage，由前端另清。"""
     import settings as S
-    st = S.reset()
+    old = S.load()
+    has_vectors = C.META_EMBEDDED.exists() or R.STATE.get("mode") == "full"
+    with _BUILD_LOCK:
+        busy = _maintenance_busy_locked()
+        if busy:
+            return {"ok": False, "busy": True, "msg": busy}
+        BUILD["running"] = True; BUILD["stage"] = "settings_reset"
+    try:
+        if old.get("backend", "local") != "local" and has_vectors:
+            if not _reset_vectors_for_reembed():
+                return {"ok": False, "msg": "旧向量未能安全清理，设置没有恢复默认。请重启后重试。"}
+        st = S.reset()
+    finally:
+        with _BUILD_LOCK:
+            BUILD["running"] = False; BUILD["stage"] = ""
     R.release_retrieval_if_idle(0, force=True)
     return {"ok": True, "backend": st.get("backend"), "discipline": st.get("journal_discipline")}
 
@@ -1307,19 +1622,26 @@ def index_status():
     extract_counts = _deep_extract_counts()
     # 旧字段保留给旧前端：语义改为“当前无法进入深索的终态”，不再谎称全是扫描件。
     deep_no_text = sum(extract_counts.get(s, 0)
-                       for s in ("missing_pdf", "invalid_pdf", "ocr_failed"))
+                       for s in ("missing_pdf", "invalid_pdf", "missing_file",
+                                 "invalid_file", "ocr_failed"))
     with _Q_LOCK:
         q_pending = len(QUEUE["pending"]); q_inflight = len(QUEUE["in_flight"])
     return {
         "mode": R.STATE.get("mode"), "ready": R.STATE.get("ready", False),
         "light_done": manifest.get("light_done", False), "source": manifest.get("source"),
-        "papers": manifest.get("papers", 0), "with_pdf": manifest.get("with_pdf", 0),
+        "papers": manifest.get("papers", 0),
+        "with_fulltext": manifest.get("with_fulltext", manifest.get("with_pdf", 0)),
+        "with_pdf": manifest.get("with_pdf", 0),
+        "by_fulltext_format": manifest.get("by_fulltext_format", {}),
         "meta_done": meta_done, "deep_done": deep, "deep_no_text": deep_no_text,
         "extract_status_counts": extract_counts,
         "ocr_pending": extract_counts.get("ocr_pending", 0),
         "ocr_failed": extract_counts.get("ocr_failed", 0),
         "missing_pdf": extract_counts.get("missing_pdf", 0),
         "invalid_pdf": extract_counts.get("invalid_pdf", 0),
+        "missing_file": extract_counts.get("missing_file", 0),
+        "invalid_file": extract_counts.get("invalid_file", 0),
+        "ok_text": extract_counts.get("ok_text", 0),
         # 深索摘要（SAC）：sac_done=已深索且有摘要的篇数；sac_generator=生成方(off/agent/server)；
         # sac_backfill=补生成摘要后台任务的实时进度（前端据此显示进度/禁用重复触发）。
         "sac_done": sac_done, "sac_invalid": sac_invalid, "sac_missing": sac_missing,
@@ -1351,12 +1673,14 @@ def stats_ep():
         dk = _deep_keys()
         s["coverage"]["deep_indexed"] = len(dk)
         s["coverage"]["sac_indexed"] = len(dk & _summary_keys())   # 已深索里有检索摘要的篇数
-    # 最近入库补 has_pdf/deep（供前端三态深索按钮，F45/副本#13）
+    # 最近入库补全文状态（供前端三态深索按钮）
     try:
         pap = _load_papers(); deepk = _deep_keys()
         for r in s.get("recent", []):
             p = pap.get(r.get("key"))
             r["has_pdf"] = bool(p.get("has_pdf")) if p else False
+            r["has_fulltext"] = bool(p.get("has_fulltext")) if p else False
+            r["fulltext_format"] = p.get("fulltext_format", "") if p else ""
             r["deep"] = is_deep(r.get("key"), deepk)
     except Exception as e:
         # BF18：静默 pass 会把 papers.jsonl 损坏等真故障吞成「最近入库按钮不对」，至少记一笔
@@ -1369,8 +1693,11 @@ def stats_ep():
         s["grading_discipline"] = _S.discipline()
         try:                                          # F3：概览显示中文学科名
             import journal_grading as JG
-            s["grading_discipline_name"] = JG.load_data().disciplines().get(
-                _S.discipline(), {}).get("name", _S.discipline())
+            s["grading_discipline_name"] = (
+                "法学（开发者增强：夯到拉）" if _S.discipline() == "law_personal_fun"
+                else JG.load_data().disciplines().get(
+                    _S.discipline(), {}).get("name", _S.discipline())
+            )
         except Exception:
             s["grading_discipline_name"] = _S.discipline()
         dist = GS.weight_dist(_load_papers())
@@ -1379,6 +1706,7 @@ def stats_ep():
             s["grading_pending"] = False
         else:
             s["grading_pending"] = True
+        s["grading_overview"] = GS.overview(_load_papers(), compute=False)
     except Exception as e:
         log_error("stats grading", repr(e))
     # EN-W1：附 wiki 体检摘要（契约3：{"issues":int,"checked_at":str}）。
@@ -1403,7 +1731,7 @@ def _load_papers():
         d = {}
         for line in open(C.PAPERS_JSONL, encoding="utf-8"):
             if line.strip():
-                p = json.loads(line); d[p["key"]] = p
+                p = DF.normalize_record(json.loads(line)); d[p["key"]] = p
         _PC["data"] = d; _PC["mtime"] = mt
     return _PC["data"]
 
@@ -1475,7 +1803,8 @@ def _deep_no_text_keys():
     """
     items = _deep_extract_items()
     blocked = {stem for stem, rec in items.items()
-               if rec.get("status") in ("missing_pdf", "invalid_pdf", "ocr_failed")}
+               if rec.get("status") in ("missing_pdf", "invalid_pdf", "missing_file",
+                                        "invalid_file", "ocr_failed")}
     # 尚未迁移的极端情况仍尊重旧标记；正常启动会先 reconcile_legacy。
     nt = C.STATE / "deep_no_text.txt"
     if nt.exists() and not items:
@@ -1537,7 +1866,7 @@ def _dedup_deep_marks():
             log_error("dedup deep marks", repr(e))
 
 def _rec_score(p, g=None):
-    """值得读打分：期刊权重为主 + 新近度 + 有 PDF（可深读）。
+    """值得读打分：期刊权重为主 + 新近度 + 有全文附件（可深读）。
        学科感知权重(g)优先（0–1→0–10），缺则回退旧离散 tier_rank（峰值同为 ~12）。"""
     if g and g.get("weight") is not None:
         s = g["weight"] * 10.0
@@ -1549,7 +1878,7 @@ def _rec_score(p, g=None):
         yr = 0
     if yr >= 2015:
         s += min(3.0, (yr - 2015) * 0.3)
-    if p.get("has_pdf"):
+    if p.get("has_fulltext"):
         s += 1.0
     return round(s, 2)
 
@@ -1823,7 +2152,9 @@ def deep_queue_status():
     eta_seconds = int(remaining * spp) if (spp and remaining) else None
     extract_counts = _deep_extract_counts()
     return {"pending": pending, "in_flight": in_flight, "paused": paused,
-            "deep_done": deep_done, "with_pdf": manifest.get("with_pdf", 0),
+            "deep_done": deep_done,
+            "with_fulltext": manifest.get("with_fulltext", manifest.get("with_pdf", 0)),
+            "with_pdf": manifest.get("with_pdf", 0),
             "sac_done": sac_done, "sac_invalid": sac_invalid, "sac_missing": sac_missing,
             "sac_backfill": dict(BACKFILL),   # 深索摘要覆盖 + 补生成进度
             "deep_no_text": len(_deep_no_text_keys()),   # 旧前端兼容：当前不可继续的提取终态数
@@ -1832,6 +2163,8 @@ def deep_queue_status():
             "ocr_failed": extract_counts.get("ocr_failed", 0),
             "missing_pdf": extract_counts.get("missing_pdf", 0),
             "invalid_pdf": extract_counts.get("invalid_pdf", 0),
+            "missing_file": extract_counts.get("missing_file", 0),
+            "invalid_file": extract_counts.get("invalid_file", 0),
             "eta_seconds": eta_seconds, "items": items,
             # 兼容旧前端字段
             "in_flight_keys": inflight_keys,
@@ -1890,7 +2223,7 @@ def kb_categories_list():
     for c in cats:
         live = [k for k in c.get("keys", []) if k in papers]
         deep = sum(1 for k in live if is_deep(k, deepk))
-        nopdf = sum(1 for k in live if not papers[k].get("has_pdf"))
+        nopdf = sum(1 for k in live if not papers[k].get("has_fulltext"))
         pend = sum(1 for k in live if k in qset)
         out.append({"id": c["id"], "name": c["name"], "source": c.get("source", "user"),
                     "count": len(live), "deep_count": deep, "no_pdf": nopdf,
@@ -1967,7 +2300,7 @@ def kb_cat_add_members(cid: str, q: KbMembersQ):
             continue
         if is_deep(k, deepk):
             already_deep.append(k)
-        elif p.get("has_pdf"):
+        elif p.get("has_fulltext"):
             will_deep.append(k)
         else:
             no_pdf.append(k)
@@ -2028,24 +2361,48 @@ TOPICS_BUILD = {"running": False, "msg": ""}
 @app.post("/topics/rebuild")
 def topics_rebuild():
     """后台重跑 AI 主题聚类（build_ai_topics.py，需已建语义/深索索引）。"""
-    if TOPICS_BUILD["running"]:
-        return {"ok": False, "msg": "AI 主题正在归类中，请稍候"}
-    if BUILD["running"]:
-        return {"ok": False, "msg": "正在建库/深索中，请等结束后再归类"}
     if R.STATE.get("mode") != "full":
         return JSONResponse({"ok": False, "msg": "需先深索或建语义层（AI 主题按向量聚类，纯题录库还没有向量）", "need_index": True}, status_code=200)
-    def run():
+    with _BUILD_LOCK:
+        if TOPICS_BUILD["running"]:
+            return {"ok": False, "msg": "AI 主题正在归类中，请稍候"}
+        busy = _maintenance_busy_locked()
+        if busy:
+            return {"ok": False, "busy": True, "msg": busy}
         TOPICS_BUILD["running"] = True; TOPICS_BUILD["msg"] = "归类中…"
+        BUILD["running"] = True; BUILD["stage"] = "topics"
+        BUILD["started"] = time.time(); BUILD["rc"] = None; BUILD["cancelled"] = False
+    def run():
+        p = job = None
         try:
             env = dict(os.environ); env.pop("PYTHONUTF8", None)
-            p = subprocess.run([sys.executable, str(C.APP / "build_ai_topics.py")],
-                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, timeout=900,
-                               creationflags=C.SUBPROC_NO_WINDOW)
+            p, job = _spawn_build_process(
+                [sys.executable, str(C.APP / "build_ai_topics.py")],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env,
+                creationflags=C.SUBPROC_NO_WINDOW,
+                start_new_session=(sys.platform != "win32"))
+            with _BUILD_LOCK:
+                BUILD["proc"], BUILD["job"] = p, job
+            p.communicate(timeout=900)
+            BUILD["rc"] = p.returncode
             TOPICS_BUILD["msg"] = "完成" if p.returncode == 0 else f"失败(code={p.returncode})"
+        except subprocess.TimeoutExpired:
+            if p is not None:
+                try:
+                    _kill_tree(p, job)
+                except Exception as e:
+                    log_error("topics/rebuild timeout terminate", repr(e))
+            BUILD["rc"] = -1
+            TOPICS_BUILD["msg"] = "超时（15 分钟），已停止"
         except Exception as e:
             log_error("topics/rebuild", repr(e)); TOPICS_BUILD["msg"] = f"异常：{e}"
         finally:
-            TOPICS_BUILD["running"] = False
+            with _BUILD_LOCK:
+                if BUILD.get("proc") is p:
+                    BUILD["proc"], BUILD["job"] = None, None
+                BUILD["running"] = False; BUILD["stage"] = ""
+                TOPICS_BUILD["running"] = False
+            _close_build_job(job)
     threading.Thread(target=run, daemon=True).start()
     return {"ok": True}
 
@@ -2137,6 +2494,56 @@ def wiki_list(offset: int = 0, limit: int = 0):
     out = pages[off:off + lim] if lim > 0 else pages[off:]
     return {"pages": out, "total": total}
 
+
+class WikiThemeQ(BaseModel):
+    name: str = ""
+
+
+class WikiThemeRenameQ(BaseModel):
+    old_name: str
+    new_name: str
+
+
+@app.get("/wiki/themes")
+def wiki_themes():
+    """综述主题书架：自动分类计数 + 用户自定义主题。"""
+    return W.list_themes()
+
+
+@app.post("/wiki/themes")
+def wiki_theme_create(q: WikiThemeQ):
+    try:
+        return {"ok": True, **W.create_theme(q.name)}
+    except ValueError as e:
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
+
+
+@app.post("/wiki/themes/rename")
+def wiki_theme_rename(q: WikiThemeRenameQ):
+    try:
+        return {"ok": True, **W.rename_theme(q.old_name, q.new_name)}
+    except ValueError as e:
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
+
+
+@app.delete("/wiki/themes/{name}")
+def wiki_theme_delete(name: str):
+    try:
+        return {"ok": True, **W.delete_theme(name)}
+    except ValueError as e:
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
+
+
+@app.post("/wiki/page/{page_id}/theme")
+def wiki_page_theme(page_id: str, q: WikiThemeQ):
+    try:
+        return {"ok": True, **W.set_page_theme(page_id, q.name)}
+    except ValueError as e:
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=404)
+    except Exception as e:
+        log_error("wiki/theme", repr(e), traceback.format_exc())
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
+
 @app.get("/wiki/timeline")
 def wiki_timeline(limit: int = 100):
     """EN-W3：全库时间线（契约1）。git log 解析优先，无 git 退 .history 快照目录。
@@ -2211,6 +2618,30 @@ def wiki_page(page_id: str):
     p = W.get_page(page_id)
     if not p:
         return JSONResponse({"error": "无此综合页", "id": page_id}, status_code=404)
+    try:
+        from collections import Counter
+        import grading_svc as GS
+        papers_by_key = _load_papers()
+        enriched, labels = [], Counter()
+        for source in p.get("sources", []) or []:
+            row = dict(source) if isinstance(source, dict) else {"key": str(source)}
+            paper = papers_by_key.get(row.get("key")) or {}
+            if paper:
+                g = GS.evaluate_paper(paper, compute=False)
+                row.update({k: g.get(k) for k in (
+                    "source_type", "source_type_name", "objective_label", "band", "band_name",
+                    "standard_band_name", "auto_band", "auto_band_name", "auto_standard_band_name",
+                    "weight", "manual", "src",
+                )})
+                row.setdefault("title", paper.get("title", ""))
+                labels[g.get("objective_label") or "文献"] += 1
+            enriched.append(row)
+        p["sources"] = enriched
+        p["source_composition"] = [
+            {"label": label, "count": count} for label, count in labels.most_common()
+        ]
+    except Exception as e:
+        log_error("wiki/page grading", repr(e))
     return p
 
 @app.delete("/wiki/page/{page_id}")
@@ -2243,18 +2674,45 @@ def wiki_stale(page_id: str, q: WikiStaleQ):
 
 class WikiVerifyQ(BaseModel):
     page_id: str
+    verified: bool = True
 
 @app.post("/wiki/verify")
 def wiki_verify(q: WikiVerifyQ):
     """W3：人工核验盖章——页面 frontmatter/index/内存三处写 verified_at。
        只给 UI 用，不做成 MCP 工具（核验是人的动作，agent 不得给自己的产出盖章）。"""
     try:
-        r = W.set_verified(q.page_id)
-        return {"ok": True, "verified_at": r["verified_at"]}
+        r = W.set_verified(q.page_id, q.verified)
+        return {"ok": True, "verified": r["verified"], "verified_at": r["verified_at"]}
     except ValueError as e:
         return JSONResponse({"ok": False, "detail": str(e)}, status_code=404)
     except Exception as e:
         log_error("wiki/verify", repr(e), traceback.format_exc())
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
+
+class WikiHumanEditQ(BaseModel):
+    content: str
+
+@app.get("/wiki/edit/{page_id}")
+def wiki_editable_content(page_id: str):
+    """只返回可人工编辑的正文；frontmatter、标题、来源表与系统落款保持只读。"""
+    try:
+        return {"ok": True, "id": page_id, "content": W.editable_content(page_id)}
+    except ValueError as e:
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=404)
+    except Exception as e:
+        log_error("wiki/edit/read", repr(e), traceback.format_exc())
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
+
+@app.post("/wiki/edit/{page_id}")
+def wiki_edit_content(page_id: str, q: WikiHumanEditQ):
+    """人工修订正文；保存成功即视为已核验，并保留来源、互链与版本历史。"""
+    try:
+        r = W.edit_page_by_human(page_id, q.content)
+        return {"ok": True, "id": page_id, "verified_at": r.get("verified_at", "")}
+    except ValueError as e:
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
+    except Exception as e:
+        log_error("wiki/edit/write", repr(e), traceback.format_exc())
         return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
 
 @app.get("/wiki/backlinks")
@@ -2297,7 +2755,8 @@ class WikiUpdateQ(BaseModel):
 
 @app.post("/wiki/page/{page_id}")
 def wiki_update_page(page_id: str, q: WikiUpdateQ):
-    """建 / 覆盖 / 追加任意 kind 的 wiki 页（含 entity / overview）。沿用 agent 写权护栏。"""
+    """建 / 覆盖 / 追加任意 kind 的 wiki 页（含 entity / overview）。
+    replace 显式传 sources 时替换旧来源，允许用有效 key 修正历史失效 key；最终页面仍整页校验。"""
     try:
         m = W.update_page(page_id, kind=q.kind, title=q.title, content=q.content,
                           sources=q.sources, mode=q.mode, links=q.links,
@@ -2315,7 +2774,7 @@ def wiki_update_page(page_id: str, q: WikiUpdateQ):
 
 @app.get("/wiki/lint")
 def wiki_lint(min_mentions: int = 2):
-    """gist 的 Lint：孤儿页 / 过时页 / 断链 / 无来源 / 降级页 / 缺失概念页。纯读，零副作用。"""
+    """gist 的 Lint：孤儿 / 过时 / 断链 / 来源 / 降级 / 缺失概念 / 重复外壳。纯读。"""
     try:
         return {"ok": True, **W.lint(min_mentions)}
     except Exception as e:
@@ -2371,50 +2830,6 @@ def wiki_vcs_status():
         import wiki_vcs as V
         return {"ok": True, **V.status()}
     except Exception as e:
-        return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
-
-# ── Phase 1：按需生成概念/主题综述页（命中缓存 0 成本；LLM 综合 + LLM 命名）──
-class WikiSynthQ(BaseModel):
-    concept: str = ""
-    topic_id: Optional[int] = None
-    force: bool = False           # 忽略缓存、强制重生
-    provider: str = "siliconflow"
-    base_url: str = ""
-    api_key: str = ""
-    model: str = ""
-    topk: int = 8
-
-def _synth_llm(q):
-    return {"provider": q.provider, "base_url": q.base_url, "api_key": q.api_key,
-            "model": q.model, "topk": q.topk}
-
-def _synth_ret(m):
-    return {"ok": True, "id": m["id"], "title": m["title"], "kind": m.get("kind"),
-            "cached": m.get("cached", False), "indexed": m.get("indexed", False),
-            "n_sources": len(m.get("sources", []))}
-
-@app.post("/wiki/concept")
-def wiki_concept(q: WikiSynthQ):
-    try:
-        return _synth_ret(W.synthesize_concept(q.concept, force=q.force, **_synth_llm(q)))
-    except Exception as e:
-        log_error("wiki/concept", repr(e), traceback.format_exc())
-        return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
-
-@app.post("/wiki/topic")
-def wiki_topic(q: WikiSynthQ):
-    try:
-        return _synth_ret(W.synthesize_topic(q.topic_id, force=q.force, **_synth_llm(q)))
-    except Exception as e:
-        log_error("wiki/topic", repr(e), traceback.format_exc())
-        return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
-
-@app.post("/wiki/regenerate/{page_id}")
-def wiki_regen(page_id: str, q: WikiSynthQ):
-    try:
-        return _synth_ret(W.regenerate(page_id, **_synth_llm(q)))
-    except Exception as e:
-        log_error("wiki/regenerate", repr(e), traceback.format_exc())
         return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
 
 # ══════════════════════════════════════════════════════════════════
@@ -2491,61 +2906,6 @@ def research_suggest(q: ResearchQ):
         log_error("research/suggest_sources", repr(e), traceback.format_exc())
         return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
 
-def _export_docx(page_id: str):
-    """把 digest/outline wiki 页导出。有 python-docx 则出 .docx，否则退化为 .md（诚实降级）。
-       C3：末尾用 p['sources'] 追加一节「参考文献」（页级引用），产出可直接拿去写作。"""
-    p = W.get_page(page_id)
-    if not p:
-        return JSONResponse({"ok": False, "detail": "无此页"}, status_code=404)
-    sources = p.get("sources", []) or []
-    def _cite(s):
-        if isinstance(s, dict):
-            return s.get("citation") or s.get("key") or ""
-        return str(s)
-    try:
-        import docx  # python-docx
-        from docx import Document
-        doc = Document()
-        doc.add_heading(p.get("title", "资料汇编"), level=0)
-        for line in (p.get("markdown") or "").splitlines():
-            s = line.strip()
-            if s.startswith("### "):
-                doc.add_heading(s[4:], level=2)
-            elif s.startswith("## "):
-                doc.add_heading(s[3:], level=1)
-            elif s.startswith("# "):
-                doc.add_heading(s[2:], level=1)
-            elif s and not s.startswith("---"):
-                doc.add_paragraph(s)
-        if sources:
-            doc.add_heading("参考文献", level=1)
-            for i, s in enumerate(sources, 1):
-                doc.add_paragraph(f"{i}. {_cite(s)}")
-        out = C.WIKI_DIGEST_DIR / f"{page_id}.docx"
-        doc.save(str(out))
-        return FileResponse(str(out), filename=f"{page_id}.docx",
-                            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-    except ImportError:
-        # 降级：返回 markdown 文件（本机未装 python-docx）
-        md = p.get("markdown", "")
-        if sources:
-            md += "\n\n## 参考文献\n\n" + "\n".join(f"{i}. {_cite(s)}" for i, s in enumerate(sources, 1))
-        out = C.WIKI_DIGEST_DIR / f"{page_id}.md"
-        out.write_text(md, encoding="utf-8")
-        return FileResponse(str(out), filename=f"{page_id}.md", media_type="text/markdown")
-    except Exception as e:
-        log_error("research/export_docx", repr(e), traceback.format_exc())
-        return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
-
-@app.post("/research/export_docx/{page_id}")
-def research_export_docx(page_id: str):
-    return _export_docx(page_id)
-
-@app.get("/research/export_docx/{page_id}")
-def research_export_docx_get(page_id: str):
-    """C3：GET 版——前端用 <a href download> 直接触发下载。"""
-    return _export_docx(page_id)
-
 # ══════════════════════════════════════════════════════════════════
 #  EN-A：Agent 接入的服务端地基（蓝图 G1/G2/G4 + 入库闭环）
 #  单篇题录 / 引注引擎出口 / 引文定位 / 论断核验 / 本地路径入库 / AI 使用声明
@@ -2560,7 +2920,7 @@ def paper_detail(key: str):
     if not p:
         return JSONResponse({"detail": f"未找到文献 {key}（可先用 /papers 枚举）"}, status_code=404)
     import grading_svc as GS
-    g = GS.grade_paper(p, compute=False)     # 快路径：只用已预热 memo，与 /papers 同口径
+    g = GS.evaluate_paper(p, compute=True)
     cited_by_wiki = []
     try:
         cited_by_wiki = [{"id": c.get("id"), "title": c.get("title", "")}
@@ -2570,27 +2930,56 @@ def paper_detail(key: str):
     stem = p.get("stem") or T.safe_name(key)
     _isdeep = is_deep(key)
     extract_status = _extract_record(stem, legacy_deep=_isdeep)
-    return {
+    summary_info = {"summary": "", "valid": False, "reason": ""}
+    try:
+        import sac as SAC
+        summary_info = SAC.inspect(stem)
+    except Exception as e:
+        log_error("paper detail retrieval summary", repr(e))
+    result = {
         "key": key, "title": p.get("title", ""), "author": p.get("author", ""),
         "year": p.get("year", ""), "journal": p.get("journal", ""),
         "itemtype": p.get("itemtype", ""),
-        "weight_tier": (g["cn"] if g else p.get("journal_tier", "")),
+        "weight_tier": (g["band_name"] if g else p.get("journal_tier", "")),
         "collections": p.get("collections", []),
         "official_pages": p.get("official_pages", ""),
         "has_pdf": bool(p.get("has_pdf", False)),
+        "has_fulltext": bool(p.get("has_fulltext", False)),
+        "fulltext_format": p.get("fulltext_format", ""),
         "deep": _isdeep,
         "no_text": stem in _deep_no_text_keys(),
         "extract_status": extract_status,
+        # abstract 保留作兼容；新增明确命名，避免 Agent 把 Zotero 题录摘要误当成 SAC 检索摘要。
         "abstract": p.get("abstract", ""),
+        "bibliographic_abstract": p.get("abstract", ""),
+        "retrieval_summary": summary_info.get("summary", ""),
+        "retrieval_summary_valid": bool(summary_info.get("valid")),
+        "retrieval_summary_error": summary_info.get("reason", ""),
         "ingested_at": p.get("ingested_at", ""),
         "statute_status": p.get("statute_status", "") or "",
         "cited_by_wiki": cited_by_wiki,
     }
+    if g:
+        result.update({k: g.get(k) for k in (
+            "source_type", "source_type_name", "objective_label", "band", "band_name",
+            "standard_band_name", "auto_band", "auto_band_name", "auto_standard_band_name",
+            "internal_tier", "weight", "rank", "band_rank",
+            "hit_catalogs", "explain", "manual", "src",
+        )})
+    for field in (
+        "doi", "issn", "url", "website_title", "access_date", "publisher", "place", "isbn",
+        "edition", "series", "book_title", "university", "thesis_type", "institution",
+        "report_type", "report_number", "conference_name", "proceedings_title", "court",
+        "docket_number", "decision_date", "standard_number", "version",
+    ):
+        result[field] = p.get(field, "")
+    return result
 
 @app.get("/cite/{key}")
-def cite_paper(key: str, page: Optional[int] = None, style: str = "footnote", heading: Optional[str] = None):
+def cite_paper(key: str, page: Optional[int] = None, position: Optional[int] = None,
+               locator: Optional[str] = None, style: str = "footnote", heading: Optional[str] = None):
     """EN-A2（契约5，G2 引注引擎出口）：薄封装 cite_format——格式由规则做、绝不交 LLM。
-       只透传 style 与 page；statute/report 模板由 cite_format 按 itemtype 自动分派。
+       page 保留作 PDF 兼容参数；position/locator 用于非 PDF 的章节、段落或行号定位。
        heading（可选）：法条条号（如「第201条」）——不传时对 statute 按 (key,page) 反查该页 chunk 的 heading 自动补。
        missing_fields 让 agent 知道哪些字段缺了该去补题录，而不是让它自己瞎编。"""
     if style not in ("footnote", "compact"):
@@ -2601,18 +2990,20 @@ def cite_paper(key: str, page: Optional[int] = None, style: str = "footnote", he
     import cite_format as CF
     import page_map as PM
     hit = dict(p)                      # papers.jsonl 字段名与检索结果 hit 一致，直接当 hit 用
-    hit["page"] = page
+    pos = page if page is not None else position
+    hit["page"] = pos
+    hit["locator"] = (locator or "").strip()
     # 法条条号：优先用调用方传入的 heading；否则 statute + page 给定时，从命中 chunk 行按 (key,page) 反查该页 heading。
     head = (heading or "").strip()
-    if not head and page is not None and (p.get("itemtype") or "").strip() == "statute":
+    if not head and pos is not None and (p.get("itemtype") or "").strip() == "statute":
         try:
-            head = R.find_statute_heading(key, page)
+            head = R.find_statute_heading(key, pos)
         except Exception as e:
             log_error("cite heading lookup", repr(e))
     formatted = CF.footnote(hit, heading=head) if style == "footnote" else CF.compact(hit, heading=head)
     # 印刷页展示串 + 推算标记：只有映射真产出了推算值才算 estimated（没映射不算）
     printed_disp, page_estimated = "", False
-    if page is not None:
+    if page is not None and p.get("fulltext_format") == "pdf":
         try:
             pm = PM.printed(key, page) or {}
             printed_disp = pm.get("display") or ""
@@ -2624,7 +3015,8 @@ def cite_paper(key: str, page: Optional[int] = None, style: str = "footnote", he
     # 缺字段按 itemtype 分派（与 cite_format 的模板字段一一对应）
     it = (p.get("itemtype") or "").strip()
     miss = []
-    has_pg = bool(printed_disp or (p.get("official_pages") or "").strip())
+    has_pg = bool(printed_disp or (p.get("official_pages") or "").strip()
+                  or hit.get("locator") or (pos is not None and p.get("fulltext_format") != "pdf"))
     if it == "statute":
         if not (p.get("title") or "").strip(): miss.append("title")
         # 与 cite_format._statute_cite 同口径：法规标题惯例「（2018修正）」不含「年」字，判四位数字
@@ -2642,7 +3034,8 @@ def cite_paper(key: str, page: Optional[int] = None, style: str = "footnote", he
                 miss.append(f)
         if not has_pg:
             miss.append("page")        # 手册脚注式没页码是硬伤，必须让 agent 知道
-    return {"ok": True, "key": key, "style": style, "page": page,
+    return {"ok": True, "key": key, "style": style, "page": page, "position": pos,
+            "locator": hit.get("locator", ""), "fulltext_format": p.get("fulltext_format", ""),
             "printed_page": printed_disp, "itemtype": it,
             "formatted": formatted, "missing_fields": miss,
             "page_estimated": page_estimated}
@@ -2654,7 +3047,7 @@ class LocateQuoteQ(BaseModel):
 
 @app.post("/research/locate_quote")
 def research_locate_quote(q: LocateQuoteQ):
-    """EN-A3（契约6）：在提取全文里定位一段引文 → 哪篇/PDF第几页/印刷第几页。
+    """EN-A3（契约6）：在提取全文里定位一段引文 → 哪篇及原文位置；PDF 另带印刷页码。
        key 给定只搜单篇；否则全库（cap 500 篇，截断会在结果里注明）。"""
     try:
         import textloc as TL
@@ -2689,12 +3082,12 @@ class LocalPathQ(BaseModel):
 
 @app.post("/ingest/local_path")
 def ingest_local_path(q: LocalPathQ):
-    """EN-A5（契约8）：按本地绝对路径把一个 PDF 收进受管文件夹并触发增量建库——
+    """EN-A5（契约8）：按本地绝对路径把一份受支持全文收进受管文件夹并触发增量建库——
        agent 替用户"把桌面上这篇收进库里"的入库闭环。仅文件夹模式；Zotero 模式的
        入库动作属于 Zotero（改它的库文件是越权），400 提示走 Zotero。"""
     import settings as S, hashlib as _hl, shutil
     if S.source() != "folder":
-        return JSONResponse({"detail": "Zotero 模式请把 PDF 附到 Zotero 条目上（Zotero 是它库的唯一主人），"
+        return JSONResponse({"detail": "Zotero 模式请把全文附件附到 Zotero 条目上（支持 PDF、EPUB、DOCX、Markdown、TXT；Zotero 是它库的唯一主人），"
                                        "随后等自动更新或点「更新知识库」即可入库。"}, status_code=400)
     folder = S.folder_dir()
     if not folder:
@@ -2704,11 +3097,11 @@ def ingest_local_path(q: LocalPathQ):
     if not str(src) or not src.is_absolute():
         return JSONResponse({"detail": "只接受绝对路径"}, status_code=400)
     if src.is_dir():
-        return JSONResponse({"detail": "只接受单个 PDF 文件，不接受目录"}, status_code=400)
+        return JSONResponse({"detail": "只接受单个全文文件，不接受目录"}, status_code=400)
     if not src.exists():
         return JSONResponse({"detail": f"文件不存在：{src}"}, status_code=400)
-    if src.suffix.lower() != ".pdf":
-        return JSONResponse({"detail": "只支持 .pdf 文件"}, status_code=400)
+    if not DF.supported_file(src):
+        return JSONResponse({"detail": "只支持 PDF、EPUB、DOCX、Markdown、TXT 文件（不支持 HTML）"}, status_code=400)
     try:
         data = src.read_bytes()
     except Exception as e:
@@ -2718,7 +3111,8 @@ def ingest_local_path(q: LocalPathQ):
     # sha1 查重（同 /ingest/files 的 R2 思路：先按大小粗筛，同大小才读盘算 sha1，大库不卡）
     h = _hl.sha1(data).hexdigest()
     dup = None
-    for pth in fp.rglob("*.pdf"):
+    for rec in FS.scan(folder):
+        pth = Path(rec.get("fulltext_path") or rec.get("source_path") or "")
         try:
             if pth.stat().st_size != len(data):
                 continue
@@ -2729,7 +3123,7 @@ def ingest_local_path(q: LocalPathQ):
     if dup is not None:
         return {"ok": True, "status": "duplicate", "key": FS.stable_key(folder, str(dup)),
                 "building": False, "need_review": True,
-                "hint": f"内容相同的 PDF 已在库中（{dup.name}），未重复入库。"}
+                "hint": f"内容相同的全文文件已在库中（{dup.name}），未重复入库。"}
     dst = _dedupe_name(fp / src.name)     # 同名不同容 → 加序号，绝不覆盖既有文件
     try:
         shutil.copy2(str(src), str(dst))
@@ -2769,11 +3163,50 @@ def research_disclosure(q: DisclosureQ):
         log_error("research/disclosure", repr(e), traceback.format_exc())
         return JSONResponse({"detail": str(e)}, status_code=400)
 
+_SOURCE_TYPE_FILTERS = {
+    "journal_article": {"journal_article"}, "book": {"book"}, "book_section": {"book_section"},
+    "thesis": {"thesis"}, "legal_source": {"legal_source"}, "case": {"case"},
+    "standard": {"standard"}, "report": {"report"}, "preprint": {"preprint"},
+    "conference_paper": {"conference_paper"}, "dataset": {"dataset"},
+    "web": {"web", "newspaper", "other"},
+}
+
+
+_PAPER_QUERY_FIELDS = (
+    "title", "author", "journal", "year", "doi", "isbn", "issn", "publisher",
+    "book_title", "website_title", "institution", "university", "conference_name",
+    "court", "docket_number", "standard_number", "report_number",
+)
+
+
+def _paper_metadata_match_rank(p: dict, query: str) -> Optional[int]:
+    """本地题录查找：全部词都需命中；题名精确/开头/包含优先，其次作者和其他字段。"""
+    q = " ".join(str(query or "").split()).casefold()
+    if not q:
+        return 0
+    title = " ".join(str(p.get("title") or "").split()).casefold()
+    author = " ".join(str(p.get("author") or "").split()).casefold()
+    values = [str(p.get(field) or "") for field in _PAPER_QUERY_FIELDS]
+    haystack = " ".join(values).casefold()
+    if not all(token in haystack for token in q.split()):
+        return None
+    if title == q:
+        return 0
+    if title.startswith(q):
+        return 1
+    if q in title:
+        return 2
+    if q in author:
+        return 3
+    return 4
+
+
 @app.get("/papers")
 def papers(collection: Optional[str] = None, topic: Optional[int] = None,
            category: Optional[str] = None, deep: Optional[str] = None,
            sort: str = "recommend", limit: int = 300, offset: int = 0,
-           since: Optional[str] = None):
+           since: Optional[str] = None, source_type: Optional[str] = None,
+           objective_label: Optional[str] = None, query: Optional[str] = None):
     # EN-A7：since=YYYY-MM-DD 按 ingested_at 过滤（配合 whats_new：「上次见面后新入了什么」）。
     # ingested_at 形如 "YYYY-MM-DD HH:MM:SS"，与 since 直接字典序比较即可；
     # 没有 ingested_at 的老条目（空串）在 since 模式下会被滤掉——它们本来就不是"新入库"。
@@ -2795,12 +3228,28 @@ def papers(collection: Optional[str] = None, topic: Optional[int] = None,
         items = [papers[k] for k in cats["by_collection"][collection] if k in papers]
     else:
         items = list(papers.values())
+    query = " ".join(str(query or "").split())
+    match_ranks = {}
+    if query:
+        matched = []
+        for p in items:
+            rank = _paper_metadata_match_rank(p, query)
+            if rank is not None:
+                matched.append(p)
+                match_ranks[p["key"]] = rank
+        items = matched
     import grading_svc as GS
     out = []
     filter_counts = {name: 0 for name in (
         "all", "yes", "no", "ocr", "native",
         "summary_yes", "summary_invalid", "summary_no",
     )}
+    source_type_counts = {name: 0 for name in _SOURCE_TYPE_FILTERS}
+    objective_label_counts = {}
+    wanted_types = _SOURCE_TYPE_FILTERS.get(source_type) if source_type else None
+    wanted_label = (objective_label or "").strip() or None
+    if source_type and wanted_types is None:
+        return JSONResponse({"detail": f"未知文献类型：{source_type}"}, status_code=400)
     for p in items:
         _isdeep = is_deep(p["key"], deepk)
         stem = p.get("stem") or T.safe_name(p["key"])
@@ -2810,28 +3259,49 @@ def papers(collection: Optional[str] = None, topic: Optional[int] = None,
         summary_invalid = summary_stem in sum_issues
         if since and (p.get("ingested_at") or "") < since:   # EN-A7：早于 since（或无入库时间）的滤掉
             continue
+        g = GS.evaluate_paper(p, compute=False)
+        actual_type = g.get("source_type") or "other"
+        actual_label = g.get("objective_label") or "来源"
+        deep_match = not deep or _browse_filter_matches(
+            deep, _isdeep, extract_rec, has_summary, summary_invalid)
+        label_match = wanted_label is None or actual_label == wanted_label
+        if deep_match and label_match:
+            for group, members in _SOURCE_TYPE_FILTERS.items():
+                if actual_type in members:
+                    source_type_counts[group] += 1
+                    break
+        if wanted_types is not None and actual_type not in wanted_types:
+            continue
+        if deep_match and (wanted_types is None or actual_type in wanted_types):
+            objective_label_counts[actual_label] = objective_label_counts.get(actual_label, 0) + 1
+        if not label_match:
+            continue
         filter_counts["all"] += 1
         for filter_name in ("yes", "no", "ocr", "native",
                             "summary_yes", "summary_invalid", "summary_no"):
             if _browse_filter_matches(filter_name, _isdeep, extract_rec,
                                       has_summary, summary_invalid):
                 filter_counts[filter_name] += 1
-        if deep and not _browse_filter_matches(deep, _isdeep, extract_rec,
-                                               has_summary, summary_invalid):
+        if not deep_match:
             continue
-        # F38-B：按当前学科取分级（快路径 compute=False，只用已预热 memo；未预热则回退旧 journal_tier）
-        # 手动改档/法源报告规则在 grade_paper 里优先命中（不走 memo，即改即显）。
-        g = GS.grade_paper(p, compute=False)
         out.append({
             "key": p["key"], "title": p.get("title", ""), "author": p.get("author", ""),
             "year": p.get("year", ""), "journal": p.get("journal", ""),
             "journal_tier": p.get("journal_tier", ""), "tier_rank": p.get("tier_rank", 6),
-            "weight_tier": (g["cn"] if g else ""),           # 学科感知中文档名（未预热时空→前端兜旧）
-            "weight_rank": (g["rank"] if g else 6),
-            "journal_weight": (g["weight"] if g else None),
-            "weight_needs_review": (g["needs_review"] if g else False),
-            "weight_src": (g.get("src") if g else None),     # manual=手动改档 / rule=法源报告规则
+            "weight_tier": g.get("band_name", ""),
+            "weight_rank": g.get("rank", 6),
+            "journal_weight": g.get("weight"),
+            "weight_needs_review": g.get("needs_review", False),
+            "weight_src": g.get("src"),
+            **{k: g.get(k) for k in (
+                "source_type", "source_type_name", "objective_label", "band", "band_name",
+                "standard_band_name", "auto_band", "auto_band_name", "auto_standard_band_name",
+                "internal_tier", "band_rank", "hit_catalogs",
+                "explain", "manual",
+            )},
             "official_pages": p.get("official_pages", ""), "has_pdf": p.get("has_pdf", False),
+            "has_fulltext": p.get("has_fulltext", False),
+            "fulltext_format": p.get("fulltext_format", ""),
             "collections": p.get("collections", []),
             "needs_review": bool(p.get("needs_review", False)),   # folder 模式：AI 抽的题录待核对
             "no_text": stem in notextk,
@@ -2844,7 +3314,14 @@ def papers(collection: Optional[str] = None, topic: Optional[int] = None,
             "summary_invalid": summary_invalid,
             "summary_error": sum_issues.get(summary_stem, ""),
         })
-    if sort == "recommend":
+    if sort == "match" and query:
+        def _match_y(x):
+            try:
+                return int(str(x.get("year") or "0")[:4])
+            except (TypeError, ValueError):
+                return 0
+        out.sort(key=lambda x: (match_ranks.get(x["key"], 9), -_match_y(x)))
+    elif sort == "recommend":
         out.sort(key=lambda x: -x["score"])
     elif sort == "year":
         def _y(x):
@@ -2857,13 +3334,16 @@ def papers(collection: Optional[str] = None, topic: Optional[int] = None,
     off = max(0, int(offset or 0))
     return {"papers": out[off:off + limit], "total": len(out),
             "filter_counts": filter_counts,
+            "source_type_counts": source_type_counts,
+            "objective_label_counts": objective_label_counts,
             "collection": collection, "topic": topic, "category": category, "deep": deep,
-            "sort": sort, "since": since}
+            "source_type": source_type, "objective_label": wanted_label,
+            "sort": sort, "since": since, "query": query}
 
 # ── 单篇手动改档（法源权重改造 2026-07-12）──────────────────
 class TierOverrideQ(BaseModel):
     key: str
-    tier: Optional[str] = None      # "T1"/"T1b"/"T2"/"T3"/"T4"/"T5"；None/空 = 恢复自动
+    tier: Optional[str] = None      # authority/top/core/normal；兼容历史 T?；None/空 = 恢复自动
 
 @app.post("/paper/tier")
 def set_paper_tier(q: TierOverrideQ):
@@ -2871,8 +3351,8 @@ def set_paper_tier(q: TierOverrideQ):
     import source_rules as SR
     import grading_svc as GS
     tier = (q.tier or "").strip() or None
-    if tier and tier not in SR.TIER_W:
-        return JSONResponse({"detail": f"非法档位 {tier}（可选 T1/T1b/T2/T3/T4/T5 或留空恢复自动）"},
+    if tier and tier not in SR.OVERRIDE_VALUES:
+        return JSONResponse({"detail": f"非法档位 {tier}（可选 authority/top/core/normal 或留空恢复自动）"},
                             status_code=400)
     p = _load_papers().get(q.key)
     if not p:
@@ -2882,26 +3362,26 @@ def set_paper_tier(q: TierOverrideQ):
     except Exception as e:
         log_error("paper tier override", repr(e))
         return JSONResponse({"detail": f"写入改档失败：{e}"}, status_code=500)
-    g = GS.grade_paper(p)            # 改完立刻算出生效档（含回落到规则/期刊分级的情形）
+    g = GS.evaluate_paper(p)
     return {"ok": True, "key": q.key, "override": tier,
             "effective": g or {"tier": None, "cn": p.get("journal_tier", "未知"),
                                "weight": None, "rank": p.get("tier_rank", 6),
                                "needs_review": False}}
 
-# ── 打开原文 PDF（C2/D4：页级引注可回到原文核对）─────────────
+# ── 打开主全文附件 ─────────────────────────────────────────
 class OpenPdfQ(BaseModel):
     key: str
 
-@app.post("/open_pdf")
+@app.post("/open_source")
+@app.post("/open_pdf")              # 兼容旧前端/客户端
 def open_pdf(q: OpenPdfQ):
-    """用系统默认阅读器打开某篇的原文 PDF（供深索结果卡「📄 打开原文」）。
-       pdf_path 取自 papers.jsonl（zotero/folder 两种源建库时都已落该字段）。"""
+    """用系统默认应用打开某篇的主全文附件。"""
     p = _load_papers().get(q.key)
     if not p:
         return JSONResponse({"ok": False, "msg": "无此文献"}, status_code=404)
-    path = (p.get("pdf_path") or "").strip()
+    path = (p.get("fulltext_path") or "").strip()
     if not path or not Path(path).exists():
-        return JSONResponse({"ok": False, "msg": "未找到原文 PDF 文件（可能仅题录、或文件已移动/未随库）"}, status_code=200)
+        return JSONResponse({"ok": False, "msg": "未找到主全文附件（可能仅题录、或文件已移动/未同步）"}, status_code=200)
     try:
         if sys.platform == "win32":
             os.startfile(path)  # noqa
@@ -2909,7 +3389,7 @@ def open_pdf(q: OpenPdfQ):
             subprocess.Popen(["open", path])
         else:
             subprocess.Popen(["xdg-open", path])
-        return {"ok": True, "path": path}
+        return {"ok": True, "path": path, "format": p.get("fulltext_format", "")}
     except Exception as e:
         log_error("open_pdf", repr(e))
         return JSONResponse({"ok": False, "msg": f"打开失败：{e}"}, status_code=200)
@@ -2922,9 +3402,9 @@ def open_pdf(q: OpenPdfQ):
 # ══════════════════════════════════════════════════════════════════
 @app.get("/source/{key}")
 def read_source(key: str, from_page: int = 1, to_page: int = 0, max_chars: int = 20000):
-    """按 PDF 顺序页返回该篇提取正文（每页附印刷页码）。
+    """按位置序号返回正文；PDF 带页码，其他格式带章节/段落/行号定位。
 
-    诚实降级：读不到时明确区分「无此篇 / 只有题录无 PDF / 尚未深索 / 扫描件无文字」，
+    诚实降级：读不到时明确区分「无此篇 / 只有题录无全文附件 / 尚未深索 / 扫描件无文字」，
     各给 reason + 可执行的 detail——绝不返回空串让 agent 以为这篇没内容。"""
     import textutil as T
     papers = _load_papers()
@@ -2933,10 +3413,11 @@ def read_source(key: str, from_page: int = 1, to_page: int = 0, max_chars: int =
         return JSONResponse({"ok": False, "reason": "not_found",
                              "detail": f"知识库中没有 key={key} 的文献。可先用 /papers 或 list_sources 枚举。"},
                             status_code=404)
+    p = DF.normalize_record(dict(p))
     title = p.get("title", "")
-    if not p.get("has_pdf"):
-        return {"ok": False, "reason": "no_pdf", "key": key, "title": title,
-                "detail": "该篇只有题录、没有 PDF 原文，读不到全文。"}
+    if not p.get("has_fulltext"):
+        return {"ok": False, "reason": "no_fulltext", "key": key, "title": title,
+                "detail": "该篇只有题录、没有可读取的全文附件。"}
 
     stem = p.get("stem") or T.safe_name(key)
     f = C.EXTRACTED / f"{stem}.json"
@@ -2957,6 +3438,8 @@ def read_source(key: str, from_page: int = 1, to_page: int = 0, max_chars: int =
         details = {
             "missing_pdf": "该篇记录的 PDF 附件已不在磁盘上，请先在 Zotero 中修复附件路径。",
             "invalid_pdf": "该 PDF 无法打开，可能已损坏、未同步完整或被其他程序占用。",
+            "missing_file": "该篇记录的全文附件已不在磁盘上，请先在 Zotero 中修复附件路径。",
+            "invalid_file": "该全文附件无法读取，可能已损坏、未同步完整或格式不规范。",
             "ocr_pending": "该篇正在等待本地 OCR，完成深索后即可读取正文。",
             "ocr_failed": "本地 OCR 已运行，但没有识别出有效文字；可检查 PDF 后重试。",
         }
@@ -2987,11 +3470,16 @@ def read_source(key: str, from_page: int = 1, to_page: int = 0, max_chars: int =
             truncated, next_page = True, n
             break
         used += len(txt)
-        pr = PM.printed(key, n) if PM else {}
-        out.append({"pdf_page": n, "printed_page": (pr or {}).get("display", ""), "text": txt})
+        fmt = rec.get("document_format") or p.get("fulltext_format") or "pdf"
+        pr = PM.printed(key, n) if PM and fmt == "pdf" else {}
+        out.append({"position": n, "pdf_page": n if fmt == "pdf" else None,
+                    "printed_page": (pr or {}).get("display", ""),
+                    "locator": DF.locator_label(fmt, n, pg.get("heading"), pg.get("locator_label")),
+                    "text": txt})
 
     return {"ok": True, "key": key, "title": title,
             "author": p.get("author", ""), "year": p.get("year", ""), "journal": p.get("journal", ""),
+            "fulltext_format": rec.get("document_format") or p.get("fulltext_format") or "pdf",
             "n_pages_total": last_page, "returned_pages": len(out),
             "chars": used, "truncated": truncated, "next_page": next_page,
             "pages": out}
@@ -3002,8 +3490,9 @@ def index_light_ep():
     # BF9：即时索引此前完全绕开构建锁——与 build 子进程并发重写 papers.jsonl/bm25 会写坏索引。
     # 与 /index/deep(scope=all) 同款约定：忙时返回 {ok:false,busy:true}，前端已能处理 ok:false。
     with _BUILD_LOCK:
-        if BUILD["running"]:
-            return {"ok": False, "busy": True, "msg": "已有构建任务在跑，请稍后再试"}
+        busy = _maintenance_busy_locked()
+        if busy:
+            return {"ok": False, "busy": True, "msg": busy}
         BUILD["running"] = True; BUILD["stage"] = "light"
         BUILD["started"] = time.time(); BUILD["rc"] = None; BUILD["cancelled"] = False
         BUILD["log"] = ["[light] 即时索引启动…"]   # 不留上次构建的日志尾巴
@@ -3041,15 +3530,36 @@ def _child_env():
     env["PYTHONUTF8"] = "1"
     return env
 
+
+def _spawn_build_process(cmd, **kwargs):
+    """启动 build 子进程；Windows 必须先成功加入 Job Object 才允许继续运行。"""
+    job = _new_build_job()
+    proc = None
+    try:
+        proc = subprocess.Popen(cmd, **kwargs)
+        if job is not None:
+            job.assign(proc)
+        return proc, job
+    except Exception:
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.terminate()  # Popen 持有原进程 HANDLE，不通过裸 PID 寻址
+                proc.wait(timeout=5)
+            except Exception:
+                pass
+        _close_build_job(job)
+        raise
+
+
 def _run_build(stage, extra=None, on_done=None):
     # B1：原子「判 running + 置 True」并在调用线程内同步置位（不再等子线程 start() 后才置），
     # 多路触发时后来者立即拿到 running=True → return False，不会并发跑两个子进程。
     with _BUILD_LOCK:
-        if BUILD["running"]:
+        if _maintenance_busy_locked():
             return False
         BUILD["running"] = True; BUILD["stage"] = stage; BUILD["started"] = time.time()
         BUILD["log"] = [f"[{stage}] 启动…"]; BUILD["rc"] = None
-        BUILD["proc"] = None; BUILD["cancelled"] = False
+        BUILD["proc"] = None; BUILD["job"] = None; BUILD["cancelled"] = False
         # BF35：整库深索(scope=all)标记——extra 形如 ["--scope","all"]；队列批次是 "keys:..."，不算 bulk
         BUILD["bulk"] = bool(stage == "deep" and "all" in (extra or []))
     # EN-W2：整库深索(scope=all)记下构建前的已深索集合（safe_name(stem)），
@@ -3057,15 +3567,18 @@ def _run_build(stage, extra=None, on_done=None):
     # 队列批次不走这里（keys 已知，由 _on_deep_done 直接触发），避免双算。
     pre_deep = _deep_keys() if BUILD["bulk"] else None
     def run():
-        rc = None
+        rc, job = None, None
         try:
             env = _child_env()   # 任务五：稳定 UTF-8 输出，避免 build 日志乱码
             cmd = [sys.executable, str(C.APP / "build_all.py"), "--stage", stage] + (extra or [])
-            p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env,
-                                 creationflags=C.SUBPROC_NO_WINDOW,   # ★ 不闪黑窗（Windows）
-                                 # macOS/Linux：起在独立进程组，取消时 _kill_tree 用 killpg 连孙进程一起杀
-                                 start_new_session=(sys.platform != "win32"))
-            BUILD["proc"] = p            # 留句柄给 /build/cancel
+            p, job = _spawn_build_process(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env,
+                creationflags=C.SUBPROC_NO_WINDOW,   # ★ 不闪黑窗（Windows）
+                # macOS/Linux：起在独立进程组，取消时 killpg 连孙进程一起杀
+                start_new_session=(sys.platform != "win32"))
+            with _BUILD_LOCK:
+                BUILD["proc"] = p         # 留 Popen/Job 句柄给 /build/cancel
+                BUILD["job"] = job
             for raw in p.stdout:
                 BUILD["log"].append(raw.decode("utf-8", errors="replace").rstrip())
                 BUILD["log"] = BUILD["log"][-300:]
@@ -3081,7 +3594,10 @@ def _run_build(stage, extra=None, on_done=None):
             rc = -1
         finally:
             BUILD["rc"] = rc
-            BUILD["proc"] = None
+            with _BUILD_LOCK:
+                BUILD["proc"] = None
+                BUILD["job"] = None
+            _close_build_job(job)
             # B2：重载期间表句柄、BM25 与题录状态并非原子切换。
             # 重载全程保持 running=True（锁未释放前不接受新 build）+ 短暂 ready=False（检索先返回未就绪，
             # 而非错误的空命中）；load_all 成功后自会把 ready 置回 True。
@@ -3131,27 +3647,24 @@ def _run_build(stage, extra=None, on_done=None):
 @app.post("/build")
 def build_ep():
     # 文件夹模式必须走 stage=folder（含 folder_ingest 的 LLM 抽题录），否则手动「更新知识库」
-    # 只跑 all 管线、跳过题录抽取，新 PDF 永远停留在文件名占位题录（与自动更新循环同一分派）。
+    # 只跑 all 管线、跳过题录抽取，新全文文件永远停留在文件名占位题录（与自动更新循环同一分派）。
     import settings as S
     stage = "folder" if S.source() == "folder" else "all"
     return {"ok": _run_build(stage)}
 
-def _kill_tree(p):
+def _kill_tree(p, job=None):
     """终止建库进程树。子进程（build_all）会派生嵌入/抽取 worker 孙进程，只杀本体它们会变孤儿、
        继续跑继续烧 API 额度。
-       Windows：taskkill /T /F 杀整棵树；失败兜底 terminate。
+       Windows：终止本 server 持有的 Job Object，不按 PID 枚举系统进程。
        macOS/Linux：子进程用 start_new_session 起在独立进程组里（见 _run_build 的 Popen），
-         这里 killpg 杀整组；拿不到进程组则兜底 terminate。"""
+          这里 killpg 杀整组；拿不到进程组则兜底 terminate。"""
     if sys.platform == "win32":
-        try:
-            r = subprocess.run(["taskkill", "/PID", str(p.pid), "/T", "/F"],
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15,
-                               creationflags=C.SUBPROC_NO_WINDOW)
-            if r.returncode == 0:
-                return
-            log_error("build/cancel taskkill", f"taskkill rc={r.returncode}，兜底 terminate")
-        except Exception as e:
-            log_error("build/cancel taskkill", repr(e))
+        if job is not None:
+            job.terminate(1)
+            return
+        # Job 建立前的极小窗口只可能持有 Popen；terminate 使用 Popen 内部的原进程 HANDLE。
+        p.terminate()
+        return
     else:
         try:
             import os as _os, signal as _sig
@@ -3166,10 +3679,11 @@ def build_cancel():
     """取消正在跑的建库/深索子进程。整库深索(scope=all)此前一旦开始就停不下来，
        可能空跑数小时并烧掉 API 额度。深索是增量的：已完成的篇已落盘，随时可继续。
        同时暂停深索队列——否则子进程一死，_drain_deep_queue 立刻起新批。"""
-    p = BUILD.get("proc")
-    if not BUILD["running"] or p is None:
-        return JSONResponse({"ok": False, "detail": "当前没有正在运行的任务"}, status_code=409)
-    BUILD["cancelled"] = True
+    with _BUILD_LOCK:
+        p, job = BUILD.get("proc"), BUILD.get("job")
+        if not BUILD["running"] or p is None:
+            return JSONResponse({"ok": False, "detail": "当前没有正在运行的任务"}, status_code=409)
+        BUILD["cancelled"] = True
     try:
         with _Q_LOCK:
             QUEUE["paused"] = True
@@ -3177,7 +3691,7 @@ def build_cancel():
     except Exception as e:
         log_error("build/cancel pause-queue", repr(e))
     try:
-        _kill_tree(p)   # BF7：杀整棵进程树，孙进程不再漏网
+        _kill_tree(p, job)   # Job/进程组都引用原对象，不会命中复用后的 PID
     except Exception as e:
         log_error("build/cancel", repr(e), traceback.format_exc())
         return JSONResponse({"ok": False, "detail": f"终止失败：{e}"}, status_code=500)
@@ -3195,10 +3709,10 @@ def build_status():
 
 @app.post("/index/retry_no_text")
 def retry_no_text():
-    """兼容旧路由名：清除 PDF 提取失败终态与旧产物，让用户修好附件后重新深索。"""
+    """兼容旧路由名：清除全文附件提取失败终态与旧产物，让用户修好附件后重新深索。"""
     notext = _deep_no_text_keys()   # safe_name(stem) 集合
     if not notext:
-        return {"ok": True, "cleared": 0, "msg": "当前没有待重试的 PDF 提取失败篇。"}
+        return {"ok": True, "cleared": 0, "msg": "当前没有待重试的全文附件提取失败篇。"}
     papers = _load_papers()
     keys = [k for k, p in papers.items()
             if (p.get("stem") or T.safe_name(k)) in notext]
@@ -3261,7 +3775,7 @@ class IngestQ(BaseModel):
 
 @app.post("/ingest/files")
 def ingest_files(q: IngestQ):
-    """拖入/选择的 PDF（base64）复制进受管文件夹 → 去重 → 后台 folder build（抽题录+索引）。
+    """拖入/选择的支持格式文件复制进受管文件夹 → 去重 → 后台 folder build。
        用 JSON base64 而非 multipart，避免分发版缺 python-multipart。"""
     import settings as S, hashlib as _hl, base64 as _b64
     if S.source() != "folder":
@@ -3273,9 +3787,11 @@ def ingest_files(q: IngestQ):
         return JSONResponse({"ok": False, "msg": "正在建库/入库中，请稍后再拖入", "building": True}, status_code=409)
     fp = Path(folder)
     # R2：先按文件大小建索引，只有大小撞车的候选才按需算 sha1（并缓存），
-    # 避免每拖一篇就把受管文件夹里每个 PDF 全量读盘算 sha1（大库会卡几十秒~几分钟）。
+    # 避免每拖一篇就把受管文件夹里每个全文文件全量读盘算 sha1。
     size_index = {}          # size -> [paths]
-    for p in fp.rglob("*.pdf"):
+    import folder_source as FS
+    for raw in FS.scan(str(fp)):
+        p = Path(raw)
         try:
             size_index.setdefault(p.stat().st_size, []).append(p)
         except Exception:
@@ -3299,9 +3815,9 @@ def ingest_files(q: IngestQ):
         return False
     added, skipped, failed = [], [], []
     for f in (q.files or []):
-        name = f.name or "untitled.pdf"
-        if not name.lower().endswith(".pdf"):
-            failed.append({"name": name, "reason": "非 PDF"}); continue
+        name = f.name or "untitled"
+        if not DF.supported_file(name):
+            failed.append({"name": name, "reason": "不支持的格式"}); continue
         try:
             data = _b64.b64decode((f.content_b64 or "").split(",")[-1])
             if _is_dup(data):
@@ -3361,13 +3877,24 @@ class DeepAgentQ(BaseModel):
     batch: int = 15
 
 def _run_stage_blocking(stage, extra=None):
-    """阻塞跑一段 build_all（子进程 subprocess.run，捕获 stdout 不污染 HTTP 响应）。返回 returncode。"""
+    """阻塞跑一段 build_all；仍发布 Popen/Job 句柄，允许 /build/cancel 安全停止。"""
     env = _child_env()
     cmd = [sys.executable, str(C.APP / "build_all.py"), "--stage", stage] + (extra or [])
-    p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env,
-                       creationflags=C.SUBPROC_NO_WINDOW)
+    p, job = _spawn_build_process(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env,
+        creationflags=C.SUBPROC_NO_WINDOW,
+        start_new_session=(sys.platform != "win32"))
+    with _BUILD_LOCK:
+        BUILD["proc"], BUILD["job"] = p, job
     try:
-        out = (p.stdout or b"").decode("utf-8", errors="replace")
+        out, _ = p.communicate()
+    finally:
+        with _BUILD_LOCK:
+            if BUILD.get("proc") is p:
+                BUILD["proc"], BUILD["job"] = None, None
+        _close_build_job(job)
+    try:
+        out = (out or b"").decode("utf-8", errors="replace")
         BUILD["log"].append(f"[deep_agent:{stage}] rc={p.returncode}")
         for ln in out.splitlines()[-20:]:
             BUILD["log"].append(ln)
@@ -3419,7 +3946,7 @@ def _deep_agent_run(q: DeepAgentQ):
     # ② 选下一批 pending-deep（有PDF、未深索、非扫描件），阻塞跑 deep_prepare(extract+chunk)
     papers = _load_papers(); deepk = _deep_keys(); notext = _deep_no_text_keys()
     cand = [p for p in papers.values()
-            if p.get("has_pdf") and not is_deep(p["key"], deepk)
+            if p.get("has_fulltext") and not is_deep(p["key"], deepk)
             and T.safe_name(p["key"]) not in notext]
     batch_n = max(1, int(q.batch or 15))
     batch = cand[:batch_n]
@@ -3437,7 +3964,9 @@ def _deep_agent_run(q: DeepAgentQ):
     manifest = json.loads(C.INDEX_MANIFEST.read_text(encoding="utf-8")) if C.INDEX_MANIFEST.exists() else {}
     # ③ 汇总返回。finished=没有更多待处理（末批：summaries 已提交且无新篇也能收尾）
     return {"ok": True, "wrote": wrote, "to_summarize": to_summarize,
-            "done": len(_deep_keys()), "with_pdf": manifest.get("with_pdf", 0),
+            "done": len(_deep_keys()),
+            "with_fulltext": manifest.get("with_fulltext", manifest.get("with_pdf", 0)),
+            "with_pdf": manifest.get("with_pdf", 0),
             "remaining": max(0, len(cand) - len(batch)),
             "finished": (len(batch) == 0)}
 
@@ -3447,8 +3976,9 @@ def index_deep_agent(q: DeepAgentQ):
        用法见 MCP 工具 deep_index：首次不带 summaries→返回 to_summarize；带 summaries 再调→
        嵌入上一批+返回下一批；循环至 finished=true。"""
     with _BUILD_LOCK:
-        if BUILD["running"]:
-            return {"ok": False, "busy": True}
+        busy = _maintenance_busy_locked()
+        if busy:
+            return {"ok": False, "busy": True, "msg": busy}
         BUILD["running"] = True; BUILD["stage"] = "deep_agent"
         BUILD["started"] = time.time(); BUILD["rc"] = None
         BUILD["cancelled"] = False       # BF14：每次构建开始都复位取消标记，避免上次取消残留误报
@@ -3590,8 +4120,9 @@ def maintenance_agent_summaries(q: AgentSummaryRepairQ):
         return {"ok": False, "msg": "没有提交摘要。"}
     snap = SAC.snapshot([x["key"] for x in items])
     with _BUILD_LOCK:
-        if BUILD["running"]:
-            return {"ok": False, "busy": True, "msg": "已有建库/深索任务在运行，请稍后重试。"}
+        busy = _maintenance_busy_locked()
+        if busy:
+            return {"ok": False, "busy": True, "msg": busy}
         BUILD["running"] = True; BUILD["stage"] = "agent_summary_repair"
         BUILD["started"] = time.time(); BUILD["rc"] = None; BUILD["cancelled"] = False
     try:
@@ -3639,7 +4170,7 @@ def index_sac_backfill(q: SacBackfillQ = None):
     import sac as SAC
     if not SAC.key_available():
         return {"ok": False, "need_key": True,
-                "msg": "生成检索摘要需要 API key：请到 设置 → 检索 → 检索引擎 填一个 SiliconFlow 免费 Key（或在 设置 → 建库 → 检索摘要 → 高级 单独填），再来生成。"}
+                "msg": "生成检索摘要需要可用的 AI：请到 设置 → 建库 → 检索摘要，在“PaperPiggy 自动生成”下选择复用 SiliconFlow Key，或填写其他 AI 厂商的 Key 和模型。"}
     only = None
     if q and q.keys:
         only = {T.safe_name(k) for k in q.keys if k}
@@ -3648,8 +4179,9 @@ def index_sac_backfill(q: SacBackfillQ = None):
         return {"ok": True, "started": False, "total": 0,
                 "msg": ("这篇已有检索摘要，无需再生成。" if only else "所有已深索文献都已有检索摘要，无需生成。")}
     with _BUILD_LOCK:
-        if BUILD["running"]:
-            return {"ok": False, "busy": True, "msg": "已有任务在跑（深索/更新/补生成），请稍后再试。"}
+        busy = _maintenance_busy_locked()
+        if busy:
+            return {"ok": False, "busy": True, "msg": busy}
         BUILD["running"] = True; BUILD["stage"] = "sac_backfill"
         BUILD["started"] = time.time(); BUILD["rc"] = None; BUILD["cancelled"] = False
     with _BACKFILL_LOCK:
@@ -3682,8 +4214,9 @@ def search(q: SearchQ):
     if not R.STATE.get("ready"):
         # UX8：两态文案——建过库只是重建/重载窗口（稍等即可），从未建库才需要走向导；
         # 此前一律"先建立即时索引"，害老用户在重载的几秒里被误导去重建。
-        msg = ("索引正在重建或加载，请稍候几秒再搜" if C.INDEX_MANIFEST.exists()
-               else "还没建立索引——请到 设置 → 应用 → 重新查看引导 完成首次建库")
+        msg = (R.STATE.get("error") or
+               ("索引正在重建或加载，请稍候几秒再搜" if C.INDEX_MANIFEST.exists()
+                else "还没建立索引——请到 设置 → 应用 → 重新查看引导 完成首次建库"))
         return JSONResponse({"error": msg, "ready": False}, status_code=503)
     t0 = time.time()
     keys = _resolve_category_keys(q.category)
@@ -3801,6 +4334,22 @@ def _backup_busy_reason():
     return None
 
 
+def _claim_backup(stage):
+    """原子检查并占用备份槽，避免 check/set 之间被建库线程抢入。"""
+    with _BUILD_LOCK:
+        busy = _backup_busy_reason()
+        if busy:
+            return busy
+        BACKUP.update({"running": True, "stage": stage, "done": 0, "total": 0,
+                       "result": None, "error": None})
+    return None
+
+
+def _release_backup():
+    with _BUILD_LOCK:
+        BACKUP["running"] = False
+
+
 def _auto_backup_tick():
     """自动备份（由上面的定时循环每分钟叫一次；真正动手是每 N 天一次）。
 
@@ -3814,7 +4363,7 @@ def _auto_backup_tick():
     conf = S.load().get("backup") or {}
     if not conf.get("auto"):
         return
-    if BUILD["running"] or BACKUP["running"]:
+    if _claim_backup("自动备份中"):
         return
 
     days = max(1, int(conf.get("every_days") or 7))
@@ -3828,8 +4377,6 @@ def _auto_backup_tick():
             pass                      # 时间戳坏了 → 当作没备份过，宁可多备一次
 
     import backup as BK
-    BACKUP.update({"running": True, "stage": "自动备份中", "done": 0, "total": 0,
-                   "result": None, "error": None})
     try:
         m = BK.create(include_index=False, include_key=False)
         S.save({"backup": {"last_at": m["created"]}})
@@ -3841,7 +4388,7 @@ def _auto_backup_tick():
         BACKUP["stage"] = "失败"
         log_error("auto_backup", repr(e))
     finally:
-        BACKUP["running"] = False
+        _release_backup()
 
 
 class BackupConfQ(BaseModel):
@@ -3903,13 +4450,11 @@ def backup_estimate(with_index: int = 0):
 @app.post("/backup/create")
 def backup_create(q: BackupQ = None):
     q = q or BackupQ()
-    busy = _backup_busy_reason()
+    busy = _claim_backup("打包中")
     if busy:
         return {"ok": False, "error": busy}
 
     import backup as BK
-    BACKUP.update({"running": True, "stage": "打包中", "done": 0, "total": 0,
-                   "result": None, "error": None})
 
     def work():
         try:
@@ -3929,7 +4474,7 @@ def backup_create(q: BackupQ = None):
             BACKUP["error"] = str(e)
             BACKUP["stage"] = "失败"
         finally:
-            BACKUP["running"] = False
+            _release_backup()
 
     threading.Thread(target=work, daemon=True).start()
     return {"ok": True, "started": True}
@@ -3960,8 +4505,10 @@ def backup_restore(q: BackupPathQ):
     if not info.get("ok"):
         return {"ok": False, "error": info.get("err") or "备份包不可用"}
 
-    BACKUP.update({"running": True, "stage": "恢复中", "done": 0, "total": 0,
-                   "result": None, "error": None})
+    # inspect 可能耗时，完成后重新原子检查并占位，不能沿用检查前的空闲结论。
+    busy = _claim_backup("恢复中")
+    if busy:
+        return {"ok": False, "error": busy}
 
     def work():
         try:
@@ -3977,7 +4524,7 @@ def backup_restore(q: BackupPathQ):
             BACKUP["error"] = str(e)
             BACKUP["stage"] = "失败"
         finally:
-            BACKUP["running"] = False
+            _release_backup()
 
     threading.Thread(target=work, daemon=True).start()
     return {"ok": True, "started": True}

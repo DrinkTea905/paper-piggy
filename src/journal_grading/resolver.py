@@ -58,7 +58,7 @@ def _parse_token(tok):
 
 
 def _catalog_best_tier(cat, lvl, arch_map, ctx):
-    """给定命中目录 cat 及其级别 lvl，在本原型 map 里找它能落到的最高档（T1→T6 先到先得）。
+    """给定命中目录 cat 及其级别 lvl，在本原型 map 里找它能落到的最高内部档（T1→T5 先到先得）。
        ctx 提供限定判定：is_recognized_top / fms_level。返回 (tier, matched_token) 或 (None,None)。"""
     for tier in _TIER_ORDER:
         for tok in arch_map.get(tier, []):
@@ -81,7 +81,7 @@ def resolve_journal_weight(item, active_discipline, data=None, if_enabled=None):
     """核心 API。
       item: dict，至少含 journal(刊名)，可含 issn/eissn、language/langid、if/if_cnki。
       active_discipline: 学科 id（如 'law'）。
-    返回: { weight: float, tier: 'T1'..'T6'|'待确认', hitCatalogs: [...], explain: {...} }
+    返回: { weight: float, tier: 'T1'|'T1b'|'T2'|'T3'|'T4'|'T5'|'待确认', hitCatalogs: [...], explain: {...} }
     """
     data = data or _loader.load()
     disc = data.discipline(active_discipline)          # KeyError 若学科名错（不静默）

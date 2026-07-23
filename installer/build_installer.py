@@ -36,12 +36,21 @@ OUT = ROOT / "dist-installer"
 
 sys.path.insert(0, str(SRC))
 
-ISCC_CANDIDATES = [
-    # winget 装的是 per-user，落在 %LOCALAPPDATA%\Programs（不是 Program Files）
-    os.path.join(os.environ.get("LOCALAPPDATA", ""), r"Programs\Inno Setup 6\ISCC.exe"),
-    r"C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
-    r"C:\Program Files\Inno Setup 6\ISCC.exe",
-]
+def _iscc_candidates():
+    """返回 ISCC 候选路径；即使受控 shell 没转发 LOCALAPPDATA 也能找到用户级安装。"""
+    local_appdata = os.environ.get("LOCALAPPDATA")
+    if not local_appdata:
+        user_home = os.environ.get("USERPROFILE") or str(Path.home())
+        local_appdata = str(Path(user_home) / "AppData" / "Local")
+    return [
+        # winget 装的是 per-user，落在 LocalAppData\Programs（不是 Program Files）。
+        str(Path(local_appdata) / "Programs" / "Inno Setup 6" / "ISCC.exe"),
+        r"C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
+        r"C:\Program Files\Inno Setup 6\ISCC.exe",
+    ]
+
+
+ISCC_CANDIDATES = _iscc_candidates()
 
 
 def app_version():
@@ -69,14 +78,71 @@ def check_bundle():
                          f"    干净电脑（没装 VC++ 2015-2022）上本地模式会直接 WinError 1114。\n"
                          f"    跑 build_bundle.py 的 ensure_vc_runtime()，或手动 copy。")
 
-    # ① 错位残留：数据绝不该落在 app\ 下（那是代码目录）。这种一定是 bug 产物，直接清。
+    # ① 错位残留：数据绝不该落在 app\ 下（那是代码目录）。只报警，不替构建者删文件。
     for junk in ("app/data", "app/logs"):
         p = BUNDLE / junk
         if p.exists():
-            print(f"[installer] ⚠ 清理残留：{junk}")
-            shutil.rmtree(p, ignore_errors=True)
+            raise SystemExit(
+                f"[installer] ✗ bundle 含错误落位目录：{junk}\n"
+                "    已中止，且没有自动删除。请先检查内容，再手动处理并重新构建 bundle。")
 
-    # ② 隐私闸门：数据与程序同目录之后，开发者自测 bundle 会在**包根**留下真实数据 ——
+    # ② app 新鲜度：不能把旧 dist/app 套上当前版本号发布。
+    app_dir = BUNDLE / "app"
+    version_file = app_dir / "version.json"
+    try:
+        meta = json.loads(version_file.read_text(encoding="utf-8"))
+    except Exception as e:
+        raise SystemExit(f"[installer] ✗ bundle app/version.json 缺失或损坏：{e}")
+    current_version = app_version()
+    if str(meta.get("version") or "") != current_version:
+        raise SystemExit(
+            f"[installer] ✗ bundle 版本陈旧：version.json={meta.get('version')!r}，"
+            f"当前源码={current_version!r}\n    请重新运行 src\\build_bundle.py。")
+    manifest_files = meta.get("files")
+    if not isinstance(manifest_files, dict) or not manifest_files:
+        raise SystemExit("[installer] ✗ bundle version.json 没有有效的文件哈希清单")
+
+    import build_bundle as BB
+    source_files = BB.source_app_files()
+    if set(manifest_files) != set(source_files):
+        missing = sorted(set(source_files) - set(manifest_files))[:8]
+        stale = sorted(set(manifest_files) - set(source_files))[:8]
+        raise SystemExit(
+            "[installer] ✗ bundle 文件清单与当前源码集合不一致，请重新构建。\n"
+            f"    bundle 缺：{missing or '无'}\n    bundle 多：{stale or '无'}")
+    actual_bundle = {p.relative_to(app_dir).as_posix() for p in app_dir.rglob("*")
+                     if p.is_file() and p.name != "version.json"
+                     and "__pycache__" not in p.parts and p.suffix.lower() not in {".pyc", ".pyo"}}
+    if actual_bundle != set(manifest_files):
+        raise SystemExit("[installer] ✗ bundle app 实际文件与 version.json 清单不一致，请重新构建")
+    for rel, source in source_files.items():
+        want = str(manifest_files.get(rel) or "").lower()
+        bundle_file = app_dir / Path(rel)
+        if len(want) != 64 or _sha256(source) != want or _sha256(bundle_file) != want:
+            raise SystemExit(
+                f"[installer] ✗ bundle 文件已陈旧或损坏：{rel}\n"
+                "    当前源码、bundle 和 version.json 哈希必须三方一致；请重新构建。")
+
+    runtime_marker = BUNDLE / "python" / ".paperpiggy-runtime.sha256"
+    try:
+        bundled_runtime = runtime_marker.read_text(encoding="ascii").strip()
+    except Exception as e:
+        raise SystemExit(f"[installer] ✗ bundle 缺少运行时指纹：{e}")
+    if not bundled_runtime or str(meta.get("runtime_fingerprint") or "").strip() != bundled_runtime:
+        raise SystemExit("[installer] ✗ app 清单与 bundle/python 的运行时指纹不一致")
+    runtime_src = Path(os.environ.get("LOCALKB_PY_SRC") or (ROOT / "build" / "py312"))
+    if not (runtime_src / "python.exe").exists():
+        raise SystemExit(f"[installer] ✗ 无法核对当前运行时来源：{runtime_src}")
+    if BB._python_fingerprint(runtime_src) != bundled_runtime:
+        raise SystemExit("[installer] ✗ bundle/python 已陈旧，请重新运行 src\\build_bundle.py")
+
+    for name in BB.LEGAL_DOCS:
+        bundled = BUNDLE / name
+        source = ROOT / name
+        if not bundled.is_file() or _sha256(bundled) != _sha256(source):
+            raise SystemExit(f"[installer] ✗ bundle 缺少或未同步法律文档：{name}")
+
+    # ③ 隐私闸门：数据与程序同目录之后，开发者自测 bundle 会在**包根**留下真实数据 ——
     #    data\（含 settings.json 里的硅基流动 API key、文献元数据、索引）、
     #    0_Agent交付物\（写好的论文）、0_Agent资料库\（项目记忆）。
     #    .iss 的 Excludes 已经排除它们，但那是第二道；这里是第一道。
@@ -144,24 +210,16 @@ def ensure_webview2():
 def ensure_icon():
     r"""生成 installer\PaperPiggy.ico 供 Inno 用。
 
-    仓库里只有 web\PaperPiggy.png —— .ico 一直是 launcher 运行时现封的（PNG-in-ICO），
-    没有静态 .ico 文件。这里用同一套纯 stdlib 逻辑在构建期封一份出来。
+    web\PaperPiggy.png 是唯一真源；每次构建都强制重建标准多尺寸 ICO，
+    绝不复用上次出包留下的旧图标。
     """
     ico = HERE / "PaperPiggy.ico"
-    if ico.exists() and ico.stat().st_size > 0:
-        return ico
     png = SRC / "web" / "PaperPiggy.png"
     if not png.exists():
         raise SystemExit(f"[installer] ✗ 找不到 {png}（应用图标的真源）")
-
-    import struct
-    data = png.read_bytes()
-    # ICONDIR: reserved=0, type=1(icon), count=1
-    hdr = struct.pack("<HHH", 0, 1, 1)
-    # ICONDIRENTRY: w=0/h=0 表示 256px；PNG 数据直接内嵌（PNG-in-ICO，Vista+ 支持）
-    entry = struct.pack("<BBBBHHII", 0, 0, 0, 0, 1, 32, len(data), 6 + 16)
-    ico.write_bytes(hdr + entry + data)
-    print(f"[installer] 图标已生成：{ico}（从 web/PaperPiggy.png 封成 PNG-in-ICO）")
+    from icon_utils import ensure_multi_size_ico
+    ensure_multi_size_ico(png, ico, force=True)
+    print(f"[installer] 图标已生成：{ico}（16–256px 多尺寸 ICO）")
     return ico
 
 
@@ -187,7 +245,8 @@ def build_setup(ver):
     OUT.mkdir(exist_ok=True)
     cmd = [iscc, f"/DAppVersion={ver}", str(HERE / "paperpiggy.iss")]
     print(f"[installer] 编译安装器：{' '.join(cmd)}")
-    r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                       creationflags=(0x08000000 if sys.platform == "win32" else 0))
     if r.returncode != 0:
         print(r.stdout[-3000:])
         print(r.stderr[-2000:], file=sys.stderr)

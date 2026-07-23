@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import config as C
+import document_formats as DF
 
 def _clean(s):
     return re.sub(r'\s+', ' ', (s or '').replace('\n', ' ').replace('\r', ' ')).strip()
@@ -103,7 +104,7 @@ def available(data_dir=None):
     return bool(d and (d / "zotero.sqlite").exists())
 
 def load_papers(data_dir=None, library_id=1):
-    """读 zotero.sqlite，返回 [dict]（建库记录结构 + pdf_path/collections）。
+    """读 zotero.sqlite，返回 [dict]（建库记录结构 + 全文附件/collections）。
     library_id=1 = "我的文库"（排除群组库/RSS feed）。"""
     d = Path(data_dir) if data_dir else detect_data_dir()
     if not d or not (d / "zotero.sqlite").exists():
@@ -157,24 +158,32 @@ def load_papers(data_dir=None, library_id=1):
         tags = {}
         for iid, name in q("""SELECT it.itemID, t.name FROM itemTags it JOIN tags t ON it.tagID=t.tagID"""):
             tags.setdefault(iid, []).append(name)
-        # PDF 附件路径（storage:filename → storage/<附件key>/filename）
-        pdf = {}
+        # 可读取全文附件。HTML 网页快照刻意不收；主附件在记录落盘时统一按
+        # PDF→EPUB→DOCX→Markdown→TXT 选择（document_formats 是唯一事实源）。
+        attachments = {}
         base_att = _base_attachment_path()   # 链接附件（attachments:）的相对根，解析一次复用
-        for pid, akey, path in q("""SELECT ia.parentItemID, i2.key, ia.path FROM itemAttachments ia
+        for pid, akey, att_path, content_type in q("""SELECT ia.parentItemID, i2.key, ia.path,
+                                                           COALESCE(ia.contentType, '')
+          FROM itemAttachments ia
           JOIN items i2 ON ia.itemID=i2.itemID
-          WHERE ia.contentType='application/pdf' AND ia.parentItemID IS NOT NULL"""):
-            if pid in pdf or not path:
+          WHERE ia.parentItemID IS NOT NULL
+          ORDER BY ia.parentItemID, ia.itemID"""):
+            if not att_path:
                 continue
-            if path.startswith("storage:"):
-                pdf[pid] = str(storage / akey / path.split(":", 1)[1])
-            elif path.startswith("attachments:"):
-                # BF：链接附件相对根 baseAttachmentPath 的形式。此前把 "attachments:xxx" 原样当路径，
-                # os.path.exists 恒 False → 被误判成扫描件/需 OCR。解析成真实路径；根解析不出则
-                # 不落假路径（该 pid 不入 pdf → has_pdf=False），避免把不存在的路径当成有 PDF。
+            fmt = DF.detect_format(att_path, content_type)
+            if not fmt:
+                continue
+            resolved = ""
+            if att_path.startswith("storage:"):
+                resolved = str(storage / akey / att_path.split(":", 1)[1])
+            elif att_path.startswith("attachments:"):
+                # 链接附件相对根 baseAttachmentPath。根解析不出时不落假路径。
                 if base_att:
-                    pdf[pid] = str(base_att / path.split(":", 1)[1])
+                    resolved = str(base_att / att_path.split(":", 1)[1])
             else:
-                pdf[pid] = path  # 链接附件：绝对路径
+                resolved = att_path  # 链接附件：绝对路径
+            if resolved:
+                attachments.setdefault(pid, []).append({"format": fmt, "path": resolved})
         # 收藏夹
         colname = dict(q("SELECT collectionID, collectionName FROM collections"))
         itemcol = {}
@@ -204,7 +213,7 @@ def load_papers(data_dir=None, library_id=1):
         if not title:
             continue
         ym = re.search(r'\d{4}', f.get("date", "") or "")
-        papers.append({
+        paper = {
             "key": key,
             "title": title,
             "author": "; ".join(au.get(iid, [])),
@@ -219,13 +228,35 @@ def load_papers(data_dir=None, library_id=1):
             "keywords": "; ".join(tags.get(iid, [])),
             "abstract": _clean(f.get("abstractNote", "")),
             "itemtype": typ,
+            # 全类型评价与展示所需的 Zotero 元数据。旧 papers.jsonl 没有这些键也能正常
+            # 启动；下次增量/重建轻量索引时自然补齐，不要求用户先清空正式库。
+            "url": _clean(f.get("url", "")),
+            "website_title": _clean(f.get("websiteTitle", "")),
+            "access_date": _clean(f.get("accessDate", "")),
+            "publisher": _clean(f.get("publisher", "")),
+            "place": _clean(f.get("place", "")),
+            "isbn": _clean(f.get("ISBN", "")),
+            "edition": _clean(f.get("edition", "")),
+            "series": _clean(f.get("series", "")),
+            "book_title": _clean(f.get("bookTitle", "")),
+            "university": _clean(f.get("university", "")),
+            "thesis_type": _clean(f.get("thesisType", "")),
+            "institution": _clean(f.get("institution", "")),
+            "report_type": _clean(f.get("reportType", "")),
+            "report_number": _clean(f.get("reportNumber", "")),
+            "conference_name": _clean(f.get("conferenceName", "")),
+            "proceedings_title": _clean(f.get("proceedingsTitle", "")),
+            "court": _clean(f.get("court", "")),
+            "docket_number": _clean(f.get("docketNumber", "")),
+            "decision_date": _clean(f.get("dateDecided", "")),
+            "standard_number": _clean(f.get("number", "") or f.get("codeNumber", "")),
+            "version": _clean(f.get("version", "")),
             "official_pages": _clean(f.get("pages", "")),
-            "has_pdf": iid in pdf,
-            "pdf_path": pdf.get(iid, ""),
             "collections": itemcol.get(iid, []),
             # BF1：真实入库时间 = Zotero 的 dateAdded（UTC→本地）；「最近入库」不再随每次重建全体刷新
             "ingested_at": _utc_to_local(dadd),
-        })
+        }
+        papers.append(DF.apply_attachment_fields(paper, attachments.get(iid, [])))
     return papers
 
 if __name__ == "__main__":
@@ -234,5 +265,8 @@ if __name__ == "__main__":
     print("探测到 Zotero 数据目录:", dd)
     ps = load_papers()
     print(f"读取 {len(ps)} 篇（我的文库）")
-    withpdf = sum(1 for p in ps if p["has_pdf"])
-    print(f"有 PDF: {withpdf}, 有摘要: {sum(1 for p in ps if p['abstract'])}, 有页码: {sum(1 for p in ps if p['official_pages'])}")
+    withtext = sum(1 for p in ps if p["has_fulltext"])
+    byfmt = {fmt: sum(1 for p in ps if p.get("fulltext_format") == fmt)
+             for fmt in DF.FORMAT_PRIORITY}
+    print(f"有可读全文: {withtext} {byfmt}, 有摘要: {sum(1 for p in ps if p['abstract'])}, "
+          f"有页码: {sum(1 for p in ps if p['official_pages'])}")

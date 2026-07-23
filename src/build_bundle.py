@@ -28,6 +28,7 @@ DEV_ONLY = {
     "fetch_mingit.py",   # 下载 MinGit 塞进包；构建期跑，不进分发包（它下载的 git/ 才进）
 }
 KEEP_MD = {"README.md", "MCP接入说明.md"}
+LEGAL_DOCS = ("LICENSE", "THIRD-PARTY-NOTICES.md")
 
 
 def _rm_ro(func, path, _):
@@ -64,17 +65,49 @@ def verify_manifest():
     print("[bundle] models_manifest.json 校验通过（url 均为真实直链）")
 
 
+def source_app_files():
+    """返回应进入 app/ 的源码映射；构建和安装器新鲜度校验共用这一事实源。"""
+    files = {}
+    for p in SRC.glob("*.py"):
+        if p.name not in DEV_ONLY:
+            files[p.name] = p
+    for p in SRC.glob("*.md"):
+        if p.name in KEEP_MD:
+            files[p.name] = p
+    for sub in ("web", "journal_grading"):
+        root = SRC / sub
+        if not root.exists():
+            continue
+        for p in root.rglob("*"):
+            if (p.is_file() and "__pycache__" not in p.parts
+                    and p.suffix.lower() not in {".pyc", ".pyo"}):
+                files[p.relative_to(SRC).as_posix()] = p
+    for name in ("models_manifest.json", "journal_tiers.json"):
+        p = SRC / name
+        if p.exists():
+            files[name] = p
+    return dict(sorted(files.items()))
+
+
+def copy_legal_docs():
+    """许可证与第三方声明必须随安装落盘，不能只存在于源码仓库。"""
+    root = SRC.parent
+    for name in LEGAL_DOCS:
+        source = root / name
+        if not source.is_file():
+            raise SystemExit(f"[bundle] ✗ 缺少法律文档：{source}")
+        shutil.copy2(source, BUNDLE / name)
+    print("[bundle] LICENSE / THIRD-PARTY-NOTICES.md 已加入 bundle")
+
+
 def copy_app():
     if APP_OUT.exists():
         shutil.rmtree(APP_OUT, onerror=_rm_ro)
     APP_OUT.mkdir(parents=True)
-    for p in SRC.glob("*.py"):
-        if p.name in DEV_ONLY:
-            continue
-        shutil.copy2(p, APP_OUT / p.name)
-    for p in SRC.glob("*.md"):
-        if p.name in KEEP_MD:
-            shutil.copy2(p, APP_OUT / p.name)
+    for rel, p in source_app_files().items():
+        dst = APP_OUT / Path(rel)
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(p, dst)
     # journal_grading = 期刊引用权重分级引擎（含 config/ 与 catalogs/ 目录数据）；必须整包带上，
     # 否则 retriever 里 import journal_grading 失败、权重回退旧离散档。
     # 注：早期这里还拷过一个 skills/（localkb-paper 技能包，要用户自己复制到 .claude/skills/）。
@@ -82,17 +115,6 @@ def copy_app():
     # 两份事实源，只会打架。技能不再需要任何手动安装动作。
     # 注：这里曾经还拷 docs/（4 份实现设计稿 + 2 份 .docx）。设计稿已移到仓库根的 docs/，
     # 且终端用户拿到 Word 设计稿只会困惑 —— 分发包不再带。设计文档只活在仓库里。
-    for sub in ("web", "journal_grading"):
-        s = SRC / sub
-        if s.exists():
-            shutil.copytree(s, APP_OUT / sub, ignore=shutil.ignore_patterns("__pycache__"))
-    mm = SRC / "models_manifest.json"
-    if mm.exists():
-        shutil.copy2(mm, APP_OUT / "models_manifest.json")
-    # 期刊分级种子数据（随源码分发；新机 data/ 无此文件时 journal_tiers.py 回退用它，避免分级退化默认档）
-    jt = SRC / "journal_tiers.json"
-    if jt.exists():
-        shutil.copy2(jt, APP_OUT / "journal_tiers.json")
     # 清理 pycache
     for pc in APP_OUT.rglob("__pycache__"):
         shutil.rmtree(pc, onerror=_rm_ro)
@@ -105,7 +127,7 @@ def write_version_json():
     version 取 config.APP_VERSION（全项目唯一版本字面量，别在这里再写一个数字）。
     files 清单不是装饰：updater.local_modifications()（updater.py:166）靠它比对磁盘，
     找出「用户自己改过的文件」——开源明文分发，用户真会改代码，这些文件不能被自动更新静默覆盖。
-    没有 version.json 时 updater 会保守地当作「谁都没改过」→ 直接覆盖 → 用户改动被抹掉。"""
+    没有或损坏 version.json 时 updater 会保全整个旧 app，并记录无法判定的原因。"""
     import json, hashlib, datetime
     files = {}
     for p in sorted(APP_OUT.rglob("*")):
@@ -317,7 +339,8 @@ def verify_guides():
     if not cg.exists():
         print("[bundle] ⚠ 没找到 check_guides.py，跳过指引校验")
         return
-    r = subprocess.run([sys.executable, str(cg)], cwd=str(SRC))
+    r = subprocess.run([sys.executable, str(cg)], cwd=str(SRC),
+                       creationflags=getattr(C, "SUBPROC_NO_WINDOW", 0))
     if r.returncode != 0:
         raise SystemExit("[bundle] ✗ 指引与代码不一致（上面 ❌ 那几条），已中止打包。"
                          "逐条修完再来；确要跳过用 --skip-checks。")
@@ -412,12 +435,14 @@ def main():
         if not BUNDLE.exists():
             print(f"[bundle] ✗ 找不到已构建的 bundle：{BUNDLE}（先完整构建/解压一次）"); return
         copy_app()
+        copy_legal_docs()
         print(f"[bundle] 已同步 app/（源码）→ {APP_OUT}"); return
     if not args.slim_models:
         verify_manifest()   # 依赖首启下载模型的分发包：构建前先确保 manifest 有真实直链
     BUNDLE.mkdir(parents=True, exist_ok=True)
     ensure_python(args.python_src)   # ← 以前没有这一步，所以完整构建从没跑通过
     copy_app()
+    copy_legal_docs()
     (BUNDLE / "data").mkdir(exist_ok=True)
     (BUNDLE / "models").mkdir(exist_ok=True)
     ensure_vc_runtime(args.allow_missing_vcrt)   # onnxruntime 硬依赖；缺了干净机必崩

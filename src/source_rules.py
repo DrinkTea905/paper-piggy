@@ -1,13 +1,17 @@
 # -*- coding: utf-8 -*-
 """
-文献性质定档（法源/官方报告）+ 单篇手动改档。
-- 期刊分级引擎只认刊名，法规/报告/白皮书没有刊名 → 一律被压成"待确认"(0.175)，比普刊还低。
-  本模块在期刊分级之前按【手动改档 > 条目类型 > 标题规则】三级定档（2026-07-12 用户拍板）：
-  法源（法律法规/司法解释/中央决定/司法文件）→ T1b 准权威 0.92；报告/白皮书 → T2 核心 0.85。
+文献性质识别 + 单篇手动改档。
+- 旧期刊引擎只认刊名，无法正确评价法规、报告、书籍等非期刊来源。
+  本模块识别真实文献性质，并保留旧内部 T? 权重用于兼容；普通接口统一由 grading_svc
+  显示为权威/顶级/核心/普通四档。
 - 标题规则只对 TITLE_SCOPE 内的"非学术条目类型"生效——论文标题里出现法名
   （如《…预防未成年人犯罪法》评析）绝不能被误升，所以 journalArticle/thesis 等永不进标题匹配。
 - 手动改档存 data/tier_overrides.json（{paper_key: "T1".."T5"}），优先级最高，
   由 POST /paper/tier 写入；按文件 mtime 热重载，改完即时生效、不用重启/重建。
+
+统一评价层会先识别文献性质/客观标签，再在最后应用手动改档。因此手动改档只改变
+评价，不会伪造或抹掉「三大刊 / CLSCI / 书籍 / 法源」等客观标签。本模块保留
+``resolve`` 兼容旧调用方；新代码应优先调用 ``grading_svc.evaluate_paper``。
 """
 import json, os, re, threading, time
 from pathlib import Path
@@ -18,11 +22,22 @@ import config as C
 TIER_W = {"T1": 1.00, "T1b": 0.92, "T2": 0.85, "T3": 0.65, "T4": 0.45, "T5": 0.25}
 TIER_RANK = {"T1": 0, "T1b": 1, "T2": 2, "T3": 3, "T4": 4, "T5": 5}
 
+# 面向新接口的四档稳定代码。旧 T? 记录只在读取时折叠，不强制重写用户文件。
+BAND_TO_TIER = {"authority": "T1", "top": "T1b", "core": "T2", "normal": "T5"}
+TIER_TO_BAND = {
+    "T1": "authority", "T1b": "top", "T2": "core", "T3": "core",
+    "T4": "normal", "T5": "normal", "待确认": "normal",
+}
+OVERRIDE_VALUES = set(TIER_W) | set(BAND_TO_TIER)
+
 # 条目类型 → 档位（Zotero itemtype；folder 模式 AI 抽的 report 同样命中）
-ITEMTYPE_TIER = {"statute": "T1b", "case": "T1b", "standard": "T1b", "report": "T2"}
+ITEMTYPE_TIER = {
+    "book": "T1", "bookSection": "T1", "thesis": "T1b",
+    "statute": "T1b", "case": "T1b", "standard": "T1b", "report": "T2",
+}
 
 # 标题规则的适用类型：只限"可能装着法源/报告的非学术类型"
-TITLE_SCOPE = {"webpage", "blogPost", "document", "book", "forumPost", "newspaperArticle"}
+TITLE_SCOPE = {"webpage", "blogPost", "document", "forumPost", "newspaperArticle"}
 
 # 规则命中写进建库层（papers.jsonl/LanceDB 的 journal_tier）的旧离散档标签；
 # 手动改档不写建库层（动态层已覆盖徽标/加权/过滤，建库层只在重建时才会变）。
@@ -51,6 +66,22 @@ RE_EXCLUDE = re.compile(
     r'(讲座|课程|奖学金|教程|教材|写作指南|作业|招聘|论坛预告|书评|访谈|方法|倍分法|Monte Carlo'
     r'|评析|述评|解读|观察|随笔|札记|今起施行|问题研究(?!报告)'
     r'|一图|图解|读懂|普法|漫画)', re.I)
+RE_DATASET = re.compile(
+    r'(数据集|资料集|数据库|统计数据|微观数据|开放数据|dataset|data\s+set|microdata|open\s+data)', re.I)
+
+SOURCE_TYPE_NAMES = {
+    "journal_article": "期刊论文", "book": "书籍", "book_section": "书章",
+    "thesis": "学位论文", "legal_source": "法源", "case": "案例",
+    "standard": "标准", "report": "报告与白皮书", "dataset": "数据集",
+    "preprint": "预印本", "conference_paper": "会议论文", "web": "网页与其他",
+    "newspaper": "报纸", "other": "其他",
+}
+
+_CONTAINER_TYPES = {"webpage", "blogPost", "document", "forumPost", "newspaperArticle"}
+_AUTHORITY_ORG_RE = re.compile(
+    r'(全国人民代表大会|国务院|最高人民法院|最高人民检察院|国家统计局|司法部|公安部|'
+    r'人民政府|人民法院|人民检察院|联合国|世界银行|国际货币基金组织|经合组织|OECD|WHO|'
+    r'政府部门|国家级|官方)', re.I)
 
 OVERRIDE_FILE = C.DATA / "tier_overrides.json"
 _LOCK = threading.Lock()
@@ -68,7 +99,7 @@ def _load_overrides():
         if _OV["mtime"] != mt:
             try:
                 raw = json.loads(OVERRIDE_FILE.read_text(encoding="utf-8"))
-                _OV["data"] = {k: v for k, v in raw.items() if v in TIER_W}
+                _OV["data"] = {k: v for k, v in raw.items() if v in OVERRIDE_VALUES}
                 _OV["mtime"] = mt
             except Exception:
                 # 瞬时读失败（OneDrive/杀软共享锁）：不缓存 mtime，下次调用重试——
@@ -90,8 +121,8 @@ def set_override(key, tier):
     """写/删一条手动改档。tier=None/"" → 恢复自动。写法与 grading_svc 一致：原子替换 + 重试。"""
     if not key:
         raise ValueError("key 不能为空")
-    if tier and tier not in TIER_W:
-        raise ValueError(f"非法档位 {tier}（可选：{'/'.join(TIER_W)}）")
+    if tier and tier not in OVERRIDE_VALUES:
+        raise ValueError("非法档位 %s（可选：authority/top/core/normal，兼容 T1/T1b/T2/T3/T4/T5）" % tier)
     with _LOCK:
         data = {}
         try:
@@ -119,6 +150,70 @@ def set_override(key, tier):
         else:
             OVERRIDE_FILE.write_text(txt, encoding="utf-8")
         _OV["mtime"] = None      # 强制下次重载
+
+
+def get_override(key):
+    """返回一篇的原始手动记录（四档稳定代码或历史 T?），没有则 None。"""
+    return _load_overrides().get(key or "")
+
+
+def band_of_tier(value):
+    """四档稳定代码；同时接受新 band 与历史 T?。"""
+    if value in BAND_TO_TIER:
+        return value
+    return TIER_TO_BAND.get(value, "normal")
+
+
+def internal_tier_of_override(value):
+    """把四档手动值映射到兼容内部档；历史 T? 原样保留其细分权重。"""
+    return BAND_TO_TIER.get(value, value if value in TIER_W else "T5")
+
+
+def is_authoritative_org(paper):
+    """保守识别官方/权威机构。只用于报告、数据集的客观细分，不从普通作者名猜。"""
+    if not isinstance(paper, dict):
+        return False
+    fields = ("institution", "reporting_institution", "publisher", "website_title", "author", "court")
+    blob = " ".join(str(paper.get(k) or "") for k in fields)
+    return bool(_AUTHORITY_ORG_RE.search(blob))
+
+
+def classify_source_type(paper):
+    """识别真实文献性质；容器型条目允许由可靠标题信号覆盖。"""
+    paper = paper if isinstance(paper, dict) else {}
+    it = str(paper.get("itemtype") or "").strip()
+    title = str(paper.get("title") or "")
+
+    fixed = {
+        "journalArticle": "journal_article", "book": "book", "bookSection": "book_section",
+        "thesis": "thesis", "statute": "legal_source", "case": "case",
+        "standard": "standard", "report": "report", "dataset": "dataset",
+        "preprint": "preprint", "conferencePaper": "conference_paper",
+    }
+    if it in fixed:
+        return fixed[it]
+    if it in _CONTAINER_TYPES:
+        if RE_EXCLUDE.search(title):
+            inferred = None
+        elif RE_DATASET.search(title):
+            inferred = "dataset"
+        elif RE_REPORT.search(title):
+            inferred = "report"
+        elif RE_LAW.search(title):
+            inferred = "legal_source"
+        else:
+            inferred = None
+        if inferred:
+            return inferred
+        return "newspaper" if it == "newspaperArticle" else "web"
+    # 兼容旧 papers.jsonl：itemtype 缺失但有刊名时，仍按期刊论文处理。
+    if paper.get("journal"):
+        return "journal_article"
+    return "other"
+
+
+def source_type_name(source_type):
+    return SOURCE_TYPE_NAMES.get(source_type, SOURCE_TYPE_NAMES["other"])
 
 
 def classify_title(title):
@@ -150,7 +245,9 @@ def resolve(key, itemtype, title):
     """三级定档：手动 > 类型 > 标题。命中返回 {tier, weight, rank, src}，未命中 None（走期刊分级）。"""
     ov = _load_overrides().get(key or "")
     if ov:
-        return {"tier": ov, "weight": TIER_W[ov], "rank": TIER_RANK[ov], "src": "manual"}
+        t = internal_tier_of_override(ov)
+        return {"tier": t, "weight": TIER_W[t], "rank": TIER_RANK[t], "src": "manual",
+                "band": band_of_tier(ov), "manual_code": ov}
     t = rule_tier(itemtype, title)
     if t:
         return {"tier": t, "weight": TIER_W[t], "rank": TIER_RANK[t], "src": "rule"}

@@ -17,6 +17,20 @@ _PIPELINE_GROUPS = {
     "semantic": ("embed_index.py", "index_semantic.py", "embedder.py", "siliconflow_embedder.py"),
 }
 
+# 精确登记“代码变了，但已有索引语义不变”的版本迁移。
+# 只接受已审计过的旧指纹 → 新指纹；未知变化仍按原规则提示重建。
+# v1.0.35 只为 extract/chunk 等增加 EPUB、DOCX、Markdown、TXT 分支，
+# 既有 PDF 深索结果无需重做。若以后继续改这些文件，当前指纹会变化，
+# 本迁移不会误吞新的、可能真的需要重建的改动。
+_COMPATIBLE_PIPELINE_TRANSITIONS = {
+    "deep": {
+        (
+            "961aa2cde7626605ccdd366aac8501469388d4c661252787661995153a41af30",
+            "acfdf51ca9e89f975d16e4d1d19babaadf21fe40b8d36df655fadec10a470252",
+        ): "v1.0.35-fulltext-formats",
+    },
+}
+
 
 def _sha_file(path):
     h = hashlib.sha256()
@@ -84,9 +98,32 @@ def index_health():
         except Exception as e:
             return {"state": "unknown", "label": "无法记录索引规则版本", "detail": str(e)}
         return {"state": "current", "label": "索引规则已登记"}
+    accepted = []
+    for group, current_hash in current.items():
+        transition = (built.get(group), current_hash)
+        migration = _COMPATIBLE_PIPELINE_TRANSITIONS.get(group, {}).get(transition)
+        if migration:
+            built[group] = current_hash
+            accepted.append(migration)
+    if accepted:
+        manifest["pipeline_fingerprints"] = built
+        try:
+            _atomic_json(C.INDEX_MANIFEST, manifest)
+        except Exception as e:
+            return {"state": "unknown", "label": "无法登记兼容的索引规则升级", "detail": str(e)}
+
     changed = [k for k, v in current.items() if built.get(k) != v]
     if not changed:
-        return {"state": "current", "label": "索引与当前规则一致"}
+        result = {"state": "current", "label": "索引与当前规则一致"}
+        if accepted:
+            result["detail"] = "兼容的规则升级已自动登记，无需重新深索。"
+            result["accepted_migrations"] = accepted
+        return result
+    if changed == ["light"]:
+        return {"state": "stale", "label": "题录分类规则已更新",
+                "changed": changed, "action": "手动更新知识库",
+                "detail": "只需更新一次题录；无需清空索引、重新深索或重建语义索引。",
+                "full_rebuild": False}
     need_full = any(k in changed for k in ("deep", "semantic"))
     return {"state": "stale", "label": "索引由旧规则生成",
             "changed": changed, "action": "清空并从头重建索引" if need_full else "手动更新知识库",

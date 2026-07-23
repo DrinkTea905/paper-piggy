@@ -114,6 +114,9 @@ def build(stem, force=False):
         d = json.loads(ex.read_text(encoding="utf-8"))
     except Exception:
         return None
+    # EPUB/DOCX/Markdown/TXT 没有稳定的 PDF/印刷页码，绝不伪造页码映射。
+    if (d.get("document_format") or (d.get("meta") or {}).get("fulltext_format") or "pdf") != "pdf":
+        return None
     pages = d.get("pages") or []
     if not pages:
         return None

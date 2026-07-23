@@ -61,6 +61,7 @@
 #define AppNameEn      "PaperPiggy"
 #define AppPublisher   "DrinkTea905"
 #define AppURL         "https://github.com/DrinkTea905/paper-piggy"
+#define AppUserModelID "PaperPiggy.PaperPiggy"
 ; 快捷方式**直接指向 pythonw.exe**，不经过 PaperPiggy.vbs（见文件头 §启动器：别再走 .vbs）
 #define AppLauncher    "python\pythonw.exe"
 #define AppScript      "run_localkb.py"
@@ -88,7 +89,7 @@ LicenseFile=..\LICENSE
 OutputDir=..\dist-installer
 ; 不叫 setup.exe（见 §安装包命名）
 OutputBaseFilename=PaperPiggy-{#AppVersion}-win64
-; .ico 由 build_installer.py 的 ensure_icon() 从 web/PaperPiggy.png 现封（仓库里只有 .png）
+; .ico 由 build_installer.py 从 web/PaperPiggy.png 强制重建为 16–256px 多尺寸图标
 SetupIconFile=PaperPiggy.ico
 UninstallDisplayIcon={app}\PaperPiggy.ico
 UninstallDisplayName={#AppName} {#AppVersion}
@@ -125,7 +126,11 @@ Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: 
 ;    硅基流动 API key，0_Agent* 里躺着交付物 —— 漏进公开安装包就是一次数据泄漏。
 ;    （build_bundle.py 已经不往 dist 里放这些，但护栏要有两道。）
 Source: "{#BundleDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; \
-    Excludes: "portable.txt,*.pdb,__pycache__,data\*,logs\*,update\*,0_Agent交付物\*,0_Agent资料库\*"
+    Excludes: "portable.txt,LICENSE,THIRD-PARTY-NOTICES.md,*.pdb,__pycache__,data\*,logs\*,update\*,0_Agent交付物\*,0_Agent资料库\*"
+
+; ─── 开源许可证与第三方声明：安装后也必须能在应用目录直接查到 ───
+Source: "{#BundleDir}\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#BundleDir}\THIRD-PARTY-NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
 
 ; ── 数据同目录开关（见 §数据同目录）──
 ; 从 installer\portable.txt 装进去，而不是让打包脚本临时生成 —— 少一个「忘了生成」的失败模式。
@@ -141,10 +146,10 @@ Source: "MicrosoftEdgeWebview2Setup.exe"; DestDir: "{tmp}"; Flags: deleteafterin
 
 [Icons]
 Name: "{group}\{#AppName}";        Filename: "{app}\{#AppLauncher}"; Parameters: """{app}\{#AppScript}"""; \
-    WorkingDir: "{app}"; IconFilename: "{app}\PaperPiggy.ico"
+    WorkingDir: "{app}"; IconFilename: "{app}\PaperPiggy.ico"; AppUserModelID: "{#AppUserModelID}"
 Name: "{group}\卸载 {#AppName}";   Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#AppName}";  Filename: "{app}\{#AppLauncher}"; Parameters: """{app}\{#AppScript}"""; \
-    WorkingDir: "{app}"; IconFilename: "{app}\PaperPiggy.ico"; Tasks: desktopicon
+    WorkingDir: "{app}"; IconFilename: "{app}\PaperPiggy.ico"; AppUserModelID: "{#AppUserModelID}"; Tasks: desktopicon
 
 [Run]
 ; 缺 WebView2 时静默安装（/silent /install）。装不上也不阻断安装流程——

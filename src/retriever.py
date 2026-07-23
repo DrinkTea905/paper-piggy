@@ -10,6 +10,7 @@ import sys, json, time, threading, os, re
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import config as C
+import document_formats as DF
 from textutil import tokenize, load_legal_synonyms
 
 import lancedb
@@ -28,6 +29,7 @@ import uvicorn
 
 STATE = {
     "last_active": time.time(), "ready": False, "mode": None,
+    "error": None,
     "retrieval_loaded": False, "retrieval_loading": False, "active_retrievals": 0,
 }
 M = {}  # 模型与索引句柄
@@ -64,6 +66,7 @@ def load_all():
 def _load_catalog_locked():
     t0 = time.time()
     STATE["mode"] = None
+    STATE["error"] = None
     _WEIGHT_MEMO.clear()   # 换库/改档/重载后清权重缓存，避免串旧值
     # 重载前先丢掉旧目录/句柄。最重要的是清掉历史版本留下的 records：它曾把 LanceDB
     # 全表（含 1024 维向量）物化成 Python dict/list/float，20 万行会膨胀到约 10GB。
@@ -88,6 +91,30 @@ def _load_catalog_locked():
     tbl_exists = C.TABLE_NAME in db.table_names()
     meta_ready = (C.BM25_META_DIR / "bm25_meta_ids.json").exists()
 
+    # 向量由不同引擎/模型生成时不可混用。index_semantic 是 manifest.backend 的唯一写入者；
+    # 若设置与已建表不一致，必须 fail closed，提示用户重建，而不是悄悄用新查询向量搜旧表。
+    if tbl_exists and C.INDEX_MANIFEST.exists():
+        try:
+            man = json.loads(C.INDEX_MANIFEST.read_text(encoding="utf-8"))
+            built_backend = man.get("backend")
+        except Exception as e:
+            STATE["mode"] = "manifest_error"
+            STATE["error"] = f"索引清单损坏，已停止检索以保护结果可靠性：{e}。请清空并重建索引。"
+            log(STATE["error"])
+            return
+        if built_backend:
+            import settings as _S
+            current_backend = _S.backend()
+            built_identity = man.get("embedding_identity")
+            identity_mismatch = bool(built_identity and built_identity != _S.embedding_identity())
+            if built_backend != current_backend or identity_mismatch:
+                STATE["mode"] = "backend_mismatch"
+                STATE["error"] = (f"现有索引的向量引擎/模型与当前设置不一致"
+                                  f"（索引后端 {built_backend}，当前后端 {current_backend}）。"
+                                  "已停止检索，请在设置中清空并重建索引。")
+                log(STATE["error"])
+                return
+
     if not tbl_exists and not meta_ready:
         STATE["mode"] = None; STATE["ready"] = False
         log("未建库（无表、无 L 档）——等首启向导 POST /index/light")
@@ -111,7 +138,7 @@ def _load_catalog_locked():
         with open(C.PAPERS_JSONL, encoding="utf-8") as f:
             for line in f:
                 if line.strip():
-                    _p = json.loads(line); pp[_p["key"]] = _p
+                    _p = DF.normalize_record(json.loads(line)); pp[_p["key"]] = _p
         M["papers"] = pp
     _build_statute_map()   # EN-L5：full 模式同样要有 key→statute_status（输出徽标+已废止降权）
     _load_wiki_index()
@@ -125,7 +152,7 @@ def _load_light_catalog():
         with open(C.PAPERS_JSONL, encoding="utf-8") as f:
             for line in f:
                 if line.strip():
-                    p = json.loads(line)
+                    p = DF.normalize_record(json.loads(line))
                     papers[p["key"]] = p
     M["papers"] = papers
     _build_statute_map()
@@ -437,45 +464,29 @@ def _active_discipline():
 _WEIGHT_MEMO = {}   # (discipline, journal, issn) -> weight_result；load_all 时清空（改档/换库后不串旧值）
 
 def _weight_res(r):
-    """算一条候选的权重（检索期动态）。优先级：手动改档 > 法源/报告规则 > 期刊分级引擎。
-       全部算不出 → None（排序回退旧离散档）。wiki 行 itemtype="wiki"，不进规则、走引擎兜底。"""
-    try:
-        sr = SR.resolve(r.get("key", ""), r.get("itemtype", ""), r.get("title", ""))
-        if sr:
-            return {"tier": sr["tier"], "weight": sr["weight"], "rank": sr["rank"],
-                    "needsReview": False, "src": sr["src"]}
-    except Exception:
-        pass
-    if JG is None:
+    """从全类型统一事实源取得评价；检索命中的少量候选允许惰性计算期刊目录。"""
+    if _is_wiki(r):
         return None
-    # 进程级 memo：一次检索里同刊多条候选、以及未收录书名/长刊名每次都要做上万条归一名的 SequenceMatcher
-    # 全库 fuzzy 扫描（实测未收录长名单条最高数百 ms），此前每条候选都重付。缓存 None 也是有意的——
-    # 未收录刊反复扫描代价最大。key 带 discipline，改学科即换命名空间，不会串档。
-    disc = _active_discipline()
-    journal = r.get("journal", "") or ""
-    issn = r.get("issn", "") or ""
-    ck = (disc, journal, issn)
-    if ck in _WEIGHT_MEMO:
-        return _WEIGHT_MEMO[ck]
     try:
-        wr = JG.resolve_journal_weight({"journal": journal, "issn": issn}, disc)
+        import grading_svc as GS
+        base = dict((M.get("papers") or {}).get(r.get("key", "")) or {})
+        base.update({k: v for k, v in r.items() if v not in (None, "", [])})
+        return GS.evaluate_paper(base, compute=True)
     except Exception:
-        wr = None
-    _WEIGHT_MEMO[ck] = wr
-    return wr
-
-# F38-B：tier code → 面向用户中文档名（与 grading_svc.TIER_CN 保持一致；前端 tierBadge 统一读中文 weight_tier）
-_TIER_CN = {"T1": "权威", "T1b": "准权威", "T2": "核心", "T3": "次核心",
-            "T4": "一般", "T5": "普通", "待确认": "待确认"}
+        return None
 
 def _attach_weight(d, wr):
-    """把权重结果挂到输出条目（供前端显示/加权/过滤）。weight_tier 统一输出中文档名。"""
+    """把统一评价挂到检索结果；旧字段继续保留供老客户端降级。"""
     d["journal_weight"] = wr.get("weight") if wr else None
     _t = wr.get("tier") if wr else None
-    d["weight_tier"] = _TIER_CN.get(_t, _t) if _t else None      # 中文档名（前端主徽标源）
+    d["weight_tier"] = wr.get("band_name") if wr else None
     d["weight_tier_code"] = _t                                    # 原始 T? 码（调试/兼容用）
-    d["weight_needs_review"] = bool(wr.get("needsReview")) if wr else False
+    d["weight_needs_review"] = bool(wr.get("needs_review") or wr.get("needsReview")) if wr else False
     d["weight_src"] = wr.get("src") if wr else None               # manual=手动改档 / rule=法源报告规则（前端标记）
+    for key in ("source_type", "source_type_name", "objective_label", "band", "band_name",
+                "standard_band_name", "auto_band", "auto_band_name", "auto_standard_band_name",
+                "band_rank", "internal_tier", "manual", "hit_catalogs", "explain"):
+        d[key] = wr.get(key) if wr else None
     return d
 
 def _is_wiki(r):
@@ -489,7 +500,7 @@ def _wiki_meta(r):
     return (M.get("wiki") or {}).get(wid, {})
 
 def _page_cite(r):
-    """全文块引用：优先官方页码，退回 PDF 内页码。wiki 行给"本地综合"引用 + 过时提示。"""
+    """全文块引用：PDF 用页码；其他格式用章节/段落定位，绝不伪造页码。"""
     if _is_wiki(r):
         wm = _wiki_meta(r)
         n = len(wm.get("sources", []))
@@ -505,7 +516,14 @@ def _page_cite(r):
     if r.get("year"):   parts.append(f"({r['year']})")
     s = " ".join(parts) + f"《{r.get('title','')}》"
     if r.get("journal"): s += f"，{r['journal']}"
-    # Phase A：全文块引用用「期刊印刷页码」（读者翻期刊看到的那页），而非 PDF 顺序页/整篇范围。
+    paper = (M.get("papers") or {}).get(r.get("key"), {})
+    fmt = paper.get("fulltext_format") or ("pdf" if r.get("has_pdf") else "")
+    if fmt and fmt != "pdf":
+        locator = DF.locator_label(fmt, r.get("page"), r.get("heading"))
+        if locator:
+            s += f"，{locator}"
+        return s.strip()
+    # PDF 全文块优先用期刊印刷页码，退回 PDF 顺序页/整篇范围。
     pg = ""
     if r.get("page") is not None and r.get("key"):
         try:
@@ -572,6 +590,8 @@ def search_full(query, topk, sort, keys=None, max_per_key=None):
     for r, sc, tier, wr in top:
         cid = r.get("chunk_id", "")
         deep = (r.get("row_type") != "meta")
+        paper = (M.get("papers") or {}).get(r.get("key", ""), {})
+        fmt = paper.get("fulltext_format") or ("pdf" if r.get("has_pdf") else "")
         d = {
             "chunk_id": cid, "score": round(sc, 4),
             "journal_tier": tier, "tier_rank": JT.rank_of(tier),
@@ -582,6 +602,9 @@ def search_full(query, topk, sort, keys=None, max_per_key=None):
             "row_type": r.get("row_type", "chunk"),
             "depth": "full" if deep else "abstract",
             "has_pdf": r.get("has_pdf", True),
+            "has_fulltext": bool(paper.get("has_fulltext", r.get("has_pdf", True))),
+            "fulltext_format": fmt,
+            "locator": DF.locator_label(fmt, r.get("page"), r.get("heading")) if deep else "",
             "heading": r.get("heading", ""),
             # EN-L2/L5：itemtype 供引注模板分派（statute/report），statute_status 是
             # 法条时效徽标（契约11：""｜"已修订"｜"已废止"；按 papers.jsonl 现算，不动表 schema）
@@ -596,6 +619,8 @@ def search_full(query, topk, sort, keys=None, max_per_key=None):
             d["is_wiki"] = True
             d["depth"] = "synthesis"           # 综合页非 PDF 全文块
             d["has_pdf"] = False
+            d["has_fulltext"] = False
+            d["fulltext_format"] = ""
             d["generated_at"] = wm.get("generated_at", "")
             d["generated_by"] = wm.get("generated_by", "")
             d["stale"] = bool(wm.get("stale"))
@@ -653,6 +678,8 @@ def _neighbors_loaded(key, topk=8):
         sim = round(1.0 - float(h.get("_distance", 0.0)), 4)   # cosine 距离→相似度
         tier = _tier_of(r)
         deep = (r.get("row_type") != "meta")
+        paper = (M.get("papers") or {}).get(k, {})
+        fmt = paper.get("fulltext_format") or ("pdf" if r.get("has_pdf") else "")
         d = {
             "chunk_id": h.get("chunk_id"), "score": sim,
             "journal_tier": tier, "tier_rank": JT.rank_of(tier),
@@ -663,6 +690,9 @@ def _neighbors_loaded(key, topk=8):
             "row_type": r.get("row_type", "chunk"),
             "depth": "full" if deep else "abstract",
             "has_pdf": r.get("has_pdf", True),
+            "has_fulltext": bool(paper.get("has_fulltext", r.get("has_pdf", True))),
+            "fulltext_format": fmt,
+            "locator": DF.locator_label(fmt, r.get("page"), r.get("heading")) if deep else "",
             "heading": r.get("heading", ""),
             # EN-L2/L5：与 search_full 输出保持同构（前端复用 resultCard）
             "itemtype": r.get("itemtype", ""),
@@ -739,7 +769,8 @@ def _index_wiki_page_loaded(page_id, title, body, meta):
     try:
         existed = cid in existing_chunk_ids([cid])
         try:
-            M["tbl"].delete(f"chunk_id = '{cid}'")   # 幂等：重生/覆盖先删同 id 旧行
+            from dbutil import sql_quote
+            M["tbl"].delete(f"chunk_id = '{sql_quote(cid)}'")   # 幂等：重生/覆盖先删同 id 旧行
         except Exception:
             pass
         M["tbl"].add([_fit_row_to_schema(full, vec)])
@@ -814,6 +845,8 @@ def search_light(query, topk, sort, keys=None):
             "doi": p.get("doi", ""), "page": None, "key": p.get("key", ""),
             "official_pages": p.get("official_pages", ""),
             "row_type": "meta", "depth": "abstract", "has_pdf": p.get("has_pdf", False),
+            "has_fulltext": p.get("has_fulltext", False),
+            "fulltext_format": p.get("fulltext_format", ""), "locator": "",
             "heading": "",
             # EN-L2/L5：itemtype/时效徽标（light 行直接来自 papers.jsonl，字段现成）
             "itemtype": p.get("itemtype", ""),
@@ -884,7 +917,15 @@ def _blend_bonus(x, lex):
     scale = 3 if lex else 1
     wr = x[3] if len(x) > 3 else None
     if wr and wr.get("weight") is not None:
-        b = wr["weight"] * C.WEIGHT_BONUS_SCALE * scale
+        # API reranker 是 0~1，本地 ONNX 是原始 logit；两种尺度共用 0.50 会让 API 来源档次
+        # 压过正文相关性。API 的 0.30 由 25+13 条真实查询校准/盲测，本地保留旧值。
+        try:
+            import settings as S
+            bonus_scale = (getattr(C, "WEIGHT_BONUS_SCALE_API", 0.30) if S.is_api()
+                           else getattr(C, "WEIGHT_BONUS_SCALE_LOCAL", C.WEIGHT_BONUS_SCALE))
+        except Exception:
+            bonus_scale = C.WEIGHT_BONUS_SCALE
+        b = wr["weight"] * bonus_scale * scale
     else:
         b = C.TIER_BONUS.get(x[2], 0.0) * scale
     return b

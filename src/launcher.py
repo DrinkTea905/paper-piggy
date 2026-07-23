@@ -10,6 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import config as C
 import requests
+from icon_utils import ensure_multi_size_ico
 
 
 def _ts():
@@ -41,12 +42,9 @@ def _notify(title, msg):
 
 def _is_localkb_health(j):
     """校验 /health 响应确实来自本应用，避免把占用 8770 的别的服务误判成本应用（P2）。"""
-    if not isinstance(j, dict):
-        return False
-    if j.get("app") == "localkb" or j.get("service") == "localkb":
-        return True
-    # 兼容：LocalKB /health 的特征字段组合（后端未加显式标识时据此判定）
-    return "ready" in j and "mode" in j and "building" in j
+    return (isinstance(j, dict)
+            and j.get("app") == "paperpiggy"
+            and j.get("service") == "paperpiggy-local-api")
 
 
 def _health():
@@ -59,6 +57,71 @@ def _health():
 
 def server_running():
     return _health() is not None
+
+
+def _pythonw_executable():
+    """优先当前运行时同目录的 pythonw；源码环境缺失时才回退当前解释器。"""
+    current = Path(sys.executable)
+    pyw = current if current.name.lower() == "pythonw.exe" else current.with_name("pythonw.exe")
+    return str(pyw if pyw.exists() else current)
+
+
+class _WindowsProcessHandle:
+    """已打开的 Windows 进程对象句柄；终止始终命中原对象，不受 PID 复用影响。"""
+    _PROCESS_TERMINATE = 0x0001
+    _SYNCHRONIZE = 0x00100000
+    _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    _WAIT_TIMEOUT = 0x00000102
+
+    def __init__(self, pid):
+        import ctypes
+        from ctypes import wintypes
+        self.pid = int(pid)
+        self._ctypes = ctypes
+        self._kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        self._kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        self._kernel32.OpenProcess.restype = wintypes.HANDLE
+        self._kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        self._kernel32.WaitForSingleObject.restype = wintypes.DWORD
+        self._kernel32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+        self._kernel32.TerminateProcess.restype = wintypes.BOOL
+        self._kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        self._kernel32.CloseHandle.restype = wintypes.BOOL
+        access = (self._PROCESS_TERMINATE | self._SYNCHRONIZE
+                  | self._PROCESS_QUERY_LIMITED_INFORMATION)
+        self._handle = self._kernel32.OpenProcess(access, False, self.pid)
+        if not self._handle:
+            raise ctypes.WinError(ctypes.get_last_error())
+
+    def is_running(self):
+        return bool(self._handle) and self._kernel32.WaitForSingleObject(
+            self._handle, 0) == self._WAIT_TIMEOUT
+
+    def terminate(self, exit_code=0):
+        if not self._handle or not self.is_running():
+            return
+        if not self._kernel32.TerminateProcess(self._handle, int(exit_code)):
+            raise self._ctypes.WinError(self._ctypes.get_last_error())
+        self._kernel32.WaitForSingleObject(self._handle, 8000)
+
+    def close(self):
+        handle, self._handle = self._handle, None
+        if handle:
+            self._kernel32.CloseHandle(handle)
+
+
+def _open_existing_server(health):
+    """只为身份明确、PID 合法的既有后端打开一次稳定进程句柄。"""
+    if sys.platform != "win32" or not _is_localkb_health(health):
+        return None
+    try:
+        pid = int(health.get("pid") or 0)
+        if pid <= 0:
+            return None
+        return _WindowsProcessHandle(pid)
+    except Exception as e:
+        _logline(f"打开既有后端进程句柄失败：{repr(e)}")
+        return None
 
 
 def _focus_existing_window():
@@ -159,25 +222,56 @@ def _system_light():
 
 
 def _ensure_icon():
-    """把 web/PaperPiggy.png 封成 .ico（纯 stdlib，PNG-in-ICO），供窗口/任务栏图标用。返回 ico 路径或 None。"""
+    """从图标真源生成标准多尺寸 ICO，并同步分发包根图标。"""
     try:
         png = C.APP / "web" / "PaperPiggy.png"
         ico = C.DATA / "PaperPiggy.ico"
-        if ico.exists() and ico.stat().st_size > 0:
-            return str(ico)
         if not png.exists():
             return None
-        import struct
-        data = png.read_bytes()
-        w = int.from_bytes(data[16:20], "big"); h = int.from_bytes(data[20:24], "big")
-        bw = 0 if w >= 256 else w; bh = 0 if h >= 256 else h   # 0 表示 256
-        hdr = struct.pack("<HHH", 0, 1, 1)                     # ICONDIR: reserved,type=icon,count
-        entry = struct.pack("<BBBBHHII", bw, bh, 0, 0, 1, 32, len(data), 22)  # ICONDIRENTRY
-        C.DATA.mkdir(parents=True, exist_ok=True)
-        ico.write_bytes(hdr + entry + data)
+        _, rebuilt = ensure_multi_size_ico(png, ico)
+
+        # 应用内更新只替换 app/，不会动安装目录根的 PaperPiggy.ico。
+        # 分发目录可写时同步根图标，桌面/开始菜单快捷方式与卸载项便能收到新版。
+        root = C.APP.parent
+        is_bundle = ((root / "run_localkb.py").exists()
+                     or (root / "python" / "python.exe").exists()
+                     or (root / "portable.txt").exists())
+        root_rebuilt = False
+        if is_bundle:
+            try:
+                _, root_rebuilt = ensure_multi_size_ico(png, root / "PaperPiggy.ico")
+            except Exception as e:
+                _logline(f"安装目录图标同步跳过：{repr(e)}")
+        if rebuilt or root_rebuilt:
+            _refresh_shell_icons()
         return str(ico)
-    except Exception:
+    except Exception as e:
+        _logline(f"应用图标生成失败：{repr(e)}")
         return None
+
+
+def _refresh_shell_icons():
+    """通知 Windows Explorer 图标资源已变化；失败不影响启动。"""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        ctypes.windll.shell32.SHChangeNotify(0x08000000, 0x0000, None, None)
+    except Exception:
+        pass
+
+
+def _set_app_user_model_id():
+    """给任务栏分组稳定身份，避免继续沿用 pythonw 的默认图标。"""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+            "PaperPiggy.PaperPiggy"
+        )
+    except Exception:
+        pass
 
 
 def _tint_titlebar_async():
@@ -201,14 +295,46 @@ def _tint_titlebar_async():
                     # DWMWA_CAPTION_COLOR=35：直接给标题栏底色，与内容近似（Win11 22000+；老系统忽略）
                     cap = ctypes.c_int(0x00F7F7F7 if light else 0x001C1C1E)   # 浅≈#F7F7F7 / 深≈#1E1C1C
                     dwm.DwmSetWindowAttribute(hwnd, 35, ctypes.byref(cap), ctypes.sizeof(cap))
-                    # #1b：设应用图标，替换 pythonw 默认的 Python 图标（失败静默）
+                    # 分别按当前窗口 DPI 加载大小图标。不能把 cx/cy=0 得到的同一个 HICON
+                    # 同时塞给 ICON_SMALL / ICON_BIG：Windows 可能先选 16px 帧，再把它放大到
+                    # 任务栏尺寸，结果即使 ICO 含 20/24/32/40px 帧也会发糊。
                     try:
                         ico = _ensure_icon()
                         if ico:
-                            hicon = user32.LoadImageW(None, ico, 1, 0, 0, 0x00000010)   # IMAGE_ICON, LR_LOADFROMFILE
-                            if hicon:
-                                user32.SendMessageW(hwnd, 0x0080, 0, hicon)   # WM_SETICON, ICON_SMALL
-                                user32.SendMessageW(hwnd, 0x0080, 1, hicon)   # WM_SETICON, ICON_BIG
+                            from ctypes import wintypes
+
+                            load_image = user32.LoadImageW
+                            load_image.argtypes = [wintypes.HINSTANCE, wintypes.LPCWSTR,
+                                                   wintypes.UINT, ctypes.c_int, ctypes.c_int,
+                                                   wintypes.UINT]
+                            load_image.restype = wintypes.HANDLE
+                            send_message = user32.SendMessageW
+                            send_message.argtypes = [wintypes.HWND, wintypes.UINT,
+                                                     wintypes.WPARAM, wintypes.LPARAM]
+                            send_message.restype = wintypes.LPARAM
+
+                            dpi = 96
+                            try:
+                                dpi = int(user32.GetDpiForWindow(hwnd)) or 96
+                            except Exception:
+                                pass
+
+                            def icon_metric(index):
+                                try:
+                                    return int(user32.GetSystemMetricsForDpi(index, dpi))
+                                except Exception:
+                                    return int(user32.GetSystemMetrics(index))
+
+                            small = load_image(None, ico, 1,
+                                               icon_metric(49), icon_metric(50),
+                                               0x00000010)  # IMAGE_ICON, LR_LOADFROMFILE
+                            large = load_image(None, ico, 1,
+                                               icon_metric(11), icon_metric(12),
+                                               0x00000010)
+                            if small:
+                                send_message(hwnd, 0x0080, 0, int(small))  # WM_SETICON, ICON_SMALL
+                            if large:
+                                send_message(hwnd, 0x0080, 1, int(large))  # WM_SETICON, ICON_BIG
                     except Exception:
                         pass
                     return
@@ -293,34 +419,53 @@ class _JsApi:
             return {"ok": False, "error": str(e)}
 
 
-def _stop_server(pid, proc):
-    """关窗 → 彻底停掉后端及其子进程树，根治「关掉应用后后端没关掉」的 orphan 堆积。
-       此前只有 `if proc: proc.terminate()`——① 连上已有 server（proc=None）时根本不杀；② terminate 只杀直接
-       子进程、不杀子孙。现在按 server /health 回传的 pid 杀整棵树（Windows taskkill /T /F，与 server.py 同款），
-       无论本次是否亲自起的 server 都杀。失败/非 Windows 退回 terminate。"""
-    if pid:
+def _stop_server(proc=None, attached=None):
+    """停止窗口对应的后端，不用裸 PID 寻址。
+
+    本次创建的后端用 Popen 自带的原进程句柄；连上的既有后端只在关窗前再次核对明确身份与
+    同一 PID 后，用启动时已经打开的 Windows HANDLE 终止。server 自己的 Job Object 负责清理 build 子孙。
+    """
+    if proc is not None:
         try:
-            if sys.platform == "win32":
-                subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
-                               creationflags=0x08000000,   # CREATE_NO_WINDOW：不弹黑窗（§0.5②）
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=8)
-            else:
-                os.kill(int(pid), 15)   # SIGTERM（mac 未打包，best-effort）
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=8)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=3)
         except Exception as e:
-            _logline(f"关窗停后端失败（taskkill pid={pid}）：{repr(e)}")
-    if proc is not None:   # 兜底：本次亲起的 proc 再 terminate 一次（pid 拿不到时的后备）
+            _logline(f"关窗停止本次创建的后端失败：{repr(e)}")
+        return
+    if attached is None:
+        return
+    try:
+        current = _health()
+        same_server = (_is_localkb_health(current)
+                       and int((current or {}).get("pid") or 0) == attached.pid)
+        if same_server and attached.is_running():
+            attached.terminate(0)
+        elif attached.is_running():
+            _logline("关窗未停止既有后端：身份或 PID 复核不一致，避免误杀。")
+    except Exception as e:
+        _logline(f"关窗停止既有后端失败：{repr(e)}")
+    finally:
         try:
-            proc.terminate()
+            attached.close()
         except Exception:
             pass
 
 
 def main():
+    _set_app_user_model_id()
+    _ensure_icon()
     _check_path_ascii()
     proc = None
+    attached = None
     logf = None
 
-    running = server_running()
+    running_health = _health()
+    running = running_health is not None
 
     # ── 单实例 ──────────────────────────────────────────────────────────────
     # 已经有一个 PaperPiggy 在跑 → 唤起它的窗口，自己退出，绝不再开第二个。
@@ -332,6 +477,8 @@ def main():
         _logline("已有实例在运行 → 已把它的窗口拉到前台，本次启动退出。")
         return
     # 找不到窗口（上一个实例的窗口已关、只剩 server 还活着）→ 往下走，开一个窗口连上它。
+    if running:
+        attached = _open_existing_server(running_health)
 
     if not running:
         # 端口已被别的（非 LocalKB）程序占用 → 我们的 server 起不来，先给人话而非静默崩溃
@@ -341,11 +488,11 @@ def main():
                     f"端口 {C.DAEMON_PORT} 已被其它程序占用，PaperPiggy 无法启动。\n"
                     f"请关闭占用该端口的程序后重试。")
             return
-        flags = 0x08000000 if sys.platform == "win32" else 0  # CREATE_NO_WINDOW（无控制台）
         logf = _rotate_and_open_server_log()
-        proc = subprocess.Popen([sys.executable, str(C.APP / "server.py")],
+        proc = subprocess.Popen([_pythonw_executable(), str(C.APP / "server.py")],
                                 stdout=logf, stderr=logf,
-                                stdin=subprocess.DEVNULL, creationflags=flags)
+                                stdin=subprocess.DEVNULL, creationflags=C.SUBPROC_NO_WINDOW,
+                                close_fds=True)
 
     up = False
     for _ in range(60):
@@ -369,23 +516,17 @@ def main():
                 proc.terminate()
         except Exception:
             pass
+        if attached is not None:
+            try:
+                attached.close()
+            except Exception:
+                pass
         if logf:
             try:
                 logf.close()
             except Exception:
                 pass
         return
-
-    # 关窗时按 pid 杀掉整棵 server 进程树（含子进程），无论本次是否亲自起的 server —— 根治 orphan 堆积。
-    # server /health 现在回传自己的 pid；拿不到就退回本次 Popen 的 proc.pid。
-    srv_pid = None
-    try:
-        j = _health()
-        srv_pid = (j or {}).get("pid")
-    except Exception:
-        pass
-    if srv_pid is None and proc is not None:
-        srv_pid = proc.pid
 
     try:
         import webview
@@ -396,7 +537,7 @@ def main():
                               text_select=True, js_api=_JsApi())   # 原生目录选择器桥（pick_folder）
         _tint_titlebar_async()   # #1：标题栏跟随系统浅/深色，别再是突兀的黑条
         webview.start()   # 阻塞直到窗口关闭
-        _stop_server(srv_pid, proc)   # 关窗即彻底停掉后端及其子进程树（含「连上已有 server」的情形），不再留 orphan
+        _stop_server(proc, attached)
         if logf:
             try:
                 logf.close()
@@ -416,6 +557,11 @@ def main():
                 "请在任务管理器结束 python / pythonw 进程。")
         import webbrowser
         webbrowser.open(C.DAEMON_URL)
+        if attached is not None:
+            try:
+                attached.close()
+            except Exception:
+                pass
         # 回退分支收尾：server 需常驻供浏览器访问，故不 terminate proc；本进程随即退出，
         # logf 句柄由进程退出自动释放（子进程持有各自的 fd 副本，仍能继续写 server.log）。
 

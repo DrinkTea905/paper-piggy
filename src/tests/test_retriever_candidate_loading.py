@@ -60,6 +60,13 @@ class CandidateLoadingTests(unittest.TestCase):
     def test_result_columns_never_include_vector(self):
         self.assertNotIn("vector", R._RESULT_COLUMNS)
 
+    def test_blend_bonus_uses_separate_api_and_local_scales(self):
+        item = ({"key": "K"}, 1.0, "未知", {"weight": 1.0})
+        with mock.patch("settings.is_api", return_value=True):
+            self.assertAlmostEqual(R._blend_bonus(item, lex=False), R.C.WEIGHT_BONUS_SCALE_API)
+        with mock.patch("settings.is_api", return_value=False):
+            self.assertAlmostEqual(R._blend_bonus(item, lex=False), R.C.WEIGHT_BONUS_SCALE_LOCAL)
+
     def test_discovery_does_not_refill_with_duplicate_source_overflow(self):
         rows = {
             "a": {"chunk_id": "a", "key": "K1", "text": "a", "row_type": "chunk", "title": "一", "journal_tier": "普通"},

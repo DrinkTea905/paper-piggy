@@ -14,6 +14,7 @@ import config as C
 from textutil import tokenize, clean, safe_name, de_emoji, EMOJI, load_core_terms, load_legal_synonyms
 import journal_tiers as JT
 import source_rules as SR
+import document_formats as DF
 
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -102,6 +103,7 @@ def build_dict(papers):
 
 def enrich(m, now, old_ingested=None):
     """给一条题录记录补 text/stem/tier/lang/ingested_at（数据源无关）。"""
+    DF.normalize_record(m)
     m.setdefault("official_pages", "")
     m.setdefault("has_pdf", False)
     m.setdefault("collections", [])
@@ -133,6 +135,8 @@ def enrich(m, now, old_ingested=None):
 def compute_stats(papers):
     now_iso = time.strftime("%Y-%m-%d %H:%M:%S")
     with_pdf = sum(1 for p in papers if p["has_pdf"])
+    with_fulltext = sum(1 for p in papers if p["has_fulltext"])
+    by_format = Counter(p.get("fulltext_format") or "" for p in papers if p.get("has_fulltext"))
     ek = C.STATE / "embedded_keys.txt"
     # BF26：历史并发双跑曾把同 stem 追加两遍，len(split()) 会虚报深索篇数——去重后再数
     deep = len(set(ek.read_text(encoding="utf-8").split())) if ek.exists() else 0
@@ -145,7 +149,10 @@ def compute_stats(papers):
     col = Counter(c for p in papers for c in p.get("collections", []))
     no_abstract = sum(1 for p in papers if not p["abstract"])
     return {
-        "coverage": {"total": len(papers), "with_pdf": with_pdf, "no_pdf": len(papers) - with_pdf,
+        "coverage": {"total": len(papers), "with_fulltext": with_fulltext,
+                     "no_fulltext": len(papers) - with_fulltext,
+                     "with_pdf": with_pdf, "no_pdf": len(papers) - with_pdf,
+                     "by_fulltext_format": {fmt: by_format.get(fmt, 0) for fmt in DF.FORMAT_PRIORITY},
                      "meta_indexed": len(papers), "deep_indexed": deep, "chunks": 0, "no_abstract": no_abstract},
         "by_year": sorted([{"year": y, "n": n} for y, n in by_year.items()],
                           key=lambda x: (x["year"] == "未标注", x["year"])),
@@ -160,7 +167,7 @@ def compute_stats(papers):
         "recent": [{"key": p["key"], "title": p["title"], "ingested_at": p["ingested_at"]}
                    for p in sorted(papers, key=lambda x: x.get("ingested_at", ""), reverse=True)[:8]],
         "health": {"meta_coverage": round(1 - no_abstract / max(1, len(papers)), 2),
-                   "one_liner": f"题录索引就绪·{len(papers)}篇（{with_pdf}篇有PDF可深索）"},
+                   "one_liner": f"题录索引就绪·{len(papers)}篇（{with_fulltext}篇有全文可深索）"},
         "updated_at": now_iso,
     }
 
@@ -231,7 +238,7 @@ def _dedup_papers(papers, protect):
         if prot_idx:
             keep = set(prot_idx)   # 有深索产物的成员全保留（下游 purge 才不会删其 chunks/向量）
         else:
-            keep = {sorted(idxs, key=lambda i: (not papers[i].get("has_pdf"),
+            keep = {sorted(idxs, key=lambda i: (not papers[i].get("has_fulltext"),
                                                 papers[i].get("ingested_at") or "9999"))[0]}
         for i in keep:             # survivor 继承最早入库时间，别让去重把"首次入库"抹成 now
             if (papers[i].get("ingested_at") or "9999") > earliest:
@@ -246,16 +253,14 @@ def main():
     t0 = time.time()
     now = time.strftime("%Y-%m-%d %H:%M:%S")
     papers, source = get_papers()
-    # 仅导入有 PDF 的条目（Zotero 模式向导可选；文件夹模式本就全是 PDF）
+    # 单一开关：仅导入有可读取全文附件的条目。设置键 import_only_pdf 为兼容旧用户保留，
+    # 产品语义已扩展为 PDF/EPUB/DOCX/Markdown/TXT，HTML 网页快照不算。
     try:
         import settings as _S
         if _S.source() == "zotero" and _S.load().get("import_only_pdf"):
             before = len(papers)
-            # 严格「只导入有 PDF」：不再豁免法源类。产品所有者 2026-07-15 明确要求——
-            # 他会给重要法条/法规自己补上 PDF 再入库，宁可漏也不要一堆无正文的纯题录混进来。
-            # （此前豁免 statute/case/standard/report，见 git 历史；CLAUDE.md §7 已同步。）
-            papers = [p for p in papers if p.get("has_pdf")]
-            print(f"[light] 仅导入有 PDF：{before} → {len(papers)} 篇", flush=True)
+            papers = [p for p in papers if p.get("has_fulltext")]
+            print(f"[light] 仅导入有全文附件：{before} → {len(papers)} 篇", flush=True)
     except Exception:
         pass
     print(f"[light] 数据源={source}，{len(papers)} 篇", flush=True)
@@ -307,7 +312,9 @@ def main():
     # BF3：stats/manifest 同样原子写——server 轮询读它们，半截 JSON 会让仪表盘/状态页报解析错
     _atomic_write_text(C.STATS_CACHE, json.dumps(stats, ensure_ascii=False, indent=2))
     _man = {"source": source, "light_done": True, "light_at": now,
-            "papers": len(papers), "with_pdf": stats["coverage"]["with_pdf"]}
+            "papers": len(papers), "with_fulltext": stats["coverage"]["with_fulltext"],
+            "with_pdf": stats["coverage"]["with_pdf"],
+            "by_fulltext_format": stats["coverage"]["by_fulltext_format"]}
     # backend 只由真正产出向量的阶段(index_semantic/embed_index)写入并作为一致性校验基准；
     # light 绝不覆写它——否则切换后端后一次轻量重建/自动增量就把「原引擎」证据抹掉，
     # 新旧两套向量混用无从检测。保留 manifest 里已有的 backend。

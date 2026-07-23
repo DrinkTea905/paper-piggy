@@ -2,7 +2,11 @@
 
 > **改 UI / MCP 工具 / Agent 模板 / wiki 规约之前，先读这一份。**
 > 这个应用有三套面向不同读者的指引，它们**不会自动跟着代码走**。历史上已经漂过一次
-> （`MCP接入说明.md` 写「28 个工具」，代码里实际 32 个），所以别指望「我记得改」。
+> （`MCP接入说明.md` 曾写死旧工具数，代码继续变化后就漂移了），所以别指望「我记得改」。
+
+> **面向用户的功能或 UI 更新还必须固定检查四处发布面**：① 产品内「新手指引」；
+> ② 产品内「Agent 指引」；③ 主仓库 GitHub README；④ 独立教程仓库
+> `DrinkTea905/paper-piggy-guide`。逐处判断是否需要同步；不改也要在完成报告中说明理由。
 
 ---
 
@@ -46,7 +50,7 @@
 
 | 你改了 | 必须同步 | 校验 |
 |---|---|---|
-| `WIKI_MD_SEED`(:33) —— wiki 页面规约种子 | ① **必须 bump `SCHEMA_VERSION`**(:31，现在是 `"v2"`) ② 把当前版和所有旧版 normalized-sha1 留在 `_FACTORY_HASHES`(:172) ③ `MCP接入说明.md` 的「信任模型」段 | ✅ check_guides ④（schema + 当前 hash；③仍靠人） |
+| `WIKI_MD_SEED` —— wiki 页面规约种子 | ① **必须 bump `SCHEMA_VERSION`**（当前值以 `wiki_store.py` 为准） ② 把当前版和所有旧版 normalized-sha1 留在 `_FACTORY_HASHES` ③ `MCP接入说明.md` 的「信任模型」段 | ✅ check_guides ④（schema + 当前 hash；③仍靠人） |
 
 > ⚠️ **忘了 bump `SCHEMA_VERSION` 会静默让老库永远收到过期规约。** 这是本项目最阴的一个坑：
 > 不报错、不告警，只是所有老用户的 wiki 规约永远停在旧版。
@@ -55,17 +59,19 @@
 
 | 你改了 | 必须同步 | 校验 |
 |---|---|---|
-| 新增/改动 UI 功能（页签、按钮、流程） | `index.html` `#home-guide`(:87) 八章 + `#ag-guide`(:350) 十章 + `app.js` `agentGuideCard()`(:1207) 四步图 | ❌ 人肉（用 §3 的 checklist） |
+| 新增/改动 UI 功能（页签、按钮、流程） | ① `index.html` `#home-guide`(:87) 八章；② `#ag-guide`(:350) 十章；③ `app.js` `agentGuideCard()`(:1207) 四步图；④ 主仓库 `README.md`；⑤ 独立教程仓库 `DrinkTea905/paper-piggy-guide` 的相关章节。前两项是产品内两份指引，连同两个 GitHub 发布面必须逐处检查并报告 | ❌ 人肉（用 §3 的 checklist） |
 | 首启向导流程 | `index.html` `.wizard-steps`(:786) + `app.js` `renderStep1`(:3494) ~ `renderStep5`(:4025) + `src/README.md` 的「第一次使用」段 | ❌ 人肉 |
 | 「🧹 清空并从头重建索引」(`#sec-rebuild` + `POST /index/reset`，破坏性、须 confirm) | 设置页就地说明是主文案；**动它必对齐 `backup.py` 的 CORE/INDEX「移哪些·保留哪些」口径**；破坏性操作要在指引里提示"先备份" | ❌ 人肉 |
 | 顶栏自动更新徽标（`#up-badge`、设置页 `#up-autocheck`、`app.js renderUpdateBadge()`） | 两个 localStorage 键 `localkb.autoUpdateCheck`(默认开)/`localkb.updateDismissed`(按版本忽略)；文案要与「知识库自动更新」明确**区分**（同名不同物，见 CHANGELOG v1.0.1 提醒） | ❌ 人肉 |
-| PDF 提取 / OCR 状态或文案 | 同步 `deep_extract_status.VALID_STATUSES`、`server.py` 的状态下发、`app.js` 的徽标/进度/重试文案，以及 `#home-guide` / `#ag-guide`。`ocr_pending` 必须能进入深索；`missing_pdf / invalid_pdf / ocr_failed` 才是阻塞终态 | ✅ OCR 单测覆盖核心；UI 文案仍需人肉 |
+| 全文格式 / 提取 / OCR 状态或文案 | 格式清单与优先级只改 `document_formats.py`；同步来源扫描、`deep_extract_status.VALID_STATUSES`、`server.py` 状态下发、`app.js` 徽标/进度/重试文案，以及 `#home-guide` / `#ag-guide`。PDF 的 `ocr_pending` 必须能进入深索；各种 `missing_* / invalid_* / ocr_failed` 是阻塞终态 | ✅ 五格式与 OCR 单测覆盖核心；UI 文案仍需人肉 |
 
 ### 1.5 其它
 
 | 你改了 | 必须同步 | 校验 |
 |---|---|---|
-| 期刊评级规则 | `journal_grading/` 配置 + `journal_grading/期刊引用权重分级方案.md`；跑 `journal_grading/selftest.py` | ✅ selftest |
+| 全类型文献评价、客观标签或四档映射 | `source_rules.py` + `grading_svc.py` + `journal_grading/`；同步检索/浏览/单篇详情/wiki 来源/MCP 契约与库总览，跑 `test_source_grading*.py` 和 `journal_grading/selftest.py`。新增目录还要登记 `catalog_registry.py` 的来源、上游版本、检查日期 | ✅ 单测 + selftest；UI 文案人肉 |
+| 文献页查找与来源筛选 | `server.py /papers(query, source_type, objective_label)` + `mcp_server.py list_sources.source_type` + 文献页题录查找、十二类性质和动态客观标签；分类/状态/排序/分页组合必须一起测 | ✅ `test_source_grading_api.py`；UI 组合人肉 |
+| Agent 工作流或出厂定时任务 | 修改 `agent_ws._WF_*` / 任务模板后，同步 `_template_specs()`，运行 `agent_ws.py --print-hashes` 并把新 hash 追加到 `_FACTORY_HASHES`（旧值不删） | ✅ 模板 hash 构建检查 |
 | 依赖 | `requirements.txt` **和** `requirements.lock` 同时改；同步 `THIRD-PARTY-NOTICES.md` 并核许可证；分发包需要重建 `build/py312`。含新依赖的首版必须走完整安装器，应用内 app 增量包不会补 Python wheel。⚠️ 平台专属包用标记：Windows-only 加 `; sys_platform=="win32"`（如 `pythonnet`），macOS-only 加 `; sys_platform=="darwin"`（如 `pyobjc-*`）。`.lock` 是 Windows 实机冻结，**macOS 用 `.txt` 不用 `.lock`** | ❌ |
 | 版本号 | **只改 `config.APP_VERSION`**(`config.py:19`) | ✅ check_guides ⑤（断言全源码没有第二处版本字面量） |
 | **新增任何 `C.DATA / "xxx"` 落点** | **必须**在 `backup.py` 的四个清单里给它选一个座位：`CORE_IN_DATA`（备份）/ `INDEX_IN_DATA`（可选索引）/ `NEVER_IN_DATA`（永不）/ `SPECIAL_IN_DATA` | ✅ check_guides ⑥（未分类 → 直接中止打包） |
@@ -163,7 +169,7 @@ const n = (AG.cfg && AG.cfg.tool_count) || AG_TOOLS.length;   // 后端真值优
 - [ ] 我改了 MCP 工具吗？→ 跑 `gen_mcp_doc.py` 了吗？
 - [ ] UI 里有没有**硬编码的数量/清单**会因为这次改动而变错？（§2.2）
 - [ ] 新增/升级依赖了吗？→ 同步 lock + 第三方声明，并明确首版是否必须完整安装器
-- [ ] 改了 PDF/OCR 链路吗？→ 混合 PDF、附件缺失、坏 PDF、OCR 失败、旧状态迁移都测了吗？
+- [ ] 改了全文格式/PDF OCR 链路吗？→ 主附件优先级、五格式解析与定位、HTML 排除、混合 PDF、附件缺失、坏文件、OCR 失败、旧状态迁移都测了吗？
 - [ ] `CHANGELOG.md` 加一行了吗？
 
 ---

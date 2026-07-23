@@ -118,6 +118,12 @@
 
   const esc = (s) => (s || "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
   const num = (n) => (n == null ? "0" : Number(n).toLocaleString("zh-CN"));
+  const hasFulltext = (x) => !!(x && (x.has_fulltext != null ? x.has_fulltext : x.has_pdf));
+  const withFulltext = (x) => Number((x && (x.with_fulltext != null ? x.with_fulltext : x.with_pdf)) || 0);
+  const noFulltext = (x) => Number((x && (x.no_fulltext != null ? x.no_fulltext : x.no_pdf)) || 0);
+  const fulltextLabel = (x) => ({ pdf: "PDF", epub: "EPUB", docx: "DOCX", markdown: "Markdown", txt: "TXT" }[
+    String((x && x.fulltext_format) || "").toLowerCase()
+  ] || "全文");
 
   // 全局浮层提示（右下角，自动消失）——用于跨页通知（如深索完成），不依赖当前所在 tab
   let _toastTimer = null;
@@ -201,9 +207,9 @@
   function applySourceCopy() {
     if (APP.source !== "folder") return;
     const sub = document.querySelector(".wizard-sub");
-    if (sub) sub.textContent = "把一个文件夹里的 PDF 变成能秒级检索、可视化、可对话的本地知识库。全程离线，隐私不出本机。";
+    if (sub) sub.textContent = "把一个文件夹里的全文文件变成能秒级检索、可视化、可对话的本地知识库。支持 PDF、EPUB、DOCX、Markdown、TXT；核心数据保存在本机。";
     const bt = $("#btn-build");
-    if (bt) bt.title = "加了新 PDF 后点一次即在后台增量更新（也可直接把 PDF 拖进窗口即时入库）。想定时自动更新？到 ⚙ 设置里开。";
+    if (bt) bt.title = "加了新全文文件后点一次即在后台增量更新（也可直接拖进窗口即时入库）。想定时自动更新？到 ⚙ 设置里开。";
   }
 
   // ── 顶栏状态 pill（读 /health：mode=null|light|full）+ 常驻进度条（读 /index/status）──
@@ -250,14 +256,14 @@
     }
     else if (!h.mode) { s.textContent = "未建库"; s.className = "status warn"; }
     else {
-      const withPdf = st ? (st.with_pdf || 0) : 0;
+      const withPdf = withFulltext(st);
       const deep = st ? (st.deep_done || 0) : 0;
       if (withPdf > 0) {
         s.textContent = `已深索 ${num(deep)}/${num(withPdf)} 篇`;
-        s.title = `共 ${num(papers)} 篇文献；${num(withPdf)} 篇有 PDF 可深索，已深索 ${num(deep)} 篇（可精读、页级引用）` + sacText(st);
+        s.title = `共 ${num(papers)} 篇文献；${num(withPdf)} 篇有全文附件可深索，已深索 ${num(deep)} 篇（可精读并回溯原文位置）` + sacText(st);
       } else {
         s.textContent = `已索引 ${num(papers)} 篇`;
-        s.title = `${num(papers)} 篇题录即时可搜（暂无 PDF 可深索）`;
+        s.title = `${num(papers)} 篇题录即时可搜（暂无全文附件可深索）`;
       }
       s.className = "status ok";
     }
@@ -334,7 +340,7 @@
     setTimeout(() => { try { checkUpdate(true); } catch (e) {} }, 2500);
   }
 
-  // ── 深索摘要（SAC）覆盖：在每个「深索进度」旁并显「其中 M 篇有检索摘要」+ 补生成入口 ──
+  // ── 检索摘要（SAC）覆盖：在每个「深索进度」旁并显「其中 M 篇有检索摘要」+ 补生成入口 ──
   // st 需含 deep_done / sac_done / sac_invalid / sac_missing / sac_backfill。
   // 异常摘要不计完成；只在用户点修复/补生成时才重写并重嵌入。
   function sacFrag(st) {
@@ -350,7 +356,7 @@
     } else if (gap > 0) {
       const detail = [invalid ? `${num(invalid)} 篇摘要异常` : "", missing ? `${num(missing)} 篇缺失` : ""].filter(Boolean).join("，");
       s += ` <span class="sac-gap">（${detail}，不计完成）</span>`
-        + ` <a class="sac-bf-btn" data-act="sac-backfill" role="button" tabindex="0" title="第②步：修复异常摘要、补生成缺失摘要并重嵌入。需 API key，只处理这些篇，可后台跑。">🧬 修复 / 补生成摘要</a>`;
+        + ` <a class="sac-bf-btn" data-act="sac-backfill" role="button" tabindex="0" title="修复异常摘要、补生成缺失摘要并重嵌入。使用设置里的自动生成来源，只处理这些篇，可后台跑。">🧬 修复 / 补生成摘要</a>`;
     } else {
       s += ` ✓`;
     }
@@ -370,14 +376,14 @@
   async function startSacBackfill() {
     if (_sacBfBusy) return;
     const ok = await uiConfirm(
-      "将修复质量检查未通过的摘要，并为缺失摘要的已深索文献补生成摘要，再重新嵌入这些篇（摘要只有重嵌入后才对检索生效）。用你配的 API key 生成；只处理这些篇，其它文献不受影响；可放后台跑。",
+      "将修复质量检查未通过的摘要，并为缺失摘要的已深索文献补生成摘要，再重新嵌入这些篇（摘要只有重嵌入后才对检索生效）。使用“设置 → 建库 → 检索摘要”里选择的自动生成来源；只处理这些篇，其它文献不受影响；可放后台跑。",
       { title: "修复 / 补生成检索摘要？", okText: "开始处理" });
     if (!ok) return;
     _sacBfBusy = true;
     try {
       const r = await jpost("/index/sac_backfill", {});
       if (r && r.ok === false) {
-        flashToast(r.msg || (r.need_key ? "需要先配 API key。" : r.busy ? "已有任务在跑，稍后再试。" : "无法开始补生成。"));
+        flashToast(r.msg || (r.need_key ? "请先配置自动生成摘要所用的 AI。" : r.busy ? "已有任务在跑，稍后再试。" : "无法开始补生成。"));
       } else if (r && r.started === false) {
         flashToast(r.msg || "无需补生成。");
       } else {
@@ -433,7 +439,7 @@
   async function genSummaryOne(key, badge) {
     const repairing = !!(badge && badge.classList.contains("invalid"));
     const ok = await uiConfirm(
-      `${repairing ? "重新生成" : "生成"}这篇的 AI 检索摘要（知识库建设第②步）：用你的 API key 生成 ~150 字摘要并重嵌入这一篇，让语义检索更容易命中它。可放后台跑。`,
+      `${repairing ? "重新生成" : "生成"}这篇的 AI 检索摘要：使用设置里选择的自动生成来源，生成 ~150 字摘要并重嵌入这一篇，让语义检索更容易命中它。可放后台跑。`,
       { title: repairing ? "修复这篇的异常摘要？" : "为这篇生成检索摘要？", okText: repairing ? "修复" : "生成" });
     if (!ok) return;
     const original = badge ? badge.textContent : "⚪ 无摘要";
@@ -442,7 +448,7 @@
     try {
       const r = await jpost("/index/sac_backfill", { keys: [key] });
       if (r && r.ok === false) {
-        flashToast(r.msg || (r.need_key ? "需要先配 API key。" : "已有任务在跑，稍后再试。")); restore();
+        flashToast(r.msg || (r.need_key ? "请先配置自动生成摘要所用的 AI。" : "已有任务在跑，稍后再试。")); restore();
       } else if (r && r.started === false) {
         flashToast(r.msg || "这篇已有摘要。"); restore();
       } else {
@@ -472,7 +478,8 @@
   function extractCounts(st) {
     const c = (st && st.extract_status_counts) || {};
     const hasStructured = Object.keys(c).length > 0;
-    const missing = c.missing_pdf || 0, invalid = c.invalid_pdf || 0;
+    const missing = (c.missing_pdf || 0) + (c.missing_file || 0);
+    const invalid = (c.invalid_pdf || 0) + (c.invalid_file || 0);
     const failed = c.ocr_failed || 0, pending = c.ocr_pending || 0;
     return { missing, invalid, failed, pending,
       blocked: hasStructured ? missing + invalid + failed : ((st && st.deep_no_text) || 0) };
@@ -481,19 +488,19 @@
     const x = extractCounts(st), bits = [];
     if (x.pending) bits.push(`${num(x.pending)} 篇待/正在本地 OCR`);
     if (x.missing) bits.push(`${num(x.missing)} 篇附件缺失`);
-    if (x.invalid) bits.push(`${num(x.invalid)} 篇 PDF 无法打开`);
+    if (x.invalid) bits.push(`${num(x.invalid)} 篇全文附件无法读取`);
     if (x.failed) bits.push(`${num(x.failed)} 篇 OCR 未识别`);
     return bits.join("，");
   }
   function extractState(r) { return ((r && r.extract_status) || {}).status || ""; }
   function extractBlocked(r) {
     const s = extractState(r);
-    return r && (r.no_text || s === "missing_pdf" || s === "invalid_pdf" || s === "ocr_failed");
+    return r && (r.no_text || s === "missing_pdf" || s === "invalid_pdf" || s === "missing_file" || s === "invalid_file" || s === "ocr_failed");
   }
   function updateProgress(st) {
     const bar = $("#idx-progress");
     const papers = st.papers || 0, meta = st.meta_done || 0;
-    const withPdf = st.with_pdf || 0, deep = st.deep_done || 0;
+    const withPdf = withFulltext(st), deep = st.deep_done || 0;
     const stage = st.stage || "";
     // F4：仅 building 且 stage==="deep" 才算「深索中」（增量更新 all / 队列空时不误报）
     const deepBusy = st.building && stage === "deep";
@@ -502,7 +509,7 @@
     let done, total, txt;
     // F4：只在 stage==="deep" 时才叫「深索中」——增量更新(stage=all)/队列空闲时不再误报「深索中 0%」
     if (deepBusy) {
-      // 深索（把有 PDF 的文献全文拆成可检索的小段）
+      // 深索（把有全文附件的文献拆成可检索的小段）
       const blocked = extractCounts(st).blocked;
       if (withPdf > 0 && (deep + blocked) >= withPdf) {
         // 可处理正文已嵌完，其余是明确的附件/OCR失败终态；整库深索还有最后一步：
@@ -555,7 +562,7 @@
     try {
       const q = await jget("/index/queue");
       DP.paused = !!q.paused;
-      const deep = q.deep_done || 0, withPdf = q.with_pdf || 0;
+      const deep = q.deep_done || 0, withPdf = withFulltext(q);
       const pending = q.pending || 0, inflight = q.in_flight || 0;
       const building = !!q.building, stage = q.stage || "";
       const xc = extractCounts(q);
@@ -586,17 +593,17 @@
       } else {
         stat = `深索队列已空 · ` + (undeep > 0
           ? `待深索 <b>${num(undeep)}</b> 篇（可在「浏览」页勾选后深索）`
-          : `全部 PDF 已深索 ✓`);
+          : `全部全文附件已深索 ✓`);
         const issueText = extractCountsText(q);
         if (issueText) stat += ` · ${issueText}`;
-        if (xc.blocked > 0) stat += ` · <a href="#" id="dp-retry-nt" title="修好附件或 PDF 后，清除失败状态与旧产物再重试">🔁 重试 ${num(xc.blocked)} 篇提取失败文献</a>`;
+        if (xc.blocked > 0) stat += ` · <a href="#" id="dp-retry-nt" title="修好全文附件后，清除失败状态与旧产物再重试">🔁 重试 ${num(xc.blocked)} 篇提取失败文献</a>`;
         listEmpty = "暂无正在深索的文献"; eta = "";
       }
       $("#dp-stat").innerHTML = stat + sacFrag(q);
       const rnt = $("#dp-retry-nt");
       if (rnt) rnt.addEventListener("click", async (ev) => {
         ev.preventDefault();
-        if (!(await uiConfirm("将清除附件缺失、PDF 无法打开或 OCR 未识别文献的失败状态与旧提取产物。请先确认附件已修好；之后可在「浏览」页重新深索，本地 OCR 会自动运行。不会改动原 PDF。", { title: "重试 PDF 提取失败文献？", okText: "清除并可重试" }))) return;
+        if (!(await uiConfirm("将清除全文附件缺失、无法读取或 PDF OCR 未识别文献的失败状态与旧提取产物。请先确认附件已修好；之后可在「浏览」页重新深索。不会改动原文件。", { title: "重试全文提取失败文献？", okText: "清除并可重试" }))) return;
         try { const r = await jpost("/index/retry_no_text", {}); flashToast(r.msg || `已清除 ${num(r.cleared || 0)} 篇。`); deepPanelPoll(); }
         catch (e) { flashToast("重试失败：" + (e.message || e)); }
       });
@@ -730,6 +737,7 @@
   function switchTab(tab) {
     $$(".tab").forEach((x) => x.classList.toggle("active", x.dataset.tab === tab));
     $$(".panel").forEach((p) => { p.hidden = p.dataset.panel !== tab; });
+    syncHomeGuideTrigger(tab);
     // R12：离开浏览页时清掉「生成主题」的轮询，避免后台卡住时无限轮询
     if (tab !== "browse" && BR && BR.topicIv) { clearInterval(BR.topicIv); BR.topicIv = null; }
     if (tab === "dashboard") loadDashboard(dashLoaded ? "silent" : "loud");
@@ -737,7 +745,50 @@
     if (tab === "wiki") loadWikiList(wikiLoaded ? "silent" : "loud");
     if (tab === "agent" && !agentLoaded) loadAgentConfig();
     if (tab === "chat") loadChatCats();
-    if (tab === "search") loadSearchCats();   // D2：进检索页刷新「范围」下拉，纳入新建的分类/主题
+  }
+  // 浏览与全文检索共用「文献」页。题录查找走 /papers，本地即时；全文模式复用 /search。
+  let LIBRARY_MODE = "metadata";
+  function browseScopeCategory() {
+    if (!BR || !BR.scope || BR.scope.type === "all") return null;
+    if (BR.scope.type === "topic") return `topic:${BR.scope.id}`;
+    if (BR.scope.type === "zotero") return `zotero:${BR.scope.id}`;
+    return BR.scope.id || null;
+  }
+  function syncMetadataSort(queryChanged) {
+    const q = (BR.query || "").trim(), sel = $("#bl-sort");
+    const match = sel && sel.querySelector('option[value="match"]');
+    if (match) match.hidden = !q;
+    if (q && queryChanged && BR.sort === "ingested") BR.sort = "match";
+    if (!q && BR.sort === "match") BR.sort = "ingested";
+    if (sel) sel.value = BR.sort;
+  }
+  function runMetadataSearch() {
+    const q = $("#q").value.trim(), changed = q !== BR.query;
+    BR.query = q;
+    syncMetadataSort(changed);
+    if (browseLoaded) loadPapers();
+  }
+  function setLibrarySearchMode(mode, run) {
+    LIBRARY_MODE = mode === "semantic" ? "semantic" : "metadata";
+    const semantic = LIBRARY_MODE === "semantic";
+    const modeSel = $("#lib-search-mode"); if (modeSel) modeSel.value = LIBRARY_MODE;
+    const controls = $("#lib-semantic-controls"); if (controls) controls.hidden = !semantic;
+    const browseView = $("#browse-view"); if (browseView) browseView.hidden = semantic;
+    const semanticView = $("#semantic-view"); if (semanticView) semanticView.hidden = !semantic;
+    const q = $("#q"), go = $("#go");
+    if (q) q.placeholder = semantic
+      ? "输入研究问题，检索相关文献与原文片段"
+      : "按题名、作者、期刊、年份、DOI 或 ISBN 查找";
+    if (go) go.textContent = semantic ? "检索全文" : "查找";
+    if (run === false) return;
+    if (semantic) {
+      if (q && q.value.trim()) doSearch();
+      else if ($("#s-msg")) $("#s-msg").textContent = "输入研究问题，检索相关文献与原文片段。";
+    } else runMetadataSearch();
+  }
+  function runLibrarySearch() {
+    if (LIBRARY_MODE === "semantic") doSearch();
+    else runMetadataSearch();
   }
   // 「找相似」本地实词提取（F58，止血版）：不再把整句标题灌进检索，
   // 而是在中文虚词/标点处切开、去停用词、取前几个实词短语作为查询。向量近邻版放后续波次。
@@ -756,7 +807,8 @@
   }
   // 供浏览 tab 里点标题「找相似」用：默认用 AI 从标题抽核心检索词（更准），无 key 退本地实词
   async function switchToSearch(q) {
-    switchTab("search");
+    switchTab("browse");
+    setLibrarySearchMode("semantic", false);
     $("#q").value = "正在提取关键词…"; $("#go").disabled = true;
     let kw = "";
     try {
@@ -773,7 +825,8 @@
   // ok:false（light 模式 / 取不到向量）时无损回退到既有抽词法 switchToSearch。
   async function findSimilar(key, title) {
     if (!key) { switchToSearch(title || ""); return; }
-    switchTab("search");
+    switchTab("browse");
+    setLibrarySearchMode("semantic", false);
     // UX7：不再把「与「XX」相似」这种伪查询塞进 #q（用户会误当成自己的检索词）——#q 保持原输入，
     // 相似态改由 #s-msg 的提示条表达，点「清除」即回到普通检索
     const tShort = (title || "").slice(0, 24) + ((title || "").length > 24 ? "…" : "");
@@ -811,44 +864,83 @@
   // ══════════════════════════════════════════
   //  检索
   // ══════════════════════════════════════════
-  // F38-B：主徽标口径统一到学科感知中文档名（权威/核心/普通…）；WT_COLOR/WT_RANK 以中文档名为键
-  const WT_COLOR = { "权威":"#c0392b","准权威":"#a93226","核心":"#e67e22","次核心":"#d4a017",
-                     "一般":"#27ae60","普通":"#7f8c8d","待确认":"#bdc3c7","未知":"#8395a7" };
-  const WT_RANK  = { "权威":0,"准权威":1,"核心":2,"次核心":3,"一般":4,"普通":5,"待确认":6,"未知":6 };
-  // 徽标颜色：优先新中文档名；回退旧扁平刊名色（grading 预热中/引擎 down 时 weight_tier 空、兜 journal_tier）
-  function badgeColor(name) {
-    if (WT_COLOR[name] != null) return WT_COLOR[name];
-    return tierNameColor(name);
+  // 普通页面只显示一个客观标签；四档评价留给排序、tooltip、库总览和改档菜单。
+  const BAND_ORDER = ["authority", "top", "core", "normal"];
+  const BAND_STANDARD = { authority: "权威", top: "顶级", core: "核心", normal: "普通" };
+  const BAND_COLOR = { authority: "#c0392b", top: "#a93226", core: "#e67e22", normal: "#7f8c8d" };
+  const LEGACY_BAND = { "权威":"authority", "准权威":"top", "顶级":"top", "核心":"core",
+                        "次核心":"core", "一般":"normal", "普通":"normal", "待确认":"normal", "未知":"normal" };
+  const DISC = { id: "", name: "", bandNames: Object.assign({}, BAND_STANDARD), notice: "" };
+  function absorbBandNames(data) {
+    if (!data) return;
+    let src = data.band_names || data.tier_names || data.bandNames || null;
+    if (!src && Array.isArray(data.bands)) {
+      src = {}; data.bands.forEach((x) => { if (x && x.band) src[x.band] = x.band_name || x.name || x.standard_band_name; });
+    }
+    if (src) BAND_ORDER.forEach((b) => { if (src[b]) DISC.bandNames[b] = String(src[b]); });
+    const minw = $("#minw");
+    if (minw) Array.from(minw.options).forEach((o) => {
+      const b = o.dataset.band;
+      if (b) o.textContent = b === "authority" ? `只看${DISC.bandNames[b]}` : `${DISC.bandNames[b]}及以上`;
+    });
   }
-  // 主徽标＝等级（权威/核心/一般/普通…）。T2：0–1 数值「权威度」收进 tooltip，不再另立一个「权重」徽标（去重复）。
-  // 法源权重改造：徽标可点击 → 手动改档菜单（✎ 标记手动档）；wiki 行/无 key 的不可点。
+  function bandOf(r) {
+    if (r && BAND_ORDER.includes(r.band)) return r.band;
+    const code = (r && (r.weight_tier_code || r.internal_tier || r.tier)) || "";
+    if (code === "T1") return "authority";
+    if (code === "T1b") return "top";
+    if (code === "T2" || code === "T3") return "core";
+    return LEGACY_BAND[(r && (r.band_name || r.weight_tier || r.journal_tier)) || ""] || "normal";
+  }
+  function bandDisplay(r) { return (r && (r.band_name || r.standard_band_name || r.weight_tier)) || DISC.bandNames[bandOf(r)] || BAND_STANDARD[bandOf(r)]; }
+  function objectiveLabel(r) { return (r && (r.objective_label || r.source_label || r.journal_tier || r.source_type_name)) || "来源"; }
+  function bandAlias(shown, standard) {
+    return shown && standard && shown !== standard ? `${shown}（${standard}）` : (shown || standard || "普通");
+  }
+  function badgeColor(nameOrBand) {
+    const b = BAND_ORDER.includes(nameOrBand) ? nameOrBand : (LEGACY_BAND[nameOrBand] || "normal");
+    return BAND_COLOR[b];
+  }
+  function gradingTip(r) {
+    const shown = bandDisplay(r), standard = (r && r.standard_band_name) || BAND_STANDARD[bandOf(r)];
+    return `${objectiveLabel(r)} · 当前评价：${bandAlias(shown, standard)} · ${r && (r.manual || r.weight_src === "manual") ? "手动改档" : "自动评定"}`;
+  }
+  // 客观标签可点击打开四档菜单；手动改档只增加轻量 ✎，不改标签文字。
   function tierBadge(r) {
-    const cn = r.weight_tier || r.journal_tier || "未知";
-    const rev = r.weight_needs_review;
-    const wv = (!r.is_wiki && r.journal_weight != null) ? `，权威度 ${Number(r.journal_weight).toFixed(2)}（0–1）` : "";
-    const manual = r.weight_src === "manual";
+    if (r.is_wiki) return "";
+    const label = objectiveLabel(r);
+    const manual = !!r.manual || r.weight_src === "manual";
     const clickable = !!r.key && !r.is_wiki;
-    const tip = (manual ? `手动指定的档位${wv}`
-                : rev ? `待确认：未精确识别到该刊，等级为临时值，请核对原刊${wv}`
-                      : `等级（按当前锁定学科评定）${wv}`)
-              + (clickable ? "。点击可手动改档" : "");
+    const tip = gradingTip(r) + (clickable ? "。点击可手动改档；客观标签不会被改写" : "");
+    const currentBand = bandOf(r), currentName = bandDisplay(r), currentStandard = r.standard_band_name || BAND_STANDARD[currentBand];
+    const autoBand = r.auto_band || currentBand, autoName = r.auto_band_name || DISC.bandNames[autoBand] || BAND_STANDARD[autoBand];
+    const autoStandard = r.auto_standard_band_name || BAND_STANDARD[autoBand];
     const dk = clickable ? ` data-key="${esc(r.key)}"` : "";
-    return `<span class="badge tier-badge${clickable ? " tb-click" : ""}"${dk} style="background:${badgeColor(cn)}" title="${esc(tip)}">${esc(cn)}${manual ? " ✎" : ""}</span>`;
+    const gradingData = clickable ? ` data-band="${esc(currentBand)}" data-band-name="${esc(currentName)}" data-standard-band-name="${esc(currentStandard)}" data-auto-band="${esc(autoBand)}" data-auto-band-name="${esc(autoName)}" data-auto-standard-band-name="${esc(autoStandard)}" data-manual="${manual ? "1" : "0"}"` : "";
+    return `<span class="badge tier-badge objective-badge${clickable ? " tb-click" : ""}"${dk}${gradingData} title="${esc(tip)}">${esc(label)}${manual ? " ✎" : ""}</span>`;
   }
-  // 手动改档菜单：档位与后端 source_rules.TIER_W 一致；空档 = 恢复自动（删除 override）。
-  const TIER_MENU = [
-    ["", "↺ 恢复自动（按规则/期刊评定）"],
-    ["T1", "权威（1.00）"], ["T1b", "准权威（0.92）"], ["T2", "核心（0.85）"],
-    ["T3", "次核心（0.65）"], ["T4", "一般（0.45）"], ["T5", "普通（0.25）"]];
   function closeTierMenu() { const old = document.getElementById("tier-menu"); if (old) old.remove(); }
   function openTierMenu(badge) {
     closeTierMenu();
     const key = badge.dataset.key;
     if (!key) return;
+    const label = badge.textContent.replace(/\s*✎\s*$/, "");
+    const currentBand = badge.dataset.band || "normal";
+    const currentName = badge.dataset.bandName || DISC.bandNames[currentBand] || BAND_STANDARD[currentBand];
+    const currentStandard = badge.dataset.standardBandName || BAND_STANDARD[currentBand];
+    const autoBand = badge.dataset.autoBand || currentBand;
+    const autoName = badge.dataset.autoBandName || DISC.bandNames[autoBand] || BAND_STANDARD[autoBand];
+    const autoStandard = badge.dataset.autoStandardBandName || BAND_STANDARD[autoBand];
+    const manual = badge.dataset.manual === "1";
     const m = document.createElement("div");
     m.id = "tier-menu";
-    m.innerHTML = `<div class="tm-head">手动改档</div>` +
-      TIER_MENU.map(([c, label]) => `<button data-tier="${c}">${label}</button>`).join("");
+    const bandButtons = BAND_ORDER.map((b) => {
+      const shown = DISC.bandNames[b] || BAND_STANDARD[b];
+      const selected = b === currentBand;
+      return `<button data-tier="${b}" class="${selected ? "selected" : ""}" aria-pressed="${selected ? "true" : "false"}"><span>${selected ? "✓" : ""}</span>${esc(bandAlias(shown, BAND_STANDARD[b]))}</button>`;
+    }).join("");
+    const restore = manual ? `<button data-tier="" class="tm-restore">↺ 恢复自动：${esc(bandAlias(autoName, autoStandard))}</button>` : "";
+    m.innerHTML = `<div class="tm-head"><b>${esc(label)}</b><span>当前评价：${esc(bandAlias(currentName, currentStandard))} · ${manual ? "手动改档" : "自动评定"}</span>${manual ? `<small>自动规则：${esc(bandAlias(autoName, autoStandard))}</small>` : ""}</div>${bandButtons}${restore}`;
     document.body.appendChild(m);
     const rc = badge.getBoundingClientRect();
     m.style.left = Math.max(8, Math.min(rc.left, window.innerWidth - m.offsetWidth - 8)) + "px";
@@ -860,23 +952,33 @@
       try {
         const res = await jpost("/paper/tier", { key, tier: b.dataset.tier || null });
         const g = res.effective || {};
-        const cn = g.cn || "未知";
-        const wv = (g.weight != null) ? `，权威度 ${Number(g.weight).toFixed(2)}（0–1）` : "";
-        const tip = (res.override ? `手动指定的档位${wv}` : `已恢复自动评定${wv}`) + "。点击可手动改档";
+        const isManual = g.manual != null ? !!g.manual : !!res.override;
         // 同键徽标全部更新（同文献可能有多张卡），并回写内存行数据——
         // 否则 facet 收窄/重渲染会用旧数据把徽标打回原档（对抗审查 #9/#12/#13）。
         document.querySelectorAll(`.tier-badge[data-key="${CSS.escape(key)}"]`).forEach((el) => {
-          el.style.background = badgeColor(cn);
-          el.textContent = cn + (res.override ? " ✎" : "");
-          el.title = tip;
+          el.textContent = objectiveLabel(g) + (isManual ? " ✎" : "");
+          el.title = gradingTip(Object.assign({}, g, { manual: isManual })) + "。点击可手动改档；客观标签不会被改写";
+          const band = g.band || "normal", auto = g.auto_band || band;
+          el.dataset.band = band;
+          el.dataset.bandName = g.band_name || DISC.bandNames[band] || BAND_STANDARD[band];
+          el.dataset.standardBandName = g.standard_band_name || BAND_STANDARD[band];
+          el.dataset.autoBand = auto;
+          el.dataset.autoBandName = g.auto_band_name || DISC.bandNames[auto] || BAND_STANDARD[auto];
+          el.dataset.autoStandardBandName = g.auto_standard_band_name || BAND_STANDARD[auto];
+          el.dataset.manual = isManual ? "1" : "0";
         });
         const patch = (row) => {
           if (!row || row.key !== key) return;
-          row.weight_tier = g.cn || "";
-          row.weight_tier_code = g.tier || null;
+          ["objective_label", "band", "band_name", "standard_band_name", "auto_band", "auto_band_name", "auto_standard_band_name", "source_type", "source_type_name"].forEach((k) => {
+            if (g[k] != null) row[k] = g[k];
+          });
+          row.weight_tier = g.band_name || g.cn || row.weight_tier || "";
+          row.weight_tier_code = g.internal_tier || g.tier || null;
+          row.weight = (g.weight != null) ? g.weight : row.weight;
           row.journal_weight = (g.weight != null) ? g.weight : null;
-          row.weight_needs_review = !!g.needs_review;
-          row.weight_src = res.override ? "manual" : (g.src || null);
+          row.weight_needs_review = false;
+          row.manual = isManual;
+          row.weight_src = isManual ? "manual" : (g.src || null);
         };
         (SR.raw || []).forEach(patch); (SR.all || []).forEach(patch);
         ((typeof BR !== "undefined" && BR.papers) || []).forEach(patch);
@@ -902,8 +1004,8 @@
   function weightBadge(r) { return ""; }
   function extractFailureBadge(r) {
     const s = extractState(r), rec = (r && r.extract_status) || {};
-    if (s === "missing_pdf") return `<span class="tag nopdf" title="记录里有 PDF，但附件文件已不在磁盘上；请先在 Zotero 中修复路径">📎 附件缺失</span>`;
-    if (s === "invalid_pdf") return `<span class="tag nopdf" title="PDF 无法打开，可能损坏、未同步完整或被占用">⚠ PDF无法打开</span>`;
+    if (s === "missing_pdf" || s === "missing_file") return `<span class="tag nopdf" title="记录里的全文附件已不在磁盘上；请先在 Zotero 中修复路径">📎 附件缺失</span>`;
+    if (s === "invalid_pdf" || s === "invalid_file") return `<span class="tag nopdf" title="全文附件无法读取，可能损坏、未同步完整、格式异常或被占用">⚠ 附件无法读取</span>`;
     if (s === "ocr_failed") return `<span class="tag nopdf" title="本地 OCR 已运行，但没有识别出有效文字；可检查 PDF 后重试">⚠ OCR未识别</span>`;
     if (!s && r && r.no_text) return `<span class="tag nopdf" title="旧版提取失败记录；更新状态后会显示具体原因">⚠ 正文提取失败</span>`;
     if (rec.empty_pages > 0 && (s === "ok_native" || s === "ok_ocr"))
@@ -914,21 +1016,24 @@
     if (r.is_wiki) return "";                       // wiki 行用专属徽标（wikiBadge），不显示深度标
     const failure = extractFailureBadge(r);
     if (extractBlocked(r)) return failure;
-    if (r.depth === "full") return `<span class="tag full">📄 已深索</span>` + failure + (r.has_summary ? `<span class="tag sac" title="已生成并通过质量检查，检索更容易命中这篇">🧬 摘要有效</span>` : "");
+    if (r.depth === "full") return `<span class="tag full">📄 ${esc(fulltextLabel(r))} · 已深索</span>` + failure + (r.has_summary ? `<span class="tag sac" title="已生成并通过质量检查，检索更容易命中这篇">🧬 摘要有效</span>` : "");
     // F12：有 PDF 的未深索命中→可点击深索；无 PDF 的纯题录不给深索入口（避免点了无效）
-    if (r.has_pdf) {
+    if (hasFulltext(r)) {
       const pending = extractState(r) === "ocr_pending";
-      return `<span class="tag abstract deep-one" data-key="${esc(r.key || "")}" role="button" tabindex="0" title="${pending ? "点此继续深索并自动运行本地 OCR；不会上传或改写原 PDF" : "点此深索该篇：全文拆成可检索的小段后可精读到页码"}"><span class="lbl-idle">${pending ? "🔎 待本地OCR" : "📋 未深索"}</span><span class="lbl-hover">⚡ ${pending ? "开始OCR" : "深索该篇"}</span></span>`;
+      return `<span class="tag abstract deep-one" data-key="${esc(r.key || "")}" role="button" tabindex="0" title="${pending ? "点此继续深索并自动运行本地 OCR；不会上传或改写原 PDF" : "点此深索该篇：全文拆成可检索的小段后可回溯原文位置"}"><span class="lbl-idle">${pending ? "🔎 待本地OCR" : `📋 ${esc(fulltextLabel(r))} · 未深索`}</span><span class="lbl-hover">⚡ ${pending ? "开始OCR" : "深索该篇"}</span></span>`;
     }
-    return `<span class="tag nopdf" title="无 PDF，只有题录（题名·作者·年份·期刊）">🚫 无全文 / 仅题录</span>`;
+    return `<span class="tag nopdf" title="无受支持全文附件，只有题录（题名·作者·年份·期刊）">🚫 无全文 / 仅题录</span>`;
   }
   // 综合层徽标：命中的是"已存综合"页（可能已过时；来源可展开回溯到论文页码）。
   // agent 经 MCP 写回、未核验的页标 🤖，方便一眼锁定该复看/剔除的对象；人自己保存的标 📝。
   function wikiBadge(r) {
     if (!r.is_wiki) return "";
+    if (r.verified_at) {
+      return `<span class="tag wiki" title="已人工核验，可在综述页改回未核验">✅ 综述页·已核验</span>`;
+    }
     return r.by_agent
       ? `<span class="tag wiki agent" title="agent 自动写回、未经人工核验；可点「🗑 不保存」剔除">🤖 综述页·未核验</span>`
-      : `<span class="tag wiki" title="本地综述页，可能已过时，请核对来源原文">📝 综述页</span>`;
+      : `<span class="tag wiki" title="本地综述页，尚未人工核验">📝 综述页·未核验</span>`;
   }
   // EN-F5：法条时效徽标——retriever 输出侧按 papers.jsonl 现算的 statute_status（""|已修订|已废止）。
   // 引已废止/已修订的法条是硬伤，红/橙醒目提示；样式对齐既有 tier 徽标（.badge）
@@ -948,23 +1053,6 @@
     if (o.official_pages) bits.push(`<span class="pg">第 ${esc(o.official_pages)} 页</span>`);
     return bits.length ? `<div class="card-meta">${bits.join('<span class="dot-sep">·</span>')}</div>` : "";
   }
-  // 复制「引文 + 片段」（研究者更需要的是可直接引用的文本，非工程 score）
-  async function copyResult(r, btn) {
-    const txt = (r.citation || r.title || "") + "\n\n" + (r.text || "").trim();
-    const old = btn.textContent;
-    try {
-      await navigator.clipboard.writeText(txt);
-      btn.textContent = "✓ 已复制";
-    } catch (e) {
-      const ta = document.createElement("textarea");
-      ta.value = txt; ta.style.position = "fixed"; ta.style.opacity = "0";
-      document.body.appendChild(ta); ta.focus(); ta.select();
-      try { document.execCommand("copy"); btn.textContent = "✓ 已复制"; }
-      catch (_) { btn.textContent = "复制失败"; }
-      document.body.removeChild(ta);
-    }
-    setTimeout(() => { btn.textContent = old; }, 1500);
-  }
   function resultCard(r, i) {
     const div = document.createElement("div");
     div.className = "card";
@@ -978,7 +1066,7 @@
     if (r.heading) ctxTitleBits.push(esc(r.heading));
     const ctxHead = "📖 该片段所在整段原文" + (ctxTitleBits.length ? " · " + ctxTitleBits.join(" · ") : "");
     // C2：深索结果（有 key、非 wiki）可一键打开原文 PDF 核对页码
-    const openPdf = (!r.is_wiki && r.key && r.depth === "full") ? `<button class="ghost2 open-pdf" title="用系统默认阅读器打开这篇的原文 PDF">📄 打开原文</button>` : "";
+    const openPdf = (!r.is_wiki && r.key && r.depth === "full") ? `<button class="ghost2 open-pdf" title="用系统默认阅读器打开这篇的原文文件">📄 打开原文</button>` : "";
     div.innerHTML =
       `<div class="card-head"><span class="idx">#${i}</span>${wikiBadge(r)}${tierBadge(r)}${statuteBadge(r)}${weightBadge(r)}${depthTag(r)}</div>` +   // EN-F5：检索卡带法条时效徽标
       `<div class="cite">${esc(r.title || r.citation || "")}</div>` +
@@ -1017,8 +1105,8 @@
     const old = btn ? btn.textContent : null;
     if (btn) { btn.disabled = true; btn.textContent = "打开中…"; }
     try {
-      const r = await jpost("/open_pdf", { key });
-      if (!r || !r.ok) flashToast("打不开原文：" + ((r && r.msg) || "未找到 PDF"));
+      const r = await jpost("/open_source", { key });
+      if (!r || !r.ok) flashToast("打不开原文：" + ((r && r.msg) || "未找到全文附件"));
     } catch (e) { flashToast("打不开原文：" + (e.message || e)); }
     finally { if (btn) { btn.disabled = false; if (old != null) btn.textContent = old; } }
   }
@@ -1032,40 +1120,10 @@
     try { document.execCommand("copy"); ok(); } catch (_) { if (btn) btn.textContent = "复制失败"; }
     document.body.removeChild(ta);
   }
-  // GB/T 7714（国标）引文：作者. 题名. 期刊, 年份: 页码.（缺字段则省略；已有 citation 优先）
-  function citationGBT(r) {
-    if (r.citation) return r.citation;
-    const bits = [];
-    const who = (r.author || "").split(";").map((s) => s.trim()).filter(Boolean).join(", ");
-    if (who) bits.push(who + ".");
-    if (r.title) bits.push(esc0(r.title) + ".");
-    const tail = [];
-    if (r.journal) tail.push(r.journal);
-    let ym = "";
-    if (r.year) ym += String(r.year);
-    if (r.official_pages) ym += (ym ? ": " : "") + r.official_pages;
-    if (ym) tail.push(ym);
-    if (tail.length) bits.push(tail.join(", ") + ".");
-    return bits.join(" ").trim() || (r.title || "");
-  }
-  const esc0 = (s) => String(s || "");
-  // BibTeX @article 条目（字段有则填；key 用 stem/首作者+年）
-  function bibtexEntry(r) {
-    const first = (r.author || "").split(";")[0].trim().replace(/\s+/g, "");
-    const cite = (first || "ref") + (r.year || "");
-    const f = [];
-    if (r.author) f.push("  author = {" + (r.author || "").split(";").map((s) => s.trim()).filter(Boolean).join(" and ") + "}");
-    if (r.title) f.push("  title = {" + r.title + "}");
-    if (r.journal) f.push("  journal = {" + r.journal + "}");
-    if (r.year) f.push("  year = {" + r.year + "}");
-    if (r.official_pages) f.push("  pages = {" + r.official_pages + "}");
-    if (r.doi) f.push("  doi = {" + r.doi + "}");
-    return "@article{" + cite + ",\n" + f.join(",\n") + "\n}";
-  }
   // 无限滚动：一次取较大批(重排只跑一次、顺序最稳)，先渲染 10 条，滚到底再追加（原#30/副本#24）
   // raw=后端原始命中；all=facet 过滤后当前展示集（F5）。facet=当前选中的二次筛选。
   // reqSeq：BF13 检索请求序号守卫（同浏览页 BR.reqSeq 的 B5），防快速连发时旧响应覆盖新检索
-  const SR = { raw: [], all: [], shown: 0, observer: null, page: 10, facet: { deep: false, tier: "", year: "" }, reqSeq: 0 };
+  const SR = { raw: [], all: [], shown: 0, observer: null, page: 10, facet: { deep: false, band: "", year: "" }, reqSeq: 0 };
   function _renderMoreResults() {
     const end = Math.min(SR.shown + SR.page, SR.all.length);
     for (let i = SR.shown; i < end; i++) $("#results").appendChild(resultCard(SR.all[i], i + 1));
@@ -1092,12 +1150,12 @@
     }, { rootMargin: "200px" });
     SR.observer.observe(sentinel);
   }
-  // F5：基于 SR.raw 前端二次筛选（仅已深索 / 期刊等级 / 年份），即时收窄，无需重查后端
+  // F5：基于 SR.raw 前端二次筛选（仅已深索 / 来源评价 / 年份），即时收窄，无需重查后端
   function applyFacets() {
     const f = SR.facet;
     SR.all = SR.raw.filter((r) => {
       if (f.deep && r.depth !== "full") return false;
-      if (f.tier && (r.weight_tier || r.journal_tier || "未知") !== f.tier) return false;
+      if (f.band && bandOf(r) !== f.band) return false;
       if (f.year && String(r.year || "") !== f.year) return false;
       return true;
     });
@@ -1106,17 +1164,17 @@
   function renderFacets() {
     const box = $("#s-facets"); if (!box) return;
     if (!SR.raw.length) { box.hidden = true; box.innerHTML = ""; return; }
-    const tiers = {}, years = {}; let deepN = 0;
+    const bands = {}, years = {}; let deepN = 0;
     SR.raw.forEach((r) => {
       if (r.depth === "full") deepN++;
-      const t = r.weight_tier || r.journal_tier || "未知"; tiers[t] = (tiers[t] || 0) + 1;
+      const b = bandOf(r); bands[b] = (bands[b] || 0) + 1;
       const y = String(r.year || ""); if (y) years[y] = (years[y] || 0) + 1;
     });
     const f = SR.facet;
     let html = "";
     if (deepN && deepN < SR.raw.length) html += `<span class="facet-chip${f.deep ? " on" : ""}" data-fk="deep">📄 仅已深索 (${deepN})</span>`;
-    Object.keys(tiers).sort((a, b) => (WT_RANK[a] ?? 9) - (WT_RANK[b] ?? 9)).forEach((t) => {
-      if (Object.keys(tiers).length > 1) html += `<span class="facet-chip${f.tier === t ? " on" : ""}" data-fk="tier" data-fv="${esc(t)}">${esc(t)} (${tiers[t]})</span>`;
+    BAND_ORDER.forEach((b) => {
+      if (bands[b] && Object.keys(bands).length > 1) html += `<span class="facet-chip${f.band === b ? " on" : ""}" data-fk="band" data-fv="${b}">${esc(DISC.bandNames[b] || BAND_STANDARD[b])} (${bands[b]})</span>`;
     });
     Object.keys(years).sort((a, b) => b.localeCompare(a)).slice(0, 6).forEach((y) => {
       html += `<span class="facet-chip${f.year === y ? " on" : ""}" data-fk="year" data-fv="${esc(y)}">${esc(y)} (${years[y]})</span>`;
@@ -1135,10 +1193,10 @@
     const myseq = ++SR.reqSeq;   // BF13：请求序号守卫，过期响应不写结果/历史、不提前解禁按钮
     $("#go").disabled = true; $("#results").innerHTML = ""; $("#s-msg").textContent = "检索中…";
     _clearSentinel();
-    SR.raw = []; SR.all = []; SR.shown = 0; SR.facet = { deep: false, tier: "", year: "" };
+    SR.raw = []; SR.all = []; SR.shown = 0; SR.facet = { deep: false, band: "", year: "" };
     const box = $("#s-facets"); if (box) { box.hidden = true; box.innerHTML = ""; }
     try {
-      const cat = ($("#s-cat") && $("#s-cat").value) || "";
+      const cat = browseScopeCategory() || "";
       const TOPK = 50;   // search-hard-cap：由 20 提到 50
       const res = await jpost("/search", { query: q, topk: TOPK, sort: $("#sort").value,
         min_weight: parseFloat($("#minw") && $("#minw").value) || 0, category: cat || null });
@@ -1148,19 +1206,14 @@
       // T4：不再泄漏「词法模式」黑话；深索后可精读到页码
       const modeTip = res.mode === "light" ? " · 快速检索（深索后可精读到页码）" : "";
       const capTip = SR.raw.length >= TOPK ? `（已达上限 ${TOPK} 条，可加关键词或缩小范围）` : "";
-      // minweight-leaks-unknown：过滤了期刊等级时，提示未识别档位的来源也一并保留了
-      const mw = parseFloat($("#minw") && $("#minw").value) || 0;
-      const unkN = mw > 0 ? SR.raw.filter((r) => (r.weight_tier || r.journal_tier) === "待确认" || (r.weight_tier || r.journal_tier) === "未知").length : 0;
-      const unkTip = unkN ? `（另有 ${num(unkN)} 条来源未识别档位，已一并保留）` : "";
-      $("#s-msg").textContent = `命中 ${SR.raw.length} 条 · ${res.took_ms != null ? res.took_ms : "?"}ms${modeTip}${capTip}${unkTip}`;
+      $("#s-msg").textContent = `命中 ${SR.raw.length} 条 · ${res.took_ms != null ? res.took_ms : "?"}ms${modeTip}${capTip}`;
       if (!SR.raw.length) {
         // UX14：限定了分类且 0 命中——点明「只搜了这个分类」，给一键切回全库重搜的出口
-        const catSel = $("#s-cat");
-        if (cat && catSel) {
-          const catName = catSel.options[catSel.selectedIndex] ? catSel.options[catSel.selectedIndex].text : "";
-          $("#s-msg").innerHTML = `当前仅在『${esc(catName)}』分类内检索，无结果 · <a class="ag-link" id="s-cat-clear">切回全部文献</a>`;
+        if (cat) {
+          const catName = (BR.scope && BR.scope.name) || "当前分类";
+          $("#s-msg").innerHTML = `当前仅在『${esc(catName)}』内检索，无结果 · <a class="ag-link" id="s-cat-clear">切回全部文献</a>`;
           const cc = $("#s-cat-clear");
-          if (cc) cc.addEventListener("click", () => { catSel.value = ""; doSearch(); });
+          if (cc) cc.addEventListener("click", () => applyScope("all", null, "全部", null, true));
         } else { $("#s-msg").textContent += "（无结果，换个关键词试试）"; }
         return;
       }
@@ -1173,9 +1226,10 @@
     }
     finally { if (myseq === SR.reqSeq) $("#go").disabled = false; }   // BF13：只有最新请求才解禁按钮
   }
-  $("#go").addEventListener("click", doSearch);
-  // Enter 触发检索，但按钮禁用（检索进行中）时不重复提交，避免结果闪烁
-  $("#q").addEventListener("keydown", (e) => { if (e.key === "Enter" && !$("#go").disabled) doSearch(); });
+  $("#go").addEventListener("click", runLibrarySearch);
+  // Enter 触发当前模式；全文检索进行中时不重复提交。
+  $("#q").addEventListener("keydown", (e) => { if (e.key === "Enter" && !$("#go").disabled) runLibrarySearch(); });
+  $("#lib-search-mode").addEventListener("change", (e) => setLibrarySearchMode(e.target.value));
 
   // ── F4：检索历史（localStorage 最近 15 条，可点 chip）──
   function pushSearchHistory(q) {
@@ -1221,20 +1275,6 @@
     if (qs.length) { EXAMPLES_DYN = qs; renderExamples(); }
   }
   renderExamples(); renderSearchHistory();
-  // 检索范围下拉（D2）：复用对话「限定分类」的数据源
-  loadSearchCats();
-  async function loadSearchCats() {
-    const sel = $("#s-cat"); if (!sel) return;
-    const cur = sel.value;
-    const [cats, tops] = await Promise.all([
-      jget("/kb/categories").then((d) => d.categories || []).catch(() => []),
-      jget("/topics").then((d) => d.topics || []).catch(() => []),
-    ]);
-    sel.innerHTML = `<option value="">全部文献</option>`
-      + cats.map((c) => `<option value="${esc(c.id)}">🗂 ${esc(c.name)}</option>`).join("")
-      + tops.map((t) => `<option value="topic:${t.id}">🧠 ${esc(t.name)}</option>`).join("");
-    if (cur) sel.value = cur;
-  }
 
   // ══════════════════════════════════════════
   //  库总览（仪表盘）—— 全部手绘 SVG/CSS
@@ -1300,45 +1340,44 @@
       ${bars}${labels}</svg>`;
   }
 
-  // 覆盖：堆叠横条（有PDF / 无PDF）+ 无摘要标注
+  // 覆盖：堆叠横条（有全文附件 / 无全文附件）+ 无摘要标注
   function coverageCard(cov) {
     const total = cov.total || 0;
-    const withPdf = cov.with_pdf || 0, noPdf = cov.no_pdf || 0, noAbs = cov.no_abstract || 0, metaIdx = cov.meta_indexed || 0;
+    const withPdf = withFulltext(cov), noPdf = noFulltext(cov), noAbs = cov.no_abstract || 0, metaIdx = cov.meta_indexed || 0;
     const pw = total ? (withPdf / total) * 100 : 0;
     const stacked = `<svg viewBox="0 0 100 8" preserveAspectRatio="none" style="width:100%;height:16px;border-radius:8px">
-      <rect x="0" y="0" width="${pw.toFixed(2)}" height="8" fill="#16a085"><title>有PDF：${withPdf} 篇</title></rect>
-      <rect x="${pw.toFixed(2)}" y="0" width="${(100 - pw).toFixed(2)}" height="8" fill="#cbd5e1"><title>无PDF：${noPdf} 篇</title></rect></svg>`;
+      <rect x="0" y="0" width="${pw.toFixed(2)}" height="8" fill="#16a085"><title>有全文附件：${withPdf} 篇</title></rect>
+      <rect x="${pw.toFixed(2)}" y="0" width="${(100 - pw).toFixed(2)}" height="8" fill="#cbd5e1"><title>无全文附件：${noPdf} 篇</title></rect></svg>`;
     return `<div class="dcard span2"><h4>入库覆盖</h4>
-      <p class="dcard-sub">题录已索引 ${num(metaIdx)} 篇；有 PDF 的可深索到页码级</p>
+      <p class="dcard-sub">题录已索引 ${num(metaIdx)} 篇；有全文附件的可深索并回溯原文位置</p>
       <div class="cov-nums">
         <div class="n"><b>${num(total)}</b><span>总篇数</span></div>
-        <div class="n"><b style="color:#16a085">${num(withPdf)}</b><span>有 PDF</span></div>
-        <div class="n"><b style="color:#94a3b8">${num(noPdf)}</b><span>无 PDF</span></div>
+        <div class="n"><b style="color:#16a085">${num(withPdf)}</b><span>有全文附件</span></div>
+        <div class="n"><b style="color:#94a3b8">${num(noPdf)}</b><span>无全文附件</span></div>
         <div class="n"><b style="color:#b45309">${num(noAbs)}</b><span>无摘要</span></div>
       </div>
       ${stacked}
       <div class="cov-legend">
-        <span><i style="background:#16a085"></i>有 PDF ${total ? Math.round(withPdf / total * 100) : 0}%</span>
-        <span><i style="background:#cbd5e1"></i>无 PDF ${total ? Math.round(noPdf / total * 100) : 0}%</span>
+        <span><i style="background:#16a085"></i>有全文 ${total ? Math.round(withPdf / total * 100) : 0}%</span>
+        <span><i style="background:#cbd5e1"></i>无全文 ${total ? Math.round(noPdf / total * 100) : 0}%</span>
         <span><i style="background:#f59e0b"></i>无摘要 ${num(noAbs)} 篇（仅题录）</span>
       </div></div>`;
   }
 
-  // 期刊分级分布：把「待确认」并入「普通」显示（检索卡仍保留「待确认」徽标以提示核对未识别刊）
+  // 旧缓存可能仍是六档；展示层无损折叠为四档。
   function mergeProvisionalTier(by) {
-    const out = []; let prov = 0;
-    (by || []).forEach((x) => { if (x.tier === "待确认") prov += x.n; else out.push({ tier: x.tier, n: x.n }); });
-    if (prov > 0) {
-      const norm = out.find((x) => x.tier === "普通");
-      if (norm) norm.n += prov; else out.push({ tier: "普通", n: prov });
-    }
-    return out;
+    const counts = { authority: 0, top: 0, core: 0, normal: 0 };
+    (by || []).forEach((x) => { counts[x.band || LEGACY_BAND[x.tier] || "normal"] += Number(x.n || x.count || 0); });
+    return BAND_ORDER.map((band) => ({ band, tier: DISC.bandNames[band] || BAND_STANDARD[band], n: counts[band] }));
   }
   // 「最近入库」的「展开更多」→ 跳「浏览」并按入库时间排序
   function _goBrowseRecent() {
-    BR.sort = "ingested"; BR.deepFilter = "";
+    BR.sort = "ingested"; BR.query = ""; BR.deepFilter = ""; BR.sourceType = ""; BR.objectiveLabel = "";
+    setLibrarySearchMode("metadata", false);
+    const q = $("#q"); if (q) q.value = "";
     const bs = $("#bl-sort"); if (bs) bs.value = "ingested";
     const df = $("#bl-deep-filter"); if (df) df.value = "";
+    const tf = $("#bl-type-filter"); if (tf) tf.value = "";
     const firstBrowse = !browseLoaded;
     switchTab("browse");
     if (!firstBrowse) selectCollection(null, "全部", null);
@@ -1347,9 +1386,9 @@
     by_tier = mergeProvisionalTier(by_tier);
     if (!by_tier || !by_tier.length) return "";
     const max = Math.max.apply(null, by_tier.map((d) => d.n)) || 1;
-    const rows = by_tier.map((d) => hbar(d.tier, d.n, max, badgeColor(d.tier), true)).join("");
-    return `<div class="dcard"><h4>期刊分级分布</h4>
-      <p class="dcard-sub">按当前锁定学科评定 · 颜色越暖越权威（红＝权威 / 橙＝核心 / 绿＝一般 / 灰＝普通）</p>${rows}</div>`;
+    const rows = by_tier.map((d) => hbar(d.tier, d.n, max, badgeColor(d.band), true)).join("");
+    return `<div class="dcard"><h4>四档来源评价</h4>
+      <p class="dcard-sub">按当前锁定学科评定；普通页面仍只显示客观标签</p>${rows}</div>`;
   }
 
   function journalCard(by_journal) {
@@ -1357,7 +1396,7 @@
     const max = Math.max.apply(null, by_journal.map((d) => d.n)) || 1;
     const rows = by_journal.map((d) => hbar(d.journal, d.n, max, badgeColor(d.tier), true)).join("");
     return `<div class="dcard span2 jlist"><h4>高频期刊 Top ${by_journal.length}</h4>
-      <p class="dcard-sub">带分级色点（按当前学科）</p>${rows}</div>`;
+      <p class="dcard-sub">带来源评价色点（按当前学科）</p>${rows}</div>`;
   }
   // 旧扁平刊名→颜色（保留作 grading 预热中/引擎 down 的兜底；新口径优先走 WT_COLOR）
   const TIER_RANK_BY_NAME = {
@@ -1366,7 +1405,7 @@
     "CSSCI": 2, "台湾一般": 2,
     "CSSCI扩展": 3,
     "外文一般": 4, "普刊": 4,
-    "法源": 1, "官方报告": 2,   // source_rules 建库期标签（法源=准权威档色、报告=核心档色）
+    "法源": 1, "官方报告": 2,   // source_rules 建库期标签的旧版颜色兜底
     "报纸": 5, "未知": 6,
   };
   function tierNameColor(name) {
@@ -1374,51 +1413,133 @@
     return TIER_COLOR[r != null ? r : 6];
   }
 
-  // 最近入库：默认 4 条、可展开；每条带三态深索按钮（可深索/已深索/无PDF）
-  function recentCard(recent) {
-    if (!recent || !recent.length) return `<div class="dcard"><h4>最近入库</h4><p class="dcard-sub">暂无</p></div>`;
+  // 最近入库与评价分布共用一张「文库概况」卡；每条带三态深索按钮。
+  function recentSection(recent) {
+    if (!recent || !recent.length) return `<section class="ov-recent"><div class="ov-panel-head"><h5>最近入库</h5></div><p class="hint">暂无</p></section>`;
     const row = (r) => {
       const t = (r.title || "").slice(0, 52) + ((r.title || "").length > 52 ? "…" : "");
       let btn;
       if (r.deep) btn = `<span class="rc-tag done">已深索</span>`;
-      else if (r.has_pdf) btn = `<button class="rc-deep" data-key="${esc(r.key || "")}">深索</button>`;
-      else btn = `<span class="rc-tag nopdf" title="无 PDF，无法深索">无PDF</span>`;
+      else if (hasFulltext(r)) btn = `<button class="rc-deep" data-key="${esc(r.key || "")}">深索</button>`;
+      else btn = `<span class="rc-tag nopdf" title="无全文附件，无法深索">无全文</span>`;
       return `<li><div class="rc-main"><div class="rt">${esc(t)}</div><div class="rd">${esc(r.ingested_at || "")}</div></div>${btn}</li>`;
     };
-    const head = recent.slice(0, 5).map(row).join("");
-    return `<div class="dcard"><h4>最近入库</h4>
-      <ul class="recent-list">${head}</ul>
-      <button class="rc-expand" id="rc-expand">去「浏览」页看全部 →</button></div>`;
+    const head = recent.slice(0, 3).map(row).join("");
+    return `<section class="ov-recent"><div class="ov-panel-head"><h5>最近入库</h5><button class="rc-expand" id="rc-expand">查看全部</button></div>
+      <ul class="recent-list">${head}</ul></section>`;
   }
 
-  // 概览卡：期刊分级分布 + 一行"文献构成"速览（副本#12：除分级分布再放点啥）
+  function rowsOf(value, keyName) {
+    if (Array.isArray(value)) return value;
+    if (value && typeof value === "object") return Object.keys(value).map((k) => {
+      const v = value[k]; return (v && typeof v === "object") ? Object.assign({ [keyName]: k }, v) : { [keyName]: k, n: v };
+    });
+    return [];
+  }
+  function gradingBandRows(d, go) {
+    absorbBandNames(go);
+    let raw = rowsOf(go.bands || go.by_band || go.band_counts, "band");
+    if (!raw.length) raw = mergeProvisionalTier(d.by_tier || []);
+    const map = {};
+    raw.forEach((x) => {
+      const band = x.band || LEGACY_BAND[x.tier] || "normal";
+      map[band] = { band, n: Number(x.n != null ? x.n : (x.count || 0)), ratio: x.ratio,
+                    weight: x.weight, band_name: x.band_name || x.name || x.tier };
+      if (map[band].band_name) DISC.bandNames[band] = map[band].band_name;
+    });
+    absorbBandNames({ band_names: DISC.bandNames });
+    const total = Number(go.total || Object.values(map).reduce((s, x) => s + x.n, 0) || ((d.coverage || {}).meta_indexed) || 0);
+    return BAND_ORDER.map((band) => Object.assign({ band, n: 0, ratio: 0, weight: null }, map[band] || {}, {
+      band_name: (map[band] && map[band].band_name) || DISC.bandNames[band] || BAND_STANDARD[band], total,
+    }));
+  }
+  function gradingMappings(go) { return rowsOf(go.mappings || go.mapping_rows || go.mapping, "mapping_id"); }
+  function gradingBreakdown(go, kind) {
+    if (kind === "type") return rowsOf(go.source_types || go.by_source_type || go.type_counts, "source_type");
+    return rowsOf(go.objective_labels || go.by_objective_label || go.label_counts || go.labels, "objective_label");
+  }
+  function gradingOverviewCard(d) {
+    const go = d.grading_overview || {};
+    const bands = gradingBandRows(d, go);
+    const bandRows = bands.map((x) => {
+      const pct = x.ratio != null ? Math.round(Number(x.ratio) * (Number(x.ratio) <= 1 ? 100 : 1)) : (x.total ? Math.round(x.n / x.total * 100) : 0);
+      return `<div class="ov-band-row"><span class="ov-band-dot" style="background:${BAND_COLOR[x.band]}"></span>` +
+        `<span class="ov-band-name">${esc(x.band_name)}</span><span class="ov-band-track"><i style="width:${Math.max(0, Math.min(100, pct))}%;background:${BAND_COLOR[x.band]}"></i></span>` +
+        `<b>${num(x.n)}</b><small>${pct}%</small></div>`;
+    }).join("");
+    const typeRows = gradingBreakdown(go, "type");
+    const labelRows = gradingBreakdown(go, "label");
+    const labelLimit = 12;
+    const breakdown = (typeRows.length || labelRows.length) ? `<div class="dcard span2 ov-breakdown">
+      <div class="ov-break-head"><div class="ov-break-title"><h4>文献构成</h4><div class="ov-break-tabs" role="tablist"><button class="active" data-break-kind="type" role="tab" aria-selected="true">按文献性质</button><button data-break-kind="label" role="tab" aria-selected="false">按客观标签</button></div></div><small>点击项目查看文献</small></div>
+      <div class="ov-break-panel active" data-break-panel="type"><div class="ov-chips">${typeRows.map((x) => {
+        const type = x.source_type || x.id || x.key || "", name = x.source_type_name || x.name || x.label || type || "其他";
+        const body = `${esc(name)} <b>${num(x.n != null ? x.n : x.count || 0)}</b>`;
+        return type ? `<button class="ov-chip ov-type-chip" data-source-type="${esc(type)}" data-source-name="${esc(name)}">${body}</button>`
+          : `<span class="ov-chip">${body}</span>`;
+      }).join("") || `<span class="hint">暂无统计</span>`}</div></div>
+      <div class="ov-break-panel" data-break-panel="label"><div class="ov-chips">${labelRows.map((x, i) => {
+        const label = x.objective_label || x.label || x.name || "来源";
+        return `<button class="ov-chip ov-label-chip${i >= labelLimit ? " ov-chip-extra" : ""}" data-objective-label="${esc(label)}">${esc(label)} <b>${num(x.n != null ? x.n : x.count || 0)}</b></button>`;
+      }).join("") || `<span class="hint">暂无统计</span>`}${labelRows.length > labelLimit ? `<button class="ov-break-more" data-extra-count="${labelRows.length - labelLimit}">展开其余 ${num(labelRows.length - labelLimit)} 项</button>` : ""}</div></div></div>` : "";
+    const mappings = gradingMappings(go);
+    const customized = mappings.filter((x) => x.customized);
+    const customCount = customized.length;
+    const mappingRows = (rows) => rows.map((x) => {
+        const id = x.mapping_id || x.id || x.key || "", band = x.band || LEGACY_BAND[x.band_name || x.tier] || "normal";
+        const defaultBand = x.default_band || band;
+        const defaultName = x.default_band_name || DISC.bandNames[defaultBand] || BAND_STANDARD[defaultBand];
+        const title = x.objective_label || x.source_type_name || x.label || x.name || id;
+        const detail = x.description || x.rule || x.source || "";
+        const select = x.editable ? `<select class="ov-map-select" data-mapping-id="${esc(id)}" data-default-band="${esc(defaultBand)}" data-saved-value="${esc(band)}" data-update-url="${esc(x.update_url || "/grading/mapping")}">` +
+          BAND_ORDER.map((b) => `<option value="${b}"${b === band ? " selected" : ""}>${esc(DISC.bandNames[b] || BAND_STANDARD[b])}</option>`).join("") + `</select>`
+          : `<span class="ov-map-band" style="color:${BAND_COLOR[band]}">${esc(x.band_name || DISC.bandNames[band] || BAND_STANDARD[band])}</span>`;
+        return `<div class="ov-map-row${x.customized ? " customized" : ""}"><div><b>${esc(title)}</b>${x.customized ? `<small>默认：${esc(defaultName)}</small>` : (detail ? `<small>${esc(detail)}</small>` : "")}</div>${select}</div>`;
+      }).join("");
+    const customRows = customized.map((x) => {
+      const id = x.mapping_id || x.id || x.key || "", band = x.band || "normal", defaultBand = x.default_band || "normal";
+      const title = x.objective_label || x.source_type_name || x.label || x.name || id;
+      const currentName = x.band_name || DISC.bandNames[band] || BAND_STANDARD[band];
+      const defaultName = x.default_band_name || DISC.bandNames[defaultBand] || BAND_STANDARD[defaultBand];
+      return `<div class="ov-custom-row"><div><b>${esc(title)}</b><small>当前：${esc(currentName)} · 默认：${esc(defaultName)}</small></div><button class="ov-map-reset" data-mapping-id="${esc(id)}">恢复此项</button></div>`;
+    }).join("");
+    const catalogMappings = mappings.filter((x) => String(x.mapping_id || x.id || "").startsWith("label:"));
+    const natureMappings = mappings.filter((x) => !String(x.mapping_id || x.id || "").startsWith("label:"));
+    const mappingCard = mappings.length ? `<details class="dcard span2 ov-mapping"><summary><span><b>评价规则</b><small>当前：${esc(DISC.name || "当前学科")} · ${customCount ? `<mark>${num(customCount)} 项已修改</mark>` : "使用当前预设"}</small></span><em>展开调整</em></summary>
+      <div class="ov-mapping-body"><div class="ov-map-intro"><span>调整后评价、总览和检索排序会即时更新；无需重建索引，客观标签不变。</span>${customCount ? `<button id="ov-map-reset-all">恢复全部默认</button>` : ""}</div>
+      ${customCount ? `<h5 class="ov-custom-title">已修改（${num(customCount)}）</h5><div class="ov-map-custom">${customRows}</div>` : ""}
+      <h5>期刊与目录</h5><div class="ov-map-table">${mappingRows(catalogMappings)}</div>
+      <h5>其他文献性质</h5><div class="ov-map-table">${mappingRows(natureMappings)}</div>
+      <div class="ov-map-msg hint" aria-live="polite"></div></div></details>` : "";
+    return { bandRows, breakdown, mappingCard };
+  }
+
+  // 概览卡：四档来源评价 + 全类型/目录明细。
   function overviewCard(d) {
     const cov = d.coverage || {};
     const zh = (d.by_lang || []).find((x) => /中/.test(x.lang)) || {};
     const wai = (d.by_lang || []).find((x) => /外/.test(x.lang)) || {};
     const compose = `<div class="ov-compose">
       <span><b>${num(cov.meta_indexed)}</b>总篇</span>
-      <span><b>${num(cov.with_pdf)}</b>有PDF</span>
+      <span><b>${num(withFulltext(cov))}</b>有全文附件</span>
       ${zh.n ? `<span><b>${num(zh.n)}</b>中文</span>` : ""}
       ${wai.n ? `<span><b>${num(wai.n)}</b>外文</span>` : ""}
     </div>`;
     // F3：显示当前锁定学科（中文名）+ 修改入口
-    const discName = d.grading_discipline_name || d.grading_discipline || "法学";
-    const discLine = `<p class="ov-disc">当前锁定学科：<b>${esc(discName)}</b> · <a id="ov-change-disc" class="dh-link">修改 →</a></p>`;
-    const distSub = `<p class="dcard-sub" style="margin-top:6px">期刊分级分布（按当前锁定学科评定 · 红＝权威/橙＝核心/绿＝一般/灰＝普通）</p>`;
-    let distBody;
-    // F3：分级分布未算完时显示占位，避免闪出与当前学科无关的原始档名
+    const go = d.grading_overview || {};
+    DISC.id = go.discipline || d.grading_discipline || DISC.id;
+    DISC.name = go.discipline_name || d.grading_discipline_name || d.grading_discipline || DISC.name || "法学";
+    DISC.notice = go.notice || go.discipline_notice || d.grading_notice || DISC.notice || "";
+    const discName = DISC.name;
+    const discLine = `<div class="ov-disc"><span>当前学科：<b>${esc(discName)}</b> · <a id="ov-change-disc" class="dh-link">修改</a></span>${DISC.notice ? `<small>${esc(DISC.notice)}</small>` : ""}</div>`;
+    const detail = gradingOverviewCard(d);
+    let distBody = detail.bandRows;
     if (d.grading_pending) {
       distBody = `<p class="ov-dist-pending">分级分布计算中，请稍候…</p>`;
-    } else {
-      const by = mergeProvisionalTier(d.by_tier || []);
-      const max = Math.max.apply(null, by.map((x) => x.n).concat([1]));
-      distBody = by.map((x) => hbar(x.tier, x.n, max, badgeColor(x.tier), true)).join("");
     }
-    return `<div class="dcard"><h4>概览</h4>
-      ${compose}
-      ${discLine}
-      ${distSub}${distBody}</div>`;
+    return `<div class="dcard span2 ov-library"><div class="ov-library-head"><div><h4>文库概况</h4>${compose}</div>${discLine}</div>
+      <div class="ov-library-grid"><section class="ov-rating"><div class="ov-panel-head"><h5>评价分布</h5><small>按当前学科计算</small></div>${distBody}</section>${recentSection(d.recent)}</div></div>` +
+      detail.breakdown + detail.mappingCard;
   }
 
   // 底部：横板四步示意图（替代原密排功能点文字；一页显示、自适应宽度）
@@ -1432,25 +1553,25 @@
       <div class="ht-head">
         <img class="ht-mascot" src="/static/PaperPiggy.png" alt="PaperPiggy">
         <div class="ht-head-txt">
-          <div class="ht-h">四步，把小猪养成你的<span class="hl">专属知识库</span></div>
-          <div class="ht-sub">越喂越聪明 —— 喂文献进去，它替你精读、检索、写综述</div>
+          <div class="ht-h">四步，用 Agent 驱动你的<span class="hl">专属知识库</span></div>
+          <div class="ht-sub">你说明研究目标，Agent 负责检索、深读、核验与维护</div>
         </div>
         <button class="primary-btn ht-cta" id="dg-go">怎么接入 AI 助手 →</button>
       </div>
       <div class="flow">
-        ${step("s1", "1", "📥", "喂饱小猪 · 深索＋摘要", "先把 PDF <b>深索</b>成可读小段，再配<b>检索摘要</b>帮助准确命中文献；都能按需筛选、放后台慢慢完成。")}
+        ${step("s1", "1", "📥", "完成基础建库", "连接 <b>Zotero</b> 或全文文件夹，建立题录与语义索引。")}
         ${arrow}
-        ${step("s2", "2", "🔍", "秒级检索", "抛一个研究问题，全库<b>秒找</b>相关文献与原文段落，按期刊权威度排序、精确到印刷页码。")}
+          ${step("s2", "2", "🤖", "连接 Agent", "在 Agent 页复制本机接入命令，让 <b>Claude Code / Codex</b> 使用你的知识库。")}
         ${arrow}
-        ${step("s3", "3", "🤖", "Agent 驱动", "把库接进 <b>Claude Code / Codex</b>，让 AI 替你查库、读页码 —— 尤其半自动研究助手，边问边写。")}
+        ${step("s3", "3", "🔎", "布置研究任务", "说明问题、范围、交付物与证据标准，由 Agent 安排检索、深索和核验。")}
         ${arrow}
-        ${step("s4", "4", "📚", "定时养库", "把问答与综述沉淀成 <b>wiki</b>、定期维护综述库 —— 知识越用越厚，复用越来越省。")}
+        ${step("s4", "4", "📚", "积累研究成果", "把成品保存到<b>交付物</b>，把可复用结论写入<b>综述库</b>，持续维护项目记忆。")}
       </div>
-      <div class="ht-foot"><span class="pig">🐷</span> 喂得越勤，小猪越懂你 —— 让 PaperPiggy 成为你的专属知识库 ✨</div>
+      <div class="ht-foot"><span class="pig">🐷</span> PaperPiggy 提供知识引擎，Agent 承担研究流程 ✨</div>
     </div>`;
   }
 
-  // 库总览·新手指引 全屏浮层：点开＝四步图（agentGuideCard）+ 详细图文章节（#home-guide 静态在 index.html）
+  // 库总览·新手指引：只在库总览页启用左上角小猪；首次显示一次锚定提示。
   function openHomeGuide() {
     const g = $("#home-guide"); if (!g) return;
     const vis = $("#hg-visual");
@@ -1463,7 +1584,32 @@
     const body = g.querySelector(".ag-guide-body"); if (body) body.scrollTop = 0;
   }
   function closeHomeGuide() { const g = $("#home-guide"); if (g) g.hidden = true; }
+  function syncHomeGuideTrigger(tab) {
+    const opener = $("#brand-guide"), tip = $("#brand-guide-tip");
+    if (!opener) return;
+    const active = tab === "dashboard";
+    opener.classList.toggle("is-inactive", !active);
+    opener.setAttribute("aria-disabled", active ? "false" : "true");
+    opener.setAttribute("aria-label", active ? "打开新手指引" : "PaperPiggy");
+    opener.title = active ? "打开新手指引" : "";
+    if (!active && tip) tip.hidden = true;
+  }
   (function wireHomeGuide() {
+    const opener = $("#brand-guide"), tip = $("#brand-guide-tip"), tipClose = $("#brand-guide-tip-close");
+    const tipKey = "localkb.brandGuideTipSeen";
+    const dismissTip = () => {
+      if (tip) tip.hidden = true;
+      try { localStorage.setItem(tipKey, "1"); } catch (_) {}
+    };
+    if (opener) opener.addEventListener("click", () => {
+      if (opener.getAttribute("aria-disabled") === "true") return;
+      dismissTip(); openHomeGuide();
+    });
+    if (tipClose) tipClose.addEventListener("click", dismissTip);
+    syncHomeGuideTrigger($(".tab.active")?.dataset.tab || "dashboard");
+    try {
+      if (tip && opener?.getAttribute("aria-disabled") !== "true" && localStorage.getItem(tipKey) !== "1") tip.hidden = false;
+    } catch (_) { if (tip && opener?.getAttribute("aria-disabled") !== "true") tip.hidden = false; }
     const c = $("#home-guide-close"); if (c) c.addEventListener("click", closeHomeGuide);
     const t2a = $("#hg-to-agent"); if (t2a) t2a.addEventListener("click", () => { closeHomeGuide(); switchTab("agent"); });
     document.addEventListener("keydown", (e) => { const g = $("#home-guide"); if (e.key === "Escape" && g && !g.hidden) closeHomeGuide(); });
@@ -1472,11 +1618,11 @@
   // 全文深索进度卡（读 /index/status；点击跳到浏览 tab 的「仅题录」筛选）
   function deepProgressCard(st) {
     if (!st) return "";
-    const withPdf = st.with_pdf || 0, deep = st.deep_done || 0;
+    const withPdf = withFulltext(st), deep = st.deep_done || 0;
     if (withPdf <= 0) {
       return `<div class="dcard span2 deep-prog">
         <h4>深索进度</h4>
-        <p class="dcard-sub">有 PDF 的文献全文拆成可检索的小段后，回答可精确到页码</p>
+        <p class="dcard-sub">有全文附件的文献拆成可检索的小段后，回答可回溯到页码、章节、段落或行号</p>
         <div class="hbar deep-prog-bar"><span class="track"><span class="fill" style="width:0%;background:#16a085"></span></span><span class="val">0%</span></div>
         <p class="deep-prog-txt">暂无可深索文献</p></div>`;
     }
@@ -1489,22 +1635,25 @@
     const clickable = remain > 0;
     const bar = `<span class="track"><span class="fill" style="width:${barPct}%;background:#16a085"></span></span>`;
     const txt = (remain > 0
-      ? `已深索 <b>${num(deep)}</b> / 有PDF ${num(withPdf)} 篇，还有 ${num(remain)} 篇可深索`
+      ? `已深索 <b>${num(deep)}</b> / 有全文附件 ${num(withPdf)} 篇，还有 ${num(remain)} 篇可深索`
       : (blocked > 0
-          ? `已深索 <b>${num(deep)}</b> / 有PDF ${num(withPdf)} 篇；可处理正文已完成（${extractCountsText(st)}）`
-          : `已深索 <b>${num(deep)}</b> / 有PDF ${num(withPdf)} 篇，已全部深索完成 ✓`)) + sacFrag(st);
+          ? `已深索 <b>${num(deep)}</b> / 有全文附件 ${num(withPdf)} 篇；可处理正文已完成（${extractCountsText(st)}）`
+          : `已深索 <b>${num(deep)}</b> / 有全文附件 ${num(withPdf)} 篇，已全部深索完成 ✓`)) + sacFrag(st);
     // 查看「已深索了哪些」（跳到浏览的「已深索」筛选）。整卡可点→浏览挑未深索去深索。
     const seeLink = deep > 0 ? `<span class="deep-prog-see" id="deep-prog-see">查看已深索 ${num(deep)} 篇 →</span>` : "";
     return `<div class="dcard span2 deep-prog${clickable ? " clickable" : ""}"${clickable ? ' id="deep-prog-card"' : ""}>
       <h4>深索进度</h4>
-      <p class="dcard-sub">只有<b>深索过</b>的文献才能被精读、页级引用、跨篇综合；未深索的仅题录可搜。</p>
+      <p class="dcard-sub">只有<b>深索过</b>的文献才能被精读、定位引用、跨篇综合；未深索的仅题录可搜。</p>
       <div class="hbar deep-prog-bar">${bar}<span class="val">${pctLabel}</span></div>
       <p class="deep-prog-txt">${txt}${seeLink}</p></div>`;
   }
 
   function _goDeepBrowse(filter) {
-    BR.deepFilter = filter; BR.sort = "recommend";
+    BR.deepFilter = filter; BR.sourceType = ""; BR.objectiveLabel = ""; BR.query = ""; BR.sort = "recommend";
+    setLibrarySearchMode("metadata", false);
+    const q = $("#q"); if (q) q.value = "";
     const df = $("#bl-deep-filter"); if (df) df.value = filter;
+    const tf = $("#bl-type-filter"); if (tf) tf.value = "";
     const bs = $("#bl-sort"); if (bs) bs.value = "recommend";
     const firstBrowse = !browseLoaded;
     switchTab("browse");
@@ -1514,7 +1663,7 @@
     const cov = d.coverage || {};
     const health = d.health || {};
     const st = status || {};
-    const withPdf = st.with_pdf || 0, deep = st.deep_done || 0;
+    const withPdf = withFulltext(st), deep = st.deep_done || 0;
     const xc = extractCounts(st), blocked = xc.blocked;
     const remain = Math.max(0, withPdf - deep - blocked);
     const processed = Math.min(withPdf, deep + blocked);
@@ -1534,7 +1683,7 @@
     const header = `<div class="dash-hero">
       <div class="dh-left">
         <div class="dh-title">${esc(health.one_liner || "知识库总览")}</div>
-        <div class="dh-sub">题录 ${num(cov.meta_indexed)} 篇 · 有 PDF ${num(cov.with_pdf)} 篇 · 已深索 ${num(cov.deep_indexed)} 篇</div>
+        <div class="dh-sub">题录 ${num(cov.meta_indexed)} 篇 · 有全文附件 ${num(withFulltext(cov))} 篇 · 已深索 ${num(cov.deep_indexed)} 篇</div>
         <button class="dash-refresh" data-act="refresh-dash" title="重新扫描进度与最近入库（后台深索/生成摘要在跑、或外部 AI 助手改了库，点这里就能看到最新，不用重开应用）">🔄 刷新</button>
       </div>
       <div class="dh-deep">
@@ -1542,9 +1691,9 @@
           <div class="dh-deep-h"><b>① 深索</b><span>${pctLabel}</span></div>
           <div class="hbar dh-bar"><span class="track"><span class="fill" style="width:${barPct}%;background:#7ee0b8"></span></span></div>
           <div class="dh-deep-txt">${withPdf === 0 ? "暂无可深索文献。" : (remain > 0
-              ? `把 PDF 全文拆成可检索的小段，回答才能精确到页码。已深索 <b>${num(deep)}</b>/${num(withPdf)} 篇，还有 ${num(remain)} 篇。`
+              ? `把全文附件拆成可检索的小段，回答才能回溯到原文位置。已深索 <b>${num(deep)}</b>/${num(withPdf)} 篇，还有 ${num(remain)} 篇。`
                : (blocked > 0
-                   ? `可处理正文已完成 ✓ —— ${extractCountsText(st)}。修好附件或 PDF 后可在「深索详情」重试；OCR 全程本地运行。`
+                   ? `可处理正文已完成 ✓ —— ${extractCountsText(st)}。修好全文附件后可在「深索详情」重试；PDF OCR 全程本地运行。`
                   : `已全部深索完成 ✓`))}
             ${deep > 0 ? `<a class="dh-link" id="dash-see-deep">查看已深索 ${num(deep)} 篇 →</a>` : ""}
             ${remain > 0 ? `<a class="dh-link" id="dash-go-deep">深索全部未深索文献 →</a>` : ""}
@@ -1561,7 +1710,7 @@
                        ? `有效摘要 <b>${num(sac)}</b>/${num(deep)} 篇；${[sacInvalid ? `<b>${num(sacInvalid)}</b> 篇异常` : "", sacMissing ? `<b>${num(sacMissing)}</b> 篇缺失` : ""].filter(Boolean).join("，")}。异常摘要不计完成；修复并重嵌入后才会替换旧前缀。 <a class="sac-bf-btn" data-act="sac-backfill" role="button" tabindex="0" title="修复异常摘要、补生成缺失摘要并重嵌入，需 API key，只处理这些篇，可后台跑。">🧬 修复 / 补生成摘要</a>`
                        : `全部摘要已通过质量检查 ✓`))}</div>
         </div>
-        ${(remain > 0 || sacGap > 0) ? `<div class="dh-deep-note">① 深索＝把 PDF 拆成可检索小段（能精读、引页码、跨篇综合）；② 检索摘要＝再给每篇配段 AI 摘要当检索前缀（更易被命中）。都可放后台慢慢跑，不影响使用。</div>` : ""}
+        ${(remain > 0 || sacGap > 0) ? `<div class="dh-deep-note">① 深索＝把全文附件拆成可检索小段（能精读、定位原文、跨篇综合）；② 检索摘要＝再给每篇配段 AI 摘要当检索前缀（更易被命中）。都可放后台慢慢跑，不影响使用。</div>` : ""}
       </div></div>`;
     // EN-F1：综述库体检角标——/stats 带 wiki_lint（后端读 data/state/wiki_lint.json；没有该键=没体检过，不显示）。
     // gist 点名 drift（综述与库脱节）是头号失败模式——有待理顺项时在首页给一条显眼入口，点击直达体检面板
@@ -1570,11 +1719,8 @@
       ? `<div class="dash-lint" id="dash-lint" role="button" tabindex="0" title="上次体检：${esc(wl.checked_at || "未知时间")}。点击去综述库查看体检详情">🩺 综述库有 <b>${num(wl.issues)}</b> 处待理顺（孤立页 / 过时页 / 断链等）→</div>`
       : "";
     $("#dash").innerHTML = header + lintLine
-      + `<div class="dash-grid dash-2col">${overviewCard(d)}${recentCard(d.recent)}</div>`
-      // 新手指引改为「点开＝全屏图文教程」，首页保持清爽（详细内容在 #home-guide 浮层）
-      + `<button class="dash-teach-open" id="dash-teach-open" type="button"><span class="dto-ic">📖</span><span class="dto-tx"><b>新手指引</b><small>四步把小猪养成你的专属知识库 · 图文详解</small></span><span class="dto-cta">点开 →</span></button>`;
+      + `<div class="dash-grid dash-2col">${overviewCard(d)}</div>`;
     // 事件
-    const dto = $("#dash-teach-open"); if (dto) dto.addEventListener("click", openHomeGuide);
     const seeD = $("#dash-see-deep"); if (seeD) seeD.addEventListener("click", () => _goDeepBrowse("yes"));
     const goD = $("#dash-go-deep"); if (goD) goD.addEventListener("click", async () => {
       goD.textContent = "正在开始全量深索…";
@@ -1596,6 +1742,79 @@
       dlint.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); goLint(); } });
     }
     const chD = $("#ov-change-disc"); if (chD) chD.addEventListener("click", (e) => { e.preventDefault(); openSettings("sec-discipline"); });  // F3：修改学科
+    $$(".ov-break-tabs button").forEach((tab) => tab.addEventListener("click", () => {
+      const kind = tab.dataset.breakKind;
+      $$(".ov-break-tabs button").forEach((x) => { const on = x === tab; x.classList.toggle("active", on); x.setAttribute("aria-selected", on ? "true" : "false"); });
+      $$(".ov-break-panel").forEach((x) => x.classList.toggle("active", x.dataset.breakPanel === kind));
+    }));
+    $$(".ov-break-more").forEach((b) => b.addEventListener("click", () => {
+      const chips = b.closest(".ov-chips"), expanded = chips.classList.toggle("expanded");
+      b.textContent = expanded ? "收起" : `展开其余 ${b.dataset.extraCount || ""} 项`;
+    }));
+    $$(".ov-type-chip").forEach((b) => b.addEventListener("click", () => {
+      BR.sourceType = b.dataset.sourceType || ""; BR.objectiveLabel = ""; BR.query = "";
+      setLibrarySearchMode("metadata", false);
+      const q = $("#q"); if (q) q.value = "";
+      const ts = $("#bl-type-filter"); if (ts) ts.value = BR.sourceType;
+      BR.scope = { type: "all", id: null, name: b.dataset.sourceName || "全部" };
+      switchTab("browse");
+      if (browseLoaded) applyScope("all", null, b.dataset.sourceName || "全部", null, true);
+    }));
+    $$(".ov-label-chip").forEach((b) => b.addEventListener("click", () => {
+      BR.objectiveLabel = b.dataset.objectiveLabel || ""; BR.sourceType = ""; BR.query = "";
+      setLibrarySearchMode("metadata", false);
+      const q = $("#q"); if (q) q.value = "";
+      const ts = $("#bl-type-filter"); if (ts) ts.value = "";
+      BR.scope = { type: "all", id: null, name: "全部" };
+      switchTab("browse");
+      if (browseLoaded) applyScope("all", null, "全部", null, true);
+    }));
+    $$(".ov-map-select").forEach((sel) => sel.addEventListener("change", async () => {
+      const old = sel.dataset.savedValue || "";
+      const msg = sel.closest(".ov-mapping")?.querySelector(".ov-map-msg");
+      sel.disabled = true; if (msg) msg.textContent = "正在保存映射…";
+      try {
+        await jpost(sel.dataset.updateUrl || "/grading/mapping", { mapping_id: sel.dataset.mappingId, band: sel.value });
+        sel.dataset.savedValue = sel.value;
+        if (msg) msg.textContent = "评价与检索排序已更新，无需重建索引；客观标签保持不变。";
+        if (browseLoaded) loadPapers();
+        setTimeout(() => loadDashboard("silent"), 300);
+      } catch (e) {
+        if (old) sel.value = old;
+        if (msg) msg.textContent = "保存失败：" + (e.message || e);
+      } finally { sel.disabled = false; }
+    }));
+    $$(".ov-map-reset").forEach((b) => b.addEventListener("click", async () => {
+      const msg = b.closest(".ov-mapping")?.querySelector(".ov-map-msg");
+      b.disabled = true; if (msg) msg.textContent = "正在恢复默认…";
+      try {
+        await jpost("/grading/mapping", { mapping_id: b.dataset.mappingId, band: null });
+        if (browseLoaded) loadPapers();
+        await loadDashboard("silent");
+        flashToast("已恢复这一项的默认评价；无需重建索引。");
+      } catch (e) {
+        if (msg) msg.textContent = "恢复失败：" + (e.message || e);
+        b.disabled = false;
+      }
+    }));
+    const resetAll = $("#ov-map-reset-all");
+    if (resetAll) resetAll.addEventListener("click", async () => {
+      const ok = await uiConfirm("将恢复当前学科的全部出厂评价规则。单篇手动改档、客观标签和索引都不会改变。", {
+        title: "恢复全部默认评价", okText: "恢复全部默认", danger: true,
+      });
+      if (!ok) return;
+      resetAll.disabled = true;
+      try {
+        await jpost("/grading/mapping/reset", {});
+        if (browseLoaded) loadPapers();
+        await loadDashboard("silent");
+        flashToast("当前学科已恢复全部默认评价；无需重建索引。");
+      } catch (e) {
+        resetAll.disabled = false;
+        const msg = resetAll.closest(".ov-mapping")?.querySelector(".ov-map-msg");
+        if (msg) msg.textContent = "恢复失败：" + (e.message || e);
+      }
+    });
     const exp = $("#rc-expand"); if (exp) exp.addEventListener("click", _goBrowseRecent);
     // R10：库总览「最近入库」的深索按钮自己 try/finally 恢复文字并用浮层反馈（不写进隐藏的浏览页 #bl-msg）
     $$(".rc-deep").forEach((b) => b.addEventListener("click", async () => {
@@ -1631,7 +1850,7 @@
   // ══════════════════════════════════════════
   // scope 统一左树选择态（type: all|zotero|topic|kbcat），取代旧的 collection/topic 两两互清。
   const BR = { scope: { type: "all", id: null, name: "全部" },
-               deepFilter: "", sort: "recommend", papers: [], selected: new Set(),
+               query: "", deepFilter: "", sourceType: "", objectiveLabel: "", sort: "ingested", papers: [], selected: new Set(),
                cats: [], reqSeq: 0, topicIv: null, total: 0 };   // cats：缓存 /kb/categories；reqSeq：B5 守卫；topicIv：R12 主题轮询句柄；total：W1 分页总数
 
   // 左侧收藏夹树（递归渲染，默认折叠，只展开有子节点的第一层由用户点开）
@@ -1687,7 +1906,10 @@
     $$("#bt-topics .bt-topic").forEach((c) => c.classList.remove("active"));
     $$("#bt-kbcats .kbcat").forEach((c) => c.classList.remove("active"));
     if (rowEl && type !== "all") rowEl.classList.add("active");
-    loadPapers();
+    if (LIBRARY_MODE === "semantic") {
+      if ($("#q").value.trim()) doSearch();
+      else $("#s-msg").textContent = `当前范围：${BR.scope.name}。输入研究问题开始检索。`;
+    } else loadPapers();
   }
   // 薄封装（保留原签名，兼容既有调用点）：收藏夹 / AI 主题 / 知识库分类
   function selectCollection(path, name, rowEl, keepFilter) {
@@ -1717,8 +1939,7 @@
         const chip = document.createElement("span");
         chip.className = "bt-topic";
         chip.title = t.name;
-        chip.innerHTML = `<span class="tp-nm">${esc(t.name)}</span><span class="tp-cnt" title="已深索/总篇数">${num(t.deep || 0)}/${num(t.size)}</span><button class="tp-gen" title="生成/查看本主题的综述页">🧩</button>`;
-        chip.querySelector(".tp-gen").addEventListener("click", (e) => { e.stopPropagation(); genTopic(t.id, t.name, e.currentTarget); });
+        chip.innerHTML = `<span class="tp-nm">${esc(t.name)}</span><span class="tp-cnt" title="已深索/总篇数">${num(t.deep || 0)}/${num(t.size)}</span>`;
         chip.addEventListener("click", () => {
           // 再点已选中的主题 → 取消，回到全库
           if (BR.scope.type === "topic" && BR.scope.id === t.id) { selectCollection(null, "全部", null); return; }
@@ -1759,7 +1980,7 @@
       if (APP.importOnlyPdf && !$("#bt-onlypdf-note")) {
         const note = document.createElement("div");
         note.id = "bt-onlypdf-note"; note.className = "bt-hint";
-        note.textContent = "已设为「只导入有 PDF」：下面分类的篇数是 Zotero 原始数量，没有 PDF 的条目未进库。";
+        note.textContent = "已设为「只导入有全文附件」：下面分类的篇数是 Zotero 原始数量，没有受支持全文附件的条目未进库。";
         box.parentNode.insertBefore(note, box);
       }
       browseLoaded = true;   // 仅收藏夹加载成功才置位；失败保持 false，切回自动重试
@@ -1769,7 +1990,7 @@
     loadPapers(); // 默认加载全库推荐
   }
 
-  // 🔄 浏览页整体刷新（供 .bl-tools 的刷新按钮用）：重取左树/总数/主题/知识库分类 + 按当前范围重拉列表。
+  // 🔄 文献页整体刷新：重取左树/总数/主题/知识库分类 + 按当前范围重拉列表。
   //   覆盖「纯新增入库 / 外部 agent 建库」这类后台轮询扳机（深索/SAC 计数）照不到、原本要切页或重开才刷的场景。
   //   刻意不置 browseLoaded=false（不整页重建，保留当前范围/选择），只重取会 stale 的那几块。
   async function refreshBrowse() {
@@ -1897,7 +2118,7 @@
       const r = await jpost(`/kb/categories/${encodeURIComponent(cid)}/members`, { keys });
       const bits = [`已加入 ${num((r.added || []).length)} 篇`];
       if (r.queued) bits.push(`其中 ${num(r.queued)} 篇有全文，已排队深索`);
-      if ((r.no_pdf || []).length) bits.push(`${num(r.no_pdf.length)} 篇无 PDF，仅题录、不可深读`);
+      if ((r.no_pdf || []).length) bits.push(`${num(r.no_pdf.length)} 篇无全文附件，仅题录、不可深读`);
       if ((r.already_deep || []).length) bits.push(`${num(r.already_deep.length)} 篇已深索`);
       if ((r.already || []).length) bits.push(`${num(r.already.length)} 篇此前已在分类`);
       toast(bits.join("；") + "。");
@@ -1913,20 +2134,24 @@
       try { const r = await jpost("/kb/categories", { name }); if (r.ok) loadKbCats(); }
       catch (e) { toast("新建分类失败：" + e.message); }
     });
-    // 收起/展开两区（状态存 localStorage）
+    // 手动分类默认展开；AI 分类与 Zotero 分类默认收起。用户调整后记住选择。
     const applyCollapse = () => {
       const st = safeParse(localStorage.getItem("localkb.btCollapse"), {});
+      const defaults = { kbc: false, topics: true, zot: true };
       // 各分区约定：#bt-{sec}-body（topics / kbc / zot）——按 caret 的 data-sec 统一收放
       $$(".bt-caret2").forEach((c) => {
         const body = $("#bt-" + c.dataset.sec + "-body");
-        if (body) body.hidden = !!st[c.dataset.sec];
-        c.textContent = st[c.dataset.sec] ? "▸" : "▾";
+        const collapsed = st[c.dataset.sec] == null ? !!defaults[c.dataset.sec] : !!st[c.dataset.sec];
+        if (body) body.hidden = collapsed;
+        c.textContent = collapsed ? "▸" : "▾";
       });
     };
     $$(".bt-caret2").forEach((c) => c.addEventListener("click", (e) => {
       e.stopPropagation();
       const st = safeParse(localStorage.getItem("localkb.btCollapse"), {});
-      st[c.dataset.sec] = !st[c.dataset.sec];
+      const defaults = { kbc: false, topics: true, zot: true };
+      const collapsed = st[c.dataset.sec] == null ? !!defaults[c.dataset.sec] : !!st[c.dataset.sec];
+      st[c.dataset.sec] = !collapsed;
       localStorage.setItem("localkb.btCollapse", JSON.stringify(st));
       applyCollapse();
     }));
@@ -2051,52 +2276,63 @@
     if (inCode) html += `<pre class="wk-code">${esc(code)}</pre>`;
     return html;
   }
+  function setWikiEditMode(editing) {
+    const editor = $("#wiki-editor");
+    if (editor) editor.hidden = !editing;
+    ["#wiki-body", "#wiki-sources", "#wiki-links", ".wiki-vtool"].forEach((sel) => {
+      const el = $(sel); if (el) el.hidden = !!editing;
+    });
+    const toc = $("#wiki-toc");
+    if (editing && toc) toc.hidden = true;
+    else if (!editing) renderWikiToc();
+    const edit = $("#wiki-edit");
+    const hist = $("#wiki-hist");
+    if (edit) edit.hidden = !!editing || edit.dataset.disabled === "1";
+    if (hist) hist.hidden = !!editing;
+  }
+
   function renderWiki(p) {
+    setWikiEditMode(false);
     $("#wiki-title").textContent = p.title || "综述页";
     const stale = p.stale ? " · ⚠ 可能已过时" : "";
     // 降级页不显示「模型 fallback(no-key)」这种黑话——它对读者毫无意义，还让人以为是正常综述
+    const themeMeta = p.theme ? ` · ${p.theme_source === "manual" ? "◆" : "◇"} ${p.theme}` : "";
     $("#wiki-meta").textContent = p.degraded
-      ? `基于 ${(p.sources || []).length} 篇 · 生成于 ${(p.generated_at || "").slice(0, 10)}${stale}`
-      : `本地综述 · 基于 ${(p.sources || []).length} 篇 · 生成于 ${(p.generated_at || "").slice(0, 10)} · 模型 ${p.generated_by || "未知"}${stale}`;
-    // unverified-flag-missing-in-modal：模态里也显示 🤖 未核验 / 📝 我保存的；降级页优先警示
-    // W3：agent 写回的页可人工核验——未核验给「标为已核验」按钮，核验后徽章转 ✅（frontmatter 落 verified_at）
+      ? `基于 ${(p.sources || []).length} 篇 · 生成于 ${(p.generated_at || "").slice(0, 10)}${themeMeta}${stale}`
+      : `本地综述 · 基于 ${(p.sources || []).length} 篇 · 生成于 ${(p.generated_at || "").slice(0, 10)}${themeMeta} · 模型 ${p.generated_by || "未知"}${stale}`;
+    // 人工核验支持双向切换；人工正文编辑保存后也会落 verified_at。
     const flag = $("#wiki-flag");
     if (flag) {
       flag.innerHTML = p.degraded
         ? `<span class="wk-flag degraded" title="${esc(p.degraded_reason || "")}">⚠ 证据清单（非 AI 综述）</span>`
-        : p.by_agent
-        ? (p.verified_at
-            ? `<span class="wk-flag ok" title="已于 ${esc(p.verified_at)} 人工核验">✅ 已核验</span>`
-            : `<span class="wk-flag agent" title="agent 写回、未经人工核验，请核对来源原文">🤖 未核验</span>` +
-              `<button id="wiki-verify" class="ghost2b wiki-verify" title="确认内容与来源无误后，把这一页标为已人工核验">✓ 标为已核验</button>`)
-        : `<span class="wk-flag" title="你保存/生成的综述页">📝 我保存的</span>`;
-      const vb = $("#wiki-verify");
-      if (vb) vb.addEventListener("click", async () => {
-        vb.disabled = true; vb.textContent = "标记中…";
+        : p.verified_at
+        ? `<span class="wk-flag ok" title="已于 ${esc(p.verified_at)} 人工核验"><span class="status-dot" aria-hidden="true"></span>已核验</span>` +
+          `<button id="wiki-verify" class="ghost2b wiki-verify" data-verified="1" title="撤销这一页的人工核验状态">改回未核验</button>`
+        : `<span class="wk-flag${p.by_agent ? " agent" : ""}" title="${p.by_agent ? "agent 写回、未经人工核验，请核对来源原文" : "尚未人工核验"}"><span class="status-dot" aria-hidden="true"></span>未核验</span>` +
+          `<button id="wiki-verify" class="ghost2b wiki-verify" data-verified="0" title="确认内容与来源无误后，把这一页标为已人工核验">标为已核验</button>`;
+      const verifyBtn = $("#wiki-verify");
+      if (verifyBtn) verifyBtn.addEventListener("click", async () => {
+        const nextVerified = verifyBtn.dataset.verified !== "1";
+        verifyBtn.disabled = true;
+        verifyBtn.textContent = nextVerified ? "标记中…" : "撤销中…";
         try {
-          const r = await jpost("/wiki/verify", { page_id: p.id });
-          const at = (r && r.verified_at) || "";
-          flag.innerHTML = `<span class="wk-flag ok" title="已于 ${esc(at)} 人工核验">✅ 已核验</span>`;
-          // 同步列表内存态，让「只看未核验」过滤即刻正确，不用重拉
-          (WK.pages || []).forEach((pg) => { if (pg.id === p.id) pg.verified_at = at; });
+          const r = await jpost("/wiki/verify", { page_id: p.id, verified: nextVerified });
+          (WK.pages || []).forEach((pg) => {
+            if (pg.id === p.id) pg.verified_at = (r && r.verified_at) || "";
+          });
           if (wikiLoaded) renderWikiList();
+          renderWiki(await jget("/wiki/page/" + encodeURIComponent(p.id)));
         } catch (e) {
-          vb.disabled = false; vb.textContent = "✓ 标为已核验";
-          flashToast("标记核验失败：" + (e.message || e));
+          verifyBtn.disabled = false;
+          verifyBtn.textContent = nextVerified ? "标为已核验" : "改回未核验";
+          flashToast((nextVerified ? "标记" : "撤销") + "核验失败：" + (e.message || e));
         }
       });
     }
-    // C3：研究助手产出的资料汇编(digest)/大纲(outline) 可一键导出 Word（有 python-docx 出 .docx，否则降级 .md），
-    // 产出可直接拿去写作。用 <a download> 直接触发下载（GET /research/export_docx/{id}）。此前该出口无任何入口=死机制。
-    if (flag && !p.degraded && (p.kind === "digest" || p.kind === "outline")) {
-      flag.innerHTML += `<a class="wk-flag" style="text-decoration:none;cursor:pointer" ` +
-        `href="/research/export_docx/${encodeURIComponent(p.id)}" download ` +
-        `title="导出为 Word 文档（含参考文献，可直接拿去写作）">⬇ 导出 Word</a>`;
-    }
-    // 降级页在正文顶部挂一条醒目横幅，说明它为什么不是综述、怎么补救
+    // 降级页在正文顶部挂一条醒目横幅，说明它为什么不是综述、怎么交给 Agent 补救
     const banner = p.degraded
       ? `<div class="wk-degraded-banner">⚠ <b>这不是 AI 综述。</b>${esc(p.degraded_reason || "")}。` +
-        `<br>配置 AI 模型后，点下方「↻ 重新生成」即可得到真正的综述。本页也不参与检索。</div>`
+        `<br>请让 Agent 读取原始文献后重写这一页；本页在修复前不参与检索。</div>`
       : "";
     // 旧版存量降级页的斜体尾注里仍写着「模型 fallback(no-key)」这类黑话（新页已不再这样写）。
     // 顶部横幅已把话说清楚，这里只在显示层隐去那一行，不改盘上的 .md。
@@ -2104,15 +2340,27 @@
       ? p.markdown.replace(/^\*（[^\n]*(?:fallback\(|no-key|no-hits)[^\n]*）\*\s*$/gm, "")
       : p.markdown;
     $("#wiki-body").innerHTML = banner + mdToHtml(mdSrc);   // 极简 md 渲染（已转义防 XSS）
-    // 参考来源：一页综述的全部可信度，都建立在「能一跳回到原文核对」上。
+    renderWikiToc();
+    // 参考来源：按 source key 由后端带回统一评价；前端不再从 citation 猜目录或类型。
     // 所以主操作是「📄 打开原文」（直接开 PDF），不是跳去「找相似」。
+    const compositionText = (() => {
+      const c = p.source_composition;
+      if (typeof c === "string") return c;
+      const rows = rowsOf(c, "objective_label");
+      if (rows.length) return rows.map((x) => `${x.objective_label || x.label || x.name || "来源"} ${num(x.n != null ? x.n : x.count || 0)}`).join(" · ");
+      const counts = {};
+      (p.sources || []).forEach((s) => { const k = objectiveLabel(s); counts[k] = (counts[k] || 0) + 1; });
+      return Object.keys(counts).map((k) => `${k} ${num(counts[k])}`).join(" · ");
+    })();
     $("#wiki-sources").innerHTML = (p.sources || []).length
-      ? `<div class="ws-h">参考来源（打开原文核对，或按引文检索溯源）</div>` +
+      ? `<div class="ws-h"><span>参考来源</span>${compositionText ? `<small>${esc(compositionText)}</small>` : ""}</div>` +
         p.sources.map((s, i) =>
           `<div class="ws-item" data-key="${esc(s.key || "")}" data-cite="${esc(s.citation || "")}">` +
+            `<span class="ws-grade"><span class="badge objective-badge">${esc(objectiveLabel(s))}</span>` +
+              `<span class="ws-band" title="${esc(gradingTip(s))}">${esc(bandDisplay(s))}${s.manual ? " · 手动" : ""}</span></span>` +
             `<span class="ws-txt">[${i + 1}] ${esc(s.citation || s.key)}</span>` +
             `<span class="ws-btns">` +
-              (s.key ? `<button class="ghost2 ws-pdf" title="用系统阅读器打开这篇 PDF 原文">📄 打开原文</button>` : "") +
+              (s.key ? `<button class="ghost2 ws-pdf" title="用系统阅读器打开这篇原文文件">📄 打开原文</button>` : "") +
               (s.key ? `<button class="ghost2 ws-sim" title="在库里找与这篇相似的文献">🔍 找相似</button>` : "") +
             `</span>` +
           `</div>`).join("")
@@ -2124,9 +2372,9 @@
         ev.stopPropagation();
         pdf.disabled = true;
         try {
-          const r = await jpost("/open_pdf", { key: k });
+          const r = await jpost("/open_source", { key: k });
           // UX10：非阻断性失败用浮层提示，不再弹浏览器灰框 alert
-          if (r && r.ok === false) flashToast(r.msg || "打开失败：这篇可能没有 PDF 原文。");
+          if (r && r.ok === false) flashToast(r.msg || "打开失败：这篇可能没有全文附件。");
         } catch (e) { flashToast("打开原文失败：" + (e.message || e)); }
         finally { pdf.disabled = false; }
       });
@@ -2139,15 +2387,30 @@
     });
     renderWikiLinks(p);
     $("#wiki-hist").dataset.id = p.id;
+    $("#wiki-discard").dataset.id = p.id;
     $("#wiki-history").hidden = true;
-    $("#wiki-regen").dataset.id = p.id;
-    // R11：对话沉淀页禁止「重新生成」（点了必报错）——隐藏该按钮并记录 kind 供二次拦截
-    const regenBtn = $("#wiki-regen");
-    if (regenBtn) { regenBtn.dataset.kind = p.kind || "answer"; regenBtn.style.display = (p.kind || "answer") === "answer" ? "none" : ""; }
     // EN-F7：换页时清空上一页残留的核验输入与结果，避免张冠李戴
     const wvI = $("#wv-claim"); if (wvI) wvI.value = "";
     const wvR = $("#wv-result"); if (wvR) { wvR.hidden = true; wvR.innerHTML = ""; }
+    const editBtn = $("#wiki-edit");
+    if (editBtn) {
+      editBtn.dataset.id = p.id;
+      editBtn.dataset.disabled = p.degraded ? "1" : "0";
+      editBtn.hidden = !!p.degraded;
+    }
     $("#wiki-modal").hidden = false;
+  }
+  function renderWikiToc() {
+    const body = $("#wiki-body"), toc = $("#wiki-toc"); if (!body || !toc) return;
+    const headings = [...body.querySelectorAll("h2, h3")];
+    if (headings.length < 2) { toc.hidden = true; toc.innerHTML = ""; return; }
+    headings.forEach((h, i) => { h.id = `wiki-section-${i}`; });
+    toc.innerHTML = `<div class="wiki-toc-h">本页目录</div>` + headings.map((h, i) =>
+      `<button class="wiki-toc-link lv-${h.tagName.toLowerCase()}" data-target="wiki-section-${i}">${esc(h.textContent || "")}</button>`).join("");
+    toc.hidden = false;
+    toc.querySelectorAll(".wiki-toc-link").forEach((b) => b.addEventListener("click", () => {
+      const h = body.querySelector("#" + b.dataset.target); if (h) h.scrollIntoView({ behavior: "smooth", block: "start" });
+    }));
   }
   // 互链（本页链出）与反向链接（哪些页链到本页）——把孤立的页面走成一张图。
   // 这是 karpathy 用 Obsidian graph view 看的东西，这里长在应用自己的界面里。
@@ -2208,6 +2471,49 @@
     }
   }
 
+  (function wireWikiEditor() {
+    const edit = $("#wiki-edit"), editText = $("#wiki-edit-text");
+    const editSave = $("#wiki-edit-save"), editCancel = $("#wiki-edit-cancel");
+    if (edit) edit.addEventListener("click", async () => {
+      const id = edit.dataset.id;
+      if (!id || !editText) return;
+      edit.disabled = true;
+      try {
+        const r = await jget("/wiki/edit/" + encodeURIComponent(id));
+        editText.value = (r && r.content) || "";
+        editText.dataset.original = editText.value;
+        setWikiEditMode(true);
+        editText.focus();
+      } catch (e) {
+        flashToast("读取可编辑正文失败：" + (e.message || e));
+      } finally { edit.disabled = false; }
+    });
+    if (editCancel) editCancel.addEventListener("click", () => {
+      if (editText) editText.value = editText.dataset.original || "";
+      setWikiEditMode(false);
+    });
+    if (editSave) editSave.addEventListener("click", async () => {
+      const id = edit && edit.dataset.id;
+      const content = (editText && editText.value || "").trim();
+      if (!id || !content) { flashToast("正文不能为空。"); return; }
+      editSave.disabled = true;
+      const old = editSave.textContent;
+      editSave.textContent = "保存中…";
+      try {
+        const r = await jpost("/wiki/edit/" + encodeURIComponent(id), { content });
+        (WK.pages || []).forEach((pg) => { if (pg.id === id) pg.verified_at = (r && r.verified_at) || ""; });
+        if (wikiLoaded) renderWikiList();
+        renderWiki(await jget("/wiki/page/" + encodeURIComponent(id)));
+        flashToast("正文已保存，并标为已核验。");
+      } catch (e) {
+        flashToast("保存正文失败：" + (e.message || e));
+      } finally {
+        editSave.disabled = false;
+        editSave.textContent = old;
+      }
+    });
+  })();
+
   async function openWikiPage(id) {
     try { renderWiki(await jget("/wiki/page/" + encodeURIComponent(id))); }
     catch (e) { flashToast("打开综合页失败：" + (e.message || e)); }   // UX10
@@ -2224,17 +2530,6 @@
       if (onDone) onDone();
     } catch (e) { flashToast("删除失败：" + (e.message || e)); }   // UX10
     finally { if (btn) { btn.disabled = false; if (old != null) btn.textContent = old; } }
-  }
-  async function genTopic(topicId, name, btn) {
-    if (!(await ensureLlmKey())) return;
-    const old = btn ? btn.textContent : null;
-    if (btn) { btn.textContent = "⏳"; btn.disabled = true; }
-    try {
-      const r = await jpost("/wiki/topic", llmBody({ topic_id: topicId }));
-      if (!r.ok) throw new Error(r.detail || "生成失败");
-      await openWikiPage(r.id);
-    } catch (e) { flashToast("生成「" + name + "」综述失败：" + (e.message || e)); }   // UX10
-    finally { if (btn) { btn.textContent = old; btn.disabled = false; } }
   }
   (function wireWikiModal() {
     const close = $("#wiki-close"); if (close) close.addEventListener("click", () => ($("#wiki-modal").hidden = true));
@@ -2262,7 +2557,7 @@
         const conf = (r.confidence != null) ? `（把握 ${Math.round(Number(r.confidence) * 100)}%）` : "";
         const evs = (r.evidence || []).map((ev) => {
           const pg = (ev.printed_page != null && ev.printed_page !== "") ? `第 ${esc(String(ev.printed_page))} 页`
-                   : ((ev.pdf_page != null && ev.pdf_page !== "") ? `PDF 第 ${esc(String(ev.pdf_page))} 页` : "");
+                   : (ev.locator ? esc(String(ev.locator)) : ((ev.pdf_page != null && ev.pdf_page !== "") ? `PDF 第 ${esc(String(ev.pdf_page))} 页` : ""));
           return `<div class="wv-ev"><div class="wv-ev-t">${esc(ev.title || ev.citation || ev.key || "")}${pg ? ` · <span class="pg">${pg}</span>` : ""}</div>` +
             (ev.quote ? `<div class="wv-ev-q">「${esc(ev.quote)}」</div>` : "") + `</div>`;
         }).join("");
@@ -2276,61 +2571,82 @@
     const wvGo = $("#wv-go"); if (wvGo) wvGo.addEventListener("click", runVerifyClaim);
     const wvIn = $("#wv-claim"); if (wvIn) wvIn.addEventListener("keydown", (e) => { if (e.key === "Enter") runVerifyClaim(); });
     const disc = $("#wiki-discard");
-    if (disc) disc.addEventListener("click", () => discardWiki($("#wiki-regen").dataset.id,
+    if (disc) disc.addEventListener("click", () => discardWiki(disc.dataset.id,
       () => {
         $("#wiki-modal").hidden = true;
         if (wikiLoaded) loadWikiList("silent");        // 从 wiki 页删的，刷新列表
         if ($("#q").value.trim()) doSearch();          // 从检索删的，刷新检索（保留原行为）
       }, disc));
-    const regen = $("#wiki-regen");
-    if (regen) regen.addEventListener("click", async () => {
-      if ((regen.dataset.kind || "") === "answer") { flashToast("「对话沉淀」页由对话生成，请回「💬 对话」重新提问后再保存。"); return; }  // R11/UX10
-      if (!(await ensureLlmKey())) return;
-      const id = regen.dataset.id; if (!id) return;
-      regen.textContent = "重新生成中…"; regen.disabled = true;
-      try {
-        const r = await jpost("/wiki/regenerate/" + encodeURIComponent(id), llmBody({}));
-        if (!r.ok) throw new Error(r.detail || "失败");
-        await openWikiPage(r.id);
-        if (wikiLoaded) loadWikiList("silent");
-      } catch (e) { flashToast("重新生成失败：" + (e.message || e)); }   // UX10
-      finally { regen.textContent = "↻ 重新生成"; regen.disabled = false; }
-    });
   })();
 
   // ══════════════════════════════════════════
-  //  wiki 页（综合页书架）：列出 /wiki/list + 新建综述 + 打开/重生/删除
+  //  wiki 页（综合页书架）：列出 /wiki/list + 主题整理 + 打开/核验/删除；写作交给 Agent
   // ══════════════════════════════════════════
-  let WK = { kind: "", agentOnly: false, pages: [] };
+  let WK = { kind: "", agentOnly: false, pages: [], themes: [], theme: "", search: "", sort: "new", reqSeq: 0 };
   async function loadWikiList(mode) {
     const box = $("#wk-list");
+    const myseq = ++WK.reqSeq;
     loadWikiSuggestions();   // EN-F2：每次进综述库都刷新建议横幅（fire-and-forget，失败静默）
     if (mode !== "silent") box.innerHTML = `<div class="wk-loading">加载综合页中…</div>`;
     try {
-      const d = await jget("/wiki/list");
+      const [d, td] = await Promise.all([jget("/wiki/list"), jget("/wiki/themes")]);
+      if (myseq !== WK.reqSeq) return;
       WK.pages = d.pages || [];
+      WK.themes = td.themes || [];
+      if (WK.theme && !WK.themes.some((x) => x.name === WK.theme)) WK.theme = "";
+      renderWikiThemes();
       renderWikiList();
       if (GV.on) drawGraph();      // 关系图开着时（删页/回滚/新建后）同步重画
       wikiLoaded = true;   // 成功才置位，失败保持 false 便于切回重试
     } catch (e) {
+      if (myseq !== WK.reqSeq) return;
       box.innerHTML = `<div class="wk-loading">加载失败：${esc(e.message)}</div>`;
     }
   }
   const WK_KIND = { answer: "📝 对话沉淀", concept: "🧩 概念综述", topic: "🗂 主题综述",
                     digest: "📚 资料汇编", outline: "🧭 选题框架",
                     entity: "👤 实体页", overview: "🧭 总论页" };
+  function renderWikiThemes() {
+    const box = $("#wk-themes"); if (!box) return;
+    const rows = [{ name: "", label: "全部综述", count: WK.pages.length, source: "all" }, ...WK.themes.map((x) => ({ ...x, label: x.name }))];
+    box.innerHTML = rows.map((t) =>
+      `<button class="wk-theme${WK.theme === t.name ? " active" : ""}" data-theme="${esc(t.name)}">` +
+        `<span class="wk-theme-ic">${t.source === "manual" ? "◆" : (t.source === "all" ? "▦" : "◇")}</span>` +
+        `<span class="wk-theme-name">${esc(t.label)}</span><span class="wk-theme-count">${num(t.count)}</span></button>`).join("");
+    box.querySelectorAll(".wk-theme").forEach((el) => el.addEventListener("click", () => {
+      WK.theme = el.dataset.theme || ""; renderWikiThemes(); renderWikiList();
+    }));
+    const selected = WK.themes.find((x) => x.name === WK.theme);
+    const actions = $("#wk-theme-actions");
+    if (actions) {
+      actions.innerHTML = selected && selected.custom
+        ? `<button class="ghost2b" data-theme-act="rename">重命名</button><button class="ghost2b danger" data-theme-act="delete">删除主题</button>` : "";
+      const rn = actions.querySelector('[data-theme-act="rename"]'); if (rn) rn.addEventListener("click", renameWikiTheme);
+      const del = actions.querySelector('[data-theme-act="delete"]'); if (del) del.addEventListener("click", deleteWikiTheme);
+    }
+  }
   function renderWikiList() {
     const box = $("#wk-list");
-    let list = WK.pages;
+    let list = [...WK.pages];
+    if (WK.theme) list = list.filter((p) => (p.theme || "未分类") === WK.theme);
     if (WK.kind) list = list.filter((p) => (p.kind || "answer") === WK.kind);
-    // W3：「只看未核验」＝agent 写回且尚未人工核验（已核验的不再算待办）
-    if (WK.agentOnly) list = list.filter((p) => p.by_agent && !p.verified_at);
+    // 「只看未核验」覆盖所有尚未人工核验的正常综述页。
+    if (WK.agentOnly) list = list.filter((p) => !p.degraded && !p.verified_at);
+    if (WK.search) {
+      const q = WK.search.toLocaleLowerCase("zh-CN");
+      list = list.filter((p) => (p.title || "").toLocaleLowerCase("zh-CN").includes(q));
+    }
+    if (WK.sort === "title") list.sort((a, b) => (a.title || "").localeCompare(b.title || "", "zh-CN"));
+    else if (WK.sort === "sources") list.sort((a, b) => Number(b.n_sources || 0) - Number(a.n_sources || 0));
+    else list.sort((a, b) => String(b.generated_at || "").localeCompare(String(a.generated_at || "")));
+    const heading = $("#wk-current-theme"); if (heading) heading.textContent = WK.theme || "全部综述";
+    const count = $("#wk-count"); if (count) count.textContent = `共 ${list.length} 页`;
     if (!WK.pages.length) {
       box.innerHTML = `<div class="wk-empty">
         <div class="wk-empty-ic">📖</div>
         <div class="wk-empty-h">还没有综述页</div>
-        <div class="wk-empty-s">在上面输入一个概念点「生成综述」，或在「💬 对话」里问答后「保存此答案」，
-          或让「🤖 Agent」调 save_synthesis 写回——综述页会在这里累积。</div></div>`;
+        <div class="wk-empty-s">请让「🤖 Agent」阅读文献并把带来源的综合写回；
+          生成后的页面会自动出现在这里，供你分类、阅读和核验。</div></div>`;
       return;
     }
     if (!list.length) { box.innerHTML = `<div class="wk-empty">当前筛选下没有综述页。</div>`; return; }
@@ -2343,55 +2659,73 @@
     const kind = WK_KIND[p.kind || "answer"] || (p.kind || "");
     const prov = p.degraded
       ? `<span class="wk-flag degraded" title="${esc(p.degraded_reason || "")}">⚠ 证据清单（非 AI 综述）</span>`
-      : p.by_agent
-      // W3：核验过的 agent 页在列表里也转 ✅，与详情弹窗口径一致
-      ? (p.verified_at
-          ? `<span class="wk-flag ok" title="已于 ${esc(p.verified_at)} 人工核验">✅ 已核验</span>`
-          : `<span class="wk-flag agent" title="agent 写回、未经人工核验">🤖 未核验</span>`)
-      : `<span class="wk-flag" title="你保存/生成的综述页">📝 我保存的</span>`;
-    const stale = p.stale ? `<span class="wk-flag stale" title="有新论文可能影响此综述，建议重生">⚠ 可能已过时</span>` : "";
-    // 整卡可点即打开；删除按钮浮在右上角，点它不触发打开。其余操作（重新生成/历史）都在详情页里。
+      : p.verified_at
+      ? `<span class="wk-flag ok" title="已于 ${esc(p.verified_at)} 人工核验"><span class="status-dot" aria-hidden="true"></span>已核验</span>`
+      : `<span class="wk-flag${p.by_agent ? " agent" : ""}" title="${p.by_agent ? "agent 写回、未经人工核验" : "尚未人工核验"}"><span class="status-dot" aria-hidden="true"></span>未核验</span>`;
+    const stale = p.stale ? `<span class="wk-flag stale" title="有新论文可能影响此综述，建议让 Agent 读取新增文献后更新">⚠ 可能已过时</span>` : "";
+    // 整卡可点即打开；整理主题与删除收进「…」，让列表优先服务阅读。
     div.className += " wk-card-click";
+    const themeOptions = [`<option value="">自动归类</option>`, ...WK.themes.map((t) =>
+      `<option value="${esc(t.name)}"${p.theme_source === "manual" && p.theme === t.name ? " selected" : ""}>${esc(t.name)}</option>`)].join("");
     div.innerHTML =
-      `<button class="wk-card-del" title="删除这条综述">🗑</button>` +
-      `<div class="wk-card-head"><span class="wk-badge k-${esc(p.kind || "answer")}">${esc(kind)}</span>` +
+      `<div class="wk-card-main"><div class="wk-card-head"><span class="wk-badge k-${esc(p.kind || "answer")}">${esc(kind)}</span>` +
         `<span class="wk-title">${esc(p.title || "(无标题)")}</span></div>` +
-      `<div class="wk-card-meta">基于 ${num(p.n_sources)} 篇 · ${esc((p.generated_at || "").slice(0, 10) || "未知日期")}` +
-        ` · 模型 ${esc(p.generated_by || "未知")} ${prov} ${stale}</div>`;
+      `<div class="wk-card-meta"><span>${p.theme_source === "manual" ? "◆" : "◇"} ${esc(p.theme || "未分类")}</span>` +
+        `<span>基于 ${num(p.n_sources)} 篇</span><span>${esc((p.generated_at || "").slice(0, 10) || "未知日期")}</span></div></div>` +
+      `<span class="wk-card-status">${prov}${stale}</span>` +
+      `<button class="wk-card-more" title="整理或删除" aria-label="整理或删除">•••</button>` +
+      `<div class="wk-card-pop" hidden><label>固定到主题<select class="wk-card-theme">${themeOptions}</select></label>` +
+        `<button class="wk-card-del">删除这条综述</button></div>`;
     div.addEventListener("click", () => openWikiPage(p.id));
     div.setAttribute("role", "button");
     div.setAttribute("tabindex", "0");
     div.addEventListener("keydown", (e) => { if (e.key === "Enter") openWikiPage(p.id); });
+    const more = div.querySelector(".wk-card-more"), pop = div.querySelector(".wk-card-pop");
+    more.addEventListener("click", (e) => { e.stopPropagation(); pop.hidden = !pop.hidden; });
+    pop.addEventListener("click", (e) => e.stopPropagation());
+    div.querySelector(".wk-card-theme").addEventListener("change", async (e) => {
+      e.stopPropagation();
+      try { await jpost("/wiki/page/" + encodeURIComponent(p.id) + "/theme", { name: e.target.value }); await loadWikiList("silent"); }
+      catch (err) { flashToast("整理主题失败：" + (err.message || err)); }
+    });
     div.querySelector(".wk-card-del").addEventListener("click", (e) => {
       e.stopPropagation();
       discardWiki(p.id, () => loadWikiList("silent"), e.currentTarget);
     });
     return div;
   }
-  async function genConcept() {
-    const c = $("#wk-concept").value.trim();
-    if (!c) { $("#wk-msg").textContent = "请先输入一个概念或主题。"; return; }
-    if (!(await ensureLlmKey())) return;
-    // BF22：进来时先存原文案、结束恢复——index.html 里按钮是「生成」，之前写死恢复成「＋ 生成综述」会越改越错
-    const btn = $("#wk-gen"); const old = btn.textContent;
-    btn.disabled = true; btn.textContent = "生成中…"; $("#wk-msg").textContent = "";
-    try {
-      const r = await jpost("/wiki/concept", llmBody({ concept: c }));
-      if (!r.ok) throw new Error(r.detail || "生成失败");
-      $("#wk-concept").value = "";
-      await openWikiPage(r.id);
-      loadWikiList("silent");
-      $("#wk-msg").textContent = r.cached ? "已命中已有综合（未重复生成）。" : "已生成新综述并加入列表。";
-    } catch (e) { $("#wk-msg").textContent = "生成失败：" + (e.message || e); }
-    finally { btn.disabled = false; btn.textContent = old; }   // BF22
+  async function createWikiTheme() {
+    const name = await askText("新建研究主题", "", "例如：少年司法"); if (!name) return;
+    try { await jpost("/wiki/themes", { name }); WK.theme = name; await loadWikiList("silent"); }
+    catch (e) { flashToast("新建主题失败：" + (e.message || e)); }
+  }
+  async function renameWikiTheme() {
+    if (!WK.theme) return;
+    const name = await askText("重命名主题", WK.theme, "主题名称"); if (!name || name === WK.theme) return;
+    try { await jpost("/wiki/themes/rename", { old_name: WK.theme, new_name: name }); WK.theme = name; await loadWikiList("silent"); }
+    catch (e) { flashToast("重命名失败：" + (e.message || e)); }
+  }
+  async function deleteWikiTheme() {
+    if (!WK.theme) return;
+    if (!(await uiConfirm("主题里的综述不会被删除，它们会恢复自动归类。", { title: `删除“${WK.theme}”主题？`, okText: "删除主题", danger: true }))) return;
+    try { await jsend("/wiki/themes/" + encodeURIComponent(WK.theme), "DELETE"); WK.theme = ""; await loadWikiList("silent"); }
+    catch (e) { flashToast("删除主题失败：" + (e.message || e)); }
   }
   // ── EN-F2：建议横幅——新深索的文献可能影响已有综述页（Ingest 环：喂了新料，提醒回头更新综述）──
-  const WSUG = { items: [], open: false };   // open：列表是否展开（跨刷新保持用户的展开选择）
+  const WSUG = { items: [], open: false, reqSeq: 0 };   // open：列表是否展开（跨刷新保持用户的展开选择）
   async function loadWikiSuggestions() {
     const box = $("#wk-suggest"); if (!box) return;
+    const myseq = ++WSUG.reqSeq;
     // 建议是增强功能：拉不到（旧后端/接口未就绪）就当没有，绝不打断综述库主流程
-    try { const d = await jget("/wiki/suggestions"); WSUG.items = d.items || []; }
-    catch (e) { WSUG.items = []; }
+    try {
+      const d = await jget("/wiki/suggestions");
+      if (myseq !== WSUG.reqSeq) return;
+      WSUG.items = d.items || [];
+    }
+    catch (e) {
+      if (myseq !== WSUG.reqSeq) return;
+      WSUG.items = [];
+    }
     renderWikiSuggestions();
   }
   function renderWikiSuggestions() {
@@ -2478,11 +2812,13 @@
     }
   }
 
-  // ── 体检（lint）：孤儿页 / 过时页 / 断链 / 无来源页 / 降级页 / 缺失概念页 ──
+  // ── 体检（lint）：孤儿 / 过时 / 断链 / 来源 / 降级 / 缺失概念 / 重复外壳 ──
   const LINT_LABEL = { orphan: "孤儿页（没有任何互链）", stale: "已标记过时", broken_link: "断链",
                        body_broken_link: "正文链接指向不存在的页",   // EN-F4：正文 [[wikilink]] 的断链
                        no_sources: "没有来源论文", degraded: "降级页（未配 AI 模型时生成）",
-                       missing_concept: "被反复提及、却没有独立页的概念" };
+                       missing_concept: "被反复提及、却没有独立页的概念",
+                       invalid_source: "来源指向不存在的文献",
+                       duplicate_scaffold: "重复标题或研究问题" };
   // 体检建议的大白话版（给法学用户看；后端 suggestions 带工具名是给 agent 的，这里不用）
   const LINT_FIX = {
     orphan: (n) => `有 ${n} 页没跟其它综述连起来（成了"孤岛"）。可以让 AI 把它们和相关的页互相关联，以后顺着就能查到；或者确认它们本来就该单独放。`,
@@ -2491,8 +2827,10 @@
     // EN-F4：正文里 [[双方括号链接]] 的断链，与上面的元数据关联断链分开说
     body_broken_link: (n) => `有 ${n} 处正文链接指向不存在的页（点了会扑空）。让 AI 把这些链接改成正确的页，或补写目标页。`,
     no_sources: (n) => `有 ${n} 页没标是根据哪些文献写的。没有出处的综述不可靠——让 AI 补上来源，或者干脆删掉。`,
-    degraded: (n) => `有 ${n} 页是没配 AI 模型时生成的，其实只是原文片段的清单、不是真正的综述。配好 AI 模型后重新生成一下。`,
+    degraded: (n) => `有 ${n} 页是没配 AI 模型时生成的，其实只是原文片段的清单、不是真正的综述。请让 Agent 读取原始文献后重写。`,
     missing_concept: (n, items) => `有些概念被好几页反复提到、却没有自己的独立页（比如${(items || []).slice(0, 3).map((x) => "「" + x.concept + "」").join("、")}）。可以让 AI 各写一页，查起来更方便。`,
+    invalid_source: (n) => `有 ${n} 个来源编号在当前文献库里不存在，通常是复制时错了一位。让 AI 按候选编号回查原文后修正，不能凭猜测替换。`,
+    duplicate_scaffold: (n) => `有 ${n} 页把标题或研究问题重复写了两遍。让 AI 保留一份正文外壳后重写即可。`,
   };
   async function runLint() {
     const box = $("#wk-lint-panel"), btn = $("#wk-lint");
@@ -2505,10 +2843,10 @@
       const r = await jget("/wiki/lint");
       // 大白话：为什么要维护、维护了有什么用（法学用户看得懂）
       const why = `<div class="lint-why">📖 <b>综述库为什么要"维护"？</b>你和 AI 生成的每页综述，会随着你不断加新文献而<b>慢慢过时、或彼此脱节</b>。
-        定期体检能揪出：没跟其它页连起来的<b>孤立页</b>、被新文献推翻的<b>过时页</b>、指向已删页的<b>断链</b>、没有来源出处的<b>可疑页</b>。
+        定期体检能揪出：没跟其它页连起来的<b>孤立页</b>、被新文献推翻的<b>过时页</b>、指向已删页的<b>断链</b>、没有或写错来源的<b>可疑页</b>，以及重复的标题/研究问题。
         把这些理顺，你的知识库才会<b>越用越准、越查越省事</b>，而不是越堆越乱。这些整理活儿都可以交给 AI 代劳。</div>`;
       if (r.healthy) {
-        box.innerHTML = why + `<div class="lint-ok">✅ 综述库很健康：${r.n_pages} 页，没有孤立页、过时页、断链，来源齐全，暂时不用维护。</div>`;
+        box.innerHTML = why + `<div class="lint-ok">✅ 综述库很健康：${r.n_pages} 页，没有孤立页、过时页、断链，来源齐全有效，标题也没有重复，暂时不用维护。</div>`;
         return;
       }
       let html = why + `<div class="lint-h">🩺 体检结果：共 ${r.n_pages} 页，发现 <b>${r.n_issues}</b> 处可以理顺的地方</div>`;
@@ -2519,6 +2857,7 @@
           // EN-F4：body_broken_link 结构同 broken_link（page_id/title/dangling），chip 点开出问题的那页
           if (k === "broken_link" || k === "body_broken_link") return `<span class="lint-chip" data-id="${esc(x.page_id)}">${esc(x.title || x.page_id)} → ${esc(x.dangling)}</span>`;
           if (k === "missing_concept") return `<span class="lint-chip plain">${esc(x.concept)}（被 ${x.mentioned_in} 页提及）</span>`;
+          if (k === "invalid_source") return `<span class="lint-chip" data-id="${esc(x.id)}">${esc(x.title || x.id)} → ${esc(x.key)}${(x.suggestions || []).length ? `（可能是 ${esc(x.suggestions.join("、"))}）` : ""}</span>`;
           return `<span class="lint-chip" data-id="${esc(x.id)}">${esc(x.title || x.id)}</span>`;
         }).join("");
         if (items.length > 10) html += `<span class="lint-chip plain">…… 还有 ${items.length - 10} 个</span>`;
@@ -2549,7 +2888,7 @@
     GV.on = !GV.on;
     $("#wk-list").hidden = GV.on;
     $("#wk-graph").hidden = !GV.on;
-    $("#wk-view").textContent = GV.on ? "📋 列表" : "🕸 关系图";
+    $("#wk-view").textContent = GV.on ? "返回列表" : "关系图";
     if (GV.on) await drawGraph();
     else if (GV.raf) { cancelAnimationFrame(GV.raf); GV.raf = 0; }
   }
@@ -2644,23 +2983,18 @@
   }
 
   (function wireWikiPage() {
-    const gen = $("#wk-gen"); if (gen) gen.addEventListener("click", genConcept);
-    const inp = $("#wk-concept"); if (inp) inp.addEventListener("keydown", (e) => { if (e.key === "Enter") genConcept(); });
     const kind = $("#wk-kind"); if (kind) kind.addEventListener("change", () => { WK.kind = kind.value; renderWikiList(); });
+    const search = $("#wk-search"); if (search) search.addEventListener("input", () => { WK.search = search.value.trim(); renderWikiList(); });
+    const sort = $("#wk-sort"); if (sort) sort.addEventListener("change", () => { WK.sort = sort.value; renderWikiList(); });
     const ag = $("#wk-agent"); if (ag) ag.addEventListener("change", () => { WK.agentOnly = ag.checked; renderWikiList(); });
-    const lint = $("#wk-lint"); if (lint) lint.addEventListener("click", runLint);
+    const nt = $("#wk-theme-new"); if (nt) nt.addEventListener("click", createWikiTheme);
+    const closeWikiMore = () => { const more = document.querySelector(".wk-more"); if (more) more.open = false; };
+    const lint = $("#wk-lint"); if (lint) lint.addEventListener("click", () => { closeWikiMore(); runLint(); });
     // EN-F3：时间线按钮 + 弹层关闭（Esc/遮罩关闭统一走 W2 的通用弹窗处理，见「W2」段）
-    const tl = $("#wk-timeline"); if (tl) tl.addEventListener("click", openTimeline);
+    const tl = $("#wk-timeline"); if (tl) tl.addEventListener("click", () => { closeWikiMore(); openTimeline(); });
     const tlc = $("#wk-tl-close"); if (tlc) tlc.addEventListener("click", () => ($("#wk-tl-modal").hidden = true));
     const view = $("#wk-view"); if (view) view.addEventListener("click", toggleGraph);
     const hist = $("#wiki-hist"); if (hist) hist.addEventListener("click", () => toggleWikiHistory(hist.dataset.id));
-    // 生成综述折叠入口（推荐用 Agent，这里只是网页端兜底）
-    const gt = $("#wk-gen-toggle"); if (gt) gt.addEventListener("click", () => {
-      const panel = $("#wk-gen-panel"); panel.hidden = !panel.hidden;
-      gt.classList.toggle("primary-btn", !panel.hidden);
-      if (!panel.hidden) { const c = $("#wk-concept"); if (c) c.focus(); }
-    });
-    const ta = $("#wk-to-agent"); if (ta) ta.addEventListener("click", () => switchTab("agent"));
   })();
 
   // ══════════════════════════════════════════
@@ -2668,7 +3002,7 @@
   // ══════════════════════════════════════════
   let AG = { cfg: null };
   const AG_TOOLS = [
-    ["“查库里关于 XX 的文献”", "search_localkb", "在你的文库里做混合检索，返回带期刊分级、页码、可回溯引用的结果"],
+        ["“查库里关于 XX 的文献”", "search_localkb", "在你的文库里做混合检索，返回带统一来源评价、页码、可回溯引用的结果"],
     ["“库里现在有多少、索引到哪了”", "localkb_status", "看索引各档进度、篇数，以及已存了多少综合页"],
     ["“把库更新一下 / 深索一下”", "localkb_build", "触发建库或深索（加了新文献后增量更新）"],
     ["“把这个综述存进库”", "save_synthesis", "把 AI 综合出的结论写回成一页带引用的 wiki，下次能被检索命中"],
@@ -2678,7 +3012,7 @@
     ["“看看有哪些综述该更新了”", "pending_wiki_updates", "拉新文献影响了哪些既有综述页，逐页判断标脏 / 重写"],
   ];
   const AG_PROMPTS = [
-    "帮我查库里关于「认罪认罚从宽对司法信任的影响」的权威文献，按期刊层级排。",
+    "帮我查库里关于「认罪认罚从宽对司法信任的影响」的文献，按来源评价排。",
     "先看看库里有没有现成的综述；没有的话检索后综合一版，再帮我存起来。",
     "把库里关于「社会观护」的核心论点综述一下，每个论断带页码引用。",
     "库里最近加的文献深索了吗？没有的话帮我全部深索一遍。",
@@ -2693,7 +3027,7 @@
   function renderAgentTools() {
     $("#ag-tools").innerHTML = AG_TOOLS.map(
       ([say, tool, desc]) => `<tr><td>${esc(say)}</td><td>${esc(desc)}</td></tr>`).join("");
-    // 工具数用后端真实值（当前 32 个），别用下面这张示例表的行数（只列了几个代表性的）
+    // 工具数用后端真实值，别用下面这张示例表的行数（只列了几个代表性的）
     const n = (AG.cfg && AG.cfg.tool_count) || AG_TOOLS.length;
     const tc = $("#ag-tool-count"); if (tc) tc.textContent = `（${n} 个工具）`;
   }
@@ -2703,13 +3037,13 @@
   async function loadAgentDeep() {
     try {
       const st = await jget("/index/status");
-      const withPdf = st.with_pdf || 0, deep = st.deep_done || 0, xc = extractCounts(st);
+      const withPdf = withFulltext(st), deep = st.deep_done || 0, xc = extractCounts(st);
       const pct = withPdf ? Math.round((Math.min(withPdf, deep + xc.blocked) / withPdf) * 100) : 0;
       $("#ag-deep").innerHTML = withPdf
-        ? `已深索 <b>${num(deep)}</b> / 有 PDF ${num(withPdf)} 篇（${pct}%）。` +
+        ? `已深索 <b>${num(deep)}</b> / 有全文附件 ${num(withPdf)} 篇（${pct}%）。` +
           ((deep + xc.blocked) < withPdf ? ` <a class="ag-link" id="ag-godeep">去「浏览」深索更多 →</a>`
             : (xc.blocked > 0 ? ` 可处理正文已完成 ✓（${extractCountsText(st)}）` : ` 已全部深索完成 ✓`)) + sacFrag(st)
-        : `暂无可深索文献（库里没有带 PDF 的文献，或尚未建库）。`;
+        : `暂无可深索文献（库里没有带受支持全文附件的文献，或尚未建库）。`;
       const g = $("#ag-godeep");
       if (g) g.addEventListener("click", () => switchTab("browse"));
     } catch (e) { $("#ag-deep").textContent = "读取深索进度失败：" + e.message; }
@@ -2724,13 +3058,17 @@
     // 本地模型是否安装是用户可自行选择的运行方式，不作为应用更新后的待处理提醒。
     const system = [["索引", AG.upgrade.index], ["运行环境", AG.upgrade.runtime]];
     const warnings = system.filter(([, x]) => x && ["stale", "missing", "unknown"].includes(x.state));
+    const lightIndexOnly = !pendingItems.length && warnings.length === 1 && warnings[0][0] === "索引"
+      && Array.isArray((warnings[0][1] || {}).changed) && warnings[0][1].changed.join(",") === "light";
     box.hidden = AG.upgradeDismissed || (!pendingItems.length && !warnings.length);
     if (box.hidden) return;
     const n = pendingItems.length;
-    $("#ag-upgrade-title").textContent = n ? `${n} 项用户内容有新版待合并` : "应用更新后有项目需要留意";
+    $("#ag-upgrade-title").textContent = n ? `${n} 项用户内容有新版待合并`
+      : (lightIndexOnly ? "题录分类规则需要更新" : "应用更新后有项目需要留意");
     $("#ag-upgrade-sub").textContent = n
       ? "你的版本没有被覆盖。先看差异，推荐复制给 Agent 合并；也可带备份直接采用新版。"
-      : "应用已更新，但下面的配套内容仍需人工处理。";
+      : (lightIndexOnly ? (warnings[0][1].detail || "手动更新一次知识库即可，无需清空或重新深索。")
+        : "应用已更新，但下面的配套内容仍需人工处理。");
     list.innerHTML = pendingItems.map((x) =>
       `<div class="ag-upgrade-item" data-upgrade-i="${x._upgradeIndex}">` +
       `<div class="agu-name">${esc(x.label)}${x.status === "customized" ? "（新版旁本写入失败）" : ""}</div>` +
@@ -2739,12 +3077,15 @@
       `<button data-uact="ack">本版不再提醒</button><button class="agu-use" data-uact="replace">备份后采用新版</button>` +
       `</div><div class="agu-path">你的文件：${esc(x.main_path)}${x.new_path ? `<br>新版旁本：${esc(x.new_path)}` : ""}</div></div>`
     ).join("");
-    health.innerHTML = system.map(([name, x]) => {
-      if (!x) return "";
-      const warn = ["stale", "missing", "unknown"].includes(x.state);
+    // 正常状态不占警告卡；这里只显示确实需要处理的项目。
+    health.innerHTML = warnings.map(([name, x]) => {
       const tip = x.action ? `；建议：${x.action}` : "";
-      return `<span class="agu-health${warn ? " warn" : ""}" title="${esc((x.label || "") + tip)}">${esc(name)}：${esc(x.label || "未知")}</span>`;
+      const action = name === "索引" && x.action === "手动更新知识库" && !x.full_rebuild
+        ? `<button class="agu-health-action" data-uhealth="index">手动更新知识库</button>` : "";
+      return `<div class="agu-health-line"><span class="agu-health warn" title="${esc((x.label || "") + tip)}">${esc(name)}：${esc(x.label || "未知")}</span>${action}</div>`;
     }).join("");
+    const refreshIndex = health.querySelector('[data-uhealth="index"]');
+    if (refreshIndex) refreshIndex.addEventListener("click", doManualUpdate);
   }
   async function refreshUpgradeHealth() {
     AG.upgradeDismissed = false;
@@ -2989,12 +3330,6 @@
     document.addEventListener("keydown", (e) => { if (e.key === "Escape" && guide && !guide.hidden) showGuide(false); });
   })();
 
-  // 只保留友好的「建议深读」标签，隐藏 ⭐15.7 这种裸数字（假精度；口径与设置「学科」无关，见 F17）
-  function scoreBadge(p) {
-    const s = p.score;
-    if (s == null || s < 12) return "";
-    return `<span class="brec" title="按期刊层级/年份/有无全文综合推荐，值得优先深读">建议深读</span>`;
-  }
   // 已深索的卡：有效→🧬；异常→🟠；缺失→⚪。异常与缺失都由用户点后才生成。
   function sacBadge(p) {
     if (!p.deep) return "";
@@ -3003,18 +3338,18 @@
     }
     return p.has_summary
       ? `<span class="tag sac has" role="button" tabindex="0" title="点开查看这篇的 AI 检索摘要">🧬 摘要有效</span>`
-      : `<span class="tag sac none" role="button" tabindex="0" title="点此为这篇生成 AI 检索摘要（知识库建设第②步；让检索更容易命中，需 API key，会重嵌入这一篇，可后台跑）">⚪ 摘要缺失</span>`;
+      : `<span class="tag sac none" role="button" tabindex="0" title="点此用设置里的自动生成来源补检索摘要；会重嵌入这一篇，可后台跑">⚪ 摘要缺失</span>`;
   }
   function deepBadge(p) {
     const failure = extractFailureBadge(p);
     if (extractBlocked(p)) return failure;
-    if (p.deep) return `<span class="tag full">📄 已深索</span>` + failure + sacBadge(p);
+    if (p.deep) return `<span class="tag full">📄 ${esc(fulltextLabel(p))} · 已深索</span>` + failure + sacBadge(p);
     // F11：有 PDF 的未深索徽标可点击深索（hover 变「深索该篇」）
-    if (p.has_pdf) {
+    if (hasFulltext(p)) {
       const pending = extractState(p) === "ocr_pending";
-      return `<span class="tag abstract deep-one" data-key="${esc(p.key)}" role="button" tabindex="0" title="${pending ? "点此继续深索并自动运行本地 OCR；不会上传或改写原 PDF" : "点此深索该篇（后台排队，不影响你继续操作）"}"><span class="lbl-idle">${pending ? "🔎 待本地OCR" : "📋 未深索"}</span><span class="lbl-hover">⚡ ${pending ? "开始OCR" : "深索该篇"}</span></span>`;
+      return `<span class="tag abstract deep-one" data-key="${esc(p.key)}" role="button" tabindex="0" title="${pending ? "点此继续深索并自动运行本地 OCR；不会上传或改写原 PDF" : "点此深索该篇（后台排队，不影响你继续操作）"}"><span class="lbl-idle">${pending ? "🔎 待本地OCR" : `📋 ${esc(fulltextLabel(p))} · 未深索`}</span><span class="lbl-hover">⚡ ${pending ? "开始OCR" : "深索该篇"}</span></span>`;
     }
-    return `<span class="tag nopdf" title="无 PDF，只有题录（题名·作者·年份·期刊）">🚫 无全文 / 仅题录</span>`;  // T5：与「未深索」区分
+    return `<span class="tag nopdf" title="无受支持全文附件，只有题录（题名·作者·年份·期刊）">🚫 无全文 / 仅题录</span>`;  // T5：与「未深索」区分
   }
   // 文件夹模式：AI 抽的题录待人工核对
   function reviewBadge(p) {
@@ -3029,9 +3364,9 @@
     div.innerHTML =
       `<label class="bcard-cb"><input type="checkbox" ${checked} data-key="${esc(p.key)}"/></label>` +
       `<div class="bcard-body">` +
-        `<div class="bcard-head">${scoreBadge(p)}${tierBadge(p)}${statuteBadge(p)}${deepBadge(p)}${reviewBadge(p)}` +   // EN-F5：浏览卡带法条时效徽标
+        `<div class="bcard-head">${tierBadge(p)}${statuteBadge(p)}${deepBadge(p)}${reviewBadge(p)}` +   // EN-F5：浏览卡带法条时效徽标
           // UX4：直接开原文 PDF（复用检索卡的 /open_pdf 通道）；无 PDF 禁用。标题点击仍保持「找相似」不动
-          `<button class="bcard-open" title="${p.has_pdf ? "用系统阅读器打开这篇的 PDF 原文" : "无 PDF，无法打开原文"}"${p.has_pdf ? "" : " disabled"}>📄 打开</button>` +
+          `<button class="bcard-open" title="${hasFulltext(p) ? `用系统阅读器打开这篇的 ${fulltextLabel(p)} 原文` : "无全文附件，无法打开原文"}"${hasFulltext(p) ? "" : " disabled"}>📄 打开</button>` +
           `<button class="bcard-addcat" title="加入「手动分类」">＋分类</button></div>` +   // D1：可见入口
         `<div class="bcard-title" title="点标题：查找相似文献">${esc(p.title || "(无标题)")}</div>` +
         metaRow(p) +
@@ -3064,7 +3399,7 @@
     div.querySelector(".bcard-title").addEventListener("click", () => findSimilar(p.key, p.title || ""));
     // UX4：「📄 打开」——系统阅读器打开原文（stopPropagation 防触发标题/右键行为）
     const ob = div.querySelector(".bcard-open");
-    if (ob && p.has_pdf) ob.addEventListener("click", (e) => { e.stopPropagation(); openPdfByKey(p.key, ob); });
+    if (ob && hasFulltext(p)) ob.addEventListener("click", (e) => { e.stopPropagation(); openPdfByKey(p.key, ob); });
     // D1：卡片上的「＋分类」按钮——右击的多选集优先，否则只这一篇
     const ac = div.querySelector(".bcard-addcat");
     if (ac) ac.addEventListener("click", (e) => {
@@ -3094,11 +3429,10 @@
   function refreshSelUI() {
     const n = BR.selected.size;
     // 待本地 OCR 可以进入深索；只排除附件缺失、坏 PDF、OCR 已失败的终态。
-    const deepN = BR.papers.filter((p) => BR.selected.has(p.key) && p.has_pdf && !p.deep && !extractBlocked(p)).length;
+    const deepN = BR.papers.filter((p) => BR.selected.has(p.key) && hasFulltext(p) && !p.deep && !extractBlocked(p)).length;
     $("#bl-sel-n").textContent = num(deepN);
     $("#bl-deep-sel").disabled = deepN === 0;
     const _a = $("#bl-addcat"); if (_a) _a.disabled = n === 0;
-    const _c = $("#bl-cite-sel"); if (_c) _c.disabled = n === 0;
     // 全选框状态：所有卡片均可勾选，故以当前列表全部为分母
     const allSel = BR.papers.length > 0 && BR.papers.every((p) => BR.selected.has(p.key));
     const box = $("#bl-selall");
@@ -3115,19 +3449,41 @@
       opt.textContent = counts[key] == null ? base : `${base}（${num(counts[key])}）`;
     });
   }
+  function renderBrowseTypeCounts(counts) {
+    const sel = $("#bl-type-filter"); if (!sel || !counts) return;
+    Array.from(sel.options).forEach((opt) => {
+      const base = opt.dataset.label || opt.textContent.replace(/（[\d,]+）$/, "");
+      const key = opt.value || "all";
+      opt.dataset.label = base;
+      opt.textContent = counts[key] == null ? base : `${base}（${num(counts[key])}）`;
+    });
+  }
+  function renderBrowseLabelCounts(counts) {
+    const sel = $("#bl-label-filter"); if (!sel) return;
+    const current = BR.objectiveLabel || "";
+    const rows = Object.entries(counts || {}).sort((a, b) => Number(b[1] || 0) - Number(a[1] || 0) || a[0].localeCompare(b[0], "zh-CN"));
+    sel.innerHTML = `<option value="">客观标签</option>` + rows.map(([label, count]) =>
+      `<option value="${esc(label)}">${esc(label)}（${num(count)}）</option>`).join("");
+    if (current && !rows.some(([label]) => label === current)) {
+      const opt = document.createElement("option"); opt.value = current; opt.textContent = `${current}（0）`; sel.appendChild(opt);
+    }
+    sel.value = current;
+  }
+
+  function renderBrowseActiveFilters() {
+    const box = $("#bl-active-filters"); if (!box) return;
+    const chips = [];
+    if (BR.objectiveLabel) chips.push(`<span>客观标签：<b>${esc(BR.objectiveLabel)}</b><button type="button" data-clear-filter="objective" aria-label="清除客观标签筛选">×</button></span>`);
+    box.innerHTML = chips.join("");
+    box.hidden = !chips.length;
+  }
 
   async function loadPapers() {
     const myseq = ++BR.reqSeq;   // B5：请求序号守卫，防止快速切换时旧响应覆盖新选择
     $("#bl-name").textContent = BR.scope.name;
     $("#bl-list").innerHTML = ""; $("#bl-msg").textContent = "加载中…";
     BR.selected.clear(); refreshSelUI();
-    const isRec = BR.sort === "recommend";
-    // T6：长解释收进点击浮层（.tip-i 已有 ctx 展开习惯）；title 精简为一句
-    $("#bl-tip").innerHTML = isRec
-      ? `⭐ 已按「值得先读」排序：优先高等级期刊（权威/核心）、近年、有全文可深读的
-         <span class="tip-i" title="推荐分＝期刊权威度×10＋近年加成＋有全文可深读；随「设置→检索→期刊分级学科」变化。">ⓘ 怎么算的</span>`
-      : "";
-    $("#bl-tip").style.display = isRec ? "" : "none";
+    renderBrowseActiveFilters();
     const om = $("#bl-more"); if (om) om.remove();   // W1：换范围/重载时清掉旧「加载更多」按钮
     try {
       const params = new URLSearchParams({ sort: BR.sort, limit: "300", offset: "0" });
@@ -3137,9 +3493,14 @@
       else if (s.type === "kbcat") params.set("category", s.id);
       // 文献状态筛选（深索 / OCR / 检索摘要，与左侧范围叠加）
       if (BR.deepFilter) params.set("deep", BR.deepFilter);
+      if (BR.sourceType) params.set("source_type", BR.sourceType);
+      if (BR.objectiveLabel) params.set("objective_label", BR.objectiveLabel);
+      if (BR.query) params.set("query", BR.query);
       const d = await jget("/papers?" + params.toString());
       if (myseq !== BR.reqSeq) return;   // B5：已有更新的请求发出，丢弃这次陈旧响应
       renderBrowseFilterCounts(d.filter_counts || {});
+      renderBrowseTypeCounts(d.source_type_counts || d.type_counts || {});
+      renderBrowseLabelCounts(d.objective_label_counts || {});
       BR.papers = d.papers || [];
       // W1：「（显示前 300）」这种死数字标签取消——分页由底部「加载更多」承担
       BR.total = d.total != null ? d.total : BR.papers.length;
@@ -3150,9 +3511,13 @@
         // empty-cat-hint-deadlock：给出可操作路径 + 跳转按钮，而非死胡同
         $("#bl-msg").innerHTML = `该分类暂无文献。去「⭐ 全部文献」勾选后点「＋ 加入分类」，或右键文献卡 / 拖到左侧分类上归类。 <a class="ag-link" id="bl-go-all">→ 去全部文献</a>`;
         const g = $("#bl-go-all"); if (g) g.addEventListener("click", () => selectCollection(null, "全部", null));
-      } else if (BR.deepFilter) {
-        const opt = $("#bl-deep-filter").selectedOptions[0];
-        $("#bl-msg").textContent = `（没有符合“${(opt && opt.textContent.trim()) || "当前筛选"}”的文献）`;
+      } else if (BR.query || BR.deepFilter || BR.sourceType || BR.objectiveLabel) {
+        const bits = [];
+        if (BR.query) bits.push(`题录：${BR.query}`);
+        if (BR.sourceType) bits.push($("#bl-type-filter").selectedOptions[0]?.dataset.label || "当前文献类型");
+        if (BR.deepFilter) bits.push($("#bl-deep-filter").selectedOptions[0]?.dataset.label || "当前状态");
+        if (BR.objectiveLabel) bits.push(`客观标签：${BR.objectiveLabel}`);
+        $("#bl-msg").textContent = `（没有符合“${bits.join(" · ")}”的文献）`;
       } else { $("#bl-msg").textContent = "（该分类暂无文献）"; }
       const frag = document.createDocumentFragment();
       BR.papers.forEach((p) => frag.appendChild(paperCard(p)));
@@ -3178,6 +3543,9 @@
       else if (s.type === "zotero") params.set("collection", s.id);
       else if (s.type === "kbcat") params.set("category", s.id);
       if (BR.deepFilter) params.set("deep", BR.deepFilter);
+      if (BR.sourceType) params.set("source_type", BR.sourceType);
+      if (BR.objectiveLabel) params.set("objective_label", BR.objectiveLabel);
+      if (BR.query) params.set("query", BR.query);
       const d = await jget("/papers?" + params.toString());
       if (myseq !== BR.reqSeq) return;             // 期间用户切了范围/排序 → 丢弃
       const fresh = new Map((d.papers || []).map((x) => [x.key, x]));
@@ -3218,6 +3586,9 @@
       else if (s.type === "zotero") params.set("collection", s.id);
       else if (s.type === "kbcat") params.set("category", s.id);
       if (BR.deepFilter) params.set("deep", BR.deepFilter);
+      if (BR.sourceType) params.set("source_type", BR.sourceType);
+      if (BR.objectiveLabel) params.set("objective_label", BR.objectiveLabel);
+      if (BR.query) params.set("query", BR.query);
       const d = await jget("/papers?" + params.toString());
       if (myseq !== BR.reqSeq) return;
       // W1：recommend/year 排序在两次请求间可能因深索完成/改档而重排——按 key 去重防重复卡片（漏条无法前端补救，可接受）
@@ -3239,7 +3610,7 @@
 
   // 触发对一批 key 的深索
   async function deepIndexKeys(keys, btn) {
-    if (!keys.length) { $("#bl-msg").textContent = "没有可深索的文献（需有 PDF 且尚未深索）。"; return; }
+    if (!keys.length) { $("#bl-msg").textContent = "没有可深索的文献（需有受支持全文附件且尚未深索）。"; return; }
     if (btn) btn.disabled = true;
     try {
       // C7：手动深索走持久队列，撞锁自动排队；后端返回 {ok:true,queued:n}
@@ -3267,7 +3638,7 @@
     try {
       const r = await jpost("/index/deep", { scope: "keys:" + key });
       if (r && r.ok === false) { flashToast("已有任务在跑，稍后再试。"); reset(); return; }
-      if (r && r.queued === 0) { flashToast("这篇可能已在深索，或附件/PDF 当前不可读，未新增任务。"); reset(); }
+      if (r && r.queued === 0) { flashToast("这篇可能已在深索，或全文附件当前不可读，未新增任务。"); reset(); }
       else { localStorage.removeItem("localkb.deepDismissed"); flashToast("已开始后台深索这篇，进度见顶部。"); poll(); }
     } catch (e) { flashToast("启动深索失败：" + (e.message || e)); reset(); }
   }
@@ -3283,8 +3654,16 @@
   });
   $("#bl-sort").addEventListener("change", () => { BR.sort = $("#bl-sort").value; loadPapers(); });
   $("#bl-deep-filter").addEventListener("change", () => { BR.deepFilter = $("#bl-deep-filter").value; loadPapers(); });
+  $("#bl-type-filter").addEventListener("change", () => { BR.sourceType = $("#bl-type-filter").value; loadPapers(); });
+  $("#bl-label-filter").addEventListener("change", () => { BR.objectiveLabel = $("#bl-label-filter").value; loadPapers(); });
+  $("#bl-active-filters").addEventListener("click", (e) => {
+    const b = e.target.closest("button[data-clear-filter]");
+    if (!b) return;
+    if (b.dataset.clearFilter === "objective") BR.objectiveLabel = "";
+    loadPapers();
+  });
   $("#bl-deep-sel").addEventListener("click", () => {
-    const keys = BR.papers.filter((p) => BR.selected.has(p.key) && p.has_pdf && !p.deep && !extractBlocked(p)).map((p) => p.key);
+    const keys = BR.papers.filter((p) => BR.selected.has(p.key) && hasFulltext(p) && !p.deep && !extractBlocked(p)).map((p) => p.key);
     deepIndexKeys(keys, $("#bl-deep-sel"));
   });
   // D1：工具栏「＋ 加入分类」——对当前勾选集打开加入分类菜单
@@ -3294,15 +3673,6 @@
     e.stopPropagation();   // 否则冒泡到 document 的关闭浮层处理器会立刻关掉刚打开的菜单
     const rect = _blAdd.getBoundingClientRect();
     openAddToCatMenu([...BR.selected], rect.left, rect.bottom + 2);
-  });
-  // D3/F1：导出选中引文（GB/T 7714 国标，一篇一行）
-  const _blCite = $("#bl-cite-sel");
-  if (_blCite) _blCite.addEventListener("click", () => {
-    const picked = BR.papers.filter((p) => BR.selected.has(p.key));
-    if (!picked.length) return;
-    const txt = picked.map((p) => citationGBT(p)).join("\n\n");
-    copyText(txt, _blCite);
-    flashToast(`已复制 ${num(picked.length)} 篇的规范引文（GB/T 7714）。`);
   });
   // 「深索推荐 Top 10」按钮已移除（F19：年份排序时名不副实，且与选中深索重复）
   $("#bt-all").addEventListener("click", () => selectCollection(null, "全部", null));
@@ -3490,10 +3860,10 @@
     showSettingsPane(pane, targetId);
     loadSac();    // 进入设置面板即拉取 SAC 当前状态并回填
     loadEngine(); // 同时回填检索引擎当前后端/是否已设 key
-    loadDiscipline(); // 回填期刊分级学科下拉
+      loadDiscipline(); // 回填来源评价学科下拉
     loadAutoUpdate(); // 回填自动更新开关/间隔
     loadRetrievalMemory(); // 回填检索组件的空闲释放时间与当前状态
-    loadOnlyPdf();    // 回填「只导入有 PDF」开关
+    loadOnlyPdf();    // 回填「只导入有全文附件」开关（旧函数名保留兼容）
     loadBackup();     // 回填备份位置/自动备份，并列出已有备份包
     checkUpdate(true); // 静默查一次新版（用缓存、失败不吭声），有新版才显示升级面板
     loadMirror();     // 回填国内镜像地址
@@ -3516,8 +3886,8 @@
         if (dsRow) dsRow.hidden = false;
         if (ds) ds.checked = !!s.delete_sync;
         if (note) note.textContent = s.delete_sync
-          ? "🗑 已开启同步删除：文件夹里删掉的 PDF 下次更新会从库中清出。"
-          : "🗑 未开启同步删除：文件夹里删掉的 PDF 仍留在库中（防误删）。要清出请勾选上面。";
+          ? "🗑 已开启同步删除：文件夹里删掉的全文文件下次更新会从库中清出。"
+          : "🗑 未开启同步删除：文件夹里删掉的全文文件仍留在库中（防误删）。要清出请勾选上面。";
         if (pb) pb.hidden = true;
       } else {
         if (dsRow) dsRow.hidden = true;
@@ -3526,13 +3896,13 @@
       }
     } catch (e) {}
   }
-  async function saveAutoUpdate() {
+  async function saveAutoUpdate(confirmDeleteSync = false) {
     const en = $("#au-enabled"), dd = $("#au-days"), tm = $("#au-time"), cu = $("#au-catchup"), ds = $("#au-delsync"), msg = $("#au-msg");
     let days = parseInt(dd && dd.value, 10); if (!(days >= 1 && days <= 30)) days = 1;
     if (dd) dd.value = String(days);
     const at = (tm && /^\d{1,2}:\d{2}$/.test(tm.value)) ? tm.value : "07:00";
     try {
-      await jpost("/setup/auto_update", { enabled: en.checked, interval_days: days, at_time: at, catch_up_on_launch: !!(cu && cu.checked), delete_sync: !!(ds && ds.checked) });
+      await jpost("/setup/auto_update", { enabled: en.checked, interval_days: days, at_time: at, catch_up_on_launch: !!(cu && cu.checked), delete_sync: !!(ds && ds.checked), confirm_delete_sync: !!(confirmDeleteSync && ds && ds.checked) });
       if (msg) msg.textContent = en.checked
         ? `已开启：${_auDaysLabel(days)} ${at} 检查一次新增文献并自动增量更新${(cu && cu.checked) ? "；错过会在开应用时补跑" : ""}。`
         : "已关闭：只能用顶栏「⟳ 手动更新知识库」手动更新。";
@@ -3544,15 +3914,36 @@
     if (dd) dd.addEventListener("change", saveAutoUpdate);
     if (tm) tm.addEventListener("change", saveAutoUpdate);
     if (cu) cu.addEventListener("change", saveAutoUpdate);
-    if (ds) ds.addEventListener("change", async () => { await saveAutoUpdate(); loadAutoUpdate(); });   // 保存后刷新删除同步提示
+    if (ds) ds.addEventListener("change", async () => {
+      if (ds.checked) {
+        const ok = await uiConfirm(
+          "开启后，来源里删除的文献会在知识库更新时一并从 PaperPiggy 索引中清除。原始文件和 Zotero 不受影响。",
+          { title: "开启删除同步？", okText: "开启删除同步", danger: true }
+        );
+        if (!ok) { ds.checked = false; return; }
+      }
+      await saveAutoUpdate(!!ds.checked); loadAutoUpdate();
+    });
     if (pb) pb.addEventListener("click", async () => {
       const note = $("#au-del-note"); const lbl = pb.textContent;
-      pb.disabled = true; pb.textContent = "清理中…";
+      pb.disabled = true; pb.textContent = "检查中…";
       try {
-        const r = await jpost("/setup/purge_deleted", {});
+        const preview = await jpost("/setup/purge_deleted", { preview: true });
+        const count = Number(preview.removed ?? preview.count ?? preview.would_remove ?? 0);
+        if (!count) {
+          if (note) note.textContent = preview.msg || "没有需要清理的已删除文献。";
+          return;
+        }
+        const ok = await uiConfirm(
+          `将从 PaperPiggy 索引中清理 ${num(count)} 篇已不在来源里的文献及其索引产物。原始文件和 Zotero 不受影响。`,
+          { title: `确认清理 ${num(count)} 篇文献？`, okText: "确认清理", danger: true }
+        );
+        if (!ok) return;
+        pb.textContent = "清理中…";
+        const r = await jpost("/setup/purge_deleted", { confirm: true });
         if (note) note.textContent = (r && r.msg) || "已清理。";
       } catch (e) { if (note) note.textContent = "清理失败：" + (e.message || e); }
-      pb.disabled = false; pb.textContent = lbl;
+      finally { pb.disabled = false; pb.textContent = lbl; }
     });
   })();
 
@@ -3596,7 +3987,7 @@
     });
   })();
 
-  // 只导入有 PDF（Zotero 模式）：设置里开关，改后需点「手动更新知识库」重建题录索引
+  // 只导入有全文附件（Zotero 模式）：旧设置键保留，改后需点「手动更新知识库」重建题录索引
   async function loadOnlyPdf() {
     const cb = $("#set-onlypdf"); if (!cb) return;
     try { const d = await jget("/setup/detect"); cb.checked = !!d.import_only_pdf; } catch (e) {}
@@ -3608,8 +3999,8 @@
       try {
         await jpost("/setup/import_only_pdf", { only_pdf: cb.checked });
         if (msg) msg.textContent = (cb.checked
-          ? "已设为只导入有 PDF 的文献。"
-          : "已允许导入纯题录（无 PDF 的也进库）。") + "点顶栏「手动更新知识库」重建题录索引即生效。";
+          ? "已设为只导入有全文附件的文献。"
+          : "已允许导入纯题录（无受支持全文附件的也进库）。") + "点顶栏「手动更新知识库」重建题录索引即生效。";
       } catch (e) { if (msg) msg.textContent = "保存失败：" + e.message; }
     });
   })();
@@ -3628,7 +4019,16 @@
     });
   })();
 
-  // ── 期刊分级学科：设置里选整库锁定的学科，保存后下次检索即生效 ──
+  function applyDisciplineMeta(s, id) {
+    const meta = (s.disciplines || []).find((d) => d.id === id) || {};
+    DISC.id = id || s.current || DISC.id;
+    DISC.name = meta.name || s.current_name || DISC.name;
+    DISC.notice = meta.notice || meta.description || s.notice || s.discipline_notice || "";
+    absorbBandNames(meta); absorbBandNames(s);
+    const note = $("#disc-note");
+    if (note) note.textContent = DISC.notice || "普通页面只显示客观标签；四档评价用于排序、总览、手动改档和研究工作流。";
+  }
+  // ── 来源评价学科：整库锁定；娱乐学科的显示名和说明完全由后端元数据下发 ──
   async function loadDiscipline() {
     const sel = $("#disc-select"); if (!sel) return;
     try {
@@ -3637,6 +4037,7 @@
       sel.innerHTML = (s.disciplines || []).map(d =>
         `<option value="${esc(d.id)}">${esc(d.name)}</option>`).join("");
       if (s.current) sel.value = s.current;
+      applyDisciplineMeta(s, s.current || sel.value);
       $("#disc-msg").textContent = "";
     } catch (e) {
       $("#disc-msg").textContent = "加载失败：" + e.message;
@@ -3665,8 +4066,10 @@
   if (_dsel) _dsel.addEventListener("change", async () => {
     const sel = $("#disc-select"), msg = $("#disc-msg");
     try {
+      const picked = sel.options[sel.selectedIndex] ? sel.options[sel.selectedIndex].text : sel.value;
       const r = await jpost("/setup/discipline", { discipline: sel.value });
-      msg.textContent = "已切换：" + (sel.options[sel.selectedIndex] ? sel.options[sel.selectedIndex].text : r.current) + "（检索即时生效；分级分布后台重算后自动刷新）";
+      await loadDiscipline();
+      msg.textContent = "已切换：" + (DISC.name || picked || r.current) + "（检索即时生效；四档分布后台重算后自动刷新）";
       refreshAfterDiscipline();
     } catch (e) { msg.textContent = "保存失败：" + e.message; }
   });
@@ -3703,6 +4106,13 @@
     root.setAttribute("data-fontsize", fs);
     const ts = $("#ui-theme"); if (ts) ts.value = pref;   // 下拉显示用户选择（system/light/dark），非解析值
     const fsel = $("#ui-fontsize"); if (fsel) fsel.value = fs;
+    const quick = $("#theme-quick-toggle");
+    if (quick) {
+      quick.dataset.theme = theme;
+      const next = theme === "dark" ? "明亮" : "夜间";
+      quick.setAttribute("aria-label", `切换到${next}模式`);
+      quick.title = `切换到${next}模式`;
+    }
   }
   function saveAppearance() {
     const a = safeParse(localStorage.getItem("localkb.ui"), {});
@@ -3714,6 +4124,12 @@
   }
   { const ts = $("#ui-theme"); if (ts) ts.addEventListener("change", saveAppearance);
     const fsel = $("#ui-fontsize"); if (fsel) fsel.addEventListener("change", saveAppearance);
+    const quick = $("#theme-quick-toggle"); if (quick) quick.addEventListener("click", () => {
+      const a = safeParse(localStorage.getItem("localkb.ui"), {});
+      a.theme = document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark";
+      localStorage.setItem("localkb.ui", JSON.stringify(a));
+      applyAppearance();
+    });
     // 跟随系统时，系统主题变化即时重解析
     if (window.matchMedia) { try { window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
       const a = safeParse(localStorage.getItem("localkb.ui"), {}); if ((a.theme || "system") === "system") applyAppearance();
@@ -3764,19 +4180,19 @@
     const items = (r && r.items) || [];
     if (!items.length) { box.innerHTML = '<p class="hint">还没有备份包。</p>'; return; }
     box.innerHTML = items.map((it) => {
-      if (it.broken) return `<div class="bk-item"><b>${it.name}</b> <span class="danger-text">（包已损坏，不能用来恢复）</span></div>`;
+      if (it.broken) return `<div class="bk-item"><b>${esc(String(it.name || ""))}</b> <span class="danger-text">（包已损坏，不能用来恢复）</span></div>`;
       const m = it.manifest || {};
       const tags = [m.includes_index ? "含索引" : "仅手写资产"];
       if (m.has_api_key) tags.push("⚠️ 含密钥");
       const c = m.counts || {};
-      const detail = [c.wiki_pages != null ? c.wiki_pages + " 篇综述" : null,
-                      c.papers != null ? c.papers + " 条文献" : null,
-                      c.agent_outputs ? c.agent_outputs + " 个交付物主题" : null]
+      const detail = [c.wiki_pages != null ? esc(String(c.wiki_pages)) + " 篇综述" : null,
+                      c.papers != null ? esc(String(c.papers)) + " 条文献" : null,
+                      c.agent_outputs ? esc(String(c.agent_outputs)) + " 个交付物主题" : null]
                      .filter(Boolean).join(" · ");
       return `<div class="bk-item">
-        <div><b>${it.mtime}</b> · ${_bkSize(it.size)} · ${tags.join(" / ")}</div>
+        <div><b>${esc(String(it.mtime || ""))}</b> · ${esc(String(_bkSize(it.size)))} · ${tags.join(" / ")}</div>
         <div class="hint">${detail || "&nbsp;"}</div>
-        <button class="ghost danger bk-restore" data-path="${it.path.replace(/"/g, "&quot;")}">↩ 从这个包恢复</button>
+        <button class="ghost danger bk-restore" data-path="${esc(String(it.path || ""))}">↩ 从这个包恢复</button>
       </div>`;
     }).join("");
     box.querySelectorAll(".bk-restore").forEach(b =>
@@ -3992,7 +4408,7 @@
     const bridge = window.pywebview && window.pywebview.api && window.pywebview.api.apply_update;
     if (!bridge) { msg.textContent = "请在 PaperPiggy 应用窗口里升级（浏览器模式不支持）。"; return; }
     if (!(await uiConfirm("会下载新版程序 → 关闭应用 → 替换后自动重启。\n\n" +
-                 "你的数据（索引、综述、Agent 交付物、期刊分级）完全不受影响。",
+                 "你的数据（索引、综述、Agent 交付物、来源评价数据）完全不受影响。",
                  { title: "开始升级？", okText: "下载并升级" }))) return;
     btn.disabled = true;
     msg.textContent = "下载中…";
@@ -4121,11 +4537,19 @@
   function engApiVisible(be) { const box = $("#eng-api"); if (box) box.hidden = (be !== "api"); }
   async function loadEngine() {
     $("#eng-msg").textContent = "";
-    // /setup/detect 只回 backend + 是否已设 key；base/模型名用标准默认（改过高级项的可自行重填）
+    // 回填高级项，避免保存设置时把用户明确配置过的兼容服务静默改回默认。
     $("#eng-base").value = "https://api.siliconflow.cn/v1";
     $("#eng-embed").value = ""; $("#eng-rerank").value = ""; $("#eng-key").value = "";
     let be = "local", keySet = false, last4 = "";
-    try { const d = await jget("/setup/detect"); be = d.backend === "api" ? "api" : "local"; keySet = !!d.api_key_set; last4 = d.api_key_last4 || ""; } catch (e) {}
+    try {
+      const d = await jget("/setup/detect");
+      be = d.backend === "api" ? "api" : "local"; keySet = !!d.api_key_set; last4 = d.api_key_last4 || "";
+      $("#eng-base").value = d.api_base || "https://api.siliconflow.cn/v1";
+      $("#eng-embed").value = d.api_embed_model === "BAAI/bge-m3" ? "" : (d.api_embed_model || "");
+      $("#eng-rerank").value = d.api_rerank_model === "BAAI/bge-reranker-v2-m3" ? "" : (d.api_rerank_model || "");
+      const adv = document.querySelector("#eng-api details.eng-custom");
+      if (adv && !String($("#eng-base").value).toLowerCase().includes("siliconflow")) adv.open = true;
+    } catch (e) {}
     const r = document.querySelector(`input[name=eng-backend][value=${be}]`); if (r) r.checked = true;
     // K3：已设置时用掩码占位「••••••1234（留空＝不改）」，让用户知道填过；留空提交＝不改
     $("#eng-key").placeholder = keySet ? ((last4 ? maskKey(last4) + " " : "") + "你之前已经填过 API 了，留空即可、不用改") : "去 cloud.siliconflow.cn 领免费 key";
@@ -4150,16 +4574,15 @@
       const r = await jpost("/setup/test_api", { base: b.base, key: b.key, embed_model: b.embed_model, rerank_model: b.rerank_model });
       if (r && r.ok) { msg.className = "hint ok"; msg.textContent = `✓ 连接成功，向量维度 ${num(r.dim)}，延迟 ${num(r.latency_ms)}ms`; }
       // BF23：textContent 本身不解析 HTML，再套 esc() 会把 & < > 显示成 &amp; 等实体（双重转义）
-      else { msg.className = "hint warn"; msg.textContent = "连接失败：" + ((r && r.msg) || "未知错误"); }
-    } catch (e) { msg.className = "hint warn"; msg.textContent = "连接失败：" + e.message; }
+      else { msg.className = "hint warn"; msg.textContent = "连接失败：" + ((r && r.msg) || "未知错误") + "。请确认该服务同时支持嵌入与重排；普通对话 API 不能使用。"; }
+    } catch (e) { msg.className = "hint warn"; msg.textContent = "连接失败：" + e.message + "。请确认该服务同时支持嵌入与重排；普通对话 API 不能使用。"; }
     finally { btn.disabled = false; }
   });
   // 换引擎后旧向量不兼容 → 应用时强制重建索引，并显示「正在重建中」
   async function doRebuildIndex(msgEl, hadDeep) {
     if (msgEl) { msgEl.className = "hint"; msgEl.textContent = "正在重建索引（换引擎后旧向量不兼容）…"; }
     try {
-      const r = await fetch("/build", { method: "POST" });
-      let j = null; try { j = await r.json(); } catch (e) {}
+      const j = await jpost("/build", {});
       if (j && j.ok === false) { if (msgEl) { msgEl.className = "hint warn"; msgEl.textContent = "已有任务在跑，稍后再点「应用检索引擎」重建。"; } return; }
       poll();
       await new Promise((resolve) => {
@@ -4167,7 +4590,7 @@
         const iv = setInterval(async () => {
           tries++;
           try {
-            const s = await (await fetch("/build/status")).json();
+            const s = await jget("/build/status");
             if (!s.running || tries > 240) {   // 6min 封顶，防后端卡 running 时 await 永不返回、按钮卡死
               clearInterval(iv);
               if (msgEl) {
@@ -4178,7 +4601,11 @@
               }
               poll(); if (dashLoaded) loadDashboard("silent"); resolve();
             } else if (msgEl) { msgEl.textContent = "正在重建索引中…（可关闭设置，进度见顶部）"; }
-          } catch (e) { clearInterval(iv); resolve(); }
+          } catch (e) {
+            clearInterval(iv);
+            if (msgEl) { msgEl.className = "hint warn"; msgEl.textContent = "读取重建进度失败：" + (e.message || e); }
+            resolve();
+          }
         }, 1500);
       });
     } catch (e) { if (msgEl) { msgEl.className = "hint warn"; msgEl.textContent = "重建失败：" + (e.message || e); } }   // BF23：textContent 去 esc
@@ -4194,78 +4621,122 @@
     finally { btn.disabled = false; }
   });
 
-  // ── 深索摘要（SAC）：K2（副本#7）三选一 generator=server|agent|off ──
-  // BF21：key 输入框的 dirty 标记——只有用户动过才把 key 放进请求体（空串＝清除落盘）；
-  // 没动过就不带 key 字段，避免每次保存高级设置都把已存 key 清掉/覆盖
-  let sacKeyDirty = false;
+  // ── 检索摘要：生成方（Agent / PaperPiggy / 暂不）+ 自动生成的明确凭据来源 ──
+  let sacKeyDirty = false, sacState = null;
   { const sk = $("#sac-key"); if (sk) sk.addEventListener("input", () => { sacKeyDirty = true; }); }
-  // 当前选中的生成方式（读单选按钮）
   function sacGen() { return (document.querySelector("input[name=sac-gen]:checked") || {}).value || "off"; }
-  // 依据 generator + effective_ready 显示状态行
-  function renderSacStatus(gen, effectiveReady) {
-    const el = $("#sac-status");
+  function sacSource() { return (document.querySelector("input[name=sac-source]:checked") || {}).value || "reuse"; }
+  function applySacProvider(name, force) {
+    const p = PROVIDERS[name] || PROVIDERS.custom;
+    const baseRow = $("#sac-base-row");
+    if (baseRow) baseRow.hidden = name !== "custom";
+    if (force || !$("#sac-base").value.trim()) $("#sac-base").value = p.base || "";
+    if (force || !$("#sac-model").value.trim()) $("#sac-model").value = p.model || "";
+  }
+  function syncSacPanels() {
+    const gen = sacGen(), source = sacSource();
+    $("#sac-server-options").hidden = gen !== "server";
+    $("#sac-custom-fields").hidden = gen !== "server" || source !== "custom";
+  }
+  function renderSacStatus(s) {
+    sacState = s || sacState || {};
+    const gen = sacState.generator || sacGen(), source = sacState.source || sacSource();
+    const el = $("#sac-status"), reuse = $("#sac-reuse-status");
+    if (reuse) {
+      reuse.className = "hint " + (sacState.reuse_ready ? "ok" : "warn");
+      reuse.textContent = sacState.reuse_ready
+        ? `✓ 已找到检索引擎的 SiliconFlow Key${sacState.reuse_key_last4 ? "（" + maskKey(sacState.reuse_key_last4) + "）" : ""}，将使用 ${sacState.reuse_model || "Qwen/Qwen2.5-7B-Instruct"}。`
+        : "⚠ 尚未找到可复用的 SiliconFlow Key。请先在“设置 → 检索 → 检索引擎”配置，或改选其他 AI 厂商。";
+    }
+    syncSacPanels();
     if (gen === "off") {
-      el.className = "sac-status hint"; el.textContent = "已关闭：深索时不生成摘要。";
+      el.className = "sac-status hint"; el.textContent = "已选择暂不生成：深索仍会正常完成，以后可随时补摘要。";
     } else if (gen === "agent") {
-      el.className = "sac-status hint ok"; el.textContent = "✓ 交给 Agent：深索或维护知识库时，由 Claude Code / Codex 生成并修复摘要，不调用服务端摘要生成 API。";
-    } else if (effectiveReady) {
-      el.className = "sac-status hint ok"; el.textContent = "✓ 服务端自动：深索时会自动生成摘要前缀（用你配的 API key）。";
+      el.className = "sac-status hint ok"; el.textContent = "✓ 交给 Agent：它会读正文、生成或修复摘要并重新嵌入，不调用 PaperPiggy 的摘要 API。";
+    } else if (sacState.effective_ready) {
+      el.className = "sac-status hint ok";
+      el.textContent = source === "reuse"
+        ? "✓ PaperPiggy 自动生成：复用 SiliconFlow Key 和当前免费的简单模型。"
+        : `✓ PaperPiggy 自动生成：使用 ${PROVIDER_NAMES[sacState.provider] || sacState.provider || "其他 AI 厂商"} / ${sacState.model || "自选模型"}（费用由服务商收取）。`;
     } else {
-      el.className = "sac-status hint warn"; el.textContent = "⚠ 服务端自动模式需先在检索引擎里配 API key，或在下方“高级”单独填 key。";
+      el.className = "sac-status hint warn";
+      el.textContent = source === "reuse"
+        ? "⚠ 自动生成尚未就绪：缺少可复用的 SiliconFlow Key。"
+        : "⚠ 自动生成尚未就绪：请填写并测试所选 AI 厂商的 Key 和模型。";
     }
   }
   async function loadSac() {
-    // 先给个中性态，避免上次残留
     $("#sac-status").className = "sac-status hint";
     $("#sac-status").textContent = "";
     try {
       const s = await jget("/setup/sac");
-      // 迁移兼容：后端未回 generator 时，用老的 enabled 推断（true→server，false→off）
       const gen = s.generator || (s.enabled ? "server" : "off");
-      const r = document.querySelector(`input[name=sac-gen][value=${gen}]`); if (r) r.checked = true;
-      $("#sac-base").value = s.base || "";
-      $("#sac-model").value = s.model || "";
-      // K3：key 是密码，后端只回末4位；已设则用掩码占位，不回填明文
-      const last4 = s.key_last4 || s.sac_key_last4 || "";
+      let source = s.source === "custom" ? "custom" : "reuse";
+      const gr = document.querySelector(`input[name=sac-gen][value=${gen}]`); if (gr) gr.checked = true;
+      const sr = document.querySelector(`input[name=sac-source][value=${source}]`); if (sr) sr.checked = true;
+      let provider = s.provider || "deepseek";
+      if (!PROVIDERS[provider] || provider === "siliconflow") provider = "custom";
+      $("#sac-provider").value = provider;
+      // 复用路径没有独立厂商配置；展开“其他厂商”时先给出所选厂商的正常默认值，
+      // 避免把 SiliconFlow 的 Base URL 配上 DeepSeek 模型这一类混搭带进去。
+      $("#sac-base").value = source === "custom" ? (s.base || PROVIDERS[provider].base || "") : (PROVIDERS[provider].base || "");
+      $("#sac-model").value = source === "custom" ? (s.model || PROVIDERS[provider].model || "") : (PROVIDERS[provider].model || "");
+      applySacProvider(provider, false);
+      const last4 = s.key_last4 || "";
       $("#sac-key").value = "";
-      sacKeyDirty = false;   // BF21：程序回填不算用户改动
+      sacKeyDirty = false;
       $("#sac-key").placeholder = s.key_set
-        ? ((last4 ? maskKey(last4) + " " : "") + "你之前已经填过了，留空即可（不填则复用检索引擎的 key）")
-        : "不用填，会自动复用检索引擎的 key";
-      renderSacStatus(gen, !!s.effective_ready);
+        ? ((last4 ? maskKey(last4) + " " : "") + "已保存，留空不改")
+        : "填写所选 AI 厂商的 Key";
+      renderSacStatus(s);
     } catch (e) {
       $("#sac-status").className = "sac-status hint warn";
       $("#sac-status").textContent = "状态加载失败：" + e.message;
     }
   }
-  // 三选一切换：立即 POST 保存 generator，并用返回的 effective_ready 刷新状态行
   $$("input[name=sac-gen]").forEach((radio) => radio.addEventListener("change", async () => {
-    const gen = sacGen();
     try {
-      const r = await jpost("/setup/sac", { generator: gen });
-      renderSacStatus(gen, !!(r && r.effective_ready));
+      const r = await jpost("/setup/sac", { generator: sacGen() });
+      renderSacStatus(r);
     } catch (e) {
       $("#sac-status").className = "sac-status hint warn";
       $("#sac-status").textContent = "保存失败：" + e.message;
     }
   }));
-  // 高级：单独保存 base / key / model（随当前 generator 一起提交，只传填了的字段）
-  $("#sac-adv-save").addEventListener("click", async () => {
-    const msg = $("#sac-adv-msg");
-    const gen = sacGen();
-    const body = { generator: gen };
-    const base = $("#sac-base").value.trim(), model = $("#sac-model").value.trim(), key = $("#sac-key").value.trim();
-    // BF21：base/model 每次照发（空串＝清空落盘，后端已按 is not None 判）；key 只有用户动过输入框才发，
-    // 动过且为空串＝明确清除——之前「填了清不掉」就是因为空值一律不发
-    body.base = base; body.model = model;
-    if (sacKeyDirty) body.key = key;
-    msg.textContent = "保存中…";
+  $$("input[name=sac-source]").forEach((radio) => radio.addEventListener("change", async () => {
+    syncSacPanels();
     try {
-      const r = await jpost("/setup/sac", body);
-      renderSacStatus(gen, !!(r && r.effective_ready));
-      msg.textContent = "已保存 ✓";
-      await loadSac();   // BF21：以后端落盘结果回显校验（顺带清空明文输入、重置 dirty）
-    } catch (e) { msg.textContent = "保存失败：" + e.message; }
+      const r = await jpost("/setup/sac", { generator: "server", source: sacSource() });
+      renderSacStatus(r);
+    } catch (e) { $("#sac-status").textContent = "保存失败：" + e.message; }
+  }));
+  $("#sac-provider").addEventListener("change", () => {
+    applySacProvider($("#sac-provider").value, true);
+    $("#sac-key").value = "";
+    $("#sac-key").placeholder = "更换服务商后请填写新的 Key";
+    sacKeyDirty = true;
+  });
+  $("#sac-custom-save").addEventListener("click", async () => {
+    const msg = $("#sac-custom-msg"), provider = $("#sac-provider").value;
+    const base = $("#sac-base").value.trim(), model = $("#sac-model").value.trim(), key = $("#sac-key").value.trim();
+    if (!base || !model) { msg.className = "hint warn"; msg.textContent = "请填写 Base URL 和模型。"; return; }
+    if (!key && (!sacState || !sacState.key_set || provider !== sacState.provider)) {
+      msg.className = "hint warn"; msg.textContent = "请填写所选 AI 厂商的 API Key。"; return;
+    }
+    const body = { generator: "server", source: "custom", provider, base, model };
+    if (sacKeyDirty) body.key = key;
+    msg.className = "hint"; msg.textContent = "保存并测试中…（会调用 1 次所选模型）";
+    try {
+      const saved = await jpost("/setup/sac", body);
+      const tested = await jpost("/setup/test_sac", {});
+      if (tested && tested.ok) {
+        msg.className = "hint ok"; msg.textContent = `✓ 测试成功，延迟 ${num(tested.latency_ms)}ms`;
+      } else {
+        msg.className = "hint warn"; msg.textContent = "测试失败：" + ((tested && tested.msg) || "未知错误");
+      }
+      renderSacStatus(saved);
+      await loadSac();
+    } catch (e) { msg.className = "hint warn"; msg.textContent = "保存或测试失败：" + e.message; }
   });
 
   // ── 错误日志（查看 / 复制 / 清空）──
@@ -4305,15 +4776,14 @@
   let manualUpdating = false;
   async function doManualUpdate() {
     if (manualUpdating) return;
-    const btn = $("#btn-build"); const old = btn.textContent;
-    const restore = () => { manualUpdating = false; btn.disabled = false; btn.textContent = old; };
+    const btn = $("#btn-build"); const old = btn.innerHTML;
+    const restore = () => { manualUpdating = false; btn.disabled = false; btn.innerHTML = old; };
     manualUpdating = true; btn.disabled = true; btn.textContent = "⟳ 更新中…";
     // UX6：更新前记一份篇数基线（total/deep），完成后对比告诉用户到底新增了几篇；取不到就退化为普通完成提示
     let baseTotal = null;
     try { const s0 = await jget("/stats"); baseTotal = ((s0 && s0.coverage) || {}).total; } catch (e) {}
     try {
-      const r = await fetch("/build", { method: "POST" });
-      let j = null; try { j = await r.json(); } catch (e) {}
+      const j = await jpost("/build", {});
       // 忙时后端返回 {ok:false}，提示而非假装已开始
       if (j && j.ok === false) { btn.textContent = "有任务在跑，稍后再试"; setTimeout(restore, 1800); return; }
       poll();  // 顶部状态/进度条立刻接管
@@ -4321,7 +4791,7 @@
       const iv = setInterval(async () => {
         tries++;
         try {
-          const s = await (await fetch("/build/status")).json();
+          const s = await jget("/build/status");
           if (!s.running || tries > 240) {   // 240×1.5s≈6min 封顶，防后端卡 running 时按钮永久禁用
             clearInterval(iv); restore();
             if (dashLoaded) loadDashboard("silent");
@@ -4341,11 +4811,19 @@
                   } else flashToast("更新完成 ✓");
                 } catch (e) { flashToast("更新完成 ✓"); }
               }
+              refreshUpgradeHealth().catch((e) => reportErr(e && e.message, "refresh upgrade health after build"));
             }
           }
-        } catch (e) { clearInterval(iv); restore(); }
+        } catch (e) {
+          clearInterval(iv); restore();
+          flashToast("读取更新进度失败：" + (e.message || e));
+        }
       }, 1500);
-    } catch (e) { btn.textContent = "更新失败"; setTimeout(restore, 1800); }
+    } catch (e) {
+      btn.textContent = "更新失败";
+      flashToast("更新失败：" + (e.message || e));
+      setTimeout(restore, 1800);
+    }
   }
   $("#btn-build").addEventListener("click", doManualUpdate);
 
@@ -4353,7 +4831,7 @@
   //  首启向导（Onboarding）
   // ══════════════════════════════════════════
   // backend: 引擎选择的临时态（local 默认；api 模式记录表单与「是否测通」）
-  const WZ = { detect: null, step: 1, backend: "local", api: { base: "https://api.siliconflow.cn/v1", key: "", embed_model: "BAAI/bge-m3", rerank_model: "BAAI/bge-reranker-v2-m3" }, apiTested: false };
+  const WZ = { detect: null, step: 1, backend: "local", api: { base: "https://api.siliconflow.cn/v1", key: "", embed_model: "BAAI/bge-m3", rerank_model: "BAAI/bge-reranker-v2-m3" }, apiSaved: false, apiTested: false };
   function setStep(n) {
     WZ.step = n;
     $$(".wizard-steps li").forEach((li) => {
@@ -4374,7 +4852,7 @@
         <span class="v ${ok ? "ok" : "miss"}">${ok ? esc(String(val)) : (missTxt || "未检测到")}</span></li>`;
     };
     const noZoteroHint = !d.zotero_dir
-      ? `<div class="wz-note">未检测到 Zotero —— 没关系，第 3 步可选「文件夹模式」，直接放 PDF 建库。</div>` : "";
+      ? `<div class="wz-note">未检测到 Zotero —— 没关系，第 3 步可选「文件夹模式」，直接放 PDF、EPUB、DOCX、Markdown 或 TXT 建库。</div>` : "";
     $("#wizard-body").innerHTML =
       `<div class="wz-note">只需 4 步、几分钟，就能把你的文库变成可秒级检索、可对话的本地知识库。先看看环境：</div>
       <ul class="wz-check">
@@ -4384,70 +4862,12 @@
       <div class="wz-actions">
         <button class="primary" id="wz1-next">下一步 →</button>
       </div>`;
-    $("#wz1-next").addEventListener("click", renderStepKey);
-  }
-
-  // 第 2 步（新）：领一个免费 SiliconFlow key —— 很多功能（对话/AI摘要/抽题录/找相似）用它的免费模型就够
-  function renderStepKey() {
-    setStep(2);
-    const cur = (WZ.api && WZ.api.key) || "";
-    $("#wizard-body").innerHTML =
-      `<div class="wz-note">强烈建议先领一个 <b>免费的 SiliconFlow（硅基流动）Key</b>。填这一个，PaperPiggy 的很多小功能——
-        对话、深索时自动生成 AI 摘要、文件夹模式自动读题录、点标题「找相似」——都能用它的<b>免费模型</b>跑起来。
-        <br>（认真做研究更推荐把库接进 Agent，见后面「🤖 Agent」页；这个 Key 是给应用内小功能兜底用的。）</div>
-      <div class="wz-field">
-        <label>SiliconFlow API Key（可选，但强烈建议）</label>
-        <input id="wzk-key" type="password" value="${esc(cur)}" placeholder="去 https://account.siliconflow.cn/zh/login 登录领免费额度" />
-      </div>
-      <p class="wz-mini">👉 <a href="https://account.siliconflow.cn/zh/login" target="_blank" rel="noopener">点此打开 SiliconFlow 登录页领 Key</a>。也可以先跳过，之后在「⚙ 设置」里补。</p>
-      <div class="wz-actions-inline">
-        <button class="ghost2c" id="wzk-test">测试连接（把要用的免费模型测一遍）</button>
-        <span id="wzk-test-msg" class="wz-test-msg"></span>
-      </div>
-      <div id="wzk-msg"></div>
-      <div class="wz-actions">
-        <button class="ghost2c wz-back" id="wzk-back">← 上一步</button>
-        <button class="primary" id="wzk-next">下一步：配置检索引擎 →</button>
-      </div>`;
-    $("#wzk-test").addEventListener("click", async () => {
-      const k = $("#wzk-key").value.trim(), msg = $("#wzk-test-msg");
-      if (!k) { msg.className = "wz-test-msg err"; msg.textContent = "请先填 Key"; return; }
-      msg.className = "wz-test-msg"; msg.textContent = "测试中…";
-      try {
-        const r = await jpost("/setup/test_api", { base: (WZ.api && WZ.api.base) || "https://api.siliconflow.cn/v1", key: k,
-          embed_model: (WZ.api && WZ.api.embed_model) || "BAAI/bge-m3", rerank_model: (WZ.api && WZ.api.rerank_model) || "BAAI/bge-reranker-v2-m3" });
-        if (r && r.ok) {
-          if (WZ.api) WZ.api.key = k; WZ.apiTested = true;
-          msg.className = "wz-test-msg ok";
-          msg.textContent = `✓ 免费模型可用（向量维度 ${num(r.dim)}，延迟 ${num(r.latency_ms)}ms）。下一步会自动用 API 引擎、无需再测。`;
-        // BF23：textContent 去 esc（否则报错里的 & < > 显示成 &amp; 等实体）
-        } else { WZ.apiTested = false; msg.className = "wz-test-msg err"; msg.textContent = "连接失败：" + ((r && r.msg) || "未知错误"); }
-      } catch (e) { WZ.apiTested = false; msg.className = "wz-test-msg err"; msg.textContent = "连接失败：" + e.message; }
-    });
-    $("#wzk-back").addEventListener("click", renderStep1);
-    $("#wzk-next").addEventListener("click", async () => {
-      const k = $("#wzk-key").value.trim();
-      if (k) {
-        try {
-          await jpost("/setup/backend", { backend: WZ.backend, key: k });  // 只存 key，不改后端
-          WZ.api.key = k; if (WZ.detect) WZ.detect.meta_ready = true; APP.metaReady = true;
-          // 对话页也用这个 key（siliconflow）
-          const c = cfg(); c.provider = c.provider || "siliconflow"; c.api_key = c.api_key || k; saveCfg(c);
-        } catch (e) {
-          // R15：保存失败则停在本步显示错误、不前进（否则 renderStep2 整块重绘会抹掉刚写的提示）
-          $("#wzk-msg").innerHTML = `<div class="wz-err">保存失败：${esc(e.message)}。请检查网络后重试，或清空此框跳过（之后在设置里补）。</div>`;
-          return;
-        }
-      }
-      renderStep2();
-    });
+    $("#wz1-next").addEventListener("click", renderStep2);
   }
 
   // ── 第 2 步：选择检索引擎（本地 / API 二选一）──
   function renderStep2() {
     setStep(2);
-    // 上一步填了 SiliconFlow Key → 默认用 API 引擎（免下模型、免再测）
-    if (WZ.api && WZ.api.key && WZ.backend !== "api") WZ.backend = "api";
     const a = WZ.api;
     const localSel = WZ.backend === "local";
     $("#wizard-body").innerHTML =
@@ -4456,49 +4876,38 @@
           <input type="radio" name="wz-backend" value="local" ${localSel ? "checked" : ""} />
           <div class="wz-engine-body">
             <div class="wz-engine-h">🔒 本地模式</div>
-            <div class="wz-engine-d">离线 · 隐私不出本机 · 需下载约 1.2GB 模型（首次一次性）</div>
+            <div class="wz-engine-d">离线 · 隐私不出本机 · 首次下载约 900MB，解压后占用约 1.2GB</div>
           </div>
         </label>
         <label class="wz-engine ${localSel ? "" : "sel"}" data-be="api">
           <input type="radio" name="wz-backend" value="api" ${localSel ? "" : "checked"} />
           <div class="wz-engine-body">
-            <div class="wz-engine-h">☁️ API 模式 <span class="wz-badge-save">省空间</span></div>
-            <div class="wz-engine-d">接入 SiliconFlow 等 OpenAI 兼容 API 做嵌入+重排，免费、免下载；检索时联网，文本会发给该服务商</div>
+            <div class="wz-engine-h">☁️ SiliconFlow 云端检索 <span class="wz-badge-rec">推荐</span> <span class="wz-badge-save">当前免费</span></div>
+            <div class="wz-engine-d">免下载模型；用固定的 BGE 嵌入与重排模型完成检索。检索时联网，待检索文本会发给 SiliconFlow。</div>
           </div>
         </label>
       </div>
       <div id="wz-api-form" class="wz-api-form" ${localSel ? "hidden" : ""}>
+        <div class="wz-note"><b>为什么这里指定 SiliconFlow？</b><br>
+          检索引擎同时需要“嵌入”和“重排”两个模型；普通 AI 对话接口通常不提供这两项。
+          PaperPiggy 已为 SiliconFlow 配好当前免费的 BGE 模型，只需填写 Key。DeepSeek、Kimi、OpenAI 等对话 Key 不能填在这里。</div>
         <div class="wz-field">
-          <label>服务商 Base URL</label>
-          <input id="wz-api-base" value="${esc(a.base)}" placeholder="https://api.siliconflow.cn/v1" />
+          <label>SiliconFlow API Key</label>
+          <input id="wz-api-key" type="password" value="${esc(a.key)}" placeholder="${WZ.apiSaved ? "Key 已保存，留空即可" : "去 SiliconFlow 控制台创建 Key"}" />
         </div>
-        <div class="wz-field">
-          <label>API Key</label>
-          <input id="wz-api-key" type="password" value="${esc(a.key)}" placeholder="去 https://cloud.siliconflow.cn/account/ak 领免费 key" />
-        </div>
-        <details class="wz-adv">
-          <summary>高级：模型名（一般不用改）</summary>
-          <div class="wz-field">
-            <label>嵌入模型</label>
-            <input id="wz-api-embed" value="${esc(a.embed_model)}" placeholder="BAAI/bge-m3" />
-          </div>
-          <div class="wz-field">
-            <label>重排模型</label>
-            <input id="wz-api-rerank" value="${esc(a.rerank_model)}" placeholder="BAAI/bge-reranker-v2-m3" />
-          </div>
-        </details>
+        <p class="wz-mini">👉 <a href="https://cloud.siliconflow.cn/account/ak" target="_blank" rel="noopener">打开 SiliconFlow 控制台创建 Key</a>。模型当前免费，但账户仍需保持可用；余额为 0 时平台可能拒绝请求。</p>
         <div class="wz-actions-inline">
-          <button class="ghost2c" id="wz-api-test">测试连接</button>
+          <button class="ghost2c" id="wz-api-test">测试嵌入与重排</button>
           <span id="wz-api-test-msg" class="wz-test-msg"></span>
         </div>
-        <p class="wz-mini">若你在「对话」里也用 SiliconFlow，同一个 key 即可。</p>
+        <p class="wz-mini">建库后，“PaperPiggy 自动生成摘要”也可以复用这个 Key，使用简单的免费模型；若想自选更强模型，可在设置里单独选择其他 AI 厂商。</p>
       </div>
       <div id="wz2-msg"></div>
       <div class="wz-actions">
         <button class="ghost2c wz-back" id="wz2-back">← 上一步</button>
         <button class="primary" id="wz2-next">下一步 →</button>
       </div>`;
-    $("#wz2-back").addEventListener("click", renderStepKey);
+    $("#wz2-back").addEventListener("click", renderStep1);
 
     // 单选切换：更新选中态 + 展开/收起 API 表单
     const syncBackend = () => {
@@ -4510,19 +4919,14 @@
       $("#wz-api-form").hidden = be !== "api";
     };
     $$("input[name=wz-backend]").forEach((r) => r.addEventListener("change", syncBackend));
-    // 上一步已用该 Key 测通 → 提示免测（apiTested 已为 true，下一步不会拦）
-    if (WZ.apiTested && WZ.api && WZ.api.key) {
-      const tm0 = $("#wz-api-test-msg"); if (tm0) { tm0.className = "wz-test-msg ok"; tm0.textContent = "✓ 已用上一步的 Key 测通，无需再测。"; }
-    }
-
     // 表单输入回写 WZ.api；改动后视为「未测通」
     const readApiForm = () => {
-      WZ.api.base = $("#wz-api-base").value.trim();
+      WZ.api.base = "https://api.siliconflow.cn/v1";
       WZ.api.key = $("#wz-api-key").value.trim();
-      WZ.api.embed_model = $("#wz-api-embed").value.trim() || "BAAI/bge-m3";
-      WZ.api.rerank_model = $("#wz-api-rerank").value.trim() || "BAAI/bge-reranker-v2-m3";
+      WZ.api.embed_model = "BAAI/bge-m3";
+      WZ.api.rerank_model = "BAAI/bge-reranker-v2-m3";
     };
-    ["#wz-api-base", "#wz-api-key", "#wz-api-embed", "#wz-api-rerank"].forEach((sel) => {
+    ["#wz-api-key"].forEach((sel) => {
       const el = $(sel); if (el) el.addEventListener("input", () => { readApiForm(); WZ.apiTested = false; });
     });
 
@@ -4530,13 +4934,12 @@
     $("#wz-api-test").addEventListener("click", async () => {
       readApiForm();
       const btn = $("#wz-api-test"), msg = $("#wz-api-test-msg");
-      if (!WZ.api.key) { msg.className = "wz-test-msg err"; msg.textContent = "请先填 API Key"; return; }
+      if (!WZ.api.key && !WZ.apiSaved) { msg.className = "wz-test-msg err"; msg.textContent = "请先填 API Key"; return; }
       btn.disabled = true; msg.className = "wz-test-msg"; msg.textContent = "测试中…";
       try {
-        const r = await jpost("/setup/test_api", {
-          base: WZ.api.base, key: WZ.api.key,
-          embed_model: WZ.api.embed_model, rerank_model: WZ.api.rerank_model,
-        });
+        const testBody = { base: WZ.api.base, embed_model: WZ.api.embed_model, rerank_model: WZ.api.rerank_model };
+        if (WZ.api.key) testBody.key = WZ.api.key;
+        const r = await jpost("/setup/test_api", testBody);
         if (r && r.ok) {
           WZ.apiTested = true;
           msg.className = "wz-test-msg ok";
@@ -4559,17 +4962,19 @@
       $("#wz2-msg").innerHTML = "";
       if (WZ.backend === "api") {
         readApiForm();
-        if (!WZ.api.key) { $("#wz2-msg").innerHTML = `<div class="wz-err">请先填写 API Key，或选择本地模式。</div>`; return; }
+        if (!WZ.api.key && !WZ.apiSaved) { $("#wz2-msg").innerHTML = `<div class="wz-err">请先填写 API Key，或选择本地模式。</div>`; return; }
         if (!WZ.apiTested) { $("#wz2-msg").innerHTML = `<div class="wz-err">请先点「测试连接」确认 key 可用，再继续。</div>`; return; }
       }
       const btn = $("#wz2-next"); btn.disabled = true;
       const body = WZ.backend === "api"
-        ? { backend: "api", base: WZ.api.base, key: WZ.api.key, embed_model: WZ.api.embed_model, rerank_model: WZ.api.rerank_model }
+        ? { backend: "api", base: WZ.api.base, embed_model: WZ.api.embed_model, rerank_model: WZ.api.rerank_model }
         : { backend: "local" };
+      if (WZ.backend === "api" && WZ.api.key) body.key = WZ.api.key;  // 留空保留已保存 Key
       try {
         const r = await jpost("/setup/backend", body);
         // 同步本地 detect 缓存，供第 1/4 步与后续判断
-        if (WZ.detect) { WZ.detect.backend = (r && r.backend) || WZ.backend; WZ.detect.api_key_set = !!(r && r.api_key_set); }
+        WZ.apiSaved = !!(r && r.api_key_set);
+        if (WZ.detect) { WZ.detect.backend = (r && r.backend) || WZ.backend; WZ.detect.api_key_set = WZ.apiSaved; }
         renderStep3();
       } catch (e) {
         $("#wz2-msg").innerHTML = `<div class="wz-err">保存失败：${esc(e.message)}</div>`;
@@ -4599,7 +5004,7 @@
           <input type="radio" name="wz-src" value="folder" ${zSel ? "" : "checked"} />
           <div class="wz-engine-body">
             <div class="wz-engine-h">📁 文件夹模式 <span class="wz-badge-save">无需 Zotero</span></div>
-            <div class="wz-engine-d">指定一个文件夹放 PDF，系统用 AI 自动读出题名、作者、年份、期刊等信息。适合没装 Zotero、手上就是一堆 PDF 的你。</div>
+            <div class="wz-engine-d">指定一个文件夹放 PDF、EPUB、DOCX、Markdown 或 TXT，系统用 AI 自动读出题名、作者、年份、期刊等信息。适合没装 Zotero、手上就是一批全文文件的你。</div>
           </div>
         </label>
       </div>
@@ -4622,9 +5027,9 @@
         <label>Zotero 数据目录（含 zotero.sqlite，留空自动探测）</label>
         <input id="wz-zdir" value="${esc(d.zotero_dir || "")}" placeholder="如 D:\\Zotero（留空则自动探测）" />
       </div>
-      <div class="wz-note">连接会直接读取 Zotero 的 zotero.sqlite 里每一条文献（含没有 PDF 的纯题录），<b>不修改</b>你的 Zotero 数据。</div>
+      <div class="wz-note">连接会直接读取 Zotero 的 zotero.sqlite 里每一条文献（含没有受支持全文附件的纯题录），<b>不修改</b>你的 Zotero 数据。</div>
       <label class="sac-toggle" style="margin:6px 0"><input type="checkbox" id="wz-onlypdf" ${(WZ.detect && WZ.detect.import_only_pdf) ? "checked" : ""} />
-        <span>只导入有 PDF 的文献（没有 PDF 的纯题录不进库；之后可在设置里改）</span></label>
+        <span>只导入有全文附件的文献（支持 PDF、EPUB、DOCX、Markdown、TXT；没有这些附件的纯题录不进库；之后可在设置里改）</span></label>
       <div id="wz3c-msg"></div>
       <div class="wz-actions">
         <button class="ghost2c wz-back" id="wz3-back">← 上一步</button>
@@ -4632,14 +5037,14 @@
       </div>`;
     $("#wz3-back").addEventListener("click", renderStep2);
     const _op = $("#wz-onlypdf");
-    // F1：连接结果按「只导入有 PDF」勾选状态区分「全库总数 / 将实际入库数」，避免显示 2110、实际入库 1443 的误导
+    // F1：连接结果按「只导入有全文附件」勾选状态区分「全库总数 / 将实际入库数」。
     const zoteroConnectedMsg = (r, tail) => {
       const only = _op ? _op.checked : !!(WZ.detect && WZ.detect.import_only_pdf);
-      const total = r.entries, wp = r.with_pdf;
+      const total = r.entries, wp = withFulltext(r);
       let s = `✅ 已连接 Zotero，共 ${num(total)} 条文献`;
       if (only && wp != null) {
         const skip = (r.no_pdf != null) ? r.no_pdf : (total - wp);
-        s += `，其中 <b>${num(wp)}</b> 条有 PDF、将只导入这些${skip > 0 ? `（${num(skip)} 条纯题录已按你的选择跳过）` : ""}`;
+        s += `，其中 <b>${num(wp)}</b> 条有受支持全文附件、将只导入这些${skip > 0 ? `（${num(skip)} 条纯题录已按你的选择跳过）` : ""}`;
       }
       return `<div class="wz-result">${s}。${tail}</div>`;
     };
@@ -4686,14 +5091,14 @@
     if (!def) { try { def = (await jget("/setup/folder_default")).default_dir || ""; } catch (e) {} }
     $("#wz-src-body").innerHTML =
       `<div class="wz-field">
-        <label>知识库文件夹（PaperPiggy 会用它来放你的 PDF）</label>
+        <label>知识库文件夹（PaperPiggy 会用它来放你的全文文件）</label>
         <div class="wz-folder-pick">
           <input id="wz-folder-dir" value="${esc(def)}" placeholder="如 D:\\我的论文库" />
           ${nativePick ? `<button class="ghost2c" id="wz-folder-browse">浏览…</button>` : ""}
         </div>
-        <p class="wz-mini">默认就用应用自己的文件夹（上面这个路径）。点下面「📂 打开文件夹放 PDF」会创建并直接打开它，把论文拖进去即可。</p>
+        <p class="wz-mini">默认就用应用自己的文件夹（上面这个路径）。点下面「📂 打开全文文件夹」会创建并直接打开它，把论文拖进去即可。</p>
         <div class="wz-actions-inline">
-          <button class="ghost2c" id="wz-folder-open">📂 打开文件夹放 PDF</button>
+          <button class="ghost2c" id="wz-folder-open">📂 打开全文文件夹</button>
           <span id="wz-folder-cnt" class="wz-test-msg"></span>
         </div>
       </div>
@@ -4719,7 +5124,7 @@
         if (dir) await jpost("/setup/folder", { folder_dir: dir });
         const r = await jpost("/setup/open_folder", {});
         const cnt = $("#wz-folder-cnt");
-        if (cnt) cnt.textContent = "已打开文件夹，把 PDF 拖进去后回来点「建立文件夹库」。";
+        if (cnt) cnt.textContent = "已打开文件夹，把受支持全文文件拖进去后回来点「建立文件夹库」。";
       } catch (e) { const cnt = $("#wz-folder-cnt"); if (cnt) cnt.textContent = "打开失败：" + e.message; }
     });
     $("#wz3f-connect").addEventListener("click", async () => {
@@ -4731,7 +5136,7 @@
         WZ.srcChoice = "folder"; WZ.folderDir = dir; WZ.folderConnected = r;
         APP.source = "folder"; APP.folderDir = dir; APP.srcLoaded = true; applySourceCopy();
         const n = num(r.entries || 0);
-        $("#wz3f-msg").innerHTML = `<div class="wz-result">✅ 已建立文件夹库，发现 ${n} 个 PDF${r.entries ? "" : "（空文件夹也没关系，稍后把 PDF 拖进窗口就会自动入库）"}。点「下一步」继续。</div>`;
+        $("#wz3f-msg").innerHTML = `<div class="wz-result">✅ 已建立文件夹库，发现 ${n} 个受支持全文文件${r.entries ? "" : "（空文件夹也没关系，稍后把全文文件拖进窗口就会自动入库）"}。点「下一步」继续。</div>`;
         const act = btn.parentNode;
         if (act) {
           act.innerHTML = `<button class="ghost2c wz-back" id="wz3f-back2">← 上一步</button><button class="primary" id="wz3f-next2">下一步：建立索引 →</button>`;
@@ -4746,7 +5151,7 @@
     // 从后续步骤回退时：本会话已建过文件夹库 → 直接恢复「下一步」态
     if (WZ.folderConnected) {
       const n0 = num(WZ.folderConnected.entries || 0);
-      $("#wz3f-msg").innerHTML = `<div class="wz-result">✅ 已建立文件夹库，发现 ${n0} 个 PDF。点「下一步」继续。</div>`;
+      $("#wz3f-msg").innerHTML = `<div class="wz-result">✅ 已建立文件夹库，发现 ${n0} 个受支持全文文件。点「下一步」继续。</div>`;
       const cb1 = $("#wz3f-connect"), act1 = cb1 && cb1.parentNode;
       if (act1) {
         act1.innerHTML = `<button class="ghost2c wz-back" id="wz3f-back2">← 上一步</button><button class="primary" id="wz3f-next2">下一步：建立索引 →</button>`;
@@ -4761,12 +5166,12 @@
     const box = $("#wz-meta-dep"); if (!box) return;
     const hasKey = (WZ.backend === "api" && WZ.api.key) || (WZ.detect && WZ.detect.meta_ready) || APP.metaReady;
     if (hasKey) {
-      box.innerHTML = `<div class="wz-note wz-note-ok">🤖 <b>题录抽取已就绪</b>：入库时会用你配置的 API Key，自动从 PDF 正文读出题名 / 作者 / 年份 / 期刊 / 摘要。</div>`;
+      box.innerHTML = `<div class="wz-note wz-note-ok">🤖 <b>题录抽取已就绪</b>：入库时会用你配置的 API Key，自动从全文文件读出题名 / 作者 / 年份 / 期刊 / 摘要。</div>`;
       return;
     }
     box.innerHTML = `
       <div class="wz-note wz-note-warn">⚠️ <b>还差一步：配一个 AI 的 API Key</b><br>
-        文件夹里的 PDF 没有题名、作者等信息，需要 AI 从正文里读出来。推荐用 <b>SiliconFlow（硅基流动）</b>，
+        文件夹里的全文文件没有结构化题名、作者等信息，需要 AI 从正文里读出来。推荐用 <b>SiliconFlow（硅基流动）</b>，
         有免费模型、几分钟就能配好。不配也能入库，但文献只会显示文件名，检索和分类会大打折扣。</div>
       <div class="wz-field"><label>API Key（SiliconFlow）</label>
         <input id="wz-meta-key" type="password" placeholder="去 https://cloud.siliconflow.cn/account/ak 领免费 key" /></div>
@@ -4790,7 +5195,7 @@
   function renderStep4() {
     setStep(4);
     const readyHtml =
-      `<div class="wz-note">检索引擎已就绪 ✓${WZ.backend === "api" ? "（API 模式，无需本地模型）" : "（本地模型已在）"}。可直接进入下一步。</div>
+      `<div class="wz-note">检索引擎已就绪 ✓${WZ.backend === "api" ? "（SiliconFlow 云端检索，无需本地模型）" : "（本地模型已在）"}。可直接进入下一步。</div>
       <div class="wz-actions">
         <button class="ghost2c wz-back" id="wz4-back">← 上一步</button>
         <button class="primary" id="wz4-next">下一步：建立索引 →</button>
@@ -4814,7 +5219,7 @@
       if (st && st.present) { bindReady(); return; }
       const missing = (st && st.missing) || [];
       $("#wz4-inner").innerHTML =
-        `<div class="wz-note">本地模式需下载约 <b>1.2GB</b> 模型（仅此一次），下载后全程离线、隐私不出本机。
+        `<div class="wz-note">本地模式首次需下载约 <b>900MB</b> 模型，解压后占用约 <b>1.2GB</b>；下载完成后检索无需联网，待检索文本不出本机。
           ${missing.length ? `<br><span class="wz-subtle">待下载：${esc(missing.join("、"))}</span>` : ""}</div>
         <div id="wz4-prog" class="wz-dl" hidden>
           <div class="wz-dl-head"><span id="wz4-dl-name">准备中…</span><span id="wz4-dl-pct">0%</span></div>
@@ -4903,8 +5308,8 @@
     const emptyFolder = isFolder && (entries === 0);
     const note = isFolder
       ? (emptyFolder
-          ? `<div class="wz-note">文件夹还是空的——没关系，进去后把 PDF 拖进窗口就会自动入库。也可以先放好 PDF 再点下面。</div>`
-          : `<div class="wz-note">下一步会<b>逐篇读出每个 PDF 的题录</b>（题名/作者/年份/期刊），再建索引。
+          ? `<div class="wz-note">文件夹还是空的——没关系，进去后把全文文件拖进窗口就会自动入库。也可以先放好文件再点下面。</div>`
+          : `<div class="wz-note">下一步会<b>逐篇读出每个全文文件的题录</b>（题名/作者/年份/期刊），再建索引。
               比 Zotero 慢一些（每篇要让 AI 读一次），${entries != null ? `约 <b>${num(entries)}</b> 篇，` : ""}可以放着，完成后自动可搜。</div>`)
       : `<div class="wz-note">下一步<b>建立索引</b>：把每篇的「标题+摘要+关键词」建成可搜索索引。
           <b>0 等待、秒级完成</b>，完成后检索框和库总览立刻可用。${entries != null ? ` 待索引约 <b>${num(entries)}</b> 篇。` : ""}</div>`;
@@ -4954,9 +5359,9 @@
           return;
         }
         const papers = r.meta_indexed != null ? r.meta_indexed : (r.total || 0);
-        const wp = r.with_pdf || 0;
+        const wp = withFulltext(r);
         jpost("/index/semantic", {}).catch((e) => reportErr(e && e.message, "wizard auto-semantic"));
-        $("#wz5-msg").innerHTML = `<div class="wz-result">🎉 已索引 ${num(papers)} 篇（其中 ${num(wp)} 篇有 PDF 可深索）<br><span class="wz-subtle">检索质量已在后台自动提升，可直接进入使用。</span></div>`;
+        $("#wz5-msg").innerHTML = `<div class="wz-result">🎉 已索引 ${num(papers)} 篇（其中 ${num(wp)} 篇有全文附件可深索）<br><span class="wz-subtle">检索质量已在后台自动提升，可直接进入使用。</span></div>`;
         btn.outerHTML = `<button class="primary" id="wz5-enter">进入知识库 →</button>`;
         // C2：进入后强制重载库总览，刷掉冷启动残留的失败态
         $("#wz5-enter").addEventListener("click", () => { closeWizard(); poll(); dashLoaded = false; loadDashboard("loud"); maybeDeepInvite(); });
@@ -4976,7 +5381,7 @@
     let st = lastIdxStatus;
     if (!st) { try { st = await jget("/index/status"); lastIdxStatus = st; } catch (e) { return; } }
     if (st.mode !== "full") return;                       // 语义层未就绪不弹
-    const withPdf = st.with_pdf || 0, deep = st.deep_done || 0, blocked = extractCounts(st).blocked;
+    const withPdf = withFulltext(st), deep = st.deep_done || 0, blocked = extractCounts(st).blocked;
     if (!(withPdf > 0 && (deep + blocked) < withPdf)) return;
     renderDeepInvite(deep, withPdf, st.building && st.stage === "deep", st);
   }
@@ -4987,8 +5392,8 @@
     card.className = "deep-invite";
     card.innerHTML =
       `<div class="di-ic">📄</div>
-      <div class="di-txt"><b>深索让回答精确到页码</b>
-        <span>已深索 <b>${num(deep)}</b>/<b>${num(withPdf)}</b> 篇有 PDF 的文献。把剩余文献的全文拆成可检索的小段，可后台进行。${sacFrag(st)}</span></div>
+      <div class="di-txt"><b>深索让回答回溯到原文位置</b>
+        <span>已深索 <b>${num(deep)}</b>/<b>${num(withPdf)}</b> 篇有全文附件的文献。把剩余文献的全文拆成可检索的小段，可后台进行。${sacFrag(st)}</span></div>
       <div class="di-btns"><button class="go">深索全库</button><button class="later">以后再说</button></div>`;
     $("#results").parentNode.insertBefore(card, $("#results"));
     card.querySelector(".later").addEventListener("click", () => {
@@ -5025,6 +5430,10 @@
       applySourceCopy();
       // 用后端当前后端选择初始化向导态（默认 local）
       if (d.backend === "api" || d.backend === "local") WZ.backend = d.backend;
+      WZ.apiSaved = !!d.api_key_set;
+      WZ.api.base = d.api_base || "https://api.siliconflow.cn/v1";
+      WZ.api.embed_model = d.api_embed_model || "BAAI/bge-m3";
+      WZ.api.rerank_model = d.api_rerank_model || "BAAI/bge-reranker-v2-m3";
       // R16：空文件夹进入后不建索引→无 manifest→d.indexed 恒 false 会每次重弹向导。
       // 用本机 onboarded 标记兜底：已走完向导的就不再弹，改走老用户回访路径。
       const onboarded = (() => { try { return localStorage.getItem("localkb.onboarded") === "1"; } catch (e) { return false; } })();
@@ -5078,8 +5487,8 @@
     poll();
   }
   async function ingestFiles(fileList) {
-    const files = Array.from(fileList || []).filter((f) => /\.pdf$/i.test(f.name));
-    if (!files.length) { toast("只支持拖入 PDF 文件"); return; }
+    const files = Array.from(fileList || []).filter((f) => /\.(pdf|epub|docx|md|markdown|txt)$/i.test(f.name));
+    if (!files.length) { toast("只支持 PDF、EPUB、DOCX、Markdown、TXT 文件（不支持 HTML）"); return; }
     showIngestPanel(files.length);
     try {
       const payload = { files: [] };
@@ -5122,7 +5531,7 @@
       if (!isFileDrag(e)) return;
       e.preventDefault(); dragDepth = 0; if (overlay) overlay.hidden = true;
       if (APP.source === "folder") { ingestFiles((e.dataTransfer && e.dataTransfer.files) || []); }
-      else { flashToast("Zotero 模式不支持直接拖入 PDF。请在 Zotero 里添加文献后，点顶栏「⟳ 更新知识库」。"); }
+      else { flashToast("Zotero 模式不支持直接拖入文件。请在 Zotero 里添加受支持全文附件后，点顶栏「⟳ 更新知识库」。"); }
     });
     // 文件选择器兜底（拖拽不生效时 100% 可用）
     const inp = $("#ingest-file-input");
@@ -5142,6 +5551,7 @@
   }
 
   ensureSource().then(() => { initDragIngest(); maybeShowDropzone(); });
+  loadDiscipline();
   maybeWizard();
   // 冷启动：默认页＝库总览，主动加载一次（懒加载此前只在点 tab 时触发；loadDashboard 只 GET /stats，无副作用）
   if (!dashLoaded) loadDashboard("loud");

@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
 自动 SAC（M2 文档摘要前缀）——用 LLM 给每篇文献生成 ~150 字中文摘要，作为嵌入前缀提升检索。
-原来这步要人（对话里的 AI）跑；现在用用户配的 LLM API（默认 SiliconFlow 免费 DeepSeek）**全自动**。
+PaperPiggy 自动生成可复用检索引擎的 SiliconFlow Key + 免费简单模型，也可使用用户另选的文本生成厂商。
 - 存 data/summaries/summaries.json（{stem(safe_name): 摘要}），embed_index 会自动加载并拼进嵌入文本。
 - 只对"缺摘要"的篇生成，幂等；每篇 1 次 LLM 调用（非每块）。
-- settings.sac.enabled=False 或 key 空 → 跳过（退化为纯文本嵌入，不报错）。
+- 未选择 PaperPiggy 自动生成，或所选来源没有可用 Key → 跳过（不影响深索与正文检索）。
 """
 import sys, json, os, re, time
 from pathlib import Path
@@ -64,6 +64,16 @@ def validate_summary(summary):
     if useful < 30 or (visible and question_marks / len(visible) > 0.20):
         return False, "有效文字过少，疑似乱码"
 
+    punctuation_run = re.search(r"[，,。；;：:！？!?、]{3,}", s)
+    if punctuation_run:
+        return False, f"标点“{punctuation_run.group(0)}”异常连续，疑似生成损坏"
+
+    # 保守抓取相邻重复的中文短语：重要性重要性 / 测量方法，测量方法 / 研究设计，设计了。
+    # 只允许空白或标点隔开，正常的“问卷设计、访谈设计”不会命中。
+    chinese_repeat = re.search(r"([\u3400-\u9fff]{2,8})[\s，,、；;：:]*\1", s)
+    if chinese_repeat:
+        return False, f"中文短语“{chinese_repeat.group(1)}”连续重复，疑似生成损坏"
+
     words = re.findall(r"[A-Za-z]+|\d+", s.lower())
     run = 1
     for idx in range(1, len(words)):
@@ -102,19 +112,18 @@ def summarize_one(title, abstract, body, conf):
 
 
 def _conf():
-    """SAC 配置；key 为空时自动复用 API 后端的 base/key（用户配了 SiliconFlow 就一个 key 通吃）。"""
+    """返回当前自动摘要的有效配置；复用和独立厂商是明确的两条路径。"""
     c = dict(S.sac_conf())
-    if not c.get("key"):
+    if c.get("source") == "reuse":
         a = S.api_conf()
-        if a.get("key"):
-            c["key"] = a.get("key")
-            # 借 key 也借 base——本地 base 恒为 SiliconFlow 默认值，不让 a.base 优先的话，
-            # 借来的（非硅基）key 仍被发往硅基 base → 必然失败。a.base 优先、无则退回本地。
-            c["base"] = a.get("base") or c.get("base")
-            # base 非 SiliconFlow 时别硬套默认 Qwen 模型——有 a.model 就借它，
-            # 没有（api 段只配了嵌入/重排模型）则维持用户可配的 sac.model。
-            if a.get("model") and "siliconflow" not in (c.get("base") or "").lower():
-                c["model"] = a["model"]
+        # “复用”只承诺复用 SiliconFlow：普通对话 API 即使 OpenAI 兼容，也未必有检索所需模型，
+        # 更不能把别家 Key 发往 SiliconFlow。旧配置若把检索 Base 改成别家，这里明确判为未就绪。
+        if "siliconflow" in (a.get("base") or "").lower():
+            c["base"] = a.get("base") or "https://api.siliconflow.cn/v1"
+            c["key"] = a.get("key") or ""
+            c["model"] = S.DEFAULT["sac"]["model"]
+        else:
+            c["key"] = ""
     return c
 
 
@@ -198,7 +207,7 @@ def inspect(stem):
 
 
 def key_available():
-    """补生成是否有可用的 API key（本段 key，或复用检索引擎/API 后端的 key）。"""
+    """补生成是否有可用的 API key（复用 SiliconFlow，或独立 AI 厂商配置）。"""
     return bool(_conf().get("key"))
 
 

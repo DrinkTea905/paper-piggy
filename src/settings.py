@@ -3,8 +3,8 @@
 用户设置（data/settings.json）——检索引擎后端的单一事实来源。
 backend = "local"（默认，离线用本地 ONNX 模型）| "api"（用 OpenAI 兼容的嵌入/重排 API，省 1.2GB）。
 API 模式默认接 SiliconFlow（BAAI/bge-m3 + bge-reranker-v2-m3 免费）。
-⚠️ 铁律：建索引与查询必须用同一后端（本地 INT8 与 API 全精度向量不一致，混用掉点）。
-   建库时把 backend 写进 index_manifest；加载/查询时若不一致要提示重建。
+⚠️ 铁律：建索引与查询必须用同一向量空间（后端、API 地址、嵌入模型任一变化都可能不兼容）。
+   建库时把 backend + embedding_identity 写进 index_manifest；加载/查询不一致就停止并提示重建。
 """
 import sys, json, threading
 from pathlib import Path
@@ -26,15 +26,16 @@ DEFAULT = {
     "folder_dir": "",            # source=folder 时的受管库文件夹绝对路径
     # BF2：用户在向导手选的 Zotero 数据目录（空=自动探测）。此前校验完即丢，重启就失忆。
     "zotero_dir": "",
-    # Zotero 模式：只导入有 PDF 的条目。默认 True（库更干净、卡片都完整）。
-    # ⚠️ 代价：没有 PDF 的法条/法规/网页法源会被挡在库外（法源常只有网页/文本）——
+    # Zotero 模式：只导入有受支持全文附件的条目。为兼容已有用户保留旧键名 import_only_pdf。
+    # 支持 PDF、EPUB、DOCX、Markdown、TXT；不支持 HTML。默认 True。
+    # ⚠️ 代价：没有这些附件的法条/法规/网页法源会被挡在库外——
     #    这是产品所有者 2026-07-15 明确拍板的默认；想收全法源就在设置里关掉它。
     "import_only_pdf": True,
     # 整库锁定单学科（journal_grading 期刊权重引擎用）。默认 "law_personal"
     #（法学·开发者增强，含 2026-06-28 旧档：台湾刊/顶尖外文法评/外文权威，外刊不打折）；
     # 标准法学是 "law"。两者的 catalog 都随包分发，law_personal 已验证可正常加载。
     "journal_discipline": "law_personal",
-    # 自动更新：Zotero 新增条目 / 文件夹新增 PDF 时，后台定时增量更新（只跑轻量层+语义，深索永远手动）。
+    # 自动更新：Zotero 新增条目 / 文件夹新增全文文件时，后台定时增量更新（只跑轻量层+语义，深索永远手动）。
     # 调度由「分钟级轮询」改为「按天(1-30) + 指定时刻」，默认每天 07:00——时段长、避开用库时间、降低与检索撞车。
     "auto_update": {
         "enabled": True,
@@ -46,7 +47,7 @@ DEFAULT = {
         "at_time": "07:00",
         # 开应用时若上次计划更新已被错过（关机期间到点），补跑一次。
         "catch_up_on_launch": True,
-        # C3/D4-4：同步删除（默认关）。开=移出受管文件夹的 PDF 下次更新时从库中移除；
+        # C3/D4-4：同步删除（默认关）。开=移出受管文件夹的全文文件下次更新时从库中移除；
         # 关=只增不删（防误删临时挪走的文件）。仅 folder 模式的增量构建读它；zotero 走手动「清理已删除」按钮。
         "delete_sync": False,
     },
@@ -82,15 +83,18 @@ DEFAULT = {
         "include_index": False,   # 手动备份时是否连向量索引一起打包（几个 G，换机免重建）
         "last_at": "",            # 上次成功备份的时间（YYYY-MM-DD HH:MM:SS）
     },
-    # 自动 SAC（M2）：深索时用 LLM 给每篇生成 ~150 字摘要当嵌入前缀，提升检索。
-    # 默认用 SiliconFlow 免费的 Qwen2.5-7B-Instruct（纯指令模型、无思维链、出词快，最适合做短摘要）；
-    # key 空或 enabled=False 则退化为纯文本嵌入。
+    # 自动 SAC（M2）：深索后用 LLM 给每篇生成 ~150 字摘要当嵌入前缀，提升检索。
+    # source=reuse：复用检索引擎的 SiliconFlow Key + 当前免费、简单快速的 Qwen2.5-7B-Instruct；
+    # source=custom：使用用户另选的文本生成厂商 / Key / 模型（通常按量收费）。
+    # source 空是旧配置迁移态：有独立 key 视为 custom，否则视为 reuse（见 sac_conf）。
     "sac": {
         "enabled": False,           # 遗留字段；真正的门控是 generator（见 sac_conf / sac.enabled）
         # 深索摘要由谁生成：agent=交给 Agent（服务端不自动产，默认）| server=服务端用 API Key 自动产 | off=不产。
         # 默认 agent：省 API 额度、契合「以 Agent 为主」的用法。代价——应用内自己点深索时不会自动产摘要，
         # 得让 Agent 跑深索时顺带生成，或在浏览页/库总览手动补。
         "generator": "agent",
+        "source": "",
+        "provider": "deepseek",
         "base": "https://api.siliconflow.cn/v1",
         "key": "",
         "model": "Qwen/Qwen2.5-7B-Instruct",
@@ -183,6 +187,18 @@ def backend():
     return load().get("backend", "local")
 
 
+def embedding_identity(state=None):
+    """向量空间身份：后端、API 地址和嵌入模型任一变化都必须全量重嵌。"""
+    state = state or load()
+    kind = state.get("backend", "local")
+    if kind == "api":
+        api = state.get("api") or {}
+        base = str(api.get("base") or DEFAULT["api"]["base"]).strip().rstrip("/").lower()
+        model = str(api.get("embed_model") or DEFAULT["api"]["embed_model"]).strip()
+        return f"api|{base}|{model}"
+    return f"local|{C.EMBED_MODEL}|dim={C.EMBED_DIM}"
+
+
 def discipline():
     """整库锁定的期刊分级学科（journal_grading）。默认见 DEFAULT（law_personal）。"""
     return load().get("journal_discipline", DEFAULT["journal_discipline"])
@@ -217,13 +233,20 @@ def retrieval_conf():
 
 
 def sac_conf():
-    """SAC 配置。generator（server|agent|off）现在**是 DEFAULT 的一部分**（默认 agent），
-       所以新装/缺该字段的设置都会经 _merge 得到 agent。
-       这段迁移只兜底一种历史情形：settings.json 里 sac 存在、却带了个非法 generator 值。"""
-    c = dict(load().get("sac", DEFAULT["sac"]))
+    """SAC 配置，兼容旧版没有 ``source`` 的独立摘要 Key。
+
+    generator 决定由谁生成；source 只在 generator=server 时决定自动生成所用凭据：
+    reuse=复用检索引擎的 SiliconFlow Key，custom=使用另配的文本生成厂商。
+    """
+    c = dict(DEFAULT["sac"])
+    c.update(load().get("sac") or {})
     g = c.get("generator")
     if g not in ("server", "agent", "off"):
         c["generator"] = "server" if c.get("enabled") else "off"
+    if c.get("source") not in ("reuse", "custom"):
+        c["source"] = "custom" if c.get("key") else "reuse"
+    if not c.get("provider"):
+        c["provider"] = "deepseek"
     return c
 
 

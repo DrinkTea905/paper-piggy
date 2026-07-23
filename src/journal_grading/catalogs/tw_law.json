@@ -4,7 +4,7 @@
     "version": "2026-06-28-legacy",
     "source": "个人整理（台湾法学刊）",
     "origin": "cn",
-    "note": "私有目录（law_personal 专用）：台湾法学期刊。核心→T1、一般→T2。level ∈ {核心,一般}。 ｜ 已并入 2026-06-28 个人法学旧档。",
+    "note": "私有目录（law_personal 专用）：重点三刊显示权威，其他个人偏好刊显示核心；与正式 TSSCI 表分离。 ｜ 已并入 2026-06-28 个人法学旧档。",
     "migrated_from": "D:\\LocalKB\\data\\journal_tiers.json"
   },
   "journals": [

@@ -12,7 +12,7 @@
 
 - **Python 3.12**（`python3 --version` 看一下；没有就用 [python.org](https://www.python.org/downloads/) 或 `brew install python@3.12`）
 - **git**（`git --version`；没有会提示装 Xcode Command Line Tools，装上即可 —— 顺带 wiki 版本历史也靠它）
-- **Zotero**（可选）：想让它读你的 Zotero 文库就装；只想丢一个装满 PDF 的文件夹进去则不需要
+- **Zotero**（可选）：想让它读你的 Zotero 文库就装；只想丢一个装满 PDF、EPUB、DOCX、Markdown 或 TXT 的文件夹进去则不需要
 
 ## 2. 拉代码 + 装依赖
 
@@ -33,8 +33,10 @@ pip install -r src/requirements.txt
 
 首次启动向导里会让你选：
 
-- **API 模式**（省事，推荐先用这个）：填一个 [硅基流动](https://siliconflow.cn) 之类的 API Key，
-  嵌入/重排都走云端，**不用下模型**。⚠️ 账户余额为 0 时连免费模型都会报 403，建议充 ¥1。
+- **SiliconFlow 云端检索**（省事，推荐先用这个）：填写一个 [SiliconFlow（硅基流动）](https://siliconflow.cn) Key，
+  嵌入和重排都走已适配的云端模型，**不用下载本地模型**。检索同时依赖这两类专用接口，
+  所以不能直接填写 DeepSeek、Kimi、OpenAI 等普通对话 Key；这些厂商可以用于检索摘要或对话。
+  ⚠️ 已适配的检索模型当前免费，但账户余额为 0 时免费模型也可能报 403，建议充 ¥1；以后价格以服务商页面为准。
 - **本地模式**：模型跑在你机器上，首启按需下载约 900MB 的 ONNX 模型（`onnxruntime` 有 Mac wheel，
   Apple Silicon / Intel 都支持）。想省下载可以自己把模型放好，然后 `export LOCALKB_MODELS=/路径/models`。
 
@@ -55,7 +57,7 @@ macOS 上落在：
 ```
 ~/Library/Application Support/PaperPiggy/
 ├─ data/            索引、综述 wiki、收藏夹、期刊分级、检索摘要…
-├─ models/          本地模式的模型（API 模式为空）
+├─ models/          本地检索使用的模型（云端检索时为空）
 ├─ 0_Agent交付物/    AI 写的成品
 └─ 0_Agent资料库/    AI 的记忆/技能/定时任务
 ```

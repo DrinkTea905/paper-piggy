@@ -10,6 +10,7 @@ from datetime import datetime, timedelta   # EN-M1：whats_new 按天数换算 s
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import config as C
+import document_formats as DF
 import requests
 
 # stdio 必须 UTF-8（中文工具描述/结果）；日志一律走 stderr，绝不污染 stdout 的 JSON-RPC 通道
@@ -60,7 +61,7 @@ def _wiki_todo_note(prefix="\n\n"):
     if n_sugg:
         bits.append(f"{n_sugg} 篇新文献待并入综合层（调 pending_wiki_updates 看受影响页）")
     if n_lint:
-        bits.append(f"{n_lint} 项综合层体检问题（调 lint_wiki 看孤儿/过时/断链页）")
+        bits.append(f"{n_lint} 项综合层体检问题（调 lint_wiki 看孤儿/过时/断链/来源错误/重复外壳）")
     return f"{prefix}⚠ wiki 维护待办：" + "；".join(bits) + "。主动维护是高优先级，别等用户开口。"
 
 
@@ -81,8 +82,9 @@ _INSTRUCTIONS_HEAD = """你连接的是用户的**本地文献知识库**（Pape
 1. 动手综合前，先 list_wiki / get_wiki_page 看有没有现成的页，别重复造轮子。
 2. 每个论断后带 [n] 引用，n 对应 sources 里的论文 key。不臆造、不给无出处的断言。
 3. 下判断前先 read_source 读原文（逐页正文 + 印刷页码）。不要只凭 220 字检索片段就写综述。
-4. 你只能写**综合层**（save_synthesis / build_digest / research_outline / mark_stale）。
-   绝不改动文献库、索引、Zotero。你能写、不能删——删除只由用户在应用里操作。
+4. 不得直接修改原始文献或 Zotero。只有用户明确要求、并通过工具自身的安全闸时，
+   才能 add_source、建库或深索，从而更新 PaperPiggy 索引。wiki 写回仅限综合层
+   （save_synthesis / update_wiki_page / build_digest / research_outline / mark_stale）；你能写、不能删——删除只由用户在应用里操作。
 5. 你写回的页会标记为「🤖 未核验」，立即进入检索但会被降权。请对得起这个信任。
 6. 覆盖规则：你不能覆盖用户人工保存/核验过的页（会被拒绝）。发现旧页被新文献推翻，
    用 mark_stale 标脏并写清理由，而不是抹掉别人的结论。
@@ -182,7 +184,7 @@ def _workspace_text():
         "  —— 你替用户写的成品放这里，**每个主题一个子文件夹**，附一个 README（用途/引注规范/与其他材料的关系）。\n\n"
         "主动维护（优先级高，别等用户开口）：\n"
         "· 深索一批文献后 / 想维护 wiki 时，先调 pending_wiki_updates 拿受影响页清单，再逐页判断标脏或重写。\n"
-        "· 定期调 lint_wiki 给综合层做体检（孤儿页/过时页/断链/无来源页/该有独立页的概念），照清单修。\n"
+        "· 定期调 lint_wiki 给综合层做体检（孤儿页/过时页/断链/来源错误/重复外壳/缺失概念），照清单修。\n"
         "· 接入本库、或每次检索/深索后，工具输出尾部若出现「⚠ wiki 维护待办」，就顺手把它清掉——别累积。\n"
         "· 跑完定时任务后，依检索到的时效内容更新相关综合页——时效资料是 wiki 的活水。\n"
         "· 产出交付物前，和用户确认交付形态（篇幅/引注/要不要 .docx），可参照交付模板。\n"
@@ -208,9 +210,18 @@ def send(msg):
 
 def health():
     try:
-        return requests.get(URL + "/health", timeout=3).json()
+        data = requests.get(URL + "/health", timeout=3).json()
+        return data if (isinstance(data, dict)
+                        and data.get("app") == "paperpiggy"
+                        and data.get("service") == "paperpiggy-local-api") else None
     except Exception:
         return None
+
+
+def _pythonw_executable():
+    current = Path(sys.executable)
+    pyw = current if current.name.lower() == "pythonw.exe" else current.with_name("pythonw.exe")
+    return str(pyw if pyw.exists() else current)
 
 def _server_log():
     """server 子进程 stdout/stderr 落 logs/server.log（换机排障命脉，替代 DEVNULL 静默）。
@@ -233,11 +244,17 @@ def ensure_up(wait=120):
     # 的工具全体死锁且报错误导。改为：只要 /health 有应答就放行，让各端点自己的 503/人话错误透传给 agent。
     if health() is not None:
         return True
-    flags = 0x00000008 | 0x00000200 if sys.platform == "win32" else 0
     logf = _server_log()
-    subprocess.Popen([sys.executable, str(C.APP / "server.py")],
-                     stdout=logf, stderr=logf,
-                     stdin=subprocess.DEVNULL, creationflags=flags, close_fds=True)
+    try:
+        subprocess.Popen([_pythonw_executable(), str(C.APP / "server.py")],
+                         stdout=logf, stderr=logf, stdin=subprocess.DEVNULL,
+                         creationflags=C.SUBPROC_NO_WINDOW, close_fds=True)
+    finally:
+        if logf != subprocess.DEVNULL:
+            try:
+                logf.close()
+            except Exception:
+                pass
     log("拉起知识库服务（首次加载模型）...")
     t0 = time.time()
     while time.time() - t0 < wait:
@@ -249,7 +266,7 @@ def ensure_up(wait=120):
 TOOLS = [
     {
         "name": "search_localkb",
-        "description": "检索本地文献知识库（用户自己的 Zotero 库或导入的 PDF 文件夹）。返回带期刊等级、官方页码、可回溯引用的结果，用于查找某主题的相关文献、论点或原文段落。发现型检索默认同一篇最多返回2段，不用重复弱段凑满条数，适合先广泛找文献；定向深读请再用 read_source / verify_claim。可先用 localkb_status 了解库内篇数与学科。",
+        "description": "检索本地文献知识库（用户自己的 Zotero 库或导入的全文文件夹，支持 PDF、EPUB、DOCX、Markdown、TXT）。返回带期刊等级、原文定位、可回溯引用的结果，用于查找某主题的相关文献、论点或原文段落。发现型检索默认同一篇最多返回2段，不用重复弱段凑满条数，适合先广泛找文献；定向深读请再用 read_source / verify_claim。可先用 localkb_status 了解库内篇数与学科。",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -297,7 +314,7 @@ TOOLS = [
     },
     {
         "name": "suggest_new_sources",
-        "description": "半自动研究助手·能力三：给主题，返回『建议新增文献（脚注引文挖掘库内缺失、按被引频次）+ 库内错配（有PDF未深索）+ 覆盖评估』。只读、不写库。",
+        "description": "半自动研究助手·能力三：给主题，返回『建议新增文献（脚注引文挖掘库内缺失、按被引频次）+ 库内错配（有全文附件未深索）+ 覆盖评估』。只读、不写库。",
         "inputSchema": {"type": "object", "properties": {
             "topic": {"type": "string", "description": "研究主题"}},
             "required": ["topic"]},
@@ -330,7 +347,7 @@ TOOLS = [
     },
     {
         "name": "maintenance_audit",
-        "description": "全量维护统一入口：一次盘点模板、索引、深索/PDF/OCR、检索摘要、wiki 待办和体检，并区分自动处理/需决策/外部阻塞。用户只要提到维护就先调用。",
+        "description": "全量维护统一入口：一次盘点模板、索引、全文附件深索/PDF OCR、检索摘要、wiki 待办和体检，并区分自动处理/需决策/外部阻塞。用户只要提到维护就先调用。",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
@@ -368,7 +385,7 @@ TOOLS = [
     },
     {
         "name": "deep_status",
-        "description": "查看本地库【深索】进度：已深索篇数 / 有PDF总数 / 队列真实状态 / 摘要有效、异常与缺失数 /"
+        "description": "查看本地库【深索】进度：已深索篇数 / 有全文附件总数 / 队列真实状态 / 摘要有效、异常与缺失数 /"
                        " 预计剩余时间（ETA）/ 当前在深索或队首的篇。深索前后可随时查，了解深到哪了。",
         "inputSchema": {"type": "object", "properties": {}},
     },
@@ -446,7 +463,7 @@ TOOLS = [
     # ── ingest 地基：读原文。检索只给 220 字片段，真正读懂一篇文献要靠这个 ──
     {
         "name": "read_source",
-        "description": "读某篇论文的**原文正文**（逐页，附期刊印刷页码）。检索结果只给 220 字片段；"
+        "description": "读某篇论文的**原文正文**（PDF 按页并附期刊印刷页码；其他格式按章节、段落或行号定位）。检索结果只给 220 字片段；"
                        "要真正读懂一篇文献、写综述、或核对引注，必须用这个先读原文。"
                        "key 来自 search_localkb 结果里的 «key:…» 或 list_sources。"
                        "未深索 / 只有题录 / 扫描件时会明确告知原因与补救办法，不会静默返回空。",
@@ -454,8 +471,8 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "key": {"type": "string", "description": "论文 key"},
-                "from_page": {"type": "integer", "description": "起始 PDF 顺序页（默认 1）", "default": 1},
-                "to_page": {"type": "integer", "description": "结束 PDF 顺序页（0 = 直到末页）", "default": 0},
+                "from_page": {"type": "integer", "description": "起始位置序号（PDF 为顺序页；其他格式为章节/段落单元，默认 1）", "default": 1},
+                "to_page": {"type": "integer", "description": "结束位置序号（0 = 直到末尾）", "default": 0},
                 "max_chars": {"type": "integer",
                               "description": "最多返回多少字（默认 20000）。超出会截断并告诉你 next_page，从那页续读。",
                               "default": 20000},
@@ -473,6 +490,12 @@ TOOLS = [
                 "deep": {"type": "string", "enum": ["yes", "no", "all"], "default": "all",
                          "description": "yes=只列已深索（可 read_source）；no=只列未深索；all=全部"},
                 "category": {"type": "string", "description": "限定到某分类 id（来自 list_kb_categories）"},
+                "source_type": {
+                    "type": "string",
+                    "enum": ["journal_article", "book", "book_section", "thesis", "legal_source",
+                             "case", "standard", "report", "preprint", "conference_paper", "dataset", "web"],
+                    "description": "按识别后的真实文献性质过滤；web 包含网页、报纸和其他文件。",
+                },
                 "limit": {"type": "integer", "default": 50},
                 # EN-M2：分页——千篇大库此前只能看到前 limit 篇，其余永远列不到
                 "offset": {"type": "integer", "default": 0, "description": "跳过前多少条（翻页用）"},
@@ -514,7 +537,8 @@ TOOLS = [
         "description": "建立或修改一个 wiki 综合页。这是维护 wiki 的主要动作。\n"
                        "kind 可选：answer(问答沉淀) / concept(概念) / topic(主题) / digest(资料汇编) / "
                        "outline(选题框架) / **entity(实体页：作者、机构、案件、制度)** / **overview(总论页：随全库演进的核心论点)**。\n"
-                       "mode='append' 把新内容并入既有正文（读完一篇新文献后补充某页时用），'replace' 整体重写。\n"
+                       "mode='append' 把新内容与来源并入既有页；'replace' 整体重写，显式传 sources 时会替换旧来源，"
+                       "可用于修正失效 key；replace 不传 sources 则保留旧来源。\n"
                        "护栏：不能覆盖用户人工核验过的页（会被拒绝）。每个论断带 [n] 引用，sources 填论文 key。",
         "inputSchema": {
             "type": "object",
@@ -554,7 +578,8 @@ TOOLS = [
     {
         "name": "lint_wiki",
         "description": "综合层健康体检（gist 三大操作之一）。查：孤儿页、已过时页、断链、无来源论文的页、"
-                       "未配 AI 模型时生成的降级页、被反复提及却没有独立页的概念。返回问题清单 + 建议动作。"
+                       "未配 AI 模型时生成的降级页、被反复提及却没有独立页的概念、无效来源 key、重复标题/研究问题。"
+                       "返回问题清单 + 建议动作。"
                        "定期跑一次，wiki 才不会烂掉。纯读，不改任何东西。",
         "inputSchema": {
             "type": "object",
@@ -582,21 +607,24 @@ TOOLS = [
     # ── EN-M1：论文写作工作流工具（引注排版 / 单篇元数据 / 找相似 / 新进速报 / 引文定位 / 论断核验 / 收单篇）──
     {
         "name": "format_citation",
-        "description": "把一篇文献排成规范引注（脚注格式）。写论文脚注时用：key 来自 search_localkb / list_sources，"
-                       "pdf_page 传检索命中的 PDF 顺序页号，我会换算成期刊印刷页码再排。"
+        "description": "把一篇文献排成规范引注（脚注格式）。写论文脚注时用：key 来自 search_localkb / list_sources。"
+                       "PDF 用 pdf_page（会换算期刊印刷页码）；其他格式传 position 和 locator（来自检索或 locate_quote）。"
                        "返回里若有 missing_fields（题录缺字段）或 page_estimated（页码为推算）请提醒用户人工核对。"
                        "注意：引领词（参见/见/转引自）由作者按引用性质自定，本工具不加。"
                        "排注前建议先用 locate_quote 核对引文确实在那一页。",
         "inputSchema": {"type": "object", "properties": {
             "key": {"type": "string", "description": "文献 key"},
             "pdf_page": {"type": "integer", "description": "PDF 顺序页号（可选；给了才带页码引注）"},
+            "position": {"type": "integer", "description": "非 PDF 原文位置序号（可选）"},
+            "locator": {"type": "string", "description": "非 PDF 人类可读定位，如章节、标题段或行号范围（可选）"},
             "style": {"type": "string", "enum": ["footnote", "compact"], "default": "footnote",
                       "description": "footnote=法学脚注全格式（默认）/ compact=紧凑格式"}},
             "required": ["key"]},
     },
     {
         "name": "get_source_meta",
-        "description": "取**单篇**文献的完整题录与状态：作者/年份/期刊/权重档、有无 PDF、是否深索、摘要、"
+            "description": "取**单篇**文献的完整题录与状态：作者/年份、真实文献性质、唯一客观标签、四档评价、有无全文附件、主全文格式、是否深索、"
+                       "题录摘要（bibliographic_abstract）与 SAC 检索摘要（retrieval_summary，二者明确分开）、"
                        "法条时效（statute_status）、以及哪些 wiki 综合页引用了它（cited_by_wiki）。"
                        "替代『list_sources 翻找 + get_backlinks 反查』两跳——精读一篇前先调它一次拿全貌。",
         "inputSchema": {"type": "object", "properties": {
@@ -625,7 +653,7 @@ TOOLS = [
     },
     {
         "name": "locate_quote",
-        "description": "**引注核对地基**：给一句引文，核对它是否真的在原文里、在第几页（PDF 页号 + 期刊印刷页码）。"
+        "description": "**引注核对地基**：给一句引文，核对它是否真的在原文里以及原文位置（PDF 页号 + 期刊印刷页码，或 EPUB/DOCX/Markdown/TXT 的章节、段落、行号）。"
                        "写脚注前、以及核查既有文稿的引注时逐条过一遍。默认模糊匹配（容忍 OCR/标点差异），"
                        "exact=false 的命中请人工比对 context。给 key 则只在该篇内找，不给则全库找。",
         "inputSchema": {"type": "object", "properties": {
@@ -649,12 +677,12 @@ TOOLS = [
     },
     {
         "name": "add_source",
-        "description": "把本机一个 PDF 文件收进知识库（只加不删）。用户在对话里给了本地 PDF 路径、想让它进库时用。"
-                       "题录由 AI 自动抽取、**待人工核对**（应用里会标「待确认」）。收录后建库在后台跑，"
+        "description": "把本机一个全文文件收进知识库（支持 PDF、EPUB、DOCX、Markdown、TXT；只加不删，不支持 HTML）。用户在对话里给了本地文件路径、想让它进库时用。"
+                       "题录由 AI 自动抽取、**待人工核对**（应用里会标「题录待核对」）。收录后建库在后台跑，"
                        "稍后可用 localkb_status / deep_status 查进度。仅 folder（文件夹）模式可用："
-                       "Zotero 模式会拒绝并提示把 PDF 附到 Zotero 条目上。",
+                       "Zotero 模式会拒绝并提示把全文文件附到 Zotero 条目上。",
         "inputSchema": {"type": "object", "properties": {
-            "path": {"type": "string", "description": "PDF 的本机绝对路径"},
+            "path": {"type": "string", "description": "PDF、EPUB、DOCX、Markdown 或 TXT 的本机绝对路径"},
             "note": {"type": "string", "description": "备注（可选，随题录保存）"}},
             "required": ["path"]},
     },
@@ -987,12 +1015,14 @@ def do_tool(name, args):
         active = bool(s.get("pending") or s.get("in_flight") or s.get("building"))
         state = "⏸ 已暂停" if s.get("paused") else ("运行中" if active else "空闲（队列已清空）")
         eta_s = f"约剩 {max(1, int(eta // 60))} 分钟" if eta else ("无需等待" if not active else "未知")
-        out = [f"深索进度：已深索 {s.get('deep_done')}/{s.get('with_pdf')} 篇（有PDF）。",
+        with_fulltext = s.get("with_fulltext", s.get("with_pdf", 0))
+        out = [f"深索进度：已深索 {s.get('deep_done')}/{with_fulltext} 篇（有全文附件）。",
                f"队列：待处理 {s.get('pending')}、在跑 {s.get('in_flight')}、"
                f"{state}。",
                f"检索摘要：有效 {s.get('sac_done', 0)}、异常 {s.get('sac_invalid', 0)}、缺失 {s.get('sac_missing', 0)}。",
                f"预计剩余：{eta_s}。"]
         blocked = [("PDF缺失", s.get("missing_pdf", 0)), ("PDF损坏", s.get("invalid_pdf", 0)),
+                   ("附件缺失", s.get("missing_file", 0)), ("附件无法读取", s.get("invalid_file", 0)),
                    ("OCR失败", s.get("ocr_failed", 0)), ("等待OCR", s.get("ocr_pending", 0))]
         blocked = [f"{label} {n}" for label, n in blocked if n]
         if blocked:
@@ -1022,13 +1052,13 @@ def do_tool(name, args):
                                      for x in r["summary_errors"])
                 return "摘要质量检查未通过，本批一篇也没有写入。请修正后原批重交：\n" + details
             return "深索失败：" + str(r.get("error") or r.get("detail") or r)
-        done, wp, rem = r.get("done"), r.get("with_pdf"), r.get("remaining")
+        done, wp, rem = r.get("done"), r.get("with_fulltext", r.get("with_pdf")), r.get("remaining")
         ts = r.get("to_summarize") or []
         if r.get("finished") and not ts:
             tail = f"（本次已把 {r.get('wrote')} 篇摘要嵌入入库）" if r.get("wrote") else ""
             # 深索完成正是维护 wiki 的时机：服务端已在后台按新文献算「受影响综述页」。
             # 无条件提示先拉 pending_wiki_updates（异步建议可能刚落盘，计数或稍滞后）。
-            return (f"✅ 深索全部完成。已深索 {done}/{wp} 篇（有PDF），无更多待处理。{tail}\n\n"
+            return (f"✅ 深索全部完成。已深索 {done}/{wp} 篇（有全文附件），无更多待处理。{tail}\n\n"
                     f"➡ 下一步（高优先级）：调 pending_wiki_updates 看这批新文献影响了哪些既有综述页，逐页判断标脏/重写；"
                     f"再 lint_wiki 给综合层做一次体检。别让新文献与 wiki 脱节。" + _wiki_todo_note(prefix="\n"))
         out = []
@@ -1116,14 +1146,15 @@ def do_tool(name, args):
         r = resp.json()
         if not r.get("ok"):
             return f"读不到这篇的全文（{r.get('reason')}）：{r.get('detail', '')}"
+        fmt = DF.format_label(r.get("fulltext_format") or "全文")
         head = (f"《{r.get('title', '')}》 {r.get('author', '')} {r.get('year', '')} {r.get('journal', '')}\n"
-                f"全文共 {r.get('n_pages_total')} 页；本次返回 {r.get('returned_pages')} 页 / {r.get('chars')} 字。")
+                f"主全文格式：{fmt}；共 {r.get('n_pages_total')} 个位置单元；本次返回 {r.get('returned_pages')} 个 / {r.get('chars')} 字。")
         if r.get("truncated"):
             head += f"\n⚠ 已按 max_chars 截断——续读请传 from_page={r.get('next_page')}。"
         body = []
         for pg in r.get("pages", []):
             pp = pg.get("printed_page") or ""
-            mark = f"—— PDF 第 {pg['pdf_page']} 页" + (f"（印刷页 {pp}）" if pp else "") + " ——"
+            mark = "—— " + (pg.get("locator") or (f"PDF 第 {pg.get('pdf_page')} 页" if pg.get("pdf_page") else f"位置 {pg.get('position')}")) + (f"（印刷页 {pp}）" if pp else "") + " ——"
             body.append(f"\n{mark}\n{pg.get('text', '')}")
         # EN-M3：结构化件只带元数据+页码映射、不重复全文——正文可达 2 万字，
         # structuredContent 若原样再带一份，token 直接翻倍，得不偿失。
@@ -1132,7 +1163,8 @@ def do_tool(name, args):
               "n_pages_total": r.get("n_pages_total"), "returned_pages": r.get("returned_pages"),
               "chars": r.get("chars"), "truncated": bool(r.get("truncated")),
               "next_page": r.get("next_page"),
-              "pages": [{"pdf_page": pg.get("pdf_page"), "printed_page": pg.get("printed_page")}
+              "fulltext_format": r.get("fulltext_format"),
+              "pages": [{"position": pg.get("position"), "pdf_page": pg.get("pdf_page"), "printed_page": pg.get("printed_page"), "locator": pg.get("locator")}
                         for pg in r.get("pages", [])]}
         return head + "\n" + "".join(body), sc
 
@@ -1147,6 +1179,8 @@ def do_tool(name, args):
             params["deep"] = deep
         if args.get("category"):
             params["category"] = args["category"]
+        if args.get("source_type"):
+            params["source_type"] = args["source_type"]
         resp = requests.get(URL + "/papers", params=params, timeout=30)
         if resp.status_code != 200:
             return f"列举失败：{_err_of(resp)}"
@@ -1162,12 +1196,14 @@ def do_tool(name, args):
             flags = []
             if p.get("no_text"):
                 flags.append("扫描件·不可读全文")
-            if not p.get("has_pdf"):
-                flags.append("仅题录·无PDF")
+            if not p.get("has_fulltext", p.get("has_pdf")):
+                flags.append("仅题录·无全文附件")
             tail = ("　[" + "；".join(flags) + "]") if flags else ""
-            out.append(f"- «key:{p.get('key')}» {p.get('title', '')}"
+            label = p.get("objective_label") or p.get("source_type_name") or "文献"
+            band = p.get("band_name") or ""
+            out.append(f"- [{label}] «key:{p.get('key')}» {p.get('title', '')}"
                        f"（{p.get('author', '')} {p.get('year', '')}，{p.get('journal', '')}"
-                       f"{'·' + p['weight_tier'] if p.get('weight_tier') else ''}）{tail}")
+                       f"{'·评价 ' + band if band else ''}）{tail}")
         if off + len(items) < total:
             out.append(f"…… 还有 {total - off - len(items)} 篇未列出，续取请传 offset={off + len(items)}。")
         return "\n".join(out), {"total": total, "offset": off, "papers": items}
@@ -1228,9 +1264,10 @@ def do_tool(name, args):
             return "需要 page_id。新建时自取，建议带类型前缀（entity-xxx / concept-xxx / overview-main）。"
         body = {"kind": args.get("kind"), "title": args.get("title"),
                 "content": args.get("content", ""),
-                "sources": [{"key": k} for k in (args.get("sources") or [])],
                 "mode": args.get("mode", "replace"), "links": args.get("links"),
                 "by_agent": True, "model": "agent"}
+        if "sources" in args:
+            body["sources"] = [{"key": k} for k in (args.get("sources") or [])]
         resp = requests.post(URL + "/wiki/page/" + pid, json=body, timeout=120)
         if resp.status_code == 409:
             return "拒绝写入：" + _err_of(resp)
@@ -1267,15 +1304,17 @@ def do_tool(name, args):
             return "体检失败：" + _err_of(resp)
         r = resp.json()
         if r.get("healthy"):
-            return f"综合层健康（共 {r['n_pages']} 页）：无孤儿页、无过时页、无断链、无缺 provenance 的页。"
+            return (f"综合层健康（共 {r['n_pages']} 页）：无孤儿页、无过时页、无断链、"
+                    "无缺失/无效来源、无重复标题或研究问题。")
         iss = r["issues"]
         out = [f"综合层体检：{r['n_pages']} 页，发现 {r['n_issues']} 个问题。\n"]
-        # body_broken_link（正文 [[wikilink]] 断链）是后端 lint 必返回的第 7 类；旧字典漏配它，
-        # 一旦任何页正文有断链（agent 先引后建是常态）就 KeyError，整份体检报告崩掉。
+        # 每一类都必须有稳定标签；旧字典曾漏配 body_broken_link，一有正文断链整份报告就崩掉。
         label = {"orphan": "孤儿页（无任何互链）", "stale": "已标过时", "broken_link": "断链",
                  "body_broken_link": "正文互链指向不存在的页",
                  "no_sources": "无来源论文", "degraded": "降级页（未配 AI 模型时生成）",
-                 "missing_concept": "被反复提及却无独立页的概念"}
+                 "missing_concept": "被反复提及却无独立页的概念",
+                 "invalid_source": "来源 key 在文献目录中不存在",
+                 "duplicate_scaffold": "重复标题或研究问题"}
         for k, items in iss.items():
             if not items:
                 continue
@@ -1285,6 +1324,9 @@ def do_tool(name, args):
                     out.append(f"   - [{x['page_id']}] {x['title']} → 指向不存在的 {x['dangling']}")
                 elif k == "missing_concept":
                     out.append(f"   - 「{x['concept']}」被 {x['mentioned_in']} 个页提及")
+                elif k == "invalid_source":
+                    hint = "（可能是 " + "、".join(x.get("suggestions") or []) + "）" if x.get("suggestions") else ""
+                    out.append(f"   - [{x['id']}] {x['title']} → {x['key']}{hint}")
                 else:
                     extra = f"（{x['reason']}）" if x.get("reason") else ""
                     out.append(f"   - [{x['id']}] {x['title']}{extra}")
@@ -1385,6 +1427,10 @@ def do_tool(name, args):
         params = {"style": args.get("style", "footnote")}
         if args.get("pdf_page") is not None:
             params["page"] = args["pdf_page"]
+        elif args.get("position") is not None:
+            params["position"] = args["position"]
+        if args.get("locator"):
+            params["locator"] = args["locator"]
         resp = requests.get(URL + "/cite/" + key, params=params, timeout=30)
         if resp.status_code == 404:
             return f"知识库里没有 key={key} 的文献。先用 list_sources 或 search_localkb 确认 key。"
@@ -1415,21 +1461,31 @@ def do_tool(name, args):
         flags = []
         if p.get("deep"):
             flags.append("已深索·可 read_source 读全文")
-        elif p.get("has_pdf"):
-            flags.append("有PDF·未深索")
+        elif p.get("has_fulltext", p.get("has_pdf")):
+            flags.append(f"有{DF.format_label(p.get('fulltext_format') or '全文附件')}·未深索")
         else:
-            flags.append("仅题录·无PDF")
+            flags.append("仅题录·无全文附件")
         if p.get("no_text"):
             flags.append("扫描件·不可抽文本")
         if p.get("statute_status"):
             flags.append("法条时效：" + p["statute_status"])
+        evaluation = " · ".join(x for x in (
+            p.get("source_type_name"), p.get("objective_label"), p.get("band_name")
+        ) if x)
         out = [f"《{p.get('title', '')}》 «key:{key}»",
                f"{p.get('author', '')}，{p.get('journal', '')}，{p.get('year', '')}"
-               f"（{p.get('itemtype', '')}{'·' + p['weight_tier'] if p.get('weight_tier') else ''}）",
+               f"（{evaluation or p.get('itemtype', '')}）",
                f"官方页码：{p.get('official_pages') or '未知'}　收藏夹：{'、'.join(p.get('collections') or []) or '（无）'}",
                f"状态：{'；'.join(flags)}　入库：{str(p.get('ingested_at', ''))[:10]}"]
-        if p.get("abstract"):
-            out.append("摘要：" + str(p["abstract"])[:500])
+        if p.get("bibliographic_abstract") or p.get("abstract"):
+            out.append("题录摘要（来自 Zotero / 文献元数据）：" +
+                       str(p.get("bibliographic_abstract") or p.get("abstract"))[:500])
+        if p.get("retrieval_summary_valid"):
+            out.append("检索摘要（SAC，用于语义检索）：" + str(p.get("retrieval_summary") or "")[:500])
+        elif p.get("retrieval_summary_error"):
+            out.append("⚠ 检索摘要（SAC）异常：" + str(p["retrieval_summary_error"]))
+        else:
+            out.append("检索摘要（SAC）：尚未生成")
         cb = p.get("cited_by_wiki") or []
         if cb:
             out.append(f"被 {len(cb)} 个综合页引用：" + "、".join(f"[{w.get('id')}] {w.get('title', '')}" for w in cb[:10]))
@@ -1505,12 +1561,13 @@ def do_tool(name, args):
         for i, m in enumerate(ms, 1):
             ex = "逐字一致" if m.get("exact") else "模糊命中（请人工比对）"
             pp = m.get("printed_page")
-            out.append(f"[{i}] «key:{m.get('key')}» PDF 第 {m.get('pdf_page')} 页"
+            loc = m.get("locator") or (f"PDF 第 {m.get('pdf_page')} 页" if m.get("pdf_page") else f"位置 {m.get('position')}")
+            out.append(f"[{i}] «key:{m.get('key')}» {loc}"
                        + (f"（印刷页 {pp}）" if pp else "") + f" · {ex}")
             ctx = (m.get("context") or "").strip().replace("\n", " ")
             if ctx:
                 out.append(f"    上下文：…{ctx[:200]}…")
-        out.append("排脚注可接 format_citation(key, pdf_page)。")
+        out.append("排脚注可接 format_citation：PDF 传 pdf_page；其他格式传 position 与 locator。")
         return "\n".join(out), r   # EN-M3：契约6 原样作 structuredContent
 
     if name == "verify_claim":
@@ -1538,7 +1595,8 @@ def do_tool(name, args):
             out.append("证据：")
             for e in ev[:8]:
                 pp = e.get("printed_page")
-                out.append(f"- «key:{e.get('key')}» PDF 第 {e.get('pdf_page')} 页"
+                loc = e.get("locator") or (f"PDF 第 {e.get('pdf_page')} 页" if e.get("pdf_page") else f"位置 {e.get('position')}")
+                out.append(f"- «key:{e.get('key')}» {loc}"
                            + (f"（印刷页 {pp}）" if pp else "")
                            + f"：「{(e.get('quote') or '').strip()[:160]}」")
         return "\n".join(out), r   # EN-M3：契约7 原样作 structuredContent
@@ -1548,18 +1606,18 @@ def do_tool(name, args):
             return "错误：知识库服务启动失败。"
         path = str(args.get("path", "")).strip()
         if not path:
-            return "需要 path（PDF 的本机绝对路径）。"
+            return "需要 path（PDF、EPUB、DOCX、Markdown 或 TXT 的本机绝对路径）。"
         resp = requests.post(URL + "/ingest/local_path",
                              json={"path": path, "note": args.get("note") or None}, timeout=300)
         if resp.status_code != 200:
-            # zotero 模式返回 400，detail 已是人话（「Zotero 模式请把 PDF 附到 Zotero 条目上」）
+            # zotero 模式返回 400，detail 已提示把全文附件附到 Zotero 条目上。
             return f"收录失败：{_err_of(resp)}"
         r = resp.json()
         if not r.get("ok"):
             return "收录失败：" + str(r.get("hint") or r.get("detail") or r)
         if r.get("status") == "duplicate":
-            return f"这份 PDF 已在库里（key={r.get('key')}），未重复收录。"
-        out = [f"已收进知识库（key={r.get('key')}）。题录由 AI 自动抽取，**待人工核对**（应用里标「待确认」）。"]
+            return f"这份全文文件已在库里（key={r.get('key')}），未重复收录。"
+        out = [f"已收进知识库（key={r.get('key')}）。题录由 AI 自动抽取，**待人工核对**（应用里标「题录待核对」）。"]
         if r.get("building"):
             out.append("建库在后台进行中，稍后可用 localkb_status / deep_status 查进度。")
         if r.get("hint"):

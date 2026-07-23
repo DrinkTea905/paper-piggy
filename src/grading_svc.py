@@ -26,10 +26,14 @@ except Exception as _e:
     SR = None
     print("[grading_svc] source_rules 未加载，法源/报告定档停用：", _e, flush=True)
 
-# tier code → 面向用户中文档名 / 排序 rank（前后端统一口径）
-TIER_CN = {"T1": "权威", "T1b": "准权威", "T2": "核心", "T3": "次核心",
-           "T4": "一般", "T5": "普通", "待确认": "待确认"}
+# 旧内部档仍保留细分权重；面向法学增强的评价统一折叠为四档。
+TIER_CN = {"T1": "权威", "T1b": "顶级", "T2": "核心", "T3": "核心",
+           "T4": "普通", "T5": "普通", "待确认": "普通"}
 TIER_RANK = {"T1": 0, "T1b": 1, "T2": 2, "T3": 3, "T4": 4, "T5": 5, "待确认": 6}
+BAND_RANK = {"authority": 0, "top": 1, "core": 2, "normal": 3}
+BAND_CN = {"authority": "权威", "top": "顶级", "core": "核心", "normal": "普通"}
+FUN_BAND_CN = {"authority": "夯", "top": "顶级", "core": "人上人", "normal": "NPC"}
+DISCIPLINE_ALIASES = {"law_personal_fun": "law_personal"}
 
 _LOCK = threading.RLock()
 _MEMO = {}            # {disc: {journal: {tier,weight,cn,rank,needs_review}}}
@@ -41,10 +45,85 @@ _WARMING = set()      # 正在预热的 (disc, mtime)，防重复起线程
 
 MEMO_FILE = C.DATA / "grading_memo.json"
 DIST_FILE = C.DATA / "grading_dist.json"
-DIST_VER = 2   # 分布算法版本位：v2=计入法源/报告规则命中。升级后旧缓存（无此字段）自动失效重算。
+MAPPING_FILE = C.DATA / "grading_mappings.json"
+DIST_VER = 3   # v3=全类型统一评价 + 四档分布。旧缓存自动失效重算。
+
+# 库总览可调整的目录/性质映射。默认值只是说明；实际自动评价仍由目录引擎决定，
+# 只有用户显式写入 MAPPING_FILE 的项才覆盖当前学科，客观标签永远不变。
+MAPPING_SPECS = [
+    ("label:三大刊", "三大刊", "authority"), ("label:顶尖法评", "顶尖法评", "authority"),
+    ("label:CLSCI", "CLSCI", "top"), ("label:TSSCI", "TSSCI", "top"),
+    ("label:精选外文权威", "精选外文权威", "top"),
+    ("label:SSCI Q1", "SSCI Q1", "core"), ("label:SSCI Q2", "SSCI Q2", "core"),
+    ("label:SSCI Q3", "SSCI Q3", "normal"), ("label:SSCI Q4", "SSCI Q4", "normal"),
+    ("label:CSSCI", "CSSCI", "core"), ("label:CSSCI扩展", "CSSCI扩展", "core"),
+    ("label:北大核心", "北大核心", "core"), ("label:台湾法学", "台湾法学", "core"),
+    ("label:SSCI", "SSCI（无分区）", "normal"), ("label:期刊论文", "其他期刊论文", "normal"),
+    ("label:SJR Q1", "SJR Q1", "normal"), ("label:SJR Q2", "SJR Q2", "normal"),
+    ("label:SJR Q3", "SJR Q3", "normal"), ("label:SJR Q4", "SJR Q4", "normal"),
+    ("nature:book", "书籍", "authority"), ("nature:book_section", "书章", "authority"),
+    ("nature:thesis", "学位论文", "top"), ("nature:legal_source", "法源", "top"),
+    ("nature:case", "案例", "top"), ("nature:standard", "标准", "top"),
+    ("nature:report", "报告与白皮书", "core"),
+    ("nature:dataset_authority", "权威机构数据集", "core"),
+    ("nature:dataset", "其他数据集", "normal"),
+    ("nature:preprint", "预印本", "normal"),
+    ("nature:conference_paper", "会议论文", "normal"), ("nature:web", "网页与其他", "normal"),
+]
+
+# 用户本人定制的「法学（开发者增强）」出厂预设。娱乐命名学科 canonical 到
+# law_personal，因此天然共用这份配置，绝不维护第二份。
+PERSONAL_MAPPING_DEFAULTS = {
+    "label:SSCI Q1": "authority",
+    "label:SSCI Q2": "authority",
+    "label:SSCI Q3": "top",
+    "label:SSCI Q4": "top",
+    "label:CSSCI": "top",
+    "nature:report": "top",
+    "label:SJR Q1": "core",
+    "label:SJR Q2": "core",
+    "label:SJR Q3": "core",
+    "label:SJR Q4": "core",
+    "label:SSCI": "core",
+    "label:TSSCI": "authority",
+    "label:精选外文权威": "authority",
+    "label:台湾法学": "top",
+}
+
+
+def _mapping_default(mapping_id, discipline, fallback=None):
+    """返回学科预设；普通学科沿用通用说明，开发者增强使用私人定制值。"""
+    disc = canonical_discipline(discipline)
+    if disc == "law_personal" and mapping_id in PERSONAL_MAPPING_DEFAULTS:
+        return PERSONAL_MAPPING_DEFAULTS[mapping_id]
+    return fallback
+
+
+def canonical_discipline(discipline):
+    """娱乐学科只作显示别名；规则、目录、权重和缓存全部复用 law_personal。"""
+    return DISCIPLINE_ALIASES.get(discipline or "", discipline or "law")
+
+
+def band_name(band, discipline=None):
+    names = FUN_BAND_CN if discipline == "law_personal_fun" else BAND_CN
+    return names.get(band, BAND_CN["normal"])
+
+
+def _band_of_tier(tier):
+    return SR.band_of_tier(tier) if SR is not None else {
+        "T1": "authority", "T1b": "top", "T2": "core", "T3": "core",
+        "T4": "normal", "T5": "normal", "待确认": "normal",
+    }.get(tier, "normal")
 
 
 def _disc():
+    try:
+        return canonical_discipline(S.discipline())
+    except Exception:
+        return "law"
+
+
+def _requested_disc():
     try:
         return S.discipline()
     except Exception:
@@ -107,55 +186,316 @@ def flush():
             _MEMO_DIRTY = False
 
 
-def grade(journal, issn="", compute=True):
-    """按当前锁定学科算一刊分级：{tier,weight,cn,rank,needs_review} 或 None。
-       compute=False：只查 memo，命中返回、否则 None（绝不触发 fuzzy，供 /stats /papers 快路径用）。"""
+def _memo_key(journal, issn):
+    return f"{journal}\u001f{issn or ''}"
+
+
+def _localized(result, requested_disc):
+    if result is None:
+        return None
+    out = dict(result)
+    out["band_name"] = band_name(out.get("band", "normal"), requested_disc)
+    out["cn"] = out["band_name"]       # 旧调用兼容：cn 现在就是当前显示四档
+    return out
+
+
+def _hit_map(hit_catalogs):
+    return {str(x.get("catalog") or ""): str(x.get("level") or "")
+            for x in (hit_catalogs or []) if isinstance(x, dict) and x.get("catalog")}
+
+
+def _objective_label(hit_catalogs):
+    """期刊唯一客观标签。先比较映射后的四档，再按同档目录优先级决胜。"""
+    hits = _hit_map(hit_catalogs)
+    has_tssci = "tssci_law" in hits
+    candidates = []
+
+    def add(catalog, band, priority, label):
+        if catalog in hits and label:
+            candidates.append((BAND_RANK[band], priority, label))
+
+    if hits.get("clsci") == "权威":
+        add("clsci", "authority", 0, "三大刊")
+    elif "clsci" in hits:
+        add("clsci", "top", 2, "CLSCI")
+    add("law_review_top", "authority", 1, "顶尖法评")
+    add("tssci_law", "top", 0, "TSSCI")
+    add("ssci_law_authority", "top", 1, "精选外文权威")
+    if "ssci" in hits:
+        q = hits["ssci"]
+        candidates.append((BAND_RANK["core" if q in ("Q1", "Q2") else "normal"], 3,
+                           "SSCI " + q if q else "SSCI"))
+    if "cssci" in hits:
+        lvl = hits["cssci"]
+        candidates.append((BAND_RANK["core"], 4 if lvl == "来源" else 5,
+                           "CSSCI" if lvl == "来源" else "CSSCI扩展"))
+    add("pku", "core", 6, "北大核心")
+    if "sjr" in hits:
+        q = hits["sjr"]
+        candidates.append((BAND_RANK["normal"], 7, "SJR " + q if q else "SJR"))
+    # 正式 TSSCI 命中时，个人目录只参与评价、不再抢普通页面标签。
+    if "tw_law" in hits and not has_tssci:
+        candidates.append((BAND_RANK["authority" if hits["tw_law"] == "核心" else "core"],
+                           8, "台湾法学"))
+    if not candidates:
+        return "期刊论文"
+    return min(candidates)[2]
+
+
+def _signal_weight(raw, disc):
+    """同为核心时允许目录有可配置的细分权重（CSSCI扩展必须高于北大核心）。"""
+    try:
+        data = JG.load_data()
+        arch = data.archetype(data.discipline(disc)["archetype"])
+        overrides = arch.get("signalWeights", {}) or {}
+        winner = ((raw.get("explain") or {}).get("priorityWinner") or {})
+        token = winner.get("token") or (
+            f"{winner.get('catalog')}.{winner.get('level')}" if winner.get("catalog") else "")
+        return float(overrides[token]) if token in overrides else None
+    except Exception:
+        return None
+
+
+def _journal_result(journal, issn, compute, requested_disc):
     if JG is None or not journal:
         return None
-    disc = _disc()
+    disc = canonical_discipline(requested_disc)
+    ck = _memo_key(journal, issn)
     with _LOCK:
         _load_memo()
-        dm = _MEMO.get(disc)
-        if dm is not None and journal in dm:
-            return dm[journal]
+        dm = _MEMO.get(disc) or {}
+        cached = dm.get(ck)
+        # 旧 memo 以刊名为键且不含客观标签；不删除，允许 compute=True 时惰性补全。
+        if cached and cached.get("source_type") and cached.get("objective_label"):
+            return _localized(cached, requested_disc)
     if not compute:
         return None
     try:
-        r = JG.resolve_journal_weight({"journal": journal or "", "issn": issn or ""}, disc)
-        t = r.get("tier") or "待确认"
-        out = {"tier": t, "weight": r.get("weight"),
-               "cn": TIER_CN.get(t, t), "rank": TIER_RANK.get(t, 6),
-               "needs_review": bool(r.get("needsReview"))}
+        raw = JG.resolve_journal_weight({"journal": journal or "", "issn": issn or ""}, disc)
+        internal = raw.get("tier") or "待确认"
+        band = _band_of_tier(internal)
+        # 未识别的“待确认”只保留在 explain 内部；普通接口一律以 normal/T5 呈现。
+        if internal == "待确认":
+            internal = "T5"
+        weight = raw.get("weight")
+        sw = _signal_weight(raw, disc)
+        if sw is not None and band == "core":
+            weight = sw
+        out = {
+            "source_type": "journal_article", "source_type_name": "期刊论文",
+            "objective_label": _objective_label(raw.get("hitCatalogs")),
+            "band": band, "standard_band_name": BAND_CN[band],
+            "band_name": BAND_CN[band], "internal_tier": internal,
+            "weight": weight, "rank": TIER_RANK.get(internal, 6),
+            "band_rank": BAND_RANK[band], "hit_catalogs": raw.get("hitCatalogs") or [],
+            "explain": raw.get("explain") or {}, "manual": False, "src": "journal",
+            # 旧调用兼容字段
+            "tier": internal, "cn": BAND_CN[band], "needs_review": False,
+        }
     except Exception:
         out = None
-    # R3：只缓存成功结果——瞬时异常算出的 None 若写进 memo，会让该刊分级永不重算、跨重启不自愈。
     if out is not None:
         with _LOCK:
             global _MEMO_DIRTY
-            _MEMO.setdefault(disc, {})[journal] = out
+            _MEMO.setdefault(disc, {})[ck] = dict(out)
             _MEMO_DIRTY = True
+    return _localized(out, requested_disc)
+
+
+def grade(journal, issn="", compute=True):
+    """兼容刊级入口；新代码优先用 evaluate_paper。"""
+    return _journal_result(journal, issn, compute, _requested_disc())
+
+
+def _base_result(source_type, source_type_name, label, internal, weight, src, explain=None):
+    band = _band_of_tier(internal)
+    return {
+        "source_type": source_type, "source_type_name": source_type_name,
+        "objective_label": label, "band": band, "standard_band_name": BAND_CN[band],
+        "band_name": BAND_CN[band], "internal_tier": internal, "weight": weight,
+        "rank": TIER_RANK.get(internal, 6), "band_rank": BAND_RANK[band],
+        "hit_catalogs": [], "explain": explain or {}, "manual": False, "src": src,
+        "tier": internal, "cn": BAND_CN[band], "needs_review": False,
+    }
+
+
+def _non_journal_result(p, source_type):
+    name = SR.source_type_name(source_type) if SR is not None else source_type
+    if source_type == "book":
+        return _base_result(source_type, name, "书籍", "T1", 1.0, "rule")
+    if source_type == "book_section":
+        return _base_result(source_type, name, "书章", "T1", 1.0, "rule")
+    if source_type == "thesis":
+        tt = str(p.get("thesis_type") or p.get("type") or "")
+        label = "博士论文" if any(x in tt.lower() for x in ("博士", "phd", "doctor")) else \
+                ("硕士论文" if any(x in tt.lower() for x in ("硕士", "master")) else "学位论文")
+        return _base_result(source_type, name, label, "T1b", 0.92, "rule")
+    if source_type == "legal_source":
+        return _base_result(source_type, name, "法源", "T1b", 0.92, "rule")
+    if source_type == "case":
+        return _base_result(source_type, name, "案例", "T1b", 0.92, "rule")
+    if source_type == "standard":
+        return _base_result(source_type, name, "标准", "T1b", 0.92, "rule")
+    if source_type == "report":
+        official = bool(SR and SR.is_authoritative_org(p))
+        return _base_result(source_type, name, "官方报告" if official else "研究报告", "T2", 0.85, "rule")
+    if source_type == "dataset":
+        official = bool(SR and SR.is_authoritative_org(p))
+        return _base_result(source_type, name, "权威数据" if official else "数据集",
+                            "T2" if official else "T5", 0.85 if official else 0.25, "rule")
+    labels = {"preprint": "预印本", "conference_paper": "会议论文", "web": "网页",
+              "newspaper": "报纸", "other": "文件"}
+    return _base_result(source_type, name, labels.get(source_type, "文件"), "T5", 0.25, "rule")
+
+
+def _load_mapping_overrides():
+    try:
+        raw = json.loads(MAPPING_FILE.read_text(encoding="utf-8")) if MAPPING_FILE.exists() else {}
+        return raw if isinstance(raw, dict) else {}
+    except Exception:
+        return {}
+
+
+def _mapping_spec_default(mapping_id, discipline):
+    generic = next((default for mid, _label, default in MAPPING_SPECS if mid == mapping_id), None)
+    return _mapping_default(mapping_id, discipline, generic)
+
+
+def _invalidate_mapping_dist(disc):
+    """映射只影响动态评价与排序；只清分布缓存，不触碰任何索引。"""
+    with _LOCK:
+        global _DIST
+        _load_dist()
+        _DIST.pop(disc, None)
+        _atomic_write(DIST_FILE, _DIST)
+
+
+def set_mapping_override(mapping_id, band, discipline=None):
+    """保存当前学科的目录/性质四档覆盖；band 为空表示恢复自动。"""
+    valid = {x[0] for x in MAPPING_SPECS}
+    if mapping_id not in valid:
+        raise ValueError(f"未知映射：{mapping_id}")
+    if band and band not in BAND_RANK:
+        raise ValueError("档位只支持 authority/top/core/normal")
+    disc = canonical_discipline(discipline or _requested_disc())
+    raw = _load_mapping_overrides()
+    dm = raw.setdefault(disc, {})
+    default = _mapping_spec_default(mapping_id, disc)
+    # 选择出厂值等同于恢复默认，避免 grading_mappings.json 留下“看似自定义”的冗余项。
+    if band and band != default:
+        dm[mapping_id] = band
+    else:
+        dm.pop(mapping_id, None)
+    if not dm:
+        raw.pop(disc, None)
+    _atomic_write(MAPPING_FILE, raw)
+    _invalidate_mapping_dist(disc)
+    return {"mapping_id": mapping_id, "band": None if band == default else band,
+            "effective_band": band or default, "default_band": default,
+            "discipline": discipline or _requested_disc()}
+
+
+def clear_mapping_overrides(discipline=None):
+    """恢复当前学科的全部出厂映射；娱乐显示名与开发者增强共用同一份配置。"""
+    requested = discipline or _requested_disc()
+    disc = canonical_discipline(requested)
+    raw = _load_mapping_overrides()
+    removed = len(raw.get(disc) or {})
+    raw.pop(disc, None)
+    _atomic_write(MAPPING_FILE, raw)
+    _invalidate_mapping_dist(disc)
+    return {"discipline": requested, "canonical_discipline": disc, "removed": removed}
+
+
+def _apply_mapping_override(out, requested):
+    disc = canonical_discipline(requested)
+    overrides = _load_mapping_overrides().get(disc) or {}
+    source_type = out.get("source_type") or "other"
+    if source_type in {"web", "newspaper", "other"}:
+        source_type = "web"
+    if out.get("source_type") == "journal_article":
+        mapping_id = "label:" + str(out.get("objective_label") or "")
+    elif source_type == "dataset" and out.get("objective_label") == "权威数据":
+        mapping_id = "nature:dataset_authority"
+    else:
+        mapping_id = "nature:" + source_type
+    # 开发者增强的私人定制值本身就是出厂预设；用户显式调整仍然最后覆盖。
+    band = overrides.get(mapping_id) or _mapping_default(mapping_id, disc)
+    if not band:
+        return out
+    result = dict(out)
+    internal = SR.BAND_TO_TIER[band] if SR is not None else {
+        "authority": "T1", "top": "T1b", "core": "T2", "normal": "T5"}[band]
+    weight = (SR.TIER_W if SR is not None else {
+        "T1": 1.0, "T1b": .92, "T2": .85, "T5": .25})[internal]
+    result.update({
+        "band": band, "standard_band_name": BAND_CN[band], "band_name": band_name(band, requested),
+        "internal_tier": internal, "weight": weight, "rank": TIER_RANK[internal],
+        "band_rank": BAND_RANK[band], "src": "mapping", "tier": internal,
+        "cn": band_name(band, requested),
+    })
+    ex = dict(result.get("explain") or {})
+    ex["mappingOverride"] = {"mappingId": mapping_id, "band": band}
+    result["explain"] = ex
+    return result
+
+
+def evaluate_paper(p, compute=True, discipline=None):
+    """全类型统一评价事实源。手动覆盖最后应用，且只改评价层。"""
+    p = p if isinstance(p, dict) else {}
+    requested = discipline or _requested_disc()
+    source_type = SR.classify_source_type(p) if SR is not None else "journal_article"
+    if source_type == "journal_article":
+        out = _journal_result(p.get("journal", ""), p.get("issn", ""), compute, requested)
+        if out is None:
+            out = _base_result(source_type, "期刊论文", "期刊论文", "T5", 0.25, "journal_fallback",
+                               {"provisional": True, "notes": ["期刊目录尚未计算，暂按普通显示。"]})
+    else:
+        out = _non_journal_result(p, source_type)
+    out = _localized(out, requested)
+    out = _apply_mapping_override(out, requested)
+    # 单篇改档菜单需要同时展示「当前评价」与「恢复自动后评价」。这四个字段在手动覆盖前冻结，
+    # 不改变既有评价字段，也不要求前端再发一轮请求。
+    out.update({
+        "auto_band": out.get("band"),
+        "auto_band_name": out.get("band_name"),
+        "auto_standard_band_name": out.get("standard_band_name"),
+        "auto_weight": out.get("weight"),
+    })
+
+    raw_override = None
+    try:
+        raw_override = SR.get_override(p.get("key", "")) if SR is not None else None
+    except Exception:
+        raw_override = None
+    if raw_override:
+        out = dict(out)
+        internal = SR.internal_tier_of_override(raw_override)
+        band = SR.band_of_tier(raw_override)
+        out.update({
+            "band": band, "standard_band_name": BAND_CN[band],
+            "band_name": band_name(band, requested), "internal_tier": internal,
+            "weight": SR.TIER_W[internal], "rank": TIER_RANK[internal],
+            "band_rank": BAND_RANK[band], "manual": True, "src": "manual",
+            "tier": internal, "cn": band_name(band, requested), "needs_review": False,
+        })
+        ex = dict(out.get("explain") or {})
+        ex["manualOverride"] = {"stored": raw_override, "band": band, "internalTier": internal}
+        out["explain"] = ex
     return out
 
 
 def grade_paper(p, compute=True):
-    """按整条题录定档：手动改档/法源报告规则优先，未命中回退 grade(journal)。
-       返回 {tier,weight,cn,rank,needs_review[,src]} 或 None。"""
-    if SR is not None:
-        try:
-            sr = SR.resolve(p.get("key", ""), p.get("itemtype", ""), p.get("title", ""))
-        except Exception:
-            sr = None
-        if sr:
-            t = sr["tier"]
-            return {"tier": t, "weight": sr["weight"], "cn": TIER_CN.get(t, t),
-                    "rank": TIER_RANK.get(t, 6), "needs_review": False, "src": sr["src"]}
-    return grade(p.get("journal", ""), p.get("issn", ""), compute=compute)
+    """兼容篇级入口，现直接返回统一评价契约。"""
+    return evaluate_paper(p, compute=compute)
 
 
 def _ov_mtime():
-    """手动改档文件的 mtime（分布缓存失效键之一：改档后分布卡要重算）。"""
+    """手动改档/映射文件的 mtime（分布缓存失效键）。"""
     try:
-        return SR.overrides_mtime() if SR is not None else 0.0
+        one = SR.overrides_mtime() if SR is not None else 0.0
+        two = MAPPING_FILE.stat().st_mtime if MAPPING_FILE.exists() else 0.0
+        return max(one, two)
     except Exception:
         return 0.0
 
@@ -176,6 +516,59 @@ def weight_dist(papers):
     return None
 
 
+def overview(papers, compute=False):
+    """库总览使用的四档、客观标签、真实性质和可调整映射明细。"""
+    from collections import Counter
+    requested = _requested_disc()
+    band_counts = Counter()
+    label_counts = Counter()
+    type_counts = Counter()
+    type_names = {}
+    for p in (papers or {}).values():
+        g = evaluate_paper(p, compute=compute, discipline=requested)
+        band_counts[g["band"]] += 1
+        label_counts[g["objective_label"]] += 1
+        type_code = g["source_type"]
+        if type_code in {"web", "newspaper", "other"}:
+            type_code = "web"
+        type_counts[type_code] += 1
+        type_names[type_code] = "网页与其他" if type_code == "web" else g["source_type_name"]
+    total = sum(band_counts.values())
+    weights = {"authority": 1.0, "top": 0.92, "core": 0.85, "normal": 0.25}
+    bands = [{
+        "band": b, "name": band_name(b, requested), "standard_name": BAND_CN[b],
+        "count": band_counts[b], "ratio": (band_counts[b] / total if total else 0.0),
+        "weight": weights[b],
+    } for b in BAND_RANK]
+    disc = canonical_discipline(requested)
+    overrides = _load_mapping_overrides().get(disc) or {}
+    mappings = []
+    for mid, label, generic_default in MAPPING_SPECS:
+        default = _mapping_default(mid, disc, generic_default)
+        effective = overrides.get(mid, default)
+        mappings.append({
+            "mapping_id": mid, "label": label, "default_band": default,
+            "default_band_name": band_name(default, requested),
+            "band": effective, "band_name": band_name(effective, requested),
+            "customized": mid in overrides and overrides.get(mid) != default,
+            "editable": True, "update_url": "/grading/mapping",
+        })
+    return {
+        "discipline": requested, "canonical_discipline": disc,
+        "discipline_name": ("法学（开发者增强：夯到拉）" if requested == "law_personal_fun"
+                            else ((JG.load_data().disciplines().get(disc) or {}).get("name", requested)
+                                  if JG is not None else requested)),
+        "band_names": {b: band_name(b, requested) for b in BAND_RANK},
+        "notice": ("仅供娱乐：功能与“法学（开发者增强）”完全相同，仅改变四档显示名。"
+                   if requested == "law_personal_fun" else ""),
+        "total": total, "bands": bands, "mappings": mappings,
+        "labels": [{"label": k, "count": v} for k, v in label_counts.most_common()],
+        "source_types": [{"source_type": k, "source_type_name": type_names.get(k, k), "count": v}
+                         for k, v in type_counts.most_common()],
+        "single_item_override": True,
+    }
+
+
 def _papers_mtime():
     try:
         return C.PAPERS_JSONL.stat().st_mtime if C.PAPERS_JSONL.exists() else 0.0
@@ -188,11 +581,9 @@ def _compute_dist(papers, disc):
     tier_n = Counter(); jn = Counter(); jtier = {}
     for p in papers.values():
         j = p.get("journal", "")
-        g = grade_paper(p, compute=True)   # 篇级（六档分布用）：手动改档/法源规则优先，预热期允许冷算
-        if g is None and not j:
-            continue                        # 无刊且无规则命中：维持旧行为，不进分布
-        cn = g["cn"] if g else "未知"   # F3：grade 失败不再回退原始档名（防台湾核心/台湾一般等泄漏进 6 档分布）
-        rnk = g["rank"] if g else 6
+        g = grade_paper(p, compute=True)
+        cn = g["standard_band_name"]
+        rnk = g["band_rank"]
         tier_n[(cn, rnk)] += 1
         if j:
             jn[j] += 1
@@ -200,7 +591,7 @@ def _compute_dist(papers, disc):
             # last-wins 会把单篇改档写成整刊档位（对抗审查 #3/#4，major）。
             if j not in jtier:
                 gj = grade(j, p.get("issn", ""), compute=True)
-                jtier[j] = (gj["cn"], gj["rank"]) if gj else ("未知", 6)
+                jtier[j] = (gj["standard_band_name"], gj["band_rank"]) if gj else ("普通", 3)
     by_tier = sorted(({"tier": cn, "rank": r, "n": n} for (cn, r), n in tier_n.items()),
                      key=lambda x: x["rank"])
     by_journal = [{"journal": j, "tier": jtier[j][0], "rank": jtier[j][1], "n": n}

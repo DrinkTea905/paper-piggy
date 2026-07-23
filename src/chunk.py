@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-步骤2：把提取的逐页文本切成"父子块"。
+步骤2：把提取的定位单元文本切成"父子块"。
 - 子块(child)：检索单元，~500字、句子边界、轻度重叠。
 - 父块(parent)：该块所在"页"的完整文本（≤PARENT_MAX_CHARS），作为给 Claude 的上下文。
 - 每块携带可引用元数据：title/author/year/journal/doi/page/heading。
@@ -90,10 +90,11 @@ def chunk_doc(rec, itemtype_map=None):
     # EN-L1：itemtype 两级来源：extracted meta 自带 > papers.jsonl 映射兜底（历史存量文件缺该字段）
     itemtype = meta.get("itemtype") or (itemtype_map or {}).get(safe_name(key), "") or ""
     chunks = []
+    source_format = rec.get("document_format") or meta.get("fulltext_format") or "pdf"
     for pg in rec.get("pages", []):
         page = pg["page"]
         ptext = pg["text"]
-        heading = page_heading(ptext)
+        heading = pg.get("heading") or pg.get("locator_label") or page_heading(ptext)
         # EN-L1：法条先按"条"切段再在条内走既有句聚合；heading 置为条号（引用即指到条）
         segs = split_statute_articles(ptext) if itemtype == "statute" else None
         if segs is None:
@@ -135,7 +136,7 @@ def chunk_doc(rec, itemtype_map=None):
                     # EN-L1：写解析后的 itemtype（含 papers.jsonl 兜底），statute 行下游
                     # （retriever 的 _weight_res / cite_format 模板分派）都靠它认法条
                     "itemtype": itemtype,
-                    "has_pdf": True,
+                    "has_pdf": source_format == "pdf",
                     "row_type": "chunk",
                 })
                 ci += 1

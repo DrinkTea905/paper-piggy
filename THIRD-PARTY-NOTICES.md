@@ -1,7 +1,7 @@
 # 第三方组件声明
 
 PaperPiggy（论文小猪）本体以 **Apache License 2.0** 发布（见 [LICENSE](LICENSE)）。
-发行版（安装器 / 便携 zip）中还包含下列第三方组件，其版权与许可归各自作者所有。
+Windows 安装器中还包含下列第三方组件，其版权与许可归各自作者所有。
 
 > 维护提示：**新增依赖时必须回来更新这份文件**，并跑一遍许可证扫描
 > （见 [docs/MAINTENANCE.md](docs/MAINTENANCE.md)）。

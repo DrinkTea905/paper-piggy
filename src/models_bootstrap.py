@@ -9,17 +9,40 @@ manifest 文件 `models_manifest.json` 与本脚本同目录，字段见 pack_mo
 用法(CLI)：python models_bootstrap.py         # 下载缺失模型
           python models_bootstrap.py --check  # 只报告是否齐全（exit 0=齐全,1=缺）
 """
-import sys, os, json, hashlib, tarfile, argparse
-from pathlib import Path
+import sys, os, json, hashlib, tarfile, argparse, shutil, time
+from pathlib import Path, PurePosixPath
 sys.path.insert(0, str(Path(__file__).parent))
 import config as C
 
 MANIFEST = Path(__file__).parent / "models_manifest.json"
 NEEDED = ("bge-m3-onnx", "bge-reranker-v2-m3-onnx")   # 运行时必需的两个模型目录
+MODEL_FILES = ("model_quantized.onnx", "config.json", "ort_config.json",
+               "sentencepiece.bpe.model", "special_tokens_map.json",
+               "tokenizer.json", "tokenizer_config.json")
+READY_MARKER = ".paperpiggy-model-ready.json"
 
 
 def model_present(name):
-    return (C.MODELS / name / "model_quantized.onnx").exists()
+    root = C.MODELS / name
+    try:
+        complete = all((root / fn).is_file() and (root / fn).stat().st_size > 0
+                       for fn in MODEL_FILES)
+    except OSError:
+        return False
+    if not complete:
+        return False
+    marker = root / READY_MARKER
+    if not marker.exists():
+        return True                 # 兼容早期已完整下载、但还没有完成标记的模型
+    try:
+        data = json.loads(marker.read_text(encoding="utf-8"))
+        archive_sha = str(data.get("archive_sha256") or "").lower()
+        return (data.get("schema") == 1 and data.get("name") == name
+                and len(archive_sha) == 64
+                and all(c in "0123456789abcdef" for c in archive_sha)
+                and int(data.get("archive_bytes") or 0) > 0)
+    except Exception:
+        return False
 
 
 def missing_models():
@@ -104,6 +127,76 @@ def _sha256(path, progress_cb=None, name=""):
     return h.hexdigest()
 
 
+def _unique_path(parent, stem):
+    p = Path(parent) / f"{stem}-{os.getpid()}-{time.time_ns()}"
+    if p.exists():
+        raise RuntimeError(f"暂存路径意外已存在：{p}")
+    return p
+
+
+def _safe_extract_model(archive, staging, name, expect_archive_bytes=0):
+    """只允许归档内出现 <name>/ 下的普通文件和目录，拒绝穿越与链接。"""
+    staging = Path(staging)
+    staging.mkdir(parents=True, exist_ok=False)
+    with tarfile.open(archive, "r:gz") as tf:
+        members = tf.getmembers()
+        if not members:
+            raise RuntimeError("模型归档为空")
+        total = 0
+        for m in members:
+            rel = PurePosixPath(m.name.replace("\\", "/"))
+            if (rel.is_absolute() or ".." in rel.parts or not rel.parts
+                    or rel.parts[0] != name or any(":" in part for part in rel.parts)):
+                raise RuntimeError(f"归档含不安全或越界路径：{m.name!r}")
+            if m.issym() or m.islnk() or not (m.isfile() or m.isdir()):
+                raise RuntimeError(f"归档含链接或特殊文件：{m.name!r}")
+            total += int(m.size or 0)
+        # 模型压缩率很低；给足余量，同时挡住异常膨胀归档。
+        if expect_archive_bytes and total > max(expect_archive_bytes * 5, 2_000_000_000):
+            raise RuntimeError(f"归档解压体积异常：{total} 字节")
+        for m in members:
+            rel = PurePosixPath(m.name.replace("\\", "/"))
+            dst = staging.joinpath(*rel.parts)
+            if m.isdir():
+                dst.mkdir(parents=True, exist_ok=True)
+                continue
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            src = tf.extractfile(m)
+            if src is None:
+                raise RuntimeError(f"无法读取归档成员：{m.name!r}")
+            with src, open(dst, "wb") as out:
+                shutil.copyfileobj(src, out, length=1 << 20)
+
+    root = staging / name
+    missing = [fn for fn in MODEL_FILES
+               if not (root / fn).is_file() or (root / fn).stat().st_size <= 0]
+    if missing:
+        raise RuntimeError("归档缺少运行时文件：" + ", ".join(missing))
+    return root
+
+
+def _install_staged_model(staged_model, name):
+    """同盘改名原子落位；失败时尽力恢复原有不完整目录并保留现场。"""
+    target = C.MODELS / name
+    old = None
+    if target.exists():
+        old = _unique_path(C.MODELS, f".{name}.incomplete")
+        os.rename(target, old)
+    try:
+        os.rename(staged_model, target)
+        if not model_present(name):
+            raise RuntimeError("模型落位后完整性复检失败")
+    except Exception:
+        if target.exists():
+            failed = _unique_path(C.MODELS, f".{name}.failed")
+            os.rename(target, failed)
+        if old and old.exists() and not target.exists():
+            os.rename(old, target)
+        raise
+    if old and old.exists():
+        shutil.rmtree(old)
+
+
 def ensure_models(progress_cb=None, log=print):
     """下载所有缺失模型。返回 (ok, msg)。已齐全则秒返回。
 
@@ -137,25 +230,44 @@ def ensure_models(progress_cb=None, log=print):
             _download(urls, part, progress_cb, name, e.get("bytes", 0))
         except Exception as ex:
             return False, f"{name} 下载失败（已保留断点，下次续传）：{ex}"
-        if e.get("sha256"):
-            got = _sha256(part, progress_cb, name)
-            if got.lower() != e["sha256"].lower():
-                try:
-                    part.unlink()   # 校验失败＝已损坏，删掉以便下次全新重下
-                except Exception:
-                    pass
-                return False, f"{name} 校验失败（sha256 不匹配，可能下载损坏，已清除请重试）"
+        expected_sha = str(e.get("sha256") or "").lower()
+        try:
+            expected_bytes = int(e.get("bytes") or 0)
+        except (TypeError, ValueError):
+            expected_bytes = 0
+        if len(expected_sha) != 64 or any(c not in "0123456789abcdef" for c in expected_sha):
+            return False, f"清单里 {name} 缺少有效 sha256，已拒绝未校验模型"
+        if expected_bytes <= 0:
+            return False, f"清单里 {name} 缺少有效文件大小，已拒绝未校验模型"
+        actual_bytes = part.stat().st_size
+        if actual_bytes != expected_bytes:
+            part.unlink(missing_ok=True)
+            return False, (f"{name} 校验失败（大小应为 {expected_bytes}，实际 {actual_bytes}；"
+                           "已清除损坏断点，请重试）")
+        got = _sha256(part, progress_cb, name)
+        if got.lower() != expected_sha:
+            part.unlink(missing_ok=True)
+            return False, f"{name} 校验失败（sha256 不匹配，可能下载损坏，已清除请重试）"
         log(f"[models] 解压 {name} …")
         if progress_cb:
             progress_cb(name, 0, -1, "extract")   # total=-1 → 前端识别为 indeterminate（见函数 docstring）
-        with tarfile.open(part, "r:gz") as tf:
-            tf.extractall(C.MODELS)      # 归档内顶层即 <name>/...
+        staging = _unique_path(C.MODELS, f".{name}.staging")
         try:
-            part.unlink()                # 解压成功即删断点文件
-        except Exception:
-            pass
-        if not model_present(name):
-            return False, f"{name} 解压后仍缺 model_quantized.onnx（归档结构不符）"
+            staged_model = _safe_extract_model(part, staging, name, expected_bytes)
+            (staged_model / READY_MARKER).write_text(json.dumps({
+                "schema": 1, "name": name, "archive_sha256": got,
+                "archive_bytes": actual_bytes,
+            }, ensure_ascii=False, indent=2), encoding="utf-8")
+            _install_staged_model(staged_model, name)
+        except Exception as ex:
+            # 仅清理由本次创建且尚未落位的 staging；正式目录和失败现场不碰。
+            if staging.exists():
+                shutil.rmtree(staging, ignore_errors=True)
+            return False, f"{name} 安全解压或落位失败（原模型未被半成品覆盖）：{ex}"
+        finally:
+            if staging.exists():
+                shutil.rmtree(staging, ignore_errors=True)
+        part.unlink(missing_ok=True)       # 完整校验并原子落位成功后才删断点文件
         log(f"[models] {name} 就绪 ✓")
     return True, "全部模型下载完成"
 

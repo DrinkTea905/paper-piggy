@@ -10,7 +10,7 @@
   外文权威            → ssci_law_authority.收录 (T2，外刊不打折)
   CSSCI              → cssci.来源
   CSSCI扩展          → cssci.扩展
-  报纸                → newspaper.报纸        (T6)
+  报纸                → newspaper.报纸        (普通档内部信号)
   普刊/外文一般/境外/未知 → 跳过（默认档，无需登记）
 旧档只有刊名+档次、无 ISSN，故并入条目 issn 留空，靠归一刊名匹配（可后续补 ISSN）。
 合并策略：保留各目录种子文件已有条目（及其 ISSN），把旧档条目 upsert 进去（旧档为准定 level）。
@@ -80,7 +80,7 @@ NEW_META = {
                        "note": "私有目录（law_personal 专用）：非旗舰法评的 SSCI 权威社科刊。外刊不打折(intl=1.0)→T2。level=收录。"},
     "newspaper":      {"catalog": "newspaper", "version": "2026-06-28-legacy",
                        "source": "个人整理（法律类报纸/公报）", "origin": "cn",
-                       "note": "私有目录（law_personal 专用）：报纸/公报，作辅证、压最低档 T6。level=报纸。"},
+                       "note": "私有目录（law_personal 专用）：报纸/公报只作辅证，对外统一显示普通档。level=报纸。"},
 }
 
 

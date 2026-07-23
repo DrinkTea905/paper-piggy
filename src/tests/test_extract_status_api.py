@@ -120,6 +120,37 @@ class ExtractStatusApiTests(unittest.TestCase):
         self.assertEqual(result["n_pages_total"], 3)
         self.assertEqual([p["pdf_page"] for p in result["pages"]], [1])
 
+    def test_read_source_epub_returns_chapter_locator_without_pdf_page(self):
+        with tempfile.TemporaryDirectory() as td:
+            extracted = Path(td)
+            (extracted / "E.json").write_text(json.dumps({
+                "document_format": "epub", "total_pages": 2,
+                "pages": [{"page": 2, "heading": "第二章 制度沿革",
+                           "locator_label": "第二章 制度沿革", "text": "电子书正文"}],
+            }, ensure_ascii=False), encoding="utf-8")
+            papers = {"E": {"key": "E", "stem": "E", "title": "电子书",
+                             "has_fulltext": True, "fulltext_path": "book.epub",
+                             "fulltext_format": "epub", "has_pdf": False}}
+            with mock.patch.object(server.C, "EXTRACTED", extracted), \
+                    mock.patch.object(server, "_load_papers", return_value=papers):
+                result = server.read_source("E")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["fulltext_format"], "epub")
+        self.assertIsNone(result["pages"][0]["pdf_page"])
+        self.assertEqual(result["pages"][0]["locator"], "第二章 制度沿革")
+
+    def test_non_pdf_citation_accepts_position_and_locator(self):
+        papers = {"E": {"key": "E", "title": "电子书", "author": "作者",
+                         "year": "2026", "journal": "出版社", "itemtype": "book",
+                         "has_fulltext": True, "fulltext_path": "book.epub",
+                         "fulltext_format": "epub", "has_pdf": False}}
+        with mock.patch.object(server, "_load_papers", return_value=papers), \
+                mock.patch("page_map.printed") as printed:
+            result = server.cite_paper("E", position=2, locator="第二章 制度沿革")
+        printed.assert_not_called()
+        self.assertIn("第二章 制度沿革", result["formatted"])
+        self.assertNotIn("page", result["missing_fields"])
+
 
 class UpdateInstallerEndpointTests(unittest.TestCase):
     def test_opens_only_official_release_installer(self):

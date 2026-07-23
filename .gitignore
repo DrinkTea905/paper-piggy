@@ -39,7 +39,7 @@ venv/
 # ── 出包时现下/现生成的东西（不提交，build_installer.py 会自动准备）──
 # 注意：gitignore 不支持行内注释，注释必须单独成行，否则 `#` 后的内容会被当成路径的一部分。
 # MicrosoftEdgeWebview2Setup.exe = 微软可再分发二进制，构建时现下
-# PaperPiggy.ico = 由 web/PaperPiggy.png 现封
+# PaperPiggy.ico = 由 web/PaperPiggy.png 强制生成的多尺寸 Windows 图标
 installer/MicrosoftEdgeWebview2Setup.exe
 installer/PaperPiggy.ico
 
@@ -67,7 +67,7 @@ desktop.ini
 #   src/journal_grading/catalogs/*.json   期刊目录（sjr/pku/cssci/if_cnki），
 #                                                  缺了会静默回退到旧的离散档，评级变差
 #   src/journal_tiers.json                 期刊分级表
-#   src/web/PaperPiggy.png                 应用图标真源（.ico 由 launcher 运行时生成）
+#   src/web/PaperPiggy.png                 应用图标真源（.ico 由构建器/launcher 生成）
 #   _archive/数据快照/grading_memo.*.json          期刊分级的 LLM 结果缓存（689 条，花过 API 钱）
 #
 # 反过来，下面这些看着像资产、其实是运行时生成的，不用留：

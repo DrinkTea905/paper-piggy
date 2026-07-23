@@ -78,7 +78,7 @@ README / CHANGELOG / release notes 会被全世界看到。改文案时别留「
 - 把 Zotero 文库（或任意文件夹）里的论文 / 法源 / 报告建成本地索引
 - 检索：dense(LanceDB) + BM25 → RRF 融合 → reranker → 期刊权重加成
 - **综合层 wiki**：把检索答案沉淀成可持久、可引用、会标记过期（stale）的知识页
-- **Agent 层**：通过 MCP（32 个工具）让 Claude Code 等外部 agent 直接操作这个知识库，内置「写论文与综述」「维护综述库」「跨学科发散与补文献」等工作流
+- **Agent 层**：通过 MCP（当前 39 个工具；后续以 `mcp_server.TOOLS` 和自动生成的 `MCP接入说明.md` 为准）让 Claude Code 等外部 agent 直接操作这个知识库，内置「写论文与综述」「维护综述库」「跨学科发散与补文献」等工作流
 
 全本地运行（也支持 API 模式）。开源，**明文 .py 分发，不编译不混淆**。
 
@@ -202,7 +202,7 @@ $env:LOCALKB_MODELS = 'D:\00Zotero知识库\rag\data\models'
 3. **开发者文档**（给你和下一个 agent 看）：`MCP接入说明.md`、`docs/`、本文件
 
 **已经发生过的漂移**（引以为戒）：
-- `MCP接入说明.md` 曾写「共 28 个工具」，而 `mcp_server.TOOLS` 实际有 **32** 个；Resources 表还整条漏掉了 `localkb://memory`。`gen_mcp_doc.py --check` 本来能检出前者，但当时**没有任何地方调用它**。
+- `MCP接入说明.md` 曾写死一个旧工具数，而 `mcp_server.TOOLS` 已继续变化；Resources 表还整条漏掉过 `localkb://memory`。`gen_mcp_doc.py --check` 本来能检出前者，但当时**没有任何地方调用它**。
 - **散文里硬写「当前正式版 = vX」会冻住不动**（2026-07-15 审计逮到）：本文件 §7「发布记录」一度写死「v1.0.1 = 当前正式版」，而实际已迭代到 1.0.10 —— 与 §5「版本唯一源是 config.APP_VERSION」自相矛盾，会让接手 agent 误判落后 9 个版本。同类：`docs/RELEASE.md` 曾说「updater.py 是死代码」而它早已接线。**根因**：散文体里复制了一份"会变的事实"，却没有护栏逼它跟着变。**对策**：凡"当前版本 / 当前阶段 / 某功能是否已接线"这类会随迭代改变的表述，**别在散文里定值**，一律指向唯一源（`config.APP_VERSION` / `CHANGELOG.md` / 代码），并在发版流程里通读一遍（§0.5①、§7 发版提醒）。
 
 **现在有护栏了**：`check_guides.py` 会断言这些一致性，且**已接进 `build_bundle.py` —— 校验不过直接中止打包**。
@@ -223,7 +223,7 @@ $env:LOCALKB_MODELS = 'D:\00Zotero知识库\rag\data\models'
 | 期刊评级规则 | `journal_grading/` + `journal_grading/期刊引用权重分级方案.md` |
 | wiki 页面规约 | `wiki_store.WIKI_MD_SEED`（改了**必须** bump `SCHEMA_VERSION`，见 MAINTENANCE） |
 | Agent 工作流 | `agent_ws._WF_*` 常量 |
-| 应用图标 | `web/PaperPiggy.png`（`.ico` 由 launcher 运行时生成） |
+| 应用图标 | `web/PaperPiggy.png`（唯一真源；多尺寸 `.ico` 由构建器/launcher 自动生成） |
 | **数据落点** | `config._bootstrap_bundle_env()`。`run_localkb.py` 只是 `import config` 借道 —— 它曾经自己复刻过一份 HOME 解析，两处各算各的，是「启动器和 MCP 认两个数据目录」的漂移源。**别再复制出去。** |
 | Agent 工作区落点 | `agent_ws.base_dir()`（= `C.DATA.parent`，与 folder/zotero 模式无关） |
 | **哪些数据要备份** | `backup.py` 的 `CORE_IN_DATA` / `INDEX_IN_DATA` / `NEVER_IN_DATA` / `SPECIAL_IN_DATA`。**新增任何 `C.DATA / "xxx"` 都必须在这四个清单里落座**，否则 `check_guides ⑥` 直接中止打包 |

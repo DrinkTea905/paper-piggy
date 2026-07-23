@@ -24,6 +24,24 @@ class AgentOutputTests(unittest.TestCase):
         self.assertIn("全量审查", AW._WF_WIKI)
         self.assertIn("简单事项直接处理", AW._WF_WIKI)
 
+    def test_agent_safety_copy_matches_available_maintenance_tools(self):
+        self.assertIn("用户明确要求", AW._WF_PAPER)
+        self.assertIn("建库 / 深索工具更新 PaperPiggy 索引", AW._WF_PAPER)
+        self.assertIn("云端检索或使用外部 AI 助手", AW._rules_summary_text())
+        self.assertNotIn("不联网、不含大模型", AW._TASKS_README)
+
+    def test_frontend_destructive_and_error_guards_are_wired(self):
+        app_js = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+        index_html = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+        self.assertIn('jpost("/setup/purge_deleted", { preview: true })', app_js)
+        self.assertIn('jpost("/setup/purge_deleted", { confirm: true })', app_js)
+        self.assertIn('title: "开启删除同步？"', app_js)
+        self.assertNotIn('fetch("/build"', app_js)
+        self.assertIn('const s = await jget("/build/status")', app_js)
+        self.assertIn('id="ed-gokey" class="ag-link ag-linkbtn" type="button"', index_html)
+        self.assertIn('id="ag-open-skills" type="button"', index_html)
+        self.assertIn('id="settings-modal" class="modal" role="dialog"', index_html)
+
     def test_scaffold_creates_codex_and_claude_workflow_entry_files(self):
         with tempfile.TemporaryDirectory() as td, mock.patch.object(AW, "base_dir", return_value=Path(td)):
             AW.ensure_scaffold()
@@ -31,6 +49,17 @@ class AgentOutputTests(unittest.TestCase):
             self.assertTrue(agents.exists()); self.assertTrue(claude.exists())
             self.assertIn("工作流闸门", agents.read_text(encoding="utf-8"))
             self.assertIn("用户只要提到“维护”", claude.read_text(encoding="utf-8"))
+
+    def test_scaffold_removes_only_obsolete_catalog_check_task(self):
+        with tempfile.TemporaryDirectory() as td, mock.patch.object(AW, "base_dir", return_value=Path(td)):
+            obsolete = AW.tasks_dir() / "文献目录半年检查"
+            keep = AW.tasks_dir() / "我的定时任务"
+            obsolete.mkdir(parents=True); keep.mkdir(parents=True)
+            (obsolete / "任务.md").write_text("旧开发任务", encoding="utf-8")
+            (keep / "任务.md").write_text("用户任务", encoding="utf-8")
+            AW.ensure_scaffold()
+            self.assertFalse(obsolete.exists())
+            self.assertTrue((keep / "任务.md").exists())
 
     def test_recursive_output_stats_include_nested_files(self):
         with tempfile.TemporaryDirectory() as td:

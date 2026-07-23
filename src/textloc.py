@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-EN-A3：引文定位器（契约6）——在 data/extracted/{stem}.json 的逐页文本里定位一段引文，
-回答「这句话在哪篇、PDF 第几页、印刷页第几页」。
+EN-A3：引文定位器（契约6）——在 data/extracted/{stem}.json 的全文定位单元里查找引文。
+PDF 返回页码/印刷页码，其他格式返回章节、标题或行号范围。
 
 为什么要有它：引注核验（蓝图 G1/G2）的最后一步永远是"回到原文那一页"——检索只能给
 相关块，给不出可供脚注引用的精确页位；agent 替用户核对引文时必须有这个原子能力。
@@ -20,6 +20,7 @@ import sys, json
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import config as C
+import document_formats as DF
 from textutil import safe_name
 
 # 全角 ASCII 可见区（！～ = U+FF01..U+FF5E）→ 半角，外加全角空格；与 page_map._FW 同思路，
@@ -133,6 +134,7 @@ def locate(quote, key=None, fuzzy=True, max_matches=20, cap_files=CAP_FILES):
         if not d:
             continue
         k = key or d.get("key") or f.stem
+        fmt = d.get("document_format") or (d.get("meta") or {}).get("fulltext_format") or "pdf"
         for pg in (d.get("pages") or []):
             text = pg.get("text") or ""
             if not text:
@@ -148,10 +150,12 @@ def locate(quote, key=None, fuzzy=True, max_matches=20, cap_files=CAP_FILES):
                 pn = 0
             # 印刷页：pagemap sidecar 按 stem 存，用 f.stem 查最稳（key≠stem 的个别篇也不落空）
             try:
-                pr = (PM.printed(f.stem, pn) or {}).get("display") or ""
+                pr = ((PM.printed(f.stem, pn) or {}).get("display") or "") if fmt == "pdf" else ""
             except Exception:
                 pr = ""
-            matches.append({"key": k, "pdf_page": pn, "printed_page": pr,
+            matches.append({"key": k, "position": pn, "pdf_page": pn if fmt == "pdf" else None,
+                            "printed_page": pr, "fulltext_format": fmt,
+                            "locator": DF.locator_label(fmt, pn, pg.get("heading"), pg.get("locator_label")),
                             "exact": bool(exact), "context": ctx})
             if len(matches) >= max_matches:
                 break

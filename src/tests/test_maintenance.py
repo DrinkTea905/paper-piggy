@@ -18,6 +18,55 @@ import wiki_store as W  # noqa: E402
 
 
 class MaintenanceAuditTests(unittest.TestCase):
+    def test_compatible_deep_rule_change_is_accepted_without_rebuild(self):
+        old_deep = "961aa2cde7626605ccdd366aac8501469388d4c661252787661995153a41af30"
+        new_deep = "acfdf51ca9e89f975d16e4d1d19babaadf21fe40b8d36df655fadec10a470252"
+        with tempfile.TemporaryDirectory() as td:
+            manifest = Path(td) / "index_manifest.json"
+            manifest.write_text(json.dumps({"pipeline_fingerprints": {
+                "light": "same-light", "deep": old_deep, "semantic": "same-semantic",
+            }}), encoding="utf-8")
+            with mock.patch.object(UH.C, "INDEX_MANIFEST", manifest), \
+                    mock.patch.object(UH, "pipeline_fingerprints", return_value={
+                        "light": "same-light", "deep": new_deep, "semantic": "same-semantic",
+                    }):
+                result = UH.index_health()
+                saved = json.loads(manifest.read_text(encoding="utf-8"))
+        self.assertEqual("current", result["state"])
+        self.assertIn("无需重新深索", result["detail"])
+        self.assertEqual(new_deep, saved["pipeline_fingerprints"]["deep"])
+
+    def test_unknown_deep_rule_change_still_requires_full_rebuild(self):
+        with tempfile.TemporaryDirectory() as td:
+            manifest = Path(td) / "index_manifest.json"
+            manifest.write_text(json.dumps({"pipeline_fingerprints": {
+                "light": "same-light", "deep": "unknown-old", "semantic": "same-semantic",
+            }}), encoding="utf-8")
+            with mock.patch.object(UH.C, "INDEX_MANIFEST", manifest), \
+                    mock.patch.object(UH, "pipeline_fingerprints", return_value={
+                        "light": "same-light", "deep": "unknown-new", "semantic": "same-semantic",
+                    }):
+                result = UH.index_health()
+        self.assertEqual("stale", result["state"])
+        self.assertTrue(result["full_rebuild"])
+        self.assertEqual("清空并从头重建索引", result["action"])
+
+    def test_light_rule_change_requires_only_metadata_refresh(self):
+        with tempfile.TemporaryDirectory() as td:
+            manifest = Path(td) / "index_manifest.json"
+            manifest.write_text(json.dumps({"pipeline_fingerprints": {
+                "light": "old", "deep": "same-deep", "semantic": "same-semantic",
+            }}), encoding="utf-8")
+            with mock.patch.object(UH.C, "INDEX_MANIFEST", manifest), \
+                    mock.patch.object(UH, "pipeline_fingerprints", return_value={
+                        "light": "new", "deep": "same-deep", "semantic": "same-semantic",
+                    }):
+                result = UH.index_health()
+        self.assertEqual("题录分类规则已更新", result["label"])
+        self.assertEqual("手动更新知识库", result["action"])
+        self.assertFalse(result["full_rebuild"])
+        self.assertIn("无需清空索引", result["detail"])
+
     def test_agent_mode_classifies_simple_work_as_auto_and_external_files_as_blocked(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td); state = root / "state"; state.mkdir()
@@ -71,6 +120,43 @@ class WikiSuggestionQueueTests(unittest.TestCase):
                 self.assertEqual(server.wiki_suggestions(status="pending")["total"], 74)
                 history = server.wiki_suggestions(status="all", limit=200)["items"]
                 self.assertEqual(next(x for x in history if x["key"] == "K0")["status"], "not_needed")
+
+
+class WikiHumanEditingTests(unittest.TestCase):
+    def test_editable_body_hides_system_wrapper_and_keeps_user_markdown(self):
+        meta = {"id": "p1", "kind": "digest", "title": "测试综述", "subject": "测试问题",
+                "sources": [{"key": "K1", "citation": "来源一"}], "generated_at": "2026-07-22T00:00:00",
+                "generated_by": "agent", "stale": False, "by_agent": True, "links": []}
+        rendered = W._render_md(meta, "测试问题", "## 小节\n\n正文 [1]", meta["sources"])
+        editable = W._editable_body(rendered, meta)
+        self.assertEqual(editable, "## 小节\n\n正文 [1]")
+        self.assertNotIn("参考来源", editable)
+        self.assertNotIn("generated_at", editable)
+
+    def test_human_edit_preserves_agent_origin_and_auto_verifies(self):
+        existing = {"id": "p1", "kind": "digest", "title": "测试综述", "subject": "测试问题",
+                    "sources": [{"key": "K1"}], "generated_by": "agent", "stale": True,
+                    "by_agent": True, "links": ["p2"]}
+        with mock.patch.object(W, "index_map", return_value={"p1": existing}), \
+                mock.patch.object(W, "_persist_page", return_value={"id": "p1"}) as persist, \
+                mock.patch.object(W, "set_verified", return_value={"verified_at": "2026-07-22T01:02:03"}) as verify:
+            result = W.edit_page_by_human("p1", "修正后的正文")
+        self.assertTrue(persist.call_args.kwargs["human_edit"])
+        self.assertTrue(persist.call_args.kwargs["by_agent"])
+        verify.assert_called_once_with("p1", True)
+        self.assertEqual(result["verified_at"], "2026-07-22T01:02:03")
+
+    def test_verified_state_can_be_cleared(self):
+        meta = {"id": "p1", "kind": "digest", "title": "测试综述", "verified_at": "old"}
+        with tempfile.TemporaryDirectory() as td, \
+                mock.patch.object(W, "load_index", return_value={"pages": [meta]}), \
+                mock.patch.object(W, "_save_index") as save_index, \
+                mock.patch.object(W, "page_path", return_value=Path(td) / "missing.md"):
+            result = W.set_verified("p1", False)
+        self.assertFalse(result["verified"])
+        self.assertEqual(result["verified_at"], "")
+        self.assertNotIn("verified_at", meta)
+        save_index.assert_called_once()
 
 
 if __name__ == "__main__":

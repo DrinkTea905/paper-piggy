@@ -3,7 +3,7 @@
     "catalog": "warning",
     "version": "2023-2025",
     "source": "中科院《国际期刊预警名单》2023/2024/2025 (via github hitfyd/ShowJCR)",
-    "note": "命中即 T6(0.05)、标红。国际预警期刊，合并近三年。",
+    "note": "国际预警期刊，合并近三年。命中信息只保留在解释链；普通页面不新增警示档。",
     "count": 55
   },
   "journals": [

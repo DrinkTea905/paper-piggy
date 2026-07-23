@@ -4,7 +4,7 @@
     "version": "2026-06-28-legacy",
     "source": "个人整理（法律类报纸/公报）",
     "origin": "cn",
-    "note": "私有目录（law_personal 专用）：报纸/公报，作辅证、压最低档 T6。level=报纸。 ｜ 已并入 2026-06-28 个人法学旧档。",
+    "note": "私有目录（law_personal 专用）：报纸/公报只作辅证，对外统一显示普通档。 ｜ 已并入 2026-06-28 个人法学旧档。",
     "migrated_from": "D:\\LocalKB\\data\\journal_tiers.json"
   },
   "journals": [
