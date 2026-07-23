@@ -62,6 +62,30 @@ class BackupSafetyTests(unittest.TestCase):
                     B.create()
             self.assertEqual([], list(out.glob("*.zip")))
 
+    def test_cancelled_backup_removes_part_file_and_never_finalizes(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            data = root / "data"
+            data.mkdir()
+            (data / "valuable.json").write_text("valuable", encoding="utf-8")
+            out = root / "backups"
+            checks = {"n": 0}
+
+            def should_cancel():
+                checks["n"] += 1
+                return checks["n"] >= 3
+
+            with mock.patch.object(B.C, "DATA", data), \
+                    mock.patch.object(B, "CORE_IN_DATA", ["valuable.json"]), \
+                    mock.patch.object(B, "CORE_IN_HOME", []), \
+                    mock.patch.object(B, "INDEX_IN_DATA", []), \
+                    mock.patch.object(B, "backup_dir", return_value=out), \
+                    mock.patch.object(B, "_sanitized_settings", return_value=(None, False)):
+                with self.assertRaises(B.BackupCancelled):
+                    B.create(should_cancel=should_cancel)
+            self.assertEqual([], list(out.glob("*.zip")))
+            self.assertEqual([], list(out.glob("*.part")))
+
     def test_restore_stages_then_moves_old_data_to_recoverable_stash(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

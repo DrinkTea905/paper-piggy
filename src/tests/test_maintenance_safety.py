@@ -2,6 +2,7 @@
 import json
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -135,6 +136,77 @@ class MaintenanceTransactionTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertTrue(result["reembed"])
         reset_vectors.assert_called_once()
+
+
+class BackupRuntimeTests(unittest.TestCase):
+    def setUp(self):
+        server.BUILD.update({"running": False, "stage": "", "proc": None, "job": None})
+        server.BACKUP.update({
+            "running": False, "stage": "", "done": 0, "total": 0,
+            "result": None, "error": None, "kind": "", "started_at": 0.0,
+            "cancellable": False, "cancel_requested": False, "task_id": 0,
+        })
+        server._BACKUP_WORKER = None
+        server._BACKUP_CANCEL.clear()
+
+    def tearDown(self):
+        server.BUILD["running"] = False
+        server.BACKUP["running"] = False
+        server._BACKUP_WORKER = None
+        server._BACKUP_CANCEL.clear()
+
+    @mock.patch.object(server, "_start_backup_worker")
+    @mock.patch("settings.load")
+    def test_auto_backup_not_due_never_claims_slot(self, load_settings, start_worker):
+        load_settings.return_value = {
+            "backup": {
+                "auto": True, "every_days": 7,
+                "last_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            }
+        }
+        server._auto_backup_tick()
+        start_worker.assert_not_called()
+        self.assertFalse(server.BACKUP["running"])
+
+    @mock.patch.object(server, "_start_backup_worker", return_value=(True, None))
+    @mock.patch("settings.load", return_value={"backup": {"auto": True, "every_days": 7, "last_at": ""}})
+    def test_auto_backup_due_starts_background_worker(self, _load_settings, start_worker):
+        server._auto_backup_tick()
+        start_worker.assert_called_once_with(
+            "auto", "自动备份中", include_index=False, include_key=False)
+
+    def test_cancel_is_allowed_for_backup_but_not_restore(self):
+        self.assertIsNone(server._claim_backup("手动备份中", kind="manual", cancellable=True))
+        result = server.backup_cancel()
+        self.assertTrue(result["ok"])
+        self.assertTrue(server._BACKUP_CANCEL.is_set())
+        self.assertTrue(server.BACKUP["cancel_requested"])
+        server._release_backup()
+
+        self.assertIsNone(server._claim_backup("恢复中", kind="restore", cancellable=False))
+        result = server.backup_cancel()
+        self.assertFalse(result["ok"])
+        self.assertIn("不能中途停止", result["error"])
+
+    def test_status_self_heals_stale_backup_slot(self):
+        server.BACKUP.update({
+            "running": True, "kind": "auto", "stage": "自动备份中",
+            "started_at": time.time() - 31, "cancellable": True,
+        })
+        status = server._backup_status_view()
+        self.assertFalse(status["running"])
+        self.assertEqual(status["result"], {"cleaned_stale": True})
+
+    def test_manual_update_reports_real_auto_backup_reason(self):
+        server.BACKUP.update({
+            "running": True, "kind": "auto", "stage": "自动备份中",
+            "started_at": time.time(), "cancellable": True,
+        })
+        with server._BUILD_LOCK:
+            detail = server._maintenance_busy_detail_locked()
+        self.assertEqual(detail["reason"], "backup")
+        self.assertEqual(detail["stage"], "auto")
+        self.assertIn("自动备份", detail["msg"])
 
 
 class RetrieverBackendGuardTests(unittest.TestCase):

@@ -190,7 +190,7 @@
           <div class="ag-ch-n">8</div>
           <div class="ag-ch-c">
             <h3>人工控制台、备份与隐私</h3>
-            <p class="ag-note">· <b>文献页</b>用于浏览分类、查看处理状态、人工挑选文献和打开原文；“题录查找”输入后会自动显示结果，“全文与相关内容”仍需点击“检索全文”或按 Enter。<br>· <b>综述库</b>用于阅读、核验、查看历史和回滚。<br>· 顶栏<b>释放检索内存</b>只清理临时占用；有界面、对话或 Agent 查询时会拒绝，不会中断查询。<br>· <b>设置 → 数据与维护</b>可把综述、Agent 交付物、资料库、分类和人工数据备份为 zip；云备份请同步这个静态备份包。<br>· 本地检索的待检索文本留在电脑上；SiliconFlow 云端检索和所选 AI 服务会接收完成对应任务所需的文本。API Key 保存在本机设置中。</p>
+            <p class="ag-note">· <b>文献页</b>用于浏览分类、查看处理状态、人工挑选文献和打开原文；“题录查找”输入后会自动显示结果，“全文与相关内容”仍需点击“检索全文”或按 Enter。<br>· <b>综述库</b>用于阅读、核验、查看历史和回滚。<br>· 顶栏<b>释放检索内存</b>只清理临时占用；有界面、对话或 Agent 查询时会拒绝，不会中断查询。<br>· <b>设置 → 数据与维护</b>可把综述、Agent 交付物、资料库、分类和人工数据备份为 zip；自动备份在后台执行，页面会显示下次时间和当前进度，正在创建的备份可安全停止。云备份请同步这个静态备份包，不要同步整个数据目录。<br>· 本地检索的待检索文本留在电脑上；SiliconFlow 云端检索和所选 AI 服务会接收完成对应任务所需的文本。API Key 保存在本机设置中。</p>
           </div>
         </section>
 
@@ -880,6 +880,17 @@
           （只打手写资产、不含索引、不含密钥），保留最近
           <input type="number" id="bk-keep" min="1" max="20" style="width:3.5em" /> 份
         </label>
+        <p class="hint">自动备份在后台执行，不会弹出窗口。关闭开关只停止以后自动触发；
+          如果当前正在创建备份，可在下面单独停止。数据恢复为保护完整性，不能中途停止。</p>
+
+        <div id="bk-runtime" class="bk-runtime" aria-live="polite">
+          <span id="bk-runtime-dot" class="bk-runtime-dot"></span>
+          <div class="bk-runtime-copy">
+            <b id="bk-runtime-title">正在读取备份状态…</b>
+            <span id="bk-runtime-detail" class="hint"></span>
+          </div>
+          <button id="bk-cancel" class="ghost danger" hidden>停止当前备份</button>
+        </div>
 
         <div class="set-errbtns">
           <button id="bk-create" class="ghost">💾 立即备份</button>
