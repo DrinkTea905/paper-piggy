@@ -225,6 +225,7 @@
     try { st = await jget("/index/status"); } catch (e) {}
     // BF14：/health 失败早退时清掉 wasDeepBusy，防止后端重启后误弹一次「深索完成」
     if (!h) { s.textContent = "服务未连接"; s.className = "status err"; hideProgress(); wasDeepBusy = false; return; }
+    renderRetrievalMemoryButton(h.retrieval);
     // 库修订感知（连点都不用）：库/综述/交付物任一变化 → 静默刷「真变了的那一域对应的可见页」，
     // 捕捉「外部 MCP agent 改库/写综述、纯新增入库」这类 /index/status 无信号、原本要手点🔄或重开才见的变化。
     // 分域比对：只刷真变了的那一域的可见页，避免跨域误刷（如浏览页看列表时 agent 写综述把列表刷跳）。
@@ -751,6 +752,9 @@
   }
   // 浏览与全文检索共用「文献」页。题录查找走 /papers，本地即时；全文模式复用 /search。
   let LIBRARY_MODE = "metadata";
+  const METADATA_SEARCH_DELAY_MS = 300;
+  let metadataSearchTimer = null;
+  let metadataComposing = false;
   function browseScopeCategory() {
     if (!BR || !BR.scope || BR.scope.type === "all") return null;
     if (BR.scope.type === "topic") return `topic:${BR.scope.id}`;
@@ -765,28 +769,43 @@
     if (!q && BR.sort === "match") BR.sort = "ingested";
     if (sel) sel.value = BR.sort;
   }
-  function runMetadataSearch() {
+  function runMetadataSearch(options = {}) {
+    clearTimeout(metadataSearchTimer);
+    metadataSearchTimer = null;
     const q = $("#q").value.trim(), changed = q !== BR.query;
+    if (!changed) return;
     BR.query = q;
     syncMetadataSort(changed);
-    if (browseLoaded) loadPapers();
+    if (browseLoaded) loadPapers({ quiet: !!options.quiet });
+  }
+  function scheduleMetadataSearch() {
+    if (LIBRARY_MODE !== "metadata" || metadataComposing) return;
+    clearTimeout(metadataSearchTimer);
+    const q = $("#q").value.trim();
+    if (!q || q === BR.query) {
+      if (q !== BR.query) runMetadataSearch({ quiet: true });
+      return;
+    }
+    metadataSearchTimer = setTimeout(() => runMetadataSearch({ quiet: true }), METADATA_SEARCH_DELAY_MS);
   }
   function setLibrarySearchMode(mode, run) {
     LIBRARY_MODE = mode === "semantic" ? "semantic" : "metadata";
     const semantic = LIBRARY_MODE === "semantic";
     const modeSel = $("#lib-search-mode"); if (modeSel) modeSel.value = LIBRARY_MODE;
     const controls = $("#lib-semantic-controls"); if (controls) controls.hidden = !semantic;
+    const searchbar = document.querySelector(".library-searchbar"); if (searchbar) searchbar.dataset.mode = LIBRARY_MODE;
     const browseView = $("#browse-view"); if (browseView) browseView.hidden = semantic;
     const semanticView = $("#semantic-view"); if (semanticView) semanticView.hidden = !semantic;
     const q = $("#q"), go = $("#go");
     if (q) q.placeholder = semantic
       ? "输入研究问题，检索相关文献与原文片段"
       : "按题名、作者、期刊、年份、DOI 或 ISBN 查找";
-    if (go) go.textContent = semantic ? "检索全文" : "查找";
+    if (go) { go.hidden = !semantic; go.textContent = "检索全文"; }
     if (run === false) return;
     if (semantic) {
-      if (q && q.value.trim()) doSearch();
-      else if ($("#s-msg")) $("#s-msg").textContent = "输入研究问题，检索相关文献与原文片段。";
+      if ($("#s-msg")) $("#s-msg").textContent = q && q.value.trim()
+        ? "已切换到全文检索；点击「检索全文」或按 Enter 开始。"
+        : "输入研究问题，点击「检索全文」或按 Enter 开始。";
     } else runMetadataSearch();
   }
   function runLibrarySearch() {
@@ -1230,8 +1249,21 @@
     finally { if (myseq === SR.reqSeq) $("#go").disabled = false; }   // BF13：只有最新请求才解禁按钮
   }
   $("#go").addEventListener("click", runLibrarySearch);
-  // Enter 触发当前模式；全文检索进行中时不重复提交。
-  $("#q").addEventListener("keydown", (e) => { if (e.key === "Enter" && !$("#go").disabled) runLibrarySearch(); });
+  $("#q").addEventListener("input", scheduleMetadataSearch);
+  $("#q").addEventListener("compositionstart", () => {
+    metadataComposing = true;
+    clearTimeout(metadataSearchTimer);
+  });
+  $("#q").addEventListener("compositionend", () => {
+    metadataComposing = false;
+    scheduleMetadataSearch();
+  });
+  // Enter：题录查找立即采用当前输入；全文检索仍明确提交，避免输入研究问题时不断触发重检索。
+  $("#q").addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" || $("#go").disabled) return;
+    e.preventDefault();
+    runLibrarySearch();
+  });
   $("#lib-search-mode").addEventListener("change", (e) => setLibrarySearchMode(e.target.value));
 
   // ── F4：检索历史（localStorage 最近 15 条，可点 chip）──
@@ -3506,11 +3538,16 @@
     box.hidden = !chips.length;
   }
 
-  async function loadPapers() {
+  async function loadPapers(options = {}) {
+    const quiet = !!options.quiet;
     const myseq = ++BR.reqSeq;   // B5：请求序号守卫，防止快速切换时旧响应覆盖新选择
     $("#bl-name").textContent = BR.scope.name;
-    $("#bl-list").innerHTML = ""; $("#bl-msg").textContent = "加载中…";
-    BR.selected.clear(); refreshSelUI();
+    if (quiet) {
+      $("#bl-msg").textContent = "查找中…";
+    } else {
+      $("#bl-list").innerHTML = ""; $("#bl-msg").textContent = "加载中…";
+      BR.selected.clear(); refreshSelUI();
+    }
     renderBrowseActiveFilters();
     const om = $("#bl-more"); if (om) om.remove();   // W1：换范围/重载时清掉旧「加载更多」按钮
     try {
@@ -3529,6 +3566,11 @@
       renderBrowseFilterCounts(d.filter_counts || {});
       renderBrowseTypeCounts(d.source_type_counts || d.type_counts || {});
       renderBrowseLabelCounts(d.objective_label_counts || {});
+      // 自动查找期间保留旧列表，直到最新结果完整返回；此刻再一次性替换，避免每敲一个字闪空白。
+      if (quiet) {
+        $("#bl-list").innerHTML = "";
+        BR.selected.clear();
+      }
       BR.papers = d.papers || [];
       // W1：「（显示前 300）」这种死数字标签取消——分页由底部「加载更多」承担
       BR.total = d.total != null ? d.total : BR.papers.length;
@@ -3554,7 +3596,7 @@
       renderLoadMore();   // W1：还有没显示的就给「加载更多」
     } catch (e) {
       if (myseq !== BR.reqSeq) return;
-      $("#bl-msg").textContent = "加载失败：" + e.message;
+      $("#bl-msg").textContent = (quiet ? "查找失败（已保留原列表）：" : "加载失败：") + e.message;
     }
   }
 
@@ -3976,6 +4018,45 @@
   })();
 
   // ── 检索内存：首次检索加载，空闲 N 分钟后释放（0=始终保留）──
+  let releasingRetrievalMemory = false;
+  function renderRetrievalMemoryButton(s) {
+    const btn = $("#btn-release-memory"); if (!btn || !s || releasingRetrievalMemory) return;
+    if (s.loading) {
+      btn.title = "检索组件正在加载；加载结束后才能释放。";
+    } else if (Number(s.active || 0) > 0) {
+      btn.title = `当前有 ${Number(s.active)} 个检索请求正在进行；点击可查看提示，不会中断查询。`;
+    } else if (!s.loaded) {
+      btn.title = "检索内存当前未加载，无需释放。";
+    } else {
+      btn.title = "安全释放检索模型和倒排索引占用的内存；不会删除文献或索引。";
+    }
+  }
+  async function doReleaseRetrievalMemory() {
+    if (releasingRetrievalMemory) return;
+    const btn = $("#btn-release-memory"), old = btn.innerHTML;
+    releasingRetrievalMemory = true;
+    btn.disabled = true;
+    btn.textContent = "释放中…";
+    try {
+      const r = await jpost("/setup/retrieval_memory/release", {});
+      flashToast(r.msg || (r.ok ? "已释放检索内存。" : "当前暂不能释放检索内存。"));
+      renderRetrievalMemory(r);
+      renderRetrievalMemoryButton(r);
+    } catch (e) {
+      flashToast("释放检索内存失败：" + (e.message || e));
+    } finally {
+      releasingRetrievalMemory = false;
+      btn.disabled = false;
+      btn.innerHTML = old;
+      try {
+        const s = await jget("/setup/retrieval_memory");
+        renderRetrievalMemory(s);
+        renderRetrievalMemoryButton(s);
+      } catch (e) {}
+    }
+  }
+  $("#btn-release-memory").addEventListener("click", doReleaseRetrievalMemory);
+
   function renderRetrievalMemory(s, saved = false) {
     const msg = $("#ret-mem-msg"); if (!msg || !s) return;
     const mins = Number(s.idle_unload_min || 0);
@@ -4000,6 +4081,7 @@
       if (![...sel.options].some(o => o.value === val)) sel.add(new Option(`${val} 分钟`, val));
       sel.value = val;
       renderRetrievalMemory(s);
+      renderRetrievalMemoryButton(s);
     } catch (e) {
       const msg = $("#ret-mem-msg"); if (msg) msg.textContent = "读取内存设置失败：" + e.message;
     }
@@ -4813,7 +4895,12 @@
     try {
       const j = await jpost("/build", {});
       // 忙时后端返回 {ok:false}，提示而非假装已开始
-      if (j && j.ok === false) { btn.textContent = "有任务在跑，稍后再试"; setTimeout(restore, 1800); return; }
+      if (j && j.ok === false) {
+        btn.textContent = "暂不能更新";
+        flashToast(j.msg || "已有维护任务在运行，请等它结束后再更新知识库。");
+        setTimeout(restore, 2200);
+        return;
+      }
       poll();  // 顶部状态/进度条立刻接管
       let tries = 0;
       const iv = setInterval(async () => {
