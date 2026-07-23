@@ -291,6 +291,33 @@ def check_native_browser_dialogs():
     ok(name)
 
 
+# ── ⑧ 长期指引标题下不放版本公告；新功能说明必须进入对应章节 ─────────────────────────
+def _top_pinned_guide_note_hits(html):
+    hits = []
+    for guide_id in ("home-guide", "ag-guide"):
+        guide_start = html.find(f'id="{guide_id}"')
+        body_start = html.find('<div class="ag-guide-body">', guide_start)
+        first_chapter = html.find('<section class="ag-ch">', body_start)
+        if guide_start < 0 or body_start < 0 or first_chapter < 0:
+            hits.append(f"#{guide_id} 结构不完整")
+            continue
+        if 'class="ag-note"' in html[body_start:first_chapter]:
+            hits.append(f"#{guide_id} 标题下、第一章前存在 ag-note")
+    return hits
+
+
+def check_no_top_pinned_guide_notes():
+    name = "⑧ 两份长期指引标题下没有顶置公告"
+    index = SRC / "web" / "index.html"
+    if not index.exists():
+        return skip(name, "web/index.html 不存在")
+    html = index.read_text(encoding="utf-8", errors="ignore")
+    hits = _top_pinned_guide_note_hits(html)
+    if hits:
+        return bad(name, "；".join(hits) + "。请把功能说明归入对应步骤/章节，版本变化写 CHANGELOG.md")
+    ok(name)
+
+
 def main():
     print("=== 指引 ↔ 代码 一致性校验（只读）===")
     doc = SRC / "MCP接入说明.md"
@@ -305,6 +332,7 @@ def main():
     check_single_version()
     check_backup_coverage()
     check_native_browser_dialogs()
+    check_no_top_pinned_guide_notes()
     print("-" * 60)
     if FAILED:
         print(f"❌ {len(FAILED)} 项不一致——改了功能忘了同步指引。逐条修完再打包。")
