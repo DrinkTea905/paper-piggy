@@ -75,6 +75,11 @@ README / CHANGELOG / release notes 会被全世界看到。改文案时别留「
 ④ 独立教程仓库 `DrinkTea905/paper-piggy-guide`。
 即使某一处最终不需要改，完成报告也要说明已经检查及不改的理由，不能只改代码后凭印象说“文档无需同步”。
 
+**④ 长期指引不是更新日志，禁止在标题下顶置版本新增说明。**
+新功能需要用户知道时，把说明归入它所属的步骤或章节，保持从头阅读时的完整顺序；
+“本次新增 / 修复了什么”只写 `CHANGELOG.md`。不得再把临时公告式横幅插到
+「新手指引」或「Agent 指引」标题下面。
+
 ---
 
 ## 1. 这是什么
@@ -248,16 +253,15 @@ $env:LOCALKB_MODELS = 'D:\00Zotero知识库\rag\data\models'
 
 **已验证处置**：通过三个子目录忽略规则把未跟踪文件从 738 降到 26，`taskkill` 从约 560 次/分钟降到 0，`WmiPrvSE` 从 290% 降到 0.0%。具体为：
 
-- `docs/assets/论文小猪短视频素材/remotion/.gitignore`：忽略 `.tts/`、`.tts-yunze/`、`.tts-js/`、`checks/`、`public/`。
-- `docs/assets/论文小猪短视频素材/.gitignore`：忽略 `*.mp4`。
+- 当时的 `docs/assets/论文小猪短视频素材/remotion/.gitignore`：忽略 `.tts/`、`.tts-yunze/`、`.tts-js/`、`checks/`、`public/`。
+- 当时的 `docs/assets/论文小猪短视频素材/.gitignore`：忽略 `*.mp4`。
 - `local-tests/.gitignore`：除 `*.md` 外全部忽略。
-- 根 `.gitignore` 未改；它是“开源前隐私闸门”，修改前必须先读 `docs/MAINTENANCE.md`。
+- 事故处置时根 `.gitignore` 未改；它是“开源前隐私闸门”，修改前必须先读 `docs/MAINTENANCE.md`。
 
 **以后在本仓工作的硬规则**：未跟踪文件超过约 300 个时，不做逐文件 diff，先补忽略规则；接管 Remotion/Node/Python venv/构建型子项目时，先检查产物目录是否已忽略；可再生文件与大二进制媒体不进 Git；Windows 进程树用 Job Object，若不得不用 `taskkill`，先校验 PID 创建时间；再遇 WMI 高 CPU，先查 `taskkill` 创建频率和父进程，并用性能计数器、ETW、Toolhelp 排查。
 
-**下次进入本仓必须提醒用户的一项待办（只提醒，不擅自执行）**：
+**本地小红书素材已定案（2026-07-23）**：全部归入仓库根的 `本地内容/小红书/`，包括 Remotion 工程、策划、字幕、音视频、图文成品和生成缓存。它们只服务于本地小红书发布，不属于 PaperPiggy 产品源码，由根 `.gitignore` 整体忽略，永不提交或上传 GitHub。不要再提醒用户把 Remotion 源码入库。
 
-1. 仍有 18 个待验证后提交的 Remotion 源码、配置与说明文件：`docs/设计/自媒体短视频方案_论文小猪.md`；`docs/assets/论文小猪短视频素材/` 下的 `.gitignore`、`README.md`、`旁白与字幕.md`；以及 `remotion/` 下的源码、配置、锁文件、说明和 `.gitignore`。先安装 Node/pnpm 并完成类型、格式与实际渲染验证，再单独提交；生成视频、缓存和语音素材继续忽略。新子项目“源码未入库、产物未忽略”是本次事故的深层原因。
 ### 6.2 其他历史教训（2026-07-22 之前）
 
 - **硅基流动余额为 0 时，连免费的 bge-m3 都会 403（code 30001）**。`user/info` 返回的余额字段不含赠送额度，看着有钱其实没有。充 ¥1 即恢复。`.cn` 和 `.com` 账号不互通。

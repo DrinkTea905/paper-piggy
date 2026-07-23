@@ -27,6 +27,9 @@ src/CLAUDE.md
 .claude/memory/
 .claude/settings.local.json
 
+# ── 本地宣传内容（服务于小红书发布，不属于产品源码，永不上传）──
+/本地内容/小红书/
+
 # ── 构建资产（大二进制，不进仓库；重建方法见 docs/RELEASE.md）──
 # build/py312   嵌入式 Python 运行时 + 全部依赖（约 800MB）
 # build/assets  MinGit 等随包分发的第三方二进制（约 90MB）

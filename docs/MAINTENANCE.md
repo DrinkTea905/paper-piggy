@@ -60,6 +60,7 @@
 | 你改了 | 必须同步 | 校验 |
 |---|---|---|
 | 新增/改动 UI 功能（页签、按钮、流程） | ① `index.html` `#home-guide`(:87) 八章；② `#ag-guide`(:350) 十章；③ `app.js` `agentGuideCard()`(:1207) 四步图；④ 主仓库 `README.md`；⑤ 独立教程仓库 `DrinkTea905/paper-piggy-guide` 的相关章节。前两项是产品内两份指引，连同两个 GitHub 发布面必须逐处检查并报告 | ❌ 人肉（用 §3 的 checklist） |
+| 在长期指引中补充新功能说明 | 内容必须归入它所属的步骤或章节；**禁止在指引标题下顶置“新增功能 / 本次更新 / 特别提醒”式横幅**。版本变化写 `CHANGELOG.md`，长期指引只描述当前完整流程 | ✅ check_guides ⑧ |
 | 首启向导流程 | `index.html` `.wizard-steps`(:786) + `app.js` `renderStep1`(:3494) ~ `renderStep5`(:4025) + `src/README.md` 的「第一次使用」段 | ❌ 人肉 |
 | 「🧹 清空并从头重建索引」(`#sec-rebuild` + `POST /index/reset`，破坏性、须 confirm) | 设置页就地说明是主文案；**动它必对齐 `backup.py` 的 CORE/INDEX「移哪些·保留哪些」口径**；破坏性操作要在指引里提示"先备份" | ❌ 人肉 |
 | 顶栏自动更新徽标（`#up-badge`、设置页 `#up-autocheck`、`app.js renderUpdateBadge()`） | 两个 localStorage 键 `localkb.autoUpdateCheck`(默认开)/`localkb.updateDismissed`(按版本忽略)；文案要与「知识库自动更新」明确**区分**（同名不同物，见 CHANGELOG v1.0.1 提醒） | ❌ 人肉 |
@@ -135,7 +136,7 @@ const n = (AG.cfg && AG.cfg.tool_count) || AG_TOOLS.length;   // 后端真值优
 在 `src/check_guides.py`，已进 `build_bundle.py` 的 DEV_ONLY 名单（不进分发包）。
 **`build_bundle.py` 开头会跑它（`verify_guides()`），退出码非 0 直接中止打包**（`--skip-checks` 可临时跳过，正式发版不许跳）。
 
-现在断言这 7 条（编号即输出里的 ①~⑦）：
+现在断言这 9 项（编号即输出里的 ①~⑧，其中 ④b 单列）：
 
 1. ① 调 `gen_mcp_doc.main(--check)`（工具表 ↔ `mcp_server.TOOLS`）
 2. ② `RESOURCES` + `RESOURCE_TEMPLATES` ↔ `MCP接入说明.md` 的 Resources 表（双向集合比对）；`PROMPTS` ↔ Prompts 表
@@ -145,6 +146,7 @@ const n = (AG.cfg && AG.cfg.tool_count) || AG_TOOLS.length;   // 后端真值优
 6. ⑤ 全源码（.py/.js/.html）只有一处版本字面量（`config.APP_VERSION`）
 7. ⑥ 所有 `C.DATA / "xxx"` 落点都在 `backup.py` 的备份分类清单中
 8. ⑦ 前端 JS 不得调用浏览器原生 `confirm()` / `alert()`，统一使用应用内对话框
+9. ⑧ `#home-guide` / `#ag-guide` 的标题下方、第一章之前不得出现独立 `ag-note`；功能说明必须归入对应章节
 
 **仍未机器化（靠人）**：`ensure_scaffold()` 写的其余文件名（项目记忆.md / 变更日志.md / 交付说明书模板.md……）
 是否都在 `_README_RELY` / `_README_OUTPUT` 里被提到——那两份是散文体，正则误报率高，硬凑不如不做。
@@ -161,6 +163,7 @@ const n = (AG.cfg && AG.cfg.tool_count) || AG_TOOLS.length;   // 后端真值优
 代码写完之后，逐条过：
 
 - [ ] 这个功能，**用户**需要知道吗？→ 改 `#home-guide`(:87) / `#ag-guide`(:350) / 向导
+- [ ] 指引里的新增说明是否已归入对应步骤/章节，而不是作为更新横幅顶在标题下面？
 - [ ] 这个功能，**AI agent** 需要知道吗？→ 改 `mcp_server` 工具或 `agent_ws` 工作流模板
 - [ ] 我改了 agent 模板吗？→ **老用户能收到新版吗？**（§2.1）
 - [ ] 我改了工作流吗？→ 五段强制契约还在吗？根入口、MCP 初始化指令和应用内 Agent 教程口径一致吗？
