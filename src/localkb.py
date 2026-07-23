@@ -27,20 +27,26 @@ URL = C.DAEMON_URL
 
 def health():
     try:
-        return requests.get(URL + "/health", timeout=3).json()
+        data = requests.get(URL + "/health", timeout=3).json()
+        return data if (isinstance(data, dict)
+                        and data.get("app") == "paperpiggy"
+                        and data.get("service") == "paperpiggy-local-api") else None
     except Exception:
         return None
+
+
+def _pythonw_executable():
+    current = Path(sys.executable)
+    pyw = current if current.name.lower() == "pythonw.exe" else current.with_name("pythonw.exe")
+    return str(pyw if pyw.exists() else current)
 
 def ensure_up(wait=120):
     # 判活按“服务是否应答”而非“索引 ready”：空库/重载时 ready 恒 False，旧逻辑会重复拉起进程并空等 120s。
     if health() is not None:
         return True
-    flags = 0
-    if sys.platform == "win32":
-        flags = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
-    subprocess.Popen([sys.executable, str(C.APP / "server.py")],
-                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                     stdin=subprocess.DEVNULL, creationflags=flags, close_fds=True)
+    subprocess.Popen([_pythonw_executable(), str(C.APP / "server.py")],
+                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                      stdin=subprocess.DEVNULL, creationflags=C.SUBPROC_NO_WINDOW, close_fds=True)
     print("[localkb] 启动检索服务（首次加载模型，请稍候）...", file=sys.stderr)
     t0 = time.time()
     while time.time() - t0 < wait:

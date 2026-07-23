@@ -154,13 +154,14 @@ def main(batch=64):
         r.save(str(C.BM25_DIR))
         (C.BM25_DIR / "bm25_ids.json").write_text(json.dumps(ids, ensure_ascii=False), encoding="utf-8")
         print(f"[semantic] bm25 完成，{len(ids)} 行", flush=True)
-    # backend 一致性基准：只有真正产出向量的这里写 manifest.backend（light 不写、不覆写）。
+    # 向量空间一致性基准：只有真正产出向量的这里写 backend + embedding_identity（light 不覆写）。
     # 换后端后的“强制全量重嵌”路径（清进度+删表）会让这里以新后端重建、并写回新 backend。
     if tbl is not None:
         try:
             import settings as S
             man = json.loads(C.INDEX_MANIFEST.read_text(encoding="utf-8")) if C.INDEX_MANIFEST.exists() else {}
             man["backend"] = S.backend()
+            man["embedding_identity"] = S.embedding_identity()
             # 这里只证明语义向量已按当前规则生成；不要顺手替 deep/light 洗成“已更新”。
             import upgrade_health as UH
             fps = man.get("pipeline_fingerprints")

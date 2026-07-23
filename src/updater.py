@@ -28,9 +28,12 @@ r"""
     python updater.py --download           # 查 + 下载 + 校验（不应用）
     python updater.py --apply --pid <PID>  # 等 PID 退出后应用更新（由应用自己拉起）
 """
-import sys, os, json, time, shutil, hashlib, zipfile, argparse, tempfile, subprocess, traceback
+import sys, os, json, time, shutil, hashlib, zipfile, argparse, tempfile, subprocess, traceback, stat
 import importlib.util
-from pathlib import Path
+import re
+import tokenize
+from pathlib import Path, PurePosixPath
+from urllib.parse import urlparse
 from urllib.request import urlopen, Request
 from urllib.error import URLError, HTTPError
 
@@ -201,6 +204,19 @@ def _candidate_urls(primary_url, filename):
     return urls
 
 
+def _official_release_asset(url, filename):
+    """只信 GitHub 官方 Release 里、文件名完全匹配的资产直链。"""
+    if not url or not filename:
+        return False
+    try:
+        u = urlparse(str(url))
+        prefix = f"/{GH_OWNER}/{GH_REPO}/releases/download/"
+        return (u.scheme == "https" and u.netloc.lower() == "github.com"
+                and u.path.startswith(prefix) and u.path.endswith("/" + filename))
+    except Exception:
+        return False
+
+
 def _fetch_to(url, dst, progress=None, timeout=60):
     """把 url 下到 dst。任一步失败抛异常（调用方负责删残包、试下一个源）。"""
     with urlopen(Request(url, headers=UA), timeout=timeout) as r:
@@ -239,13 +255,14 @@ def download(info=None, progress=None, tries=3):
     dst = UPDATE_DIR / f"app-{info['latest']}.zip"
     filename = f"paper-piggy-app-{info['latest']}.zip"
 
-    # 期望的 sha256（GitHub 直链 + 镜像都试）
-    want = None
-    for surl in _candidate_urls(info.get("sha256_url"), filename + ".sha256"):
-        txt = _fetch_text(surl)
-        if txt:
-            want = txt.split()[0].strip().lower()
-            break
+    # 校验和必须来自 GitHub 官方 Release；镜像只能承载包，不能成为信任根。
+    sha_url = info.get("sha256_url")
+    if not _official_release_asset(sha_url, filename + ".sha256"):
+        return {"ok": False, "error": "Release 缺少官方 sha256 校验文件，已拒绝未验证更新"}
+    txt = _fetch_text(sha_url)
+    want = (txt.split()[0].strip().lower() if txt else "")
+    if not re.fullmatch(r"[0-9a-f]{64}", want):
+        return {"ok": False, "error": "官方 sha256 校验文件缺失或格式无效，已拒绝更新"}
 
     urls = _candidate_urls(info.get("url"), filename)
     if not urls:
@@ -258,12 +275,12 @@ def download(info=None, progress=None, tries=3):
             try:
                 _fetch_to(url, dst, progress=progress, timeout=90)
                 got = _sha256(dst)
-                if want and got != want:
+                if got != want:
                     dst.unlink(missing_ok=True)
                     last_err = f"{src} sha256 不符（期望 {want[:12]}…，实际 {got[:12]}…）"
                     break                      # 校验失败换下一个源，别在同一坏源上重试
                 return {"ok": True, "zip": str(dst), "version": info["latest"],
-                        "sha256": got, "verified": bool(want), "source": src}
+                        "sha256": got, "verified": True, "source": src}
             except Exception as e:
                 dst.unlink(missing_ok=True)
                 last_err = f"{src}: {type(e).__name__}: {e}"
@@ -276,24 +293,129 @@ def download(info=None, progress=None, tries=3):
 
 # ───────────────────────── 用户改动检测 ─────────────────────────
 
-def local_modifications():
-    """拿 app/version.json 的 sha256 清单比对磁盘，找出用户改过的文件。
-    开源明文分发的直接后果：用户完全可能自己改代码。这些文件不能被静默覆盖。"""
-    vj = APP_DIR / "version.json"
-    if not vj.exists():
-        return []                      # 没有清单就无从判断，保守起见当作没改过
+def _safe_manifest_rel(rel):
+    p = PurePosixPath(str(rel).replace("\\", "/"))
+    return (bool(rel) and not p.is_absolute() and ".." not in p.parts
+            and not any(":" in part for part in p.parts))
+
+
+def _is_link_or_reparse(path):
+    try:
+        st = Path(path).lstat()
+        return stat.S_ISLNK(st.st_mode) or bool(getattr(st, "st_file_attributes", 0) & 0x400)
+    except OSError:
+        return False
+
+
+def _app_files(app_dir):
+    """列出 app 内真实文件；缓存与版本清单本身不算用户源码改动。"""
+    result = {}
+    app_dir = Path(app_dir)
+    if not app_dir.exists():
+        return result
+    if _is_link_or_reparse(app_dir):
+        raise RuntimeError(f"app 目录是链接或重解析点：{app_dir}")
+    for root, dirs, files in os.walk(app_dir, topdown=True, followlinks=False):
+        root = Path(root)
+        kept_dirs = []
+        for name in dirs:
+            p = root / name
+            if _is_link_or_reparse(p):
+                raise RuntimeError(f"app 内含链接或重解析点：{p.relative_to(app_dir)}")
+            if name != "__pycache__":
+                kept_dirs.append(name)
+        dirs[:] = kept_dirs
+        for name in files:
+            p = root / name
+            if _is_link_or_reparse(p):
+                raise RuntimeError(f"app 内含链接或重解析点：{p.relative_to(app_dir)}")
+            if name == "version.json" or p.suffix.lower() in {".pyc", ".pyo"}:
+                continue
+            result[p.relative_to(app_dir).as_posix()] = p
+    return result
+
+
+def _read_app_manifest(app_dir, verify_hashes=False):
+    vj = Path(app_dir) / "version.json"
+    if not vj.is_file():
+        raise RuntimeError("缺少 version.json")
     try:
         man = json.loads(vj.read_text(encoding="utf-8"))
-    except Exception:
-        return []
-    changed = []
-    for rel, want in (man.get("files") or {}).items():
-        p = APP_DIR / rel
-        if not p.exists():
-            continue                   # 用户删了文件，覆盖回来即可
-        if _sha256(p) != want:
-            changed.append(rel)
-    return changed
+    except Exception as e:
+        raise RuntimeError(f"version.json 无法解析：{e}") from e
+    if not isinstance(man, dict) or not str(man.get("version") or "").strip():
+        raise RuntimeError("version.json 缺少有效 version")
+    files = man.get("files")
+    if not isinstance(files, dict) or not files:
+        raise RuntimeError("version.json 缺少文件哈希清单")
+    actual = _app_files(app_dir) if verify_hashes else None
+    if verify_hashes:
+        missing = sorted(set(files) - set(actual))
+        extras = sorted(set(actual) - set(files))
+        if missing:
+            raise RuntimeError(f"更新包缺少清单文件：{missing[0]}")
+        if extras:
+            raise RuntimeError(f"更新包含未列入哈希清单的文件：{extras[0]}")
+    for rel, want in files.items():
+        if not _safe_manifest_rel(rel) or not re.fullmatch(r"[0-9a-fA-F]{64}", str(want)):
+            raise RuntimeError(f"version.json 含无效文件条目：{rel!r}")
+        if verify_hashes:
+            p = actual[rel]
+            got = _sha256(p)
+            if got.lower() != str(want).lower():
+                raise RuntimeError(f"更新包文件哈希不符：{rel}")
+    return man
+
+
+def local_modification_report(app_dir=None):
+    """完整识别新增、修改、删除；清单不可用时把整个旧 app 视为待保全。"""
+    app_dir = Path(app_dir or APP_DIR)
+    actual = _app_files(app_dir)
+    report = {"manifest_ok": False, "manifest_error": None,
+              "added": [], "modified": [], "deleted": []}
+    try:
+        man = _read_app_manifest(app_dir)
+    except Exception as e:
+        report["manifest_error"] = str(e)
+        report["added"] = sorted(actual)
+        return report
+
+    report["manifest_ok"] = True
+    expected = man["files"]
+    expected_keys = set(expected)
+    actual_keys = set(actual)
+    report["added"] = sorted(actual_keys - expected_keys)
+    report["deleted"] = sorted(expected_keys - actual_keys)
+    report["modified"] = sorted(
+        rel for rel in (actual_keys & expected_keys)
+        if _sha256(actual[rel]).lower() != str(expected[rel]).lower())
+    return report
+
+
+def local_modifications():
+    """兼容旧调用方：返回所有新增、修改、删除的相对路径。"""
+    r = local_modification_report()
+    return sorted(set(r["added"] + r["modified"] + r["deleted"]))
+
+
+def _unique_sibling(parent, name):
+    candidate = Path(parent) / name
+    if not candidate.exists():
+        return candidate
+    for i in range(2, 1000):
+        candidate = Path(parent) / f"{name}-{i}"
+        if not candidate.exists():
+            return candidate
+    raise RuntimeError(f"无法为 {name} 分配保全目录")
+
+
+def _preserve_user_app(report, old_ver):
+    """整目录保存旧 app，确保新增/修改文件和删除记录都不会静默消失。"""
+    kept = _unique_sibling(BUNDLE_DIR, f"你改过的旧代码-{old_ver}")
+    shutil.copytree(APP_DIR, kept)
+    (kept / "用户改动清单.json").write_text(
+        json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    return kept
 
 
 # ───────────────────────── 应用更新（独立进程执行）─────────────────────────
@@ -395,6 +517,79 @@ def _importable(app_dir):
     return (r.stdout or "").strip()
 
 
+def _compile_python_tree(app_dir):
+    """只做语法编译，不落 pyc；任一 .py 损坏都在交换 live app 前挡住。"""
+    files = sorted(Path(app_dir).rglob("*.py"))
+    if not files:
+        raise RuntimeError("更新包里没有 Python 源码")
+    for p in files:
+        try:
+            with tokenize.open(p) as f:
+                source = f.read()
+            compile(source, str(p), "exec", dont_inherit=True)
+        except Exception as e:
+            raise RuntimeError(f"Python 语法预检失败：{p.relative_to(app_dir)}：{e}") from e
+
+
+def _preflight_app(app_dir, expected_version=None, require_manifest=True):
+    """完整预检源码语法、清单哈希、可导入性与版本一致性。"""
+    app_dir = Path(app_dir)
+    _compile_python_tree(app_dir)
+    meta = _read_app_manifest(app_dir, verify_hashes=True) if require_manifest else None
+    manifest_version = str(meta["version"]).strip() if meta else None
+    imported_version = _importable(app_dir)
+    wanted = str(expected_version).strip() if expected_version is not None else manifest_version
+    if manifest_version and imported_version != manifest_version:
+        raise RuntimeError(
+            f"config.APP_VERSION={imported_version} 与 version.json={manifest_version} 不一致")
+    if wanted and imported_version != wanted:
+        raise RuntimeError(f"应用版本不符：期望 {wanted}，实际 {imported_version}")
+    return imported_version, meta
+
+
+def _validate_zip_members(zf):
+    """拒绝目录穿越、绝对路径和链接；更新包只允许普通文件/目录。"""
+    for info in zf.infolist():
+        rel = PurePosixPath(info.filename.replace("\\", "/"))
+        mode = (info.external_attr >> 16) & 0xFFFF
+        file_type = stat.S_IFMT(mode)
+        if (not info.filename or rel.is_absolute() or ".." in rel.parts
+                or any(":" in part for part in rel.parts)):
+            raise RuntimeError(f"更新包含不安全路径：{info.filename!r}")
+        if stat.S_ISLNK(mode) or file_type not in (0, stat.S_IFREG, stat.S_IFDIR):
+            raise RuntimeError(f"更新包含不允许的链接或特殊文件：{info.filename!r}")
+
+
+def _confirmed_rollback(old_keep, old_ver, failed_source=None):
+    """恢复旧 app 并确认可导入；未确认时绝不清理任何故障现场。"""
+    failed_dir = None
+    try:
+        if failed_source and Path(failed_source).exists():
+            failed_dir = _unique_sibling(BUNDLE_DIR, ".app.failed")
+            _rename_retry(Path(failed_source), failed_dir)
+        if not Path(old_keep).exists():
+            raise RuntimeError(f"旧版暂存目录不存在：{old_keep}")
+        if APP_DIR.exists():
+            raise RuntimeError(f"回滚目标仍被占用：{APP_DIR}")
+        _rename_retry(Path(old_keep), APP_DIR)
+        restored = _importable(APP_DIR)
+        if restored != str(old_ver):
+            raise RuntimeError(f"旧版恢复后版本异常：期望 {old_ver}，实际 {restored}")
+    except Exception as e:
+        kept = [str(p) for p in (failed_dir, Path(old_keep)) if p and p.exists()]
+        if APP_DIR.exists():
+            kept.append(str(APP_DIR))
+        return False, f"回滚未确认成功：{e}。故障目录已保留：{', '.join(kept) or '请检查安装目录'}"
+
+    # 只有旧 APP 已恢复且可导入，才允许清掉失败的新版本。
+    if failed_dir and failed_dir.exists():
+        try:
+            shutil.rmtree(failed_dir)
+        except Exception as e:
+            return True, f"旧版已恢复，但失败目录未能清理：{failed_dir}（{e}）"
+    return True, f"已确认回滚到 {old_ver}"
+
+
 def _relaunch():
     r"""换完代码后把应用重新拉起来（分发包里 = pythonw run_localkb.py，无黑窗）。"""
     try:
@@ -427,11 +622,8 @@ def apply(zip_path, pid=None, relaunch=True):
     if not _writable(parent):
         return {"ok": False, "error": f"安装目录不可写（{parent}），无法更新（未做任何改动）"}
 
-    staging = parent / ".app.new"
-    old_keep = parent / f".app.old-{old_ver}"
-    for tmp in (staging, old_keep):
-        if tmp.exists():
-            shutil.rmtree(tmp, ignore_errors=True)
+    staging = _unique_sibling(parent, ".app.new")
+    old_keep = _unique_sibling(parent, f".app.old-{old_ver}")
 
     # ① 解压新版到暂存区（全新目录）——失败/坏包都不碰 live app\
     try:
@@ -439,6 +631,7 @@ def apply(zip_path, pid=None, relaunch=True):
             bad = z.testzip()
             if bad:
                 raise RuntimeError(f"更新包损坏（首个坏文件：{bad}）")
+            _validate_zip_members(z)
             z.extractall(staging)
     except Exception as e:
         shutil.rmtree(staging, ignore_errors=True)
@@ -448,9 +641,14 @@ def apply(zip_path, pid=None, relaunch=True):
     # 否则会出现「代码更新成功、启动才发现缺依赖」的半升级状态。
     try:
         target_meta = json.loads((staging / "version.json").read_text(encoding="utf-8"))
+        if not isinstance(target_meta, dict):
+            raise RuntimeError("version.json 不是对象")
         expected_runtime = str(target_meta.get("runtime_fingerprint") or "").strip()
-    except Exception:
-        expected_runtime = ""              # 兼容旧更新包：没有指纹时仍走既有 import 验证
+        if not expected_runtime:
+            raise RuntimeError("更新包缺少运行时指纹")
+    except Exception as e:
+        shutil.rmtree(staging, ignore_errors=True)
+        return {"ok": False, "error": f"更新包清单无效，已拒绝更新、未改动应用：{e}"}
     runtime_file = parent / "python" / ".paperpiggy-runtime.sha256"
     try:
         actual_runtime = runtime_file.read_text(encoding="utf-8").strip()
@@ -462,28 +660,37 @@ def apply(zip_path, pid=None, relaunch=True):
                 "error": "新版需要同步更新运行环境，应用内增量更新已安全停止、未改动应用。"
                          "请下载最新版完整安装器覆盖安装（你的数据和 Agent 资料库不会被删除）。"}
 
+    try:
+        target_meta = _read_app_manifest(staging, verify_hashes=True)
+    except Exception as e:
+        shutil.rmtree(staging, ignore_errors=True)
+        return {"ok": False, "error": f"更新包文件清单无效，已拒绝更新、未改动应用：{e}"}
+
     # ② 在暂存区就把关：新版能不能 import 起来。**这一步在碰 live app\ 之前**，
     #    所以「新版需要装新依赖 / 代码有语法错」都会在这里被挡下、应用毫发无伤。
     try:
-        new_ver = _importable(staging)
+        new_ver, _ = _preflight_app(staging)
     except Exception as e:
         shutil.rmtree(staging, ignore_errors=True)
         return {"ok": False,
                 "error": f"新版无法在本机启动（可能需要新依赖），已放弃、未改动应用。"
                          f"请到 GitHub 下载完整安装器升级。详情：{e}"}
 
-    # ③ 用户改过的 .py：复制到一个清晰命名、成功后也不删的文件夹，绝不让改动无声消失
-    mods = local_modifications()
+    # ③ 用户改动：清单坏/缺时保全整个旧 app；新增、修改、删除都写入记录。
+    try:
+        report = local_modification_report()
+    except Exception as e:
+        shutil.rmtree(staging, ignore_errors=True)
+        return {"ok": False,
+                "error": f"检查旧 app 用户改动失败，已停止更新、旧 app 未移动：{e}"}
     kept_dir = None
-    if mods:
-        kept_dir = parent / f"你改过的旧代码-{old_ver}"
-        for rel in mods:
-            try:
-                dst = kept_dir / rel
-                dst.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(APP_DIR / rel, dst)
-            except Exception:
-                pass
+    if (not report["manifest_ok"]
+            or report["added"] or report["modified"] or report["deleted"]):
+        try:
+            kept_dir = _preserve_user_app(report, old_ver)
+        except Exception as e:
+            return {"ok": False,
+                    "error": f"保全用户修改失败，已停止更新、旧 app 未移动：{e}"}
 
     # ④ 交换：两次改名（同卷、瞬间）。这是唯一真正动 live app\ 的窗口，只有毫秒级。
     try:
@@ -495,26 +702,24 @@ def apply(zip_path, pid=None, relaunch=True):
     try:
         _rename_retry(staging, APP_DIR)           # .app.new → app\（新版就位）
     except Exception as e:
-        # 新版没放上去 → 把旧版改名回来（一次 rename，最稳的回滚）
-        try:
-            _rename_retry(old_keep, APP_DIR)
-        except Exception:
-            pass
-        shutil.rmtree(staging, ignore_errors=True)
-        return {"ok": False, "error": f"放置新版失败，已回滚到 {old_ver}：{e}"}
+        rolled_back, detail = _confirmed_rollback(old_keep, old_ver)
+        if rolled_back:
+            try:
+                shutil.rmtree(staging)
+            except Exception:
+                pass
+        return {"ok": False, "safe_to_relaunch": rolled_back,
+                "rollback_failed": not rolled_back,
+                "error": f"放置新版失败：{e}；{detail}"}
 
     # ⑤ 落地再验一次（暂存验过了，这是双保险，防跨目录后路径/权限异常）
     try:
-        new_ver = _importable(APP_DIR)
+        new_ver, _ = _preflight_app(APP_DIR)
     except Exception as e:
-        # 回滚：把新版挪走、旧版改名回来
-        try:
-            _rename_retry(APP_DIR, parent / ".app.failed")
-            _rename_retry(old_keep, APP_DIR)
-        except Exception:
-            pass
-        shutil.rmtree(parent / ".app.failed", ignore_errors=True)
-        return {"ok": False, "error": f"新版落地后仍无法启动，已回滚到 {old_ver}：{e}"}
+        rolled_back, detail = _confirmed_rollback(old_keep, old_ver, APP_DIR)
+        return {"ok": False, "safe_to_relaunch": rolled_back,
+                "rollback_failed": not rolled_back,
+                "error": f"新版落地后预检失败：{e}；{detail}"}
 
     # ⑥ 成功：旧版可删（用户改过的代码已另存在「你改过的旧代码-<ver>\」），删更新包
     shutil.rmtree(old_keep, ignore_errors=True)
@@ -566,10 +771,14 @@ def main():
 
         if not result.get("ok"):
             # apply 的所有正常失败路径都承诺未改动或已回滚；主应用已经退出，必须把旧版重新拉起。
-            if not a.no_relaunch:
+            if not a.no_relaunch and result.get("safe_to_relaunch", True):
                 result["old_relaunched"] = _relaunch()
             _log("应用更新失败", result)
-            restart = "旧版已重新打开。" if result.get("old_relaunched") else "旧版自动重启失败，请手动重新打开 PaperPiggy。"
+            if result.get("rollback_failed"):
+                restart = "回滚状态未确认，已保留故障目录；请不要反复启动，按上方路径检查或覆盖安装。"
+            else:
+                restart = ("旧版已重新打开。" if result.get("old_relaunched")
+                           else "旧版自动重启失败，请手动重新打开 PaperPiggy。")
             _notify("PaperPiggy 升级失败",
                     f"{result.get('error') or '未知错误'}\n\n{restart}\n\n诊断日志：{UPDATE_LOG}")
             print(json.dumps(result, ensure_ascii=False, indent=2))

@@ -126,6 +126,18 @@ class DocumentFormatTests(unittest.TestCase):
             names = {Path(x).name for x in FS.scan(str(root))}
             self.assertEqual(names, {"paper.docx", "a.pdf", "b.epub", "c.md", "d.txt"})
 
+    def test_folder_scan_does_not_follow_external_file_links(self):
+        with tempfile.TemporaryDirectory() as managed, tempfile.TemporaryDirectory() as external:
+            root = Path(managed)
+            outside = Path(external) / "private.pdf"
+            outside.write_bytes(b"private")
+            link = root / "linked.pdf"
+            try:
+                link.symlink_to(outside)
+            except OSError:
+                self.skipTest("当前 Windows 权限不允许创建文件符号链接")
+            self.assertEqual([], FS.scan(str(root)))
+
 
 if __name__ == "__main__":
     unittest.main()

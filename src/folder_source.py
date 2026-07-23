@@ -20,31 +20,58 @@ EXTRA_META_FIELDS = (
 
 def scan(folder):
     """递归找 PDF/EPUB/DOCX/Markdown/TXT，返回绝对路径列表（排序稳定）。
-       排除 0_Agent* 目录（agent 交付物/资料库）——那里放成品、格式范本，不该污染文献检索库。"""
+       排除 0_Agent* 目录与符号链接/目录联接，并要求解析后的真实路径仍在受管目录内。
+       这样文件夹模式不会沿重解析点读到用户未选择的外部文件并把内容送去索引/API。"""
     try:
-        base = Path(folder)
+        base = Path(folder).resolve(strict=True)
+        if not base.is_dir():
+            return []
         out = []
-        for p in base.rglob("*"):
-            if not p.is_file():
-                continue
-            if p.suffix.lower() not in DF.SUPPORTED_EXTENSIONS:
-                continue
-            try:
-                parts = p.relative_to(base).parts
-            except Exception:
-                parts = p.parts
-            if any(str(seg).startswith("0_Agent") for seg in parts):
-                continue                       # 跳过 0_Agent交付物 / 0_Agent资料库 下的全文文件
-            out.append(str(p))
+        for root, dirs, files in os.walk(base, topdown=True, followlinks=False):
+            root_path = Path(root)
+            kept_dirs = []
+            for name in sorted(dirs):
+                p = root_path / name
+                if name.startswith("0_Agent") or _is_link_or_junction(p):
+                    continue
+                try:
+                    p.resolve(strict=True).relative_to(base)
+                except (OSError, ValueError):
+                    continue
+                kept_dirs.append(name)
+            dirs[:] = kept_dirs                 # 原地剪枝：绝不进入链接/联接或越界目录
+
+            for name in sorted(files):
+                p = root_path / name
+                if p.suffix.lower() not in DF.SUPPORTED_EXTENSIONS or _is_link_or_junction(p):
+                    continue
+                try:
+                    real = p.resolve(strict=True)
+                    real.relative_to(base)
+                except (OSError, ValueError):
+                    continue
+                if real.is_file():
+                    out.append(str(real))
         return sorted(out)
     except Exception:
         return []
 
 
+def _is_link_or_junction(path):
+    """Python 3.12 能识别 Windows junction；其它平台/旧解释器安全退化。"""
+    try:
+        if path.is_symlink():
+            return True
+        is_junction = getattr(path, "is_junction", None)
+        return bool(is_junction and is_junction())
+    except OSError:
+        return True
+
+
 def stable_key(folder, file_path):
     """稳定 key = 'f_' + sha1(相对路径)[:10]（重命名才变）。"""
     try:
-        rel = os.path.relpath(file_path, folder).replace("\\", "/")
+        rel = os.path.relpath(Path(file_path).resolve(), Path(folder).resolve()).replace("\\", "/")
     except Exception:
         rel = str(file_path)
     return "f_" + hashlib.sha1(rel.encode("utf-8")).hexdigest()[:10]

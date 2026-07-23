@@ -74,7 +74,8 @@ def main():
     if not exe.exists():
         raise SystemExit(f"[mingit] ✗ 解压后没找到 {exe}")
     try:
-        out = subprocess.run([str(exe), "--version"], capture_output=True, text=True, timeout=10)
+        out = subprocess.run([str(exe), "--version"], capture_output=True, text=True, timeout=10,
+                             creationflags=(0x08000000 if sys.platform == "win32" else 0))
         print(f"[mingit] ✓ {out.stdout.strip()} 就位于 {git_dir}")
     except Exception as e:
         print(f"[mingit] ⚠ 解压完成但 git --version 跑不起来：{e}")

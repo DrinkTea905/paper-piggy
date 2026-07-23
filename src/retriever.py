@@ -29,6 +29,7 @@ import uvicorn
 
 STATE = {
     "last_active": time.time(), "ready": False, "mode": None,
+    "error": None,
     "retrieval_loaded": False, "retrieval_loading": False, "active_retrievals": 0,
 }
 M = {}  # 模型与索引句柄
@@ -65,6 +66,7 @@ def load_all():
 def _load_catalog_locked():
     t0 = time.time()
     STATE["mode"] = None
+    STATE["error"] = None
     _WEIGHT_MEMO.clear()   # 换库/改档/重载后清权重缓存，避免串旧值
     # 重载前先丢掉旧目录/句柄。最重要的是清掉历史版本留下的 records：它曾把 LanceDB
     # 全表（含 1024 维向量）物化成 Python dict/list/float，20 万行会膨胀到约 10GB。
@@ -88,6 +90,30 @@ def _load_catalog_locked():
     db = lancedb.connect(str(C.LANCEDB_DIR))
     tbl_exists = C.TABLE_NAME in db.table_names()
     meta_ready = (C.BM25_META_DIR / "bm25_meta_ids.json").exists()
+
+    # 向量由不同引擎/模型生成时不可混用。index_semantic 是 manifest.backend 的唯一写入者；
+    # 若设置与已建表不一致，必须 fail closed，提示用户重建，而不是悄悄用新查询向量搜旧表。
+    if tbl_exists and C.INDEX_MANIFEST.exists():
+        try:
+            man = json.loads(C.INDEX_MANIFEST.read_text(encoding="utf-8"))
+            built_backend = man.get("backend")
+        except Exception as e:
+            STATE["mode"] = "manifest_error"
+            STATE["error"] = f"索引清单损坏，已停止检索以保护结果可靠性：{e}。请清空并重建索引。"
+            log(STATE["error"])
+            return
+        if built_backend:
+            import settings as _S
+            current_backend = _S.backend()
+            built_identity = man.get("embedding_identity")
+            identity_mismatch = bool(built_identity and built_identity != _S.embedding_identity())
+            if built_backend != current_backend or identity_mismatch:
+                STATE["mode"] = "backend_mismatch"
+                STATE["error"] = (f"现有索引的向量引擎/模型与当前设置不一致"
+                                  f"（索引后端 {built_backend}，当前后端 {current_backend}）。"
+                                  "已停止检索，请在设置中清空并重建索引。")
+                log(STATE["error"])
+                return
 
     if not tbl_exists and not meta_ready:
         STATE["mode"] = None; STATE["ready"] = False
@@ -743,7 +769,8 @@ def _index_wiki_page_loaded(page_id, title, body, meta):
     try:
         existed = cid in existing_chunk_ids([cid])
         try:
-            M["tbl"].delete(f"chunk_id = '{cid}'")   # 幂等：重生/覆盖先删同 id 旧行
+            from dbutil import sql_quote
+            M["tbl"].delete(f"chunk_id = '{sql_quote(cid)}'")   # 幂等：重生/覆盖先删同 id 旧行
         except Exception:
             pass
         M["tbl"].add([_fit_row_to_schema(full, vec)])

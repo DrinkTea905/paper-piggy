@@ -14,6 +14,12 @@
 [![Downloads](https://img.shields.io/github/downloads/DrinkTea905/paper-piggy/total.svg)](https://github.com/DrinkTea905/paper-piggy/releases)
 [![Stars](https://img.shields.io/github/stars/DrinkTea905/paper-piggy.svg)](https://github.com/DrinkTea905/paper-piggy/stargazers)
 
+### 📘 第一次使用？
+
+**[打开《PaperPiggy 从零开始新手教程》→](https://drinktea905.github.io/paper-piggy-guide/)**
+
+从下载安装到建立知识库，再到检索、深索、综述库和 AI 助手，按章节一步步操作。
+
 </div>
 
 ---
@@ -137,7 +143,7 @@ RAG 之上还有一层：把问答结果**沉淀**成带引用、可累积、互
 Windows 10/11 64 位。无需预装 Python 或 VC++ 运行库。缺 WebView2 时安装器会自动装。
 **不需要管理员权限**，安装时不弹 UAC。
 
-检索引擎二选一：**本地 ONNX**（模型跑在你机器上，首启按需下载约 900 MB）或 **SiliconFlow 云端检索**（省磁盘省内存，无需下载，已适配的检索模型当前免费）。首启向导会解释为什么普通 AI 对话 Key 不能填在检索引擎里。检索组件只在搜索时加载，默认空闲 10 分钟后释放；可在设置里改时间或选择一直保留。
+检索引擎二选一：**本地 ONNX**（模型跑在你机器上，首启按需下载约 900 MB，解压后占用约 1.2 GB）或 **SiliconFlow 云端检索**（省磁盘省内存，无需下载，已适配的检索模型当前免费）。首启向导会解释为什么普通 AI 对话 Key 不能填在检索引擎里。检索组件只在搜索时加载，默认空闲 10 分钟后释放；可在设置里改时间或选择一直保留。
 
 ### 你的数据放在哪
 

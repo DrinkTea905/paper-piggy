@@ -2286,10 +2286,8 @@
     if (editing && toc) toc.hidden = true;
     else if (!editing) renderWikiToc();
     const edit = $("#wiki-edit");
-    const regen = $("#wiki-regen");
     const hist = $("#wiki-hist");
     if (edit) edit.hidden = !!editing || edit.dataset.disabled === "1";
-    if (regen) regen.hidden = !!editing || regen.style.display === "none";
     if (hist) hist.hidden = !!editing;
   }
 
@@ -2584,13 +2582,15 @@
   // ══════════════════════════════════════════
   //  wiki 页（综合页书架）：列出 /wiki/list + 主题整理 + 打开/核验/删除；写作交给 Agent
   // ══════════════════════════════════════════
-  let WK = { kind: "", agentOnly: false, pages: [], themes: [], theme: "", search: "", sort: "new" };
+  let WK = { kind: "", agentOnly: false, pages: [], themes: [], theme: "", search: "", sort: "new", reqSeq: 0 };
   async function loadWikiList(mode) {
     const box = $("#wk-list");
+    const myseq = ++WK.reqSeq;
     loadWikiSuggestions();   // EN-F2：每次进综述库都刷新建议横幅（fire-and-forget，失败静默）
     if (mode !== "silent") box.innerHTML = `<div class="wk-loading">加载综合页中…</div>`;
     try {
       const [d, td] = await Promise.all([jget("/wiki/list"), jget("/wiki/themes")]);
+      if (myseq !== WK.reqSeq) return;
       WK.pages = d.pages || [];
       WK.themes = td.themes || [];
       if (WK.theme && !WK.themes.some((x) => x.name === WK.theme)) WK.theme = "";
@@ -2599,6 +2599,7 @@
       if (GV.on) drawGraph();      // 关系图开着时（删页/回滚/新建后）同步重画
       wikiLoaded = true;   // 成功才置位，失败保持 false 便于切回重试
     } catch (e) {
+      if (myseq !== WK.reqSeq) return;
       box.innerHTML = `<div class="wk-loading">加载失败：${esc(e.message)}</div>`;
     }
   }
@@ -2711,12 +2712,20 @@
     catch (e) { flashToast("删除主题失败：" + (e.message || e)); }
   }
   // ── EN-F2：建议横幅——新深索的文献可能影响已有综述页（Ingest 环：喂了新料，提醒回头更新综述）──
-  const WSUG = { items: [], open: false };   // open：列表是否展开（跨刷新保持用户的展开选择）
+  const WSUG = { items: [], open: false, reqSeq: 0 };   // open：列表是否展开（跨刷新保持用户的展开选择）
   async function loadWikiSuggestions() {
     const box = $("#wk-suggest"); if (!box) return;
+    const myseq = ++WSUG.reqSeq;
     // 建议是增强功能：拉不到（旧后端/接口未就绪）就当没有，绝不打断综述库主流程
-    try { const d = await jget("/wiki/suggestions"); WSUG.items = d.items || []; }
-    catch (e) { WSUG.items = []; }
+    try {
+      const d = await jget("/wiki/suggestions");
+      if (myseq !== WSUG.reqSeq) return;
+      WSUG.items = d.items || [];
+    }
+    catch (e) {
+      if (myseq !== WSUG.reqSeq) return;
+      WSUG.items = [];
+    }
     renderWikiSuggestions();
   }
   function renderWikiSuggestions() {
@@ -3018,7 +3027,7 @@
   function renderAgentTools() {
     $("#ag-tools").innerHTML = AG_TOOLS.map(
       ([say, tool, desc]) => `<tr><td>${esc(say)}</td><td>${esc(desc)}</td></tr>`).join("");
-    // 工具数用后端真实值（当前 32 个），别用下面这张示例表的行数（只列了几个代表性的）
+    // 工具数用后端真实值，别用下面这张示例表的行数（只列了几个代表性的）
     const n = (AG.cfg && AG.cfg.tool_count) || AG_TOOLS.length;
     const tc = $("#ag-tool-count"); if (tc) tc.textContent = `（${n} 个工具）`;
   }
@@ -3887,13 +3896,13 @@
       }
     } catch (e) {}
   }
-  async function saveAutoUpdate() {
+  async function saveAutoUpdate(confirmDeleteSync = false) {
     const en = $("#au-enabled"), dd = $("#au-days"), tm = $("#au-time"), cu = $("#au-catchup"), ds = $("#au-delsync"), msg = $("#au-msg");
     let days = parseInt(dd && dd.value, 10); if (!(days >= 1 && days <= 30)) days = 1;
     if (dd) dd.value = String(days);
     const at = (tm && /^\d{1,2}:\d{2}$/.test(tm.value)) ? tm.value : "07:00";
     try {
-      await jpost("/setup/auto_update", { enabled: en.checked, interval_days: days, at_time: at, catch_up_on_launch: !!(cu && cu.checked), delete_sync: !!(ds && ds.checked) });
+      await jpost("/setup/auto_update", { enabled: en.checked, interval_days: days, at_time: at, catch_up_on_launch: !!(cu && cu.checked), delete_sync: !!(ds && ds.checked), confirm_delete_sync: !!(confirmDeleteSync && ds && ds.checked) });
       if (msg) msg.textContent = en.checked
         ? `已开启：${_auDaysLabel(days)} ${at} 检查一次新增文献并自动增量更新${(cu && cu.checked) ? "；错过会在开应用时补跑" : ""}。`
         : "已关闭：只能用顶栏「⟳ 手动更新知识库」手动更新。";
@@ -3905,15 +3914,36 @@
     if (dd) dd.addEventListener("change", saveAutoUpdate);
     if (tm) tm.addEventListener("change", saveAutoUpdate);
     if (cu) cu.addEventListener("change", saveAutoUpdate);
-    if (ds) ds.addEventListener("change", async () => { await saveAutoUpdate(); loadAutoUpdate(); });   // 保存后刷新删除同步提示
+    if (ds) ds.addEventListener("change", async () => {
+      if (ds.checked) {
+        const ok = await uiConfirm(
+          "开启后，来源里删除的文献会在知识库更新时一并从 PaperPiggy 索引中清除。原始文件和 Zotero 不受影响。",
+          { title: "开启删除同步？", okText: "开启删除同步", danger: true }
+        );
+        if (!ok) { ds.checked = false; return; }
+      }
+      await saveAutoUpdate(!!ds.checked); loadAutoUpdate();
+    });
     if (pb) pb.addEventListener("click", async () => {
       const note = $("#au-del-note"); const lbl = pb.textContent;
-      pb.disabled = true; pb.textContent = "清理中…";
+      pb.disabled = true; pb.textContent = "检查中…";
       try {
-        const r = await jpost("/setup/purge_deleted", {});
+        const preview = await jpost("/setup/purge_deleted", { preview: true });
+        const count = Number(preview.removed ?? preview.count ?? preview.would_remove ?? 0);
+        if (!count) {
+          if (note) note.textContent = preview.msg || "没有需要清理的已删除文献。";
+          return;
+        }
+        const ok = await uiConfirm(
+          `将从 PaperPiggy 索引中清理 ${num(count)} 篇已不在来源里的文献及其索引产物。原始文件和 Zotero 不受影响。`,
+          { title: `确认清理 ${num(count)} 篇文献？`, okText: "确认清理", danger: true }
+        );
+        if (!ok) return;
+        pb.textContent = "清理中…";
+        const r = await jpost("/setup/purge_deleted", { confirm: true });
         if (note) note.textContent = (r && r.msg) || "已清理。";
       } catch (e) { if (note) note.textContent = "清理失败：" + (e.message || e); }
-      pb.disabled = false; pb.textContent = lbl;
+      finally { pb.disabled = false; pb.textContent = lbl; }
     });
   })();
 
@@ -4150,19 +4180,19 @@
     const items = (r && r.items) || [];
     if (!items.length) { box.innerHTML = '<p class="hint">还没有备份包。</p>'; return; }
     box.innerHTML = items.map((it) => {
-      if (it.broken) return `<div class="bk-item"><b>${it.name}</b> <span class="danger-text">（包已损坏，不能用来恢复）</span></div>`;
+      if (it.broken) return `<div class="bk-item"><b>${esc(String(it.name || ""))}</b> <span class="danger-text">（包已损坏，不能用来恢复）</span></div>`;
       const m = it.manifest || {};
       const tags = [m.includes_index ? "含索引" : "仅手写资产"];
       if (m.has_api_key) tags.push("⚠️ 含密钥");
       const c = m.counts || {};
-      const detail = [c.wiki_pages != null ? c.wiki_pages + " 篇综述" : null,
-                      c.papers != null ? c.papers + " 条文献" : null,
-                      c.agent_outputs ? c.agent_outputs + " 个交付物主题" : null]
+      const detail = [c.wiki_pages != null ? esc(String(c.wiki_pages)) + " 篇综述" : null,
+                      c.papers != null ? esc(String(c.papers)) + " 条文献" : null,
+                      c.agent_outputs ? esc(String(c.agent_outputs)) + " 个交付物主题" : null]
                      .filter(Boolean).join(" · ");
       return `<div class="bk-item">
-        <div><b>${it.mtime}</b> · ${_bkSize(it.size)} · ${tags.join(" / ")}</div>
+        <div><b>${esc(String(it.mtime || ""))}</b> · ${esc(String(_bkSize(it.size)))} · ${tags.join(" / ")}</div>
         <div class="hint">${detail || "&nbsp;"}</div>
-        <button class="ghost danger bk-restore" data-path="${it.path.replace(/"/g, "&quot;")}">↩ 从这个包恢复</button>
+        <button class="ghost danger bk-restore" data-path="${esc(String(it.path || ""))}">↩ 从这个包恢复</button>
       </div>`;
     }).join("");
     box.querySelectorAll(".bk-restore").forEach(b =>
@@ -4552,8 +4582,7 @@
   async function doRebuildIndex(msgEl, hadDeep) {
     if (msgEl) { msgEl.className = "hint"; msgEl.textContent = "正在重建索引（换引擎后旧向量不兼容）…"; }
     try {
-      const r = await fetch("/build", { method: "POST" });
-      let j = null; try { j = await r.json(); } catch (e) {}
+      const j = await jpost("/build", {});
       if (j && j.ok === false) { if (msgEl) { msgEl.className = "hint warn"; msgEl.textContent = "已有任务在跑，稍后再点「应用检索引擎」重建。"; } return; }
       poll();
       await new Promise((resolve) => {
@@ -4561,7 +4590,7 @@
         const iv = setInterval(async () => {
           tries++;
           try {
-            const s = await (await fetch("/build/status")).json();
+            const s = await jget("/build/status");
             if (!s.running || tries > 240) {   // 6min 封顶，防后端卡 running 时 await 永不返回、按钮卡死
               clearInterval(iv);
               if (msgEl) {
@@ -4572,7 +4601,11 @@
               }
               poll(); if (dashLoaded) loadDashboard("silent"); resolve();
             } else if (msgEl) { msgEl.textContent = "正在重建索引中…（可关闭设置，进度见顶部）"; }
-          } catch (e) { clearInterval(iv); resolve(); }
+          } catch (e) {
+            clearInterval(iv);
+            if (msgEl) { msgEl.className = "hint warn"; msgEl.textContent = "读取重建进度失败：" + (e.message || e); }
+            resolve();
+          }
         }, 1500);
       });
     } catch (e) { if (msgEl) { msgEl.className = "hint warn"; msgEl.textContent = "重建失败：" + (e.message || e); } }   // BF23：textContent 去 esc
@@ -4750,8 +4783,7 @@
     let baseTotal = null;
     try { const s0 = await jget("/stats"); baseTotal = ((s0 && s0.coverage) || {}).total; } catch (e) {}
     try {
-      const r = await fetch("/build", { method: "POST" });
-      let j = null; try { j = await r.json(); } catch (e) {}
+      const j = await jpost("/build", {});
       // 忙时后端返回 {ok:false}，提示而非假装已开始
       if (j && j.ok === false) { btn.textContent = "有任务在跑，稍后再试"; setTimeout(restore, 1800); return; }
       poll();  // 顶部状态/进度条立刻接管
@@ -4759,7 +4791,7 @@
       const iv = setInterval(async () => {
         tries++;
         try {
-          const s = await (await fetch("/build/status")).json();
+          const s = await jget("/build/status");
           if (!s.running || tries > 240) {   // 240×1.5s≈6min 封顶，防后端卡 running 时按钮永久禁用
             clearInterval(iv); restore();
             if (dashLoaded) loadDashboard("silent");
@@ -4782,9 +4814,16 @@
               refreshUpgradeHealth().catch((e) => reportErr(e && e.message, "refresh upgrade health after build"));
             }
           }
-        } catch (e) { clearInterval(iv); restore(); }
+        } catch (e) {
+          clearInterval(iv); restore();
+          flashToast("读取更新进度失败：" + (e.message || e));
+        }
       }, 1500);
-    } catch (e) { btn.textContent = "更新失败"; setTimeout(restore, 1800); }
+    } catch (e) {
+      btn.textContent = "更新失败";
+      flashToast("更新失败：" + (e.message || e));
+      setTimeout(restore, 1800);
+    }
   }
   $("#btn-build").addEventListener("click", doManualUpdate);
 
@@ -4837,7 +4876,7 @@
           <input type="radio" name="wz-backend" value="local" ${localSel ? "checked" : ""} />
           <div class="wz-engine-body">
             <div class="wz-engine-h">🔒 本地模式</div>
-            <div class="wz-engine-d">离线 · 隐私不出本机 · 需下载约 1.2GB 模型（首次一次性）</div>
+            <div class="wz-engine-d">离线 · 隐私不出本机 · 首次下载约 900MB，解压后占用约 1.2GB</div>
           </div>
         </label>
         <label class="wz-engine ${localSel ? "" : "sel"}" data-be="api">
@@ -5180,7 +5219,7 @@
       if (st && st.present) { bindReady(); return; }
       const missing = (st && st.missing) || [];
       $("#wz4-inner").innerHTML =
-        `<div class="wz-note">本地模式需下载约 <b>1.2GB</b> 模型（仅此一次），下载后检索无需联网，待检索文本不出本机。
+        `<div class="wz-note">本地模式首次需下载约 <b>900MB</b> 模型，解压后占用约 <b>1.2GB</b>；下载完成后检索无需联网，待检索文本不出本机。
           ${missing.length ? `<br><span class="wz-subtle">待下载：${esc(missing.join("、"))}</span>` : ""}</div>
         <div id="wz4-prog" class="wz-dl" hidden>
           <div class="wz-dl-head"><span id="wz4-dl-name">准备中…</span><span id="wz4-dl-pct">0%</span></div>

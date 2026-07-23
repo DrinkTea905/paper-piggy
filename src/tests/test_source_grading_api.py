@@ -21,17 +21,17 @@ class SourceGradingApiTests(unittest.TestCase):
             "b": {"key": "b", "itemtype": "book", "title": "重要著作", "has_pdf": True},
         }
         with mock.patch.multiple(
-            server,
-            _load_papers=mock.Mock(return_value=rows),
-            _load_cats=mock.Mock(return_value={}),
-            _deep_keys=mock.Mock(return_value=set()),
-            _deep_no_text_keys=mock.Mock(return_value=set()),
-            _deep_extract_items=mock.Mock(return_value={}),
-            _summary_keys=mock.Mock(return_value=set()),
-            _summary_issues=mock.Mock(return_value={}),
-            _extract_record=mock.Mock(return_value={"status": "not_indexed"}),
-            _rec_score=mock.Mock(return_value=0.0),
-        ):
+                server,
+                _load_papers=mock.Mock(return_value=rows),
+                _load_cats=mock.Mock(return_value={}),
+                _deep_keys=mock.Mock(return_value=set()),
+                _deep_no_text_keys=mock.Mock(return_value=set()),
+                _deep_extract_items=mock.Mock(return_value={}),
+                _summary_keys=mock.Mock(return_value=set()),
+                _summary_issues=mock.Mock(return_value={}),
+                _extract_record=mock.Mock(return_value={"status": "not_indexed"}),
+                _rec_score=mock.Mock(return_value=0.0)), \
+                mock.patch("settings.discipline", return_value="law"):
             got = server.papers(source_type="report", limit=20)
             by_label = server.papers(objective_label="书籍", limit=20)
             by_title = server.papers(query="重要著作", sort="match", limit=20)

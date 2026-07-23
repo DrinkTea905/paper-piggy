@@ -82,8 +82,9 @@ _INSTRUCTIONS_HEAD = """你连接的是用户的**本地文献知识库**（Pape
 1. 动手综合前，先 list_wiki / get_wiki_page 看有没有现成的页，别重复造轮子。
 2. 每个论断后带 [n] 引用，n 对应 sources 里的论文 key。不臆造、不给无出处的断言。
 3. 下判断前先 read_source 读原文（逐页正文 + 印刷页码）。不要只凭 220 字检索片段就写综述。
-4. 你只能写**综合层**（save_synthesis / build_digest / research_outline / mark_stale）。
-   绝不改动文献库、索引、Zotero。你能写、不能删——删除只由用户在应用里操作。
+4. 不得直接修改原始文献或 Zotero。只有用户明确要求、并通过工具自身的安全闸时，
+   才能 add_source、建库或深索，从而更新 PaperPiggy 索引。wiki 写回仅限综合层
+   （save_synthesis / update_wiki_page / build_digest / research_outline / mark_stale）；你能写、不能删——删除只由用户在应用里操作。
 5. 你写回的页会标记为「🤖 未核验」，立即进入检索但会被降权。请对得起这个信任。
 6. 覆盖规则：你不能覆盖用户人工保存/核验过的页（会被拒绝）。发现旧页被新文献推翻，
    用 mark_stale 标脏并写清理由，而不是抹掉别人的结论。
@@ -209,9 +210,18 @@ def send(msg):
 
 def health():
     try:
-        return requests.get(URL + "/health", timeout=3).json()
+        data = requests.get(URL + "/health", timeout=3).json()
+        return data if (isinstance(data, dict)
+                        and data.get("app") == "paperpiggy"
+                        and data.get("service") == "paperpiggy-local-api") else None
     except Exception:
         return None
+
+
+def _pythonw_executable():
+    current = Path(sys.executable)
+    pyw = current if current.name.lower() == "pythonw.exe" else current.with_name("pythonw.exe")
+    return str(pyw if pyw.exists() else current)
 
 def _server_log():
     """server 子进程 stdout/stderr 落 logs/server.log（换机排障命脉，替代 DEVNULL 静默）。
@@ -234,11 +244,17 @@ def ensure_up(wait=120):
     # 的工具全体死锁且报错误导。改为：只要 /health 有应答就放行，让各端点自己的 503/人话错误透传给 agent。
     if health() is not None:
         return True
-    flags = 0x00000008 | 0x00000200 if sys.platform == "win32" else 0
     logf = _server_log()
-    subprocess.Popen([sys.executable, str(C.APP / "server.py")],
-                     stdout=logf, stderr=logf,
-                     stdin=subprocess.DEVNULL, creationflags=flags, close_fds=True)
+    try:
+        subprocess.Popen([_pythonw_executable(), str(C.APP / "server.py")],
+                         stdout=logf, stderr=logf, stdin=subprocess.DEVNULL,
+                         creationflags=C.SUBPROC_NO_WINDOW, close_fds=True)
+    finally:
+        if logf != subprocess.DEVNULL:
+            try:
+                logf.close()
+            except Exception:
+                pass
     log("拉起知识库服务（首次加载模型）...")
     t0 = time.time()
     while time.time() - t0 < wait:

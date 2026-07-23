@@ -16,6 +16,7 @@ class WikiSourceQualityTests(unittest.TestCase):
     def test_invalid_source_rejects_whole_save_and_suggests_nearest_key(self):
         with mock.patch.object(W, "ensure_scaffold"), \
                 mock.patch.object(W, "_paper_keys", return_value={"GOODKEY1", "H3HVZ5YW"}), \
+                mock.patch.object(W, "index_map", return_value={}), \
                 mock.patch.object(W, "_atomic_write") as write, \
                 mock.patch.object(W, "_upsert_index") as upsert:
             with self.assertRaisesRegex(ValueError, r"H3HVZYW.*H3HVZ5YW.*整页未写入"):
@@ -24,6 +25,17 @@ class WikiSourceQualityTests(unittest.TestCase):
                 ])
         write.assert_not_called()
         upsert.assert_not_called()
+
+    def test_page_id_cannot_escape_wiki_directory_or_reach_lance_predicates(self):
+        for page_id in ("../outside", r"..\outside", "bad'id", "a/b", ""):
+            with self.subTest(page_id=page_id):
+                with self.assertRaises(ValueError):
+                    W.page_path(page_id, "answer")
+                with mock.patch.object(W, "ensure_scaffold"), \
+                        mock.patch.object(W, "_atomic_write") as write:
+                    with self.assertRaises(ValueError):
+                        W.update_page(page_id, kind="answer", title="x", content="足够长的正文")
+                    write.assert_not_called()
 
     def test_valid_sources_are_deduplicated_after_validation(self):
         with mock.patch.object(W, "_paper_keys", return_value={"GOODKEY1"}), \

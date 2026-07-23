@@ -5,7 +5,7 @@
 两种用法：① 内置 chat（用户自备 LLM key）② 检索 API（任何 agent 调 /search，不需 key）。
 错误日志：后端异常 + 前端上报都写 logs/errors.log，GET /errors 可导出（方便反馈问题）。
 """
-import sys, os, json, time, threading, subprocess, traceback, re
+import sys, os, json, time, threading, subprocess, traceback, re, atexit
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import config as C
@@ -24,11 +24,159 @@ app = FastAPI(title="本地知识库")
 #  proc/cancelled：整库深索(scope=all)跑在 subprocess 里，此前不留句柄 → 一旦开始无法停，
 #  可能空跑数小时并烧掉 API 额度。存下 Popen 供 POST /build/cancel 终止。
 BUILD = {"running": False, "stage": None, "log": [], "started": None, "rc": None,
-         "proc": None, "cancelled": False,
+         "proc": None, "job": None, "cancelled": False,
          "bulk": False}   # BF35：当前 deep 构建是否整库深索(scope=all)，队列批次为 False
 # B1：build 守卫锁——把「判 running + 置 True」做成原子并在调用线程内同步置位，
 # 杜绝多路触发并发起两个 build_all 子进程写坏同一 LanceDB/bm25/papers.jsonl。
 _BUILD_LOCK = threading.Lock()
+
+
+def _backup_running():
+    """BACKUP 在模块后部定义；通过 globals 安全查询，统一阻止维护任务互踩。"""
+    return bool((globals().get("BACKUP") or {}).get("running"))
+
+
+def _maintenance_busy_locked():
+    """调用方必须持有 _BUILD_LOCK。"""
+    if BUILD["running"]:
+        return "已有建库、深索或索引维护任务在运行，请稍后再试。"
+    if _backup_running():
+        return "正在备份或恢复数据，请等它结束后再试。"
+    return None
+
+
+class _WindowsJob:
+    """把一个 build 子进程及其后代绑进可终止的 Windows Job Object。
+
+    Job 句柄始终指向原对象，不依赖可能被系统复用的 PID。server 被正常或强制终止时，
+    句柄都会由系统关闭；KILL_ON_JOB_CLOSE 随即清理仍存活的 build_all 子进程树。
+    """
+    _KILL_ON_CLOSE = 0x00002000
+    _EXTENDED_LIMIT_INFO = 9
+
+    def __init__(self):
+        if sys.platform != "win32":
+            raise RuntimeError("Windows Job Object 只能在 Windows 使用")
+        import ctypes
+        from ctypes import wintypes
+
+        class _BasicLimit(ctypes.Structure):
+            _fields_ = [
+                ("PerProcessUserTimeLimit", ctypes.c_longlong),
+                ("PerJobUserTimeLimit", ctypes.c_longlong),
+                ("LimitFlags", wintypes.DWORD),
+                ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t),
+                ("ActiveProcessLimit", wintypes.DWORD),
+                ("Affinity", ctypes.c_size_t),
+                ("PriorityClass", wintypes.DWORD),
+                ("SchedulingClass", wintypes.DWORD),
+            ]
+
+        class _IoCounters(ctypes.Structure):
+            _fields_ = [
+                ("ReadOperationCount", ctypes.c_ulonglong),
+                ("WriteOperationCount", ctypes.c_ulonglong),
+                ("OtherOperationCount", ctypes.c_ulonglong),
+                ("ReadTransferCount", ctypes.c_ulonglong),
+                ("WriteTransferCount", ctypes.c_ulonglong),
+                ("OtherTransferCount", ctypes.c_ulonglong),
+            ]
+
+        class _ExtendedLimit(ctypes.Structure):
+            _fields_ = [
+                ("BasicLimitInformation", _BasicLimit),
+                ("IoInfo", _IoCounters),
+                ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                ("PeakJobMemoryUsed", ctypes.c_size_t),
+            ]
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+        kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+        kernel32.SetInformationJobObject.argtypes = [
+            wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+        kernel32.SetInformationJobObject.restype = wintypes.BOOL
+        kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+        kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+        kernel32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+        kernel32.TerminateJobObject.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+
+        handle = kernel32.CreateJobObjectW(None, None)
+        if not handle:
+            raise ctypes.WinError(ctypes.get_last_error())
+        info = _ExtendedLimit()
+        info.BasicLimitInformation.LimitFlags = self._KILL_ON_CLOSE
+        if not kernel32.SetInformationJobObject(
+                handle, self._EXTENDED_LIMIT_INFO, ctypes.byref(info), ctypes.sizeof(info)):
+            err = ctypes.get_last_error()
+            kernel32.CloseHandle(handle)
+            raise ctypes.WinError(err)
+        self._ctypes = ctypes
+        self._wintypes = wintypes
+        self._kernel32 = kernel32
+        self._handle = handle
+        self._lock = threading.Lock()
+
+    def assign(self, proc):
+        with self._lock:
+            if not self._handle:
+                raise RuntimeError("Job Object 已关闭")
+            ph = self._wintypes.HANDLE(int(proc._handle))
+            if not self._kernel32.AssignProcessToJobObject(self._handle, ph):
+                raise self._ctypes.WinError(self._ctypes.get_last_error())
+
+    def terminate(self, exit_code=1):
+        with self._lock:
+            if not self._handle:
+                return
+            if not self._kernel32.TerminateJobObject(self._handle, int(exit_code)):
+                raise self._ctypes.WinError(self._ctypes.get_last_error())
+
+    def close(self):
+        with self._lock:
+            handle, self._handle = self._handle, None
+            if handle:
+                self._kernel32.CloseHandle(handle)
+
+
+_ACTIVE_BUILD_JOBS = set()
+_ACTIVE_BUILD_JOBS_LOCK = threading.Lock()
+
+
+def _new_build_job():
+    if sys.platform != "win32":
+        return None
+    job = _WindowsJob()
+    with _ACTIVE_BUILD_JOBS_LOCK:
+        _ACTIVE_BUILD_JOBS.add(job)
+    return job
+
+
+def _close_build_job(job):
+    if job is None:
+        return
+    with _ACTIVE_BUILD_JOBS_LOCK:
+        _ACTIVE_BUILD_JOBS.discard(job)
+    job.close()
+
+
+def _close_all_build_jobs():
+    with _ACTIVE_BUILD_JOBS_LOCK:
+        jobs = list(_ACTIVE_BUILD_JOBS)
+        _ACTIVE_BUILD_JOBS.clear()
+    for job in jobs:
+        try:
+            job.close()  # KILL_ON_JOB_CLOSE：server 退出时不遗留 build 子孙进程
+        except Exception:
+            pass
+
+
+atexit.register(_close_all_build_jobs)
 # 补生成摘要（SAC backfill）后台任务状态：给「已深索但缺检索摘要」的篇补摘要 + 重嵌入。
 # running 期间禁止重复触发；phase=生成中/重嵌入中；前端经 /index/status 的 sac_backfill 读它。
 BACKFILL = {"running": False, "phase": "", "done": 0, "total": 0, "fail": 0, "msg": "", "at": 0.0}
@@ -284,6 +432,7 @@ class AutoUpdateQ(BaseModel):
     at_time: Optional[str] = None
     catch_up_on_launch: Optional[bool] = None
     delete_sync: Optional[bool] = None       # C3：folder 模式是否同步删除（默认关）
+    confirm_delete_sync: bool = False        # 首次从关→开必须由调用方显式确认，不能只靠前端弹窗
     interval_min: Optional[int] = None       # 兼容旧前端字段（不再用于调度）
 
 def _auto_update_view():
@@ -314,7 +463,11 @@ def set_auto_update(q: AutoUpdateQ):
         h, m = _parse_hhmm(q.at_time)
         patch["at_time"] = f"{h:02d}:{m:02d}"
     if q.catch_up_on_launch is not None: patch["catch_up_on_launch"] = bool(q.catch_up_on_launch)
-    if q.delete_sync is not None: patch["delete_sync"] = bool(q.delete_sync)
+    if q.delete_sync is not None:
+        current = bool((S.load().get("auto_update") or {}).get("delete_sync", False))
+        if q.delete_sync and not current and not q.confirm_delete_sync:
+            raise HTTPException(status_code=400, detail="开启删除同步需要明确确认")
+        patch["delete_sync"] = bool(q.delete_sync)
     if q.interval_min is not None: patch["interval_min"] = max(5, int(q.interval_min))
     S.save({"auto_update": patch})
     return {"ok": True, **_auto_update_view()}
@@ -350,14 +503,23 @@ def set_retrieval_memory(q: RetrievalMemoryQ):
         R.release_retrieval_if_idle(mins * 60)
     return {"ok": True, **_retrieval_memory_view()}
 
+class PurgeDeletedQ(BaseModel):
+    preview: bool = False
+    confirm: bool = False
+
+
 @app.post("/setup/purge_deleted")
-def purge_deleted():
+def purge_deleted(q: PurgeDeletedQ = None):
     """删除同步：把「源里已删、库里还留着」的文献清出索引。
        folder 模式——删除同步在 stage=folder 增量构建里已内建，这里直接触发一次增量。
        zotero 模式——算差集手动清理（带安全阈值：读不到活库/一次要删过半则中止，防误抹整库）。"""
     import settings as S
+    q = q or PurgeDeletedQ()
     src = S.source()
     if src == "folder":
+        if not q.confirm:
+            return {"ok": False, "need_confirm": True, "mode": "folder", "would_remove": None,
+                    "msg": "将扫描受管文件夹，并从索引清理源文件已不存在的条目。确认后才会执行。"}
         ok = _run_build("folder")
         return {"ok": ok, "mode": "folder",
                 "msg": "已触发文件夹增量更新——删除的全文文件会在本次更新中自动清出。" if ok else "有任务在跑，稍后再试。"}
@@ -372,12 +534,19 @@ def purge_deleted():
     indexed = set(_load_papers().keys())
     gone = [k for k in indexed if k not in live]
     if not gone:
-        return {"ok": True, "mode": "zotero", "removed": 0, "msg": "没有需要清理的已删除文献。"}
-    if len(gone) > max(20, len(indexed) // 2):
+        return {"ok": True, "mode": "zotero", "removed": 0, "would_remove": 0,
+                "msg": "没有需要清理的已删除文献。"}
+    # 两条安全阈值独立生效：超过 20 篇，或超过现有库一半，任一命中都拒绝自动清理。
+    if len(gone) > 20 or len(gone) > len(indexed) // 2:
         return JSONResponse({"ok": False, "removed": 0,
-            "msg": f"检测到 {len(gone)} 篇需清理（超过库的一半），已中止以防误删。请确认 Zotero 库完整后重试。"},
+            "would_remove": len(gone),
+            "msg": f"检测到 {len(gone)} 篇需清理（超过 20 篇或库的一半），已中止以防误删。请确认 Zotero 库完整后重试。"},
             status_code=400)
-    if BUILD["running"]:
+    if q.preview or not q.confirm:
+        return {"ok": False, "need_confirm": True, "mode": "zotero",
+                "would_remove": len(gone), "count": len(gone),
+                "msg": f"将从索引清理 {len(gone)} 篇 Zotero 中已删除的文献。确认后才会执行。"}
+    if BUILD["running"] or _backup_running():
         return JSONResponse({"ok": False, "msg": "有构建任务在跑，稍后再清理。"}, status_code=400)
     try:
         import folder_ingest as FI
@@ -473,13 +642,15 @@ def health():
     papers = len(R.M.get("papers", {}))          # 去重篇数（题录数，L/F 档都在内存）
     blocks = int(R.M.get("row_count", 0)) if mode == "full" else 0  # LanceDB 总行数；正文/向量不常驻 Python
     n = blocks if mode == "full" else papers     # 兼容旧字段
-    return {"ready": R.STATE.get("ready", False), "mode": mode,
+    return {"app": "paperpiggy", "service": "paperpiggy-local-api",
+            "ready": R.STATE.get("ready", False), "mode": mode,
+            "error": R.STATE.get("error"),
             "n": n, "papers": papers, "blocks": blocks, "building": BUILD["running"],
             "deep": len(_deep_keys()),          # F10：「全部文献」显示 已深索/总数
             "rev": _lib_rev(),                  # 库修订号（分域）：前端据此在库/综述/交付物变动后自动刷可见页
             "loading": _LOADING,                # 冷启动读取库目录期间为 True → 前端显示遮罩，完成后淡出
             "retrieval": R.retrieval_status(),  # 检索组件冷/热态；设置页据此解释内存策略
-            "pid": os.getpid()}                 # 本 server 进程 pid → launcher 关窗时按 pid taskkill /T 杀整棵树，根治 orphan 堆积
+            "pid": os.getpid()}                 # launcher 只在明确身份复核后，用已打开的进程句柄终止
 
 # ── Agent / MCP 接入信息（给应用内 Agent 页，吐出本机真实可用的接入命令）──
 @app.get("/agent/mcp-config")
@@ -1007,13 +1178,18 @@ def _reset_vectors_for_reembed():
     """换引擎：删掉旧引擎建的全部向量与嵌入进度，让下次 build 用新引擎【全量】重嵌。
        保留 extracted/chunks 产物（深索只需重嵌、不必重抽）。wiki 行会在 load_all 时由
        reindex_missing_pages 自动回灌。返回 True=已重置。"""
+    import shutil
+    progress_files = (C.META_EMBEDDED, C.STATE / "embedded_keys.txt")
+    staged = []
     try:
-        for f in (C.META_EMBEDDED, C.STATE / "embedded_keys.txt"):
-            try:
-                if f.exists():
-                    f.unlink()
-            except Exception as e:
-                log_error("reembed unlink", repr(e))
+        # 先把进度文件可逆地挪走。若 drop_table 失败，原样放回；绝不留下
+        # “旧表仍在但进度已删”的半切换状态。
+        stamp = f"{os.getpid()}-{int(time.time() * 1000)}"
+        for f in progress_files:
+            if f.exists():
+                tmp = f.with_name(f.name + f".backend-switch-{stamp}")
+                shutil.move(str(f), str(tmp))
+                staged.append((f, tmp))
         import lancedb
         db = lancedb.connect(str(C.LANCEDB_DIR))
         if C.TABLE_NAME in db.table_names():
@@ -1023,12 +1199,26 @@ def _reset_vectors_for_reembed():
             if C.INDEX_MANIFEST.exists():
                 man = json.loads(C.INDEX_MANIFEST.read_text(encoding="utf-8"))
                 man.pop("backend", None)
-                C.INDEX_MANIFEST.write_text(json.dumps(man, ensure_ascii=False, indent=2), encoding="utf-8")
-        except Exception:
-            pass
+                man.pop("embedding_identity", None)
+                tmp = C.INDEX_MANIFEST.with_suffix(".json.tmp")
+                tmp.write_text(json.dumps(man, ensure_ascii=False, indent=2), encoding="utf-8")
+                os.replace(tmp, C.INDEX_MANIFEST)
+        except Exception as e:
+            log_error("reset vectors manifest", repr(e))
+        for _, tmp in staged:
+            try:
+                tmp.unlink(missing_ok=True)
+            except Exception as e:
+                log_error("reset vectors cleanup", repr(e))
         return True
     except Exception as e:
         log_error("reset vectors for reembed", repr(e), traceback.format_exc())
+        for original, tmp in reversed(staged):
+            try:
+                if tmp.exists() and not original.exists():
+                    shutil.move(str(tmp), str(original))
+            except Exception as restore_error:
+                log_error("reset vectors rollback", repr(restore_error), traceback.format_exc())
         return False
 
 
@@ -1105,8 +1295,9 @@ def index_reset(q: ResetIndexQ = None):
     if not (q and q.confirm):
         return {"ok": False, "need_confirm": True}
     with _BUILD_LOCK:
-        if BUILD["running"]:
-            return {"ok": False, "busy": True, "msg": "正在建索引，请等它结束或先停止，再清空。"}
+        busy = _maintenance_busy_locked()
+        if busy:
+            return {"ok": False, "busy": True, "msg": busy}
         BUILD["running"] = True; BUILD["stage"] = "reset"   # 占位防清空途中有 build 抢锁
     try:
         r = _reset_index_full()
@@ -1129,28 +1320,43 @@ def setup_backend(q: BackendQ):
     import settings as S
     old = S.load()
     old_backend = old.get("backend")
-    old_embed = (old.get("api") or {}).get("embed_model")
-    patch = {"backend": "api" if q.backend == "api" else "local"}
+    target_backend = "api" if q.backend == "api" else "local"
+    patch = {"backend": target_backend}
     api = {}
     if q.base: api["base"] = q.base
     if q.key is not None: api["key"] = q.key
     if q.embed_model: api["embed_model"] = q.embed_model
     if q.rerank_model: api["rerank_model"] = q.rerank_model
     if api: patch["api"] = api
-    st = S.save(patch)
-    new_backend = st.get("backend")
-    new_embed = (st.get("api") or {}).get("embed_model")
+    old_api = old.get("api") or {}
+    candidate = json.loads(json.dumps(old))
+    candidate["backend"] = target_backend
+    candidate_api = candidate.setdefault("api", {})
+    candidate_api.update(api)
     # 引擎变化 = 后端切换，或 API 模式下换了嵌入模型（维度可能不同，查询向量与表维度不符会直接报错）
-    engine_changed = (old_backend != new_backend) or (new_backend == "api" and old_embed and old_embed != new_embed)
+    engine_changed = S.embedding_identity(old) != S.embedding_identity(candidate)
     has_vectors = C.META_EMBEDDED.exists() or R.STATE.get("mode") == "full"
     reembed, had_deep, warn = False, 0, None
-    if engine_changed and has_vectors:
-        try:
-            had_deep = len(_deep_keys())
-        except Exception:
-            had_deep = 0
-        reembed = _reset_vectors_for_reembed()
-        warn = "检索引擎已切换：旧向量已清除，请重建索引以用新引擎全量重嵌。"
+    with _BUILD_LOCK:
+        busy = _maintenance_busy_locked()
+        if busy:
+            return {"ok": False, "busy": True, "msg": busy}
+        BUILD["running"] = True; BUILD["stage"] = "backend_switch"
+    try:
+        if engine_changed and has_vectors:
+            try:
+                had_deep = len(_deep_keys())
+            except Exception:
+                had_deep = 0
+            reembed = _reset_vectors_for_reembed()
+            if not reembed:
+                return {"ok": False, "backend": old_backend, "reembed": False,
+                        "msg": "旧向量未能安全清理，检索引擎设置未更改。请重启后重试。"}
+            warn = "检索引擎已切换：旧向量已清除，请重建索引以用新引擎全量重嵌。"
+        st = S.save(patch)
+    finally:
+        with _BUILD_LOCK:
+            BUILD["running"] = False; BUILD["stage"] = ""
     return {"ok": True, "backend": st.get("backend"), "reembed": reembed, "had_deep": had_deep,
             "api_key_set": bool((st.get("api") or {}).get("key")), "warn": warn}
 
@@ -1339,7 +1545,21 @@ def setup_reset():
        检索组件空闲释放回到 10 分钟）。
        浏览器里的对话 LLM key 存 localStorage，由前端另清。"""
     import settings as S
-    st = S.reset()
+    old = S.load()
+    has_vectors = C.META_EMBEDDED.exists() or R.STATE.get("mode") == "full"
+    with _BUILD_LOCK:
+        busy = _maintenance_busy_locked()
+        if busy:
+            return {"ok": False, "busy": True, "msg": busy}
+        BUILD["running"] = True; BUILD["stage"] = "settings_reset"
+    try:
+        if old.get("backend", "local") != "local" and has_vectors:
+            if not _reset_vectors_for_reembed():
+                return {"ok": False, "msg": "旧向量未能安全清理，设置没有恢复默认。请重启后重试。"}
+        st = S.reset()
+    finally:
+        with _BUILD_LOCK:
+            BUILD["running"] = False; BUILD["stage"] = ""
     R.release_retrieval_if_idle(0, force=True)
     return {"ok": True, "backend": st.get("backend"), "discipline": st.get("journal_discipline")}
 
@@ -2141,24 +2361,48 @@ TOPICS_BUILD = {"running": False, "msg": ""}
 @app.post("/topics/rebuild")
 def topics_rebuild():
     """后台重跑 AI 主题聚类（build_ai_topics.py，需已建语义/深索索引）。"""
-    if TOPICS_BUILD["running"]:
-        return {"ok": False, "msg": "AI 主题正在归类中，请稍候"}
-    if BUILD["running"]:
-        return {"ok": False, "msg": "正在建库/深索中，请等结束后再归类"}
     if R.STATE.get("mode") != "full":
         return JSONResponse({"ok": False, "msg": "需先深索或建语义层（AI 主题按向量聚类，纯题录库还没有向量）", "need_index": True}, status_code=200)
-    def run():
+    with _BUILD_LOCK:
+        if TOPICS_BUILD["running"]:
+            return {"ok": False, "msg": "AI 主题正在归类中，请稍候"}
+        busy = _maintenance_busy_locked()
+        if busy:
+            return {"ok": False, "busy": True, "msg": busy}
         TOPICS_BUILD["running"] = True; TOPICS_BUILD["msg"] = "归类中…"
+        BUILD["running"] = True; BUILD["stage"] = "topics"
+        BUILD["started"] = time.time(); BUILD["rc"] = None; BUILD["cancelled"] = False
+    def run():
+        p = job = None
         try:
             env = dict(os.environ); env.pop("PYTHONUTF8", None)
-            p = subprocess.run([sys.executable, str(C.APP / "build_ai_topics.py")],
-                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, timeout=900,
-                               creationflags=C.SUBPROC_NO_WINDOW)
+            p, job = _spawn_build_process(
+                [sys.executable, str(C.APP / "build_ai_topics.py")],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env,
+                creationflags=C.SUBPROC_NO_WINDOW,
+                start_new_session=(sys.platform != "win32"))
+            with _BUILD_LOCK:
+                BUILD["proc"], BUILD["job"] = p, job
+            p.communicate(timeout=900)
+            BUILD["rc"] = p.returncode
             TOPICS_BUILD["msg"] = "完成" if p.returncode == 0 else f"失败(code={p.returncode})"
+        except subprocess.TimeoutExpired:
+            if p is not None:
+                try:
+                    _kill_tree(p, job)
+                except Exception as e:
+                    log_error("topics/rebuild timeout terminate", repr(e))
+            BUILD["rc"] = -1
+            TOPICS_BUILD["msg"] = "超时（15 分钟），已停止"
         except Exception as e:
             log_error("topics/rebuild", repr(e)); TOPICS_BUILD["msg"] = f"异常：{e}"
         finally:
-            TOPICS_BUILD["running"] = False
+            with _BUILD_LOCK:
+                if BUILD.get("proc") is p:
+                    BUILD["proc"], BUILD["job"] = None, None
+                BUILD["running"] = False; BUILD["stage"] = ""
+                TOPICS_BUILD["running"] = False
+            _close_build_job(job)
     threading.Thread(target=run, daemon=True).start()
     return {"ok": True}
 
@@ -3246,8 +3490,9 @@ def index_light_ep():
     # BF9：即时索引此前完全绕开构建锁——与 build 子进程并发重写 papers.jsonl/bm25 会写坏索引。
     # 与 /index/deep(scope=all) 同款约定：忙时返回 {ok:false,busy:true}，前端已能处理 ok:false。
     with _BUILD_LOCK:
-        if BUILD["running"]:
-            return {"ok": False, "busy": True, "msg": "已有构建任务在跑，请稍后再试"}
+        busy = _maintenance_busy_locked()
+        if busy:
+            return {"ok": False, "busy": True, "msg": busy}
         BUILD["running"] = True; BUILD["stage"] = "light"
         BUILD["started"] = time.time(); BUILD["rc"] = None; BUILD["cancelled"] = False
         BUILD["log"] = ["[light] 即时索引启动…"]   # 不留上次构建的日志尾巴
@@ -3285,15 +3530,36 @@ def _child_env():
     env["PYTHONUTF8"] = "1"
     return env
 
+
+def _spawn_build_process(cmd, **kwargs):
+    """启动 build 子进程；Windows 必须先成功加入 Job Object 才允许继续运行。"""
+    job = _new_build_job()
+    proc = None
+    try:
+        proc = subprocess.Popen(cmd, **kwargs)
+        if job is not None:
+            job.assign(proc)
+        return proc, job
+    except Exception:
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.terminate()  # Popen 持有原进程 HANDLE，不通过裸 PID 寻址
+                proc.wait(timeout=5)
+            except Exception:
+                pass
+        _close_build_job(job)
+        raise
+
+
 def _run_build(stage, extra=None, on_done=None):
     # B1：原子「判 running + 置 True」并在调用线程内同步置位（不再等子线程 start() 后才置），
     # 多路触发时后来者立即拿到 running=True → return False，不会并发跑两个子进程。
     with _BUILD_LOCK:
-        if BUILD["running"]:
+        if _maintenance_busy_locked():
             return False
         BUILD["running"] = True; BUILD["stage"] = stage; BUILD["started"] = time.time()
         BUILD["log"] = [f"[{stage}] 启动…"]; BUILD["rc"] = None
-        BUILD["proc"] = None; BUILD["cancelled"] = False
+        BUILD["proc"] = None; BUILD["job"] = None; BUILD["cancelled"] = False
         # BF35：整库深索(scope=all)标记——extra 形如 ["--scope","all"]；队列批次是 "keys:..."，不算 bulk
         BUILD["bulk"] = bool(stage == "deep" and "all" in (extra or []))
     # EN-W2：整库深索(scope=all)记下构建前的已深索集合（safe_name(stem)），
@@ -3301,15 +3567,18 @@ def _run_build(stage, extra=None, on_done=None):
     # 队列批次不走这里（keys 已知，由 _on_deep_done 直接触发），避免双算。
     pre_deep = _deep_keys() if BUILD["bulk"] else None
     def run():
-        rc = None
+        rc, job = None, None
         try:
             env = _child_env()   # 任务五：稳定 UTF-8 输出，避免 build 日志乱码
             cmd = [sys.executable, str(C.APP / "build_all.py"), "--stage", stage] + (extra or [])
-            p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env,
-                                 creationflags=C.SUBPROC_NO_WINDOW,   # ★ 不闪黑窗（Windows）
-                                 # macOS/Linux：起在独立进程组，取消时 _kill_tree 用 killpg 连孙进程一起杀
-                                 start_new_session=(sys.platform != "win32"))
-            BUILD["proc"] = p            # 留句柄给 /build/cancel
+            p, job = _spawn_build_process(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env,
+                creationflags=C.SUBPROC_NO_WINDOW,   # ★ 不闪黑窗（Windows）
+                # macOS/Linux：起在独立进程组，取消时 killpg 连孙进程一起杀
+                start_new_session=(sys.platform != "win32"))
+            with _BUILD_LOCK:
+                BUILD["proc"] = p         # 留 Popen/Job 句柄给 /build/cancel
+                BUILD["job"] = job
             for raw in p.stdout:
                 BUILD["log"].append(raw.decode("utf-8", errors="replace").rstrip())
                 BUILD["log"] = BUILD["log"][-300:]
@@ -3325,7 +3594,10 @@ def _run_build(stage, extra=None, on_done=None):
             rc = -1
         finally:
             BUILD["rc"] = rc
-            BUILD["proc"] = None
+            with _BUILD_LOCK:
+                BUILD["proc"] = None
+                BUILD["job"] = None
+            _close_build_job(job)
             # B2：重载期间表句柄、BM25 与题录状态并非原子切换。
             # 重载全程保持 running=True（锁未释放前不接受新 build）+ 短暂 ready=False（检索先返回未就绪，
             # 而非错误的空命中）；load_all 成功后自会把 ready 置回 True。
@@ -3380,22 +3652,19 @@ def build_ep():
     stage = "folder" if S.source() == "folder" else "all"
     return {"ok": _run_build(stage)}
 
-def _kill_tree(p):
+def _kill_tree(p, job=None):
     """终止建库进程树。子进程（build_all）会派生嵌入/抽取 worker 孙进程，只杀本体它们会变孤儿、
        继续跑继续烧 API 额度。
-       Windows：taskkill /T /F 杀整棵树；失败兜底 terminate。
+       Windows：终止本 server 持有的 Job Object，不按 PID 枚举系统进程。
        macOS/Linux：子进程用 start_new_session 起在独立进程组里（见 _run_build 的 Popen），
-         这里 killpg 杀整组；拿不到进程组则兜底 terminate。"""
+          这里 killpg 杀整组；拿不到进程组则兜底 terminate。"""
     if sys.platform == "win32":
-        try:
-            r = subprocess.run(["taskkill", "/PID", str(p.pid), "/T", "/F"],
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15,
-                               creationflags=C.SUBPROC_NO_WINDOW)
-            if r.returncode == 0:
-                return
-            log_error("build/cancel taskkill", f"taskkill rc={r.returncode}，兜底 terminate")
-        except Exception as e:
-            log_error("build/cancel taskkill", repr(e))
+        if job is not None:
+            job.terminate(1)
+            return
+        # Job 建立前的极小窗口只可能持有 Popen；terminate 使用 Popen 内部的原进程 HANDLE。
+        p.terminate()
+        return
     else:
         try:
             import os as _os, signal as _sig
@@ -3410,10 +3679,11 @@ def build_cancel():
     """取消正在跑的建库/深索子进程。整库深索(scope=all)此前一旦开始就停不下来，
        可能空跑数小时并烧掉 API 额度。深索是增量的：已完成的篇已落盘，随时可继续。
        同时暂停深索队列——否则子进程一死，_drain_deep_queue 立刻起新批。"""
-    p = BUILD.get("proc")
-    if not BUILD["running"] or p is None:
-        return JSONResponse({"ok": False, "detail": "当前没有正在运行的任务"}, status_code=409)
-    BUILD["cancelled"] = True
+    with _BUILD_LOCK:
+        p, job = BUILD.get("proc"), BUILD.get("job")
+        if not BUILD["running"] or p is None:
+            return JSONResponse({"ok": False, "detail": "当前没有正在运行的任务"}, status_code=409)
+        BUILD["cancelled"] = True
     try:
         with _Q_LOCK:
             QUEUE["paused"] = True
@@ -3421,7 +3691,7 @@ def build_cancel():
     except Exception as e:
         log_error("build/cancel pause-queue", repr(e))
     try:
-        _kill_tree(p)   # BF7：杀整棵进程树，孙进程不再漏网
+        _kill_tree(p, job)   # Job/进程组都引用原对象，不会命中复用后的 PID
     except Exception as e:
         log_error("build/cancel", repr(e), traceback.format_exc())
         return JSONResponse({"ok": False, "detail": f"终止失败：{e}"}, status_code=500)
@@ -3607,13 +3877,24 @@ class DeepAgentQ(BaseModel):
     batch: int = 15
 
 def _run_stage_blocking(stage, extra=None):
-    """阻塞跑一段 build_all（子进程 subprocess.run，捕获 stdout 不污染 HTTP 响应）。返回 returncode。"""
+    """阻塞跑一段 build_all；仍发布 Popen/Job 句柄，允许 /build/cancel 安全停止。"""
     env = _child_env()
     cmd = [sys.executable, str(C.APP / "build_all.py"), "--stage", stage] + (extra or [])
-    p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env,
-                       creationflags=C.SUBPROC_NO_WINDOW)
+    p, job = _spawn_build_process(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env,
+        creationflags=C.SUBPROC_NO_WINDOW,
+        start_new_session=(sys.platform != "win32"))
+    with _BUILD_LOCK:
+        BUILD["proc"], BUILD["job"] = p, job
     try:
-        out = (p.stdout or b"").decode("utf-8", errors="replace")
+        out, _ = p.communicate()
+    finally:
+        with _BUILD_LOCK:
+            if BUILD.get("proc") is p:
+                BUILD["proc"], BUILD["job"] = None, None
+        _close_build_job(job)
+    try:
+        out = (out or b"").decode("utf-8", errors="replace")
         BUILD["log"].append(f"[deep_agent:{stage}] rc={p.returncode}")
         for ln in out.splitlines()[-20:]:
             BUILD["log"].append(ln)
@@ -3695,8 +3976,9 @@ def index_deep_agent(q: DeepAgentQ):
        用法见 MCP 工具 deep_index：首次不带 summaries→返回 to_summarize；带 summaries 再调→
        嵌入上一批+返回下一批；循环至 finished=true。"""
     with _BUILD_LOCK:
-        if BUILD["running"]:
-            return {"ok": False, "busy": True}
+        busy = _maintenance_busy_locked()
+        if busy:
+            return {"ok": False, "busy": True, "msg": busy}
         BUILD["running"] = True; BUILD["stage"] = "deep_agent"
         BUILD["started"] = time.time(); BUILD["rc"] = None
         BUILD["cancelled"] = False       # BF14：每次构建开始都复位取消标记，避免上次取消残留误报
@@ -3838,8 +4120,9 @@ def maintenance_agent_summaries(q: AgentSummaryRepairQ):
         return {"ok": False, "msg": "没有提交摘要。"}
     snap = SAC.snapshot([x["key"] for x in items])
     with _BUILD_LOCK:
-        if BUILD["running"]:
-            return {"ok": False, "busy": True, "msg": "已有建库/深索任务在运行，请稍后重试。"}
+        busy = _maintenance_busy_locked()
+        if busy:
+            return {"ok": False, "busy": True, "msg": busy}
         BUILD["running"] = True; BUILD["stage"] = "agent_summary_repair"
         BUILD["started"] = time.time(); BUILD["rc"] = None; BUILD["cancelled"] = False
     try:
@@ -3896,8 +4179,9 @@ def index_sac_backfill(q: SacBackfillQ = None):
         return {"ok": True, "started": False, "total": 0,
                 "msg": ("这篇已有检索摘要，无需再生成。" if only else "所有已深索文献都已有检索摘要，无需生成。")}
     with _BUILD_LOCK:
-        if BUILD["running"]:
-            return {"ok": False, "busy": True, "msg": "已有任务在跑（深索/更新/补生成），请稍后再试。"}
+        busy = _maintenance_busy_locked()
+        if busy:
+            return {"ok": False, "busy": True, "msg": busy}
         BUILD["running"] = True; BUILD["stage"] = "sac_backfill"
         BUILD["started"] = time.time(); BUILD["rc"] = None; BUILD["cancelled"] = False
     with _BACKFILL_LOCK:
@@ -3930,8 +4214,9 @@ def search(q: SearchQ):
     if not R.STATE.get("ready"):
         # UX8：两态文案——建过库只是重建/重载窗口（稍等即可），从未建库才需要走向导；
         # 此前一律"先建立即时索引"，害老用户在重载的几秒里被误导去重建。
-        msg = ("索引正在重建或加载，请稍候几秒再搜" if C.INDEX_MANIFEST.exists()
-               else "还没建立索引——请到 设置 → 应用 → 重新查看引导 完成首次建库")
+        msg = (R.STATE.get("error") or
+               ("索引正在重建或加载，请稍候几秒再搜" if C.INDEX_MANIFEST.exists()
+                else "还没建立索引——请到 设置 → 应用 → 重新查看引导 完成首次建库"))
         return JSONResponse({"error": msg, "ready": False}, status_code=503)
     t0 = time.time()
     keys = _resolve_category_keys(q.category)
@@ -4049,6 +4334,22 @@ def _backup_busy_reason():
     return None
 
 
+def _claim_backup(stage):
+    """原子检查并占用备份槽，避免 check/set 之间被建库线程抢入。"""
+    with _BUILD_LOCK:
+        busy = _backup_busy_reason()
+        if busy:
+            return busy
+        BACKUP.update({"running": True, "stage": stage, "done": 0, "total": 0,
+                       "result": None, "error": None})
+    return None
+
+
+def _release_backup():
+    with _BUILD_LOCK:
+        BACKUP["running"] = False
+
+
 def _auto_backup_tick():
     """自动备份（由上面的定时循环每分钟叫一次；真正动手是每 N 天一次）。
 
@@ -4062,7 +4363,7 @@ def _auto_backup_tick():
     conf = S.load().get("backup") or {}
     if not conf.get("auto"):
         return
-    if BUILD["running"] or BACKUP["running"]:
+    if _claim_backup("自动备份中"):
         return
 
     days = max(1, int(conf.get("every_days") or 7))
@@ -4076,8 +4377,6 @@ def _auto_backup_tick():
             pass                      # 时间戳坏了 → 当作没备份过，宁可多备一次
 
     import backup as BK
-    BACKUP.update({"running": True, "stage": "自动备份中", "done": 0, "total": 0,
-                   "result": None, "error": None})
     try:
         m = BK.create(include_index=False, include_key=False)
         S.save({"backup": {"last_at": m["created"]}})
@@ -4089,7 +4388,7 @@ def _auto_backup_tick():
         BACKUP["stage"] = "失败"
         log_error("auto_backup", repr(e))
     finally:
-        BACKUP["running"] = False
+        _release_backup()
 
 
 class BackupConfQ(BaseModel):
@@ -4151,13 +4450,11 @@ def backup_estimate(with_index: int = 0):
 @app.post("/backup/create")
 def backup_create(q: BackupQ = None):
     q = q or BackupQ()
-    busy = _backup_busy_reason()
+    busy = _claim_backup("打包中")
     if busy:
         return {"ok": False, "error": busy}
 
     import backup as BK
-    BACKUP.update({"running": True, "stage": "打包中", "done": 0, "total": 0,
-                   "result": None, "error": None})
 
     def work():
         try:
@@ -4177,7 +4474,7 @@ def backup_create(q: BackupQ = None):
             BACKUP["error"] = str(e)
             BACKUP["stage"] = "失败"
         finally:
-            BACKUP["running"] = False
+            _release_backup()
 
     threading.Thread(target=work, daemon=True).start()
     return {"ok": True, "started": True}
@@ -4208,8 +4505,10 @@ def backup_restore(q: BackupPathQ):
     if not info.get("ok"):
         return {"ok": False, "error": info.get("err") or "备份包不可用"}
 
-    BACKUP.update({"running": True, "stage": "恢复中", "done": 0, "total": 0,
-                   "result": None, "error": None})
+    # inspect 可能耗时，完成后重新原子检查并占位，不能沿用检查前的空闲结论。
+    busy = _claim_backup("恢复中")
+    if busy:
+        return {"ok": False, "error": busy}
 
     def work():
         try:
@@ -4225,7 +4524,7 @@ def backup_restore(q: BackupPathQ):
             BACKUP["error"] = str(e)
             BACKUP["stage"] = "失败"
         finally:
-            BACKUP["running"] = False
+            _release_backup()
 
     threading.Thread(target=work, daemon=True).start()
     return {"ok": True, "started": True}

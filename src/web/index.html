@@ -240,7 +240,7 @@
             <option value="metadata">题录查找</option>
             <option value="semantic">全文与相关内容</option>
           </select>
-          <input id="q" type="text" placeholder="按题名、作者、期刊、年份、DOI 或 ISBN 查找" autocomplete="off" />
+          <input id="q" type="text" aria-label="查找文献" placeholder="按题名、作者、期刊、年份、DOI 或 ISBN 查找" autocomplete="off" />
           <div id="lib-semantic-controls" hidden>
             <select id="sort" title="全文检索排序">
               <option value="blend">综合相关</option>
@@ -317,7 +317,7 @@
             <div class="ed-ic">📥</div>
             <div class="ed-h">把全文文件拖到这里，自动入库</div>
             <div class="ed-d">系统会把文件复制进你的知识库文件夹，并用 AI 读出题名、作者、年份等信息。</div>
-            <div id="ed-nokey" class="ed-nokey" hidden>还没配 AI Key —— 现在入库只有文件名。<a id="ed-gokey" class="ag-link">去配置</a></div>
+            <div id="ed-nokey" class="ed-nokey" hidden>还没配 AI Key —— 现在入库只有文件名。<button id="ed-gokey" class="ag-link ag-linkbtn" type="button">去配置</button></div>
             <button id="ed-pick" class="primary-btn">或点击选择全文文件…</button>
           </div>
           <div id="bl-msg" class="msg"></div>
@@ -344,7 +344,7 @@
           <div class="wk-filter-group">
             <label class="wk-search">
               <span class="ui-icon" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none"><circle cx="7" cy="7" r="4" stroke="currentColor" stroke-width="1.5"/><path d="m10 10 3 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></span>
-              <input id="wk-search" type="search" placeholder="搜索综述标题" />
+              <input id="wk-search" type="search" aria-label="搜索综述标题" placeholder="搜索综述标题" />
             </label>
             <select id="wk-kind" title="按类型筛选">
               <option value="">全部类型</option>
@@ -470,7 +470,7 @@
       <section class="ag-tasks-card ag-full">
         <div class="ag-tasks-h">⏰ 定时任务 <span class="ag-tasks-sub">让 AI 助手定期帮你搜集 / 综述（如少年司法周报）</span><button class="ag-refresh" id="ag-tasks-refresh" type="button" title="重新扫描定时任务文件夹（新建的任务点这里就能看到，不用重启）">🔄 刷新</button></div>
         <div id="ag-tasks" class="ag-tasks-list">读取定时任务…</div>
-        <p class="ag-note ag-tasks-note">任务定义存在「资料库 › 定时任务」（换 AI 助手也能读、照着重建）；成果落「交付物 › 定时任务」；每跑完一次，AI 会依时效内容更新综述库。<br><small>说明：定时触发由你的 AI 助手在它自己的日程里执行——本应用不联网、不含大模型，只负责登记、展示与把成果入库。</small></p>
+        <p class="ag-note ag-tasks-note">任务定义存在「资料库 › 定时任务」（换 AI 助手也能读、照着重建）；成果落「交付物 › 定时任务」；每跑完一次，AI 会依时效内容更新综述库。<br><small>说明：定时触发由你的 AI 助手在它自己的日程里执行，PaperPiggy 只登记、展示并把成果入库；云端检索和 AI 助手是否联网，取决于你的检索引擎与助手配置。</small></p>
       </section>
 
     </div>
@@ -547,7 +547,7 @@
               <div class="ag-trio-i"><b>🔭 跨学科发散与补文献</b><span>写作前打开理论视野：把窄题接到邻近学科、政治学 / 心理学等，理出该补的（尤其外文）文献。说「帮我把…这个题发散一下、看该补哪些文献」。</span></div>
               <div class="ag-trio-i"><b>📖 维护综述库</b><span>把读过的文献沉淀成带页码引用、可复用的综述页，越用越厚。说「把我最近读的文献更新进综述库」。</span></div>
             </div>
-            <p class="ag-note">这三条就是「📚 专属资料库 › 技能」里的 .md 文件——<b>一个工作流一个文件、人类可读</b>。你随时能和 AI 助手一起<b>把它们改成自己的习惯，或新建一条属于你的工作流</b>（编辑 / 新增那个 .md 就行）。应用更新时，没改过的出厂工作流会自动升级；你改过的会原样保留，并在 Agent 页显示“待合并”，可查看差异或复制任务给 Agent 合并。<a class="ag-link" id="ag-open-skills">打开技能文件夹</a></p>
+            <p class="ag-note">这三条就是「📚 专属资料库 › 技能」里的 .md 文件——<b>一个工作流一个文件、人类可读</b>。你随时能和 AI 助手一起<b>把它们改成自己的习惯，或新建一条属于你的工作流</b>（编辑 / 新增那个 .md 就行）。应用更新时，没改过的出厂工作流会自动升级；你改过的会原样保留，并在 Agent 页显示“待合并”，可查看差异或复制任务给 Agent 合并。<button class="ag-link ag-linkbtn" id="ag-open-skills" type="button">打开技能文件夹</button></p>
             <p class="ag-note">当然，直接说需求也行，比如：</p>
             <ul class="ag-prompts" id="ag-prompts"></ul>
           </div>
@@ -593,7 +593,7 @@
           <div class="ag-ch-n">7</div>
           <div class="ag-ch-c">
             <h3>定时任务：定期帮你盯动态</h3>
-            <p class="ag-note">让 AI 定期搜集某领域新动态（如每周少年司法周报）。对你的助手说「<b>帮我建一个每周一早上的 XX 周报定时任务</b>」即可：<b>任务定义</b>会写进「资料库 › 定时任务」（换助手也能读、照着重建），<b>成果</b>落「交付物 › 定时任务」，每跑完一次 AI 会依时效内容更新综述库。<br><b>本应用不联网、不含大模型</b>，定时触发由你的助手在它自己的日程里执行，应用只登记 / 展示 / 入库。</p>
+            <p class="ag-note">让 AI 定期搜集某领域新动态（如每周少年司法周报）。对你的助手说「<b>帮我建一个每周一早上的 XX 周报定时任务</b>」即可：<b>任务定义</b>会写进「资料库 › 定时任务」（换助手也能读、照着重建），<b>成果</b>落「交付物 › 定时任务」，每跑完一次 AI 会依时效内容更新综述库。<br>定时触发由你的助手在它自己的日程里执行，PaperPiggy 只登记 / 展示 / 入库；云端检索和 AI 助手是否联网，取决于你的检索引擎与助手配置。</p>
           </div>
         </section>
 
@@ -602,7 +602,7 @@
           <div class="ag-ch-n">8</div>
           <div class="ag-ch-c">
             <h3>它会怎么动你的库（权限与安全）</h3>
-            <p class="ag-note">默认<b>只读检索 + 另存综合</b>，<b>绝不改动</b>你的原始文献 / 索引 / Zotero；写回的综述标 🤖 未核验、不覆盖你的内容、可一键删。原始文献与写回成果保存在本机；云端检索和 AI 助手会接收完成对应任务所需的文本。下面是 AI 必须遵守的写回规约文件（可打开查看它被约束成什么样）：</p>
+            <p class="ag-note">默认<b>只读检索 + 另存综合</b>，不直接改动你的原始文献或 Zotero；只有你明确要求并通过工具安全闸时，Agent 才能添加来源、建库或深索，从而更新 PaperPiggy 索引。写回的综述标 🤖 未核验、不覆盖你的内容、可一键删；你也可以直接编辑正文，保存后视为已核验，并随时改回未核验。原始文献与写回成果保存在本机；云端检索和 AI 助手会接收完成对应任务所需的文本。下面是 AI 必须遵守的写回规约文件（可打开查看它被约束成什么样）：</p>
             <div class="ag-code"><code id="ag-schema"></code><button class="ag-copy" data-copy="ag-schema">复制路径</button></div>
             <p class="ag-note">💡 想更快看懂？「📚 专属资料库」里有一份通俗摘要 <code>AI写综述遵守的规约.md</code>（五条核心 + 指向上面这份完整规约）。</p>
           </div>
@@ -645,7 +645,7 @@
       </div>
     </div>
     <details id="chat-model" class="chat-model">
-      <summary>⚙ 模型设置（对话用；检索不需要 key）</summary>
+      <summary>⚙ 模型设置（仅对话；云端检索 Key 在「设置 › 检索」单独配置）</summary>
       <div class="cm-body">
         <label>服务商 <select id="set-provider"></select></label>
         <label>Base URL <input id="set-base" placeholder="https://…/v1" /></label>
@@ -667,15 +667,15 @@
         title="接入 Claude Code / Codex，可跨会话积累、系统化综述、把结论沉淀复用">💡 想跨会话积累、系统综述？接入 🤖 Agent 效果更好 →</button>
     </div>
     <div class="chat-input">
-      <textarea id="chat-q" rows="1" placeholder="问一个关于你文献库的问题…（Enter 发送，Shift+Enter 换行）"></textarea>
+      <textarea id="chat-q" rows="1" aria-label="向文献库提问" placeholder="问一个关于你文献库的问题…（Enter 发送，Shift+Enter 换行）"></textarea>
       <button id="chat-go">发送</button>
     </div>
   </main>
 
   <!-- 设置 -->
-  <div id="settings-modal" class="modal" hidden>
+  <div id="settings-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="settings-title" hidden>
     <div class="modal-box settings-box">
-      <h3>设置</h3>
+      <h3 id="settings-title">设置</h3>
       <p class="hint">改动即时生效、无需「保存」。切换检索引擎（本地↔API）会让旧向量不兼容，改动前会二次确认。</p>
 
       <div class="settings-shell">
@@ -693,7 +693,7 @@
       <div class="set-section" id="sec-engine">
         <h4>🔎 检索引擎</h4>
         <p class="hint">检索需要<b>嵌入 + 重排</b>两类专用模型，不是普通聊天 API。云端检索推荐 SiliconFlow，因为它同时提供 PaperPiggy 已适配的两类免费模型；DeepSeek、Kimi 等普通对话 API 不能直接替代检索引擎。⚠️ 建过库后换引擎或模型，旧向量不兼容，应用时会自动重建。</p>
-        <label class="eng-mode"><input type="radio" name="eng-backend" value="local" /> 🔒 本地模型（离线，需 ~1.2GB 模型）</label>
+        <label class="eng-mode"><input type="radio" name="eng-backend" value="local" /> 🔒 本地模型（离线；首次下载约 900MB，解压后约 1.2GB）</label>
         <label class="eng-mode"><input type="radio" name="eng-backend" value="api" /> ☁️ SiliconFlow 云端检索（推荐，当前免费、免下载）</label>
         <div id="eng-api">
           <p class="hint">👉 没有 Key？去 <a href="https://account.siliconflow.cn/zh/login" target="_blank" rel="noopener">SiliconFlow（硅基流动）</a> 登录领取。它默认也可供 PaperPiggy 自动生成检索摘要；对话和摘要以后仍可另选 AI 厂商。</p>
@@ -983,7 +983,7 @@
   </div>
 
   <!-- 综合页查看器（Phase 1：按需专题综述） -->
-  <div id="wiki-modal" class="modal" hidden>
+  <div id="wiki-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="wiki-title" hidden>
     <div class="modal-box wiki-box">
       <div class="wiki-head">
         <div class="wiki-title-row">
@@ -1027,9 +1027,9 @@
   </div>
 
   <!-- EN-F3：综述库时间线弹层（复用 .modal 样式；Esc/遮罩关闭对齐 W2 的做法，见 app.js） -->
-  <div id="wk-tl-modal" class="modal" hidden>
+  <div id="wk-tl-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="wk-tl-title" hidden>
     <div class="modal-box wk-tl-box">
-      <h3>🕘 综述库时间线</h3>
+      <h3 id="wk-tl-title">🕘 综述库时间线</h3>
       <p class="hint" id="wk-tl-src"></p>
       <div id="wk-tl-list" class="wk-tl-list"></div>
       <div class="modal-actions">
@@ -1039,7 +1039,7 @@
   </div>
 
   <!-- 通用应用内确认框（替代浏览器原生 confirm 灰框；uiConfirm() 用它） -->
-  <div id="upgrade-diff-modal" class="modal" hidden>
+  <div id="upgrade-diff-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="upgrade-diff-title" hidden>
     <div class="modal-box upgrade-diff-box">
       <h3 id="upgrade-diff-title">版本差异</h3>
       <p class="hint">“－”是你的版本中有、新版没有的内容；“＋”是新版新增的内容。不会在这里自动改你的文件。</p>
@@ -1048,7 +1048,7 @@
     </div>
   </div>
 
-  <div id="confirm-modal" class="modal" hidden>
+  <div id="confirm-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="confirm-title" hidden>
     <div class="modal-box confirm-box">
       <h3 id="confirm-title">请确认</h3>
       <p id="confirm-msg" class="confirm-msg"></p>
@@ -1060,7 +1060,7 @@
   </div>
 
   <!-- 检索摘要只读查看弹窗（点卡上「🧬 摘要有效」打开）——展示这篇的 AI 检索摘要文本 -->
-  <div id="summary-modal" class="modal" hidden>
+  <div id="summary-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="summary-title" hidden>
     <div class="modal-box summary-box">
       <h3 id="summary-title">检索摘要</h3>
       <p class="summary-note">🧬 这是 AI 为「让语义检索更容易命中这篇」生成的 ~150 字<b>检索摘要</b>（用作嵌入前缀），不是原文摘要。</p>
@@ -1082,9 +1082,9 @@
   </div>
 
   <!-- 文件夹模式：入库进度弹窗 -->
-  <div id="ingest-modal" class="modal" hidden>
+  <div id="ingest-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="ingest-title" hidden>
     <div class="modal-box">
-      <h3>正在入库</h3>
+      <h3 id="ingest-title">正在入库</h3>
       <p class="hint" id="ingest-sub">正在把全文文件复制进知识库并用 AI 抽取题录…</p>
       <div class="hbar"><span class="track"><span id="ingest-fill" class="fill" style="width:0%;background:var(--accent)"></span></span></div>
       <div id="ingest-detail" class="hint"></div>
@@ -1097,12 +1097,12 @@
   <input id="ingest-file-input" type="file" accept=".pdf,.epub,.docx,.md,.markdown,.txt,application/pdf,application/epub+zip,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/markdown" multiple hidden />
 
   <!-- 首启向导（Onboarding） -->
-  <div id="wizard" class="wizard" hidden>
+  <div id="wizard" class="wizard" role="dialog" aria-modal="true" aria-labelledby="wizard-title" hidden>
     <div class="wizard-box">
       <div class="wizard-head">
         <div class="wizard-logo">📚</div>
         <div>
-          <h2>欢迎使用本地知识库</h2>
+          <h2 id="wizard-title">欢迎使用本地知识库</h2>
           <p class="wizard-sub">把你的 Zotero 文库变成一个能秒级检索、可视化、可对话的本地知识库。核心数据保存在本机；是否上传待检索文本，取决于你选择本地还是云端检索。</p>
         </div>
       </div>

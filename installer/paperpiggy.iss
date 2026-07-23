@@ -126,7 +126,11 @@ Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: 
 ;    硅基流动 API key，0_Agent* 里躺着交付物 —— 漏进公开安装包就是一次数据泄漏。
 ;    （build_bundle.py 已经不往 dist 里放这些，但护栏要有两道。）
 Source: "{#BundleDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; \
-    Excludes: "portable.txt,*.pdb,__pycache__,data\*,logs\*,update\*,0_Agent交付物\*,0_Agent资料库\*"
+    Excludes: "portable.txt,LICENSE,THIRD-PARTY-NOTICES.md,*.pdb,__pycache__,data\*,logs\*,update\*,0_Agent交付物\*,0_Agent资料库\*"
+
+; ─── 开源许可证与第三方声明：安装后也必须能在应用目录直接查到 ───
+Source: "{#BundleDir}\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#BundleDir}\THIRD-PARTY-NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
 
 ; ── 数据同目录开关（见 §数据同目录）──
 ; 从 installer\portable.txt 装进去，而不是让打包脚本临时生成 —— 少一个「忘了生成」的失败模式。

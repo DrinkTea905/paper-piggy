@@ -3,8 +3,8 @@
 用户设置（data/settings.json）——检索引擎后端的单一事实来源。
 backend = "local"（默认，离线用本地 ONNX 模型）| "api"（用 OpenAI 兼容的嵌入/重排 API，省 1.2GB）。
 API 模式默认接 SiliconFlow（BAAI/bge-m3 + bge-reranker-v2-m3 免费）。
-⚠️ 铁律：建索引与查询必须用同一后端（本地 INT8 与 API 全精度向量不一致，混用掉点）。
-   建库时把 backend 写进 index_manifest；加载/查询时若不一致要提示重建。
+⚠️ 铁律：建索引与查询必须用同一向量空间（后端、API 地址、嵌入模型任一变化都可能不兼容）。
+   建库时把 backend + embedding_identity 写进 index_manifest；加载/查询不一致就停止并提示重建。
 """
 import sys, json, threading
 from pathlib import Path
@@ -185,6 +185,18 @@ def reset():
 
 def backend():
     return load().get("backend", "local")
+
+
+def embedding_identity(state=None):
+    """向量空间身份：后端、API 地址和嵌入模型任一变化都必须全量重嵌。"""
+    state = state or load()
+    kind = state.get("backend", "local")
+    if kind == "api":
+        api = state.get("api") or {}
+        base = str(api.get("base") or DEFAULT["api"]["base"]).strip().rstrip("/").lower()
+        model = str(api.get("embed_model") or DEFAULT["api"]["embed_model"]).strip()
+        return f"api|{base}|{model}"
+    return f"local|{C.EMBED_MODEL}|dim={C.EMBED_DIM}"
 
 
 def discipline():

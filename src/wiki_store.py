@@ -452,8 +452,26 @@ def kind_dir(kind):
     return f() if f else C.WIKI_ANSWERS_DIR
 
 
+_PAGE_ID_RE = re.compile(r"^[\w-]{1,120}$", re.UNICODE)
+
+
+def validate_page_id(page_id):
+    """只接受可安全用作单个 Markdown 文件名的稳定页面 id。"""
+    page_id = str(page_id or "")
+    if not _PAGE_ID_RE.fullmatch(page_id):
+        raise ValueError("页面 id 只能包含字母、数字、中文、下划线和连字符，且不超过 120 字符")
+    return page_id
+
+
 def page_path(page_id, kind):
-    return kind_dir(kind) / f"{page_id}.md"
+    page_id = validate_page_id(page_id)
+    root = kind_dir(kind).resolve()
+    path = (root / f"{page_id}.md").resolve()
+    try:
+        path.relative_to(root)
+    except ValueError as e:  # 双保险：即使未来放宽 id 规则，也不能越出对应页种目录
+        raise ValueError("页面路径越出了综述库目录") from e
+    return path
 
 
 # ═══ 页面渲染（frontmatter + markdown；不依赖 pyyaml）═══════════════
@@ -1441,6 +1459,7 @@ def update_page(page_id, kind=None, title=None, content=None, sources=None,
       replace 未传 sources 时保留旧来源。这样既不会无意丢失 provenance，也允许修正历史失效 key。
     - links 可一并写入。
     """
+    page_id = validate_page_id(page_id)
     ensure_scaffold()
     body = (content or "").strip()
     if not body:
@@ -1745,6 +1764,7 @@ def _lint_suggestions(issues):
 def delete_page(page_id):
     """删三处：data/wiki/**/<id>.md 文件 + index.json 条目（含重建 by_source）+ LanceDB wiki 行。
     幂等：缺哪处删哪处。返回 {deleted, md, table}。**只应由 UI/HTTP 触发，绝不暴露为 MCP 工具。**"""
+    page_id = validate_page_id(page_id)
     with _INDEX_LOCK:            # 读 index → 删 md → 改 index 全程串行，避免与并发保存互相覆盖
         idx = load_index()
         meta = next((p for p in idx.get("pages", []) if p.get("id") == page_id), None)
