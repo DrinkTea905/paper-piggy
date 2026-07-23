@@ -36,13 +36,49 @@ def _backup_running():
     return bool((globals().get("BACKUP") or {}).get("running"))
 
 
-def _maintenance_busy_locked():
-    """调用方必须持有 _BUILD_LOCK。"""
+def _maintenance_busy_detail_locked():
+    """调用方必须持有 _BUILD_LOCK；返回可直接展示给用户的忙碌原因。"""
     if BUILD["running"]:
-        return "已有建库、深索或索引维护任务在运行，请稍后再试。"
+        stage = BUILD.get("stage") or ""
+        messages = {
+            "deep_agent": "Agent 正在运行深索任务。请等本批查询与索引写入结束后再更新知识库。",
+            "agent_summary_repair": "Agent 正在修复并写入检索摘要。请等任务结束后再更新知识库。",
+            "deep": "正在进行全文深索。请等深索结束后再更新知识库。",
+            "deep_prepare": "正在准备全文深索数据。请等任务结束后再更新知识库。",
+            "deep_embed": "正在写入全文与摘要索引。请等任务结束后再更新知识库。",
+            "sac_backfill": "正在生成并写入检索摘要。请等任务结束后再更新知识库。",
+            "all": "知识库正在更新题录与检索索引。请等本次更新结束后再试。",
+            "folder": "知识库正在导入全文并更新索引。请等本次更新结束后再试。",
+            "light": "知识库正在更新轻量索引。请等本次更新结束后再试。",
+            "semantic": "知识库正在更新语义索引。请等本次更新结束后再试。",
+            "topics": "正在整理主题与分类。请等任务结束后再更新知识库。",
+            "reset": "正在清空并重建索引。请等任务结束后再试。",
+            "backend_switch": "正在切换检索后端并维护索引。请等任务结束后再试。",
+            "settings_reset": "正在重置设置并维护索引。请等任务结束后再试。",
+        }
+        return {
+            "busy": True,
+            "reason": "maintenance_task",
+            "stage": stage,
+            "msg": messages.get(
+                stage,
+                "已有建库、深索或索引维护任务在运行，请等它结束后再试。",
+            ),
+        }
     if _backup_running():
-        return "正在备份或恢复数据，请等它结束后再试。"
+        return {
+            "busy": True,
+            "reason": "backup",
+            "stage": "backup",
+            "msg": "正在备份或恢复数据，请等它结束后再更新知识库。",
+        }
     return None
+
+
+def _maintenance_busy_locked():
+    """兼容只需要提示文字的旧调用方。调用方必须持有 _BUILD_LOCK。"""
+    detail = _maintenance_busy_detail_locked()
+    return detail["msg"] if detail else None
 
 
 class _WindowsJob:
@@ -502,6 +538,58 @@ def set_retrieval_memory(q: RetrievalMemoryQ):
     if mins > 0:
         R.release_retrieval_if_idle(mins * 60)
     return {"ok": True, **_retrieval_memory_view()}
+
+
+@app.post("/setup/retrieval_memory/release")
+def release_retrieval_memory():
+    """手动释放检索模型和倒排索引；有查询时由 retriever 原子拒绝，不中断任何查询。"""
+    st = R.retrieval_status()
+    if st["loading"]:
+        return {
+            "ok": False,
+            "busy": True,
+            "reason": "loading",
+            "msg": "检索组件正在加载，暂不能释放。请稍后再试。",
+            **st,
+        }
+    if st["active"] > 0:
+        active = int(st["active"])
+        return {
+            "ok": False,
+            "busy": True,
+            "reason": "active_retrievals",
+            "msg": f"当前有 {active} 个检索请求正在进行（可能来自界面、对话或 Agent），本次没有释放。",
+            **st,
+        }
+    if not st["loaded"]:
+        return {
+            "ok": True,
+            "released": False,
+            "already_released": True,
+            "msg": "检索内存当前未加载，无需重复释放。",
+            **_retrieval_memory_view(),
+        }
+    if R.release_retrieval_if_idle(0, force=True):
+        return {
+            "ok": True,
+            "released": True,
+            "msg": "已释放检索内存；文献和索引没有被删除，下次检索时会自动重新加载。",
+            **_retrieval_memory_view(),
+        }
+    # 状态读取与真正释放之间可能刚好开始了一次查询；重新读取并说明真实原因。
+    st = R.retrieval_status()
+    active = int(st["active"])
+    return {
+        "ok": False,
+        "busy": True,
+        "reason": "active_retrievals" if active else "state_changed",
+        "msg": (
+            f"当前有 {active} 个检索请求正在进行（可能来自界面、对话或 Agent），本次没有释放。"
+            if active
+            else "检索状态刚刚发生变化，本次没有释放。请稍后再试。"
+        ),
+        **st,
+    }
 
 class PurgeDeletedQ(BaseModel):
     preview: bool = False
@@ -3553,12 +3641,13 @@ def _spawn_build_process(cmd, **kwargs):
         raise
 
 
-def _run_build(stage, extra=None, on_done=None):
+def _run_build(stage, extra=None, on_done=None, detailed=False):
     # B1：原子「判 running + 置 True」并在调用线程内同步置位（不再等子线程 start() 后才置），
     # 多路触发时后来者立即拿到 running=True → return False，不会并发跑两个子进程。
     with _BUILD_LOCK:
-        if _maintenance_busy_locked():
-            return False
+        busy = _maintenance_busy_detail_locked()
+        if busy:
+            return {"ok": False, **busy} if detailed else False
         BUILD["running"] = True; BUILD["stage"] = stage; BUILD["started"] = time.time()
         BUILD["log"] = [f"[{stage}] 启动…"]; BUILD["rc"] = None
         BUILD["proc"] = None; BUILD["job"] = None; BUILD["cancelled"] = False
@@ -3641,7 +3730,7 @@ def _run_build(stage, extra=None, on_done=None):
                 except Exception as e:
                     log_error("deep queue drain", repr(e))
     threading.Thread(target=run, daemon=True).start()
-    return True
+    return {"ok": True, "stage": stage} if detailed else True
 
 # ── 更新知识库（增量 all 档：读 Zotero 新增题录 + 补语义层，不动深索）──
 # 前端「更新知识库」按钮 POST /build（此前无此路由、404 被静默吞→按钮假死）。
@@ -3652,7 +3741,7 @@ def build_ep():
     # 只跑 all 管线、跳过题录抽取，新全文文件永远停留在文件名占位题录（与自动更新循环同一分派）。
     import settings as S
     stage = "folder" if S.source() == "folder" else "all"
-    return {"ok": _run_build(stage)}
+    return _run_build(stage, detailed=True)
 
 def _kill_tree(p, job=None):
     """终止建库进程树。子进程（build_all）会派生嵌入/抽取 worker 孙进程，只杀本体它们会变孤儿、

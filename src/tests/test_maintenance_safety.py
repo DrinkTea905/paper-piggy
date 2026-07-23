@@ -72,6 +72,38 @@ class MaintenanceTransactionTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertTrue(result["busy"])
 
+    @mock.patch("settings.source", return_value="zotero")
+    def test_manual_build_reports_agent_deep_task_as_exact_busy_reason(self, _source):
+        server.BUILD.update({"running": True, "stage": "deep_agent"})
+        result = server.build_ep()
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["busy"])
+        self.assertEqual(result["stage"], "deep_agent")
+        self.assertIn("Agent", result["msg"])
+        self.assertIn("深索", result["msg"])
+
+    @mock.patch.object(server.R, "release_retrieval_if_idle")
+    @mock.patch.object(server.R, "retrieval_status")
+    def test_manual_memory_release_refuses_active_retrieval(self, status, release):
+        status.return_value = {"loaded": True, "loading": False, "active": 2, "idle_s": 0}
+        result = server.release_retrieval_memory()
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["busy"])
+        self.assertEqual(result["reason"], "active_retrievals")
+        self.assertIn("2 个检索请求", result["msg"])
+        release.assert_not_called()
+
+    @mock.patch.object(server, "_retrieval_memory_view")
+    @mock.patch.object(server.R, "release_retrieval_if_idle", return_value=True)
+    @mock.patch.object(server.R, "retrieval_status")
+    def test_manual_memory_release_drops_idle_components(self, status, release, view):
+        status.return_value = {"loaded": True, "loading": False, "active": 0, "idle_s": 30}
+        view.return_value = {"loaded": False, "loading": False, "active": 0, "idle_s": 0}
+        result = server.release_retrieval_memory()
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["released"])
+        release.assert_called_once_with(0, force=True)
+
     @mock.patch("settings.save")
     @mock.patch("settings.load")
     @mock.patch.object(server, "_reset_vectors_for_reembed", return_value=False)

@@ -41,6 +41,21 @@ class AgentOutputTests(unittest.TestCase):
         self.assertIn('id="ed-gokey" class="ag-link ag-linkbtn" type="button"', index_html)
         self.assertIn('id="ag-open-skills" type="button"', index_html)
         self.assertIn('id="settings-modal" class="modal" role="dialog"', index_html)
+        self.assertIn('id="btn-release-memory"', index_html)
+        self.assertIn('jpost("/setup/retrieval_memory/release", {})', app_js)
+        self.assertIn('flashToast(j.msg || "已有维护任务在运行', app_js)
+
+    def test_metadata_lookup_is_debounced_but_fulltext_stays_explicit(self):
+        app_js = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+        index_html = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+        self.assertIn('class="library-searchbar" data-mode="metadata"', index_html)
+        self.assertIn('id="go" hidden>检索全文</button>', index_html)
+        self.assertIn("const METADATA_SEARCH_DELAY_MS = 300;", app_js)
+        self.assertIn('"input", scheduleMetadataSearch', app_js)
+        self.assertIn('"compositionstart"', app_js)
+        self.assertIn('"compositionend"', app_js)
+        self.assertIn("go.hidden = !semantic", app_js)
+        self.assertIn("点击「检索全文」或按 Enter 开始", app_js)
 
     def test_output_topics_default_to_five_and_can_expand_all(self):
         app_js = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
