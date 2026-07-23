@@ -19,7 +19,6 @@
 **[打开《PaperPiggy 从零开始新手教程》→](https://drinktea905.github.io/paper-piggy-guide/)**
 
 从下载安装到建立知识库，再到检索、深索、综述库和 AI 助手，按章节一步步操作。
-
 </div>
 
 ---
