@@ -1120,8 +1120,9 @@ def _scan_agent_output_tree(root: Path):
 
 @app.get("/agent/outputs")
 def agent_outputs(limit: int = 8):
-    """C4：列 0_Agent交付物/ 下的主题子文件夹（最近修改在前），供 Agent 页交付物卡展示「最近做了哪些主题」。
-       递归统计文件数/子目录数/最新修改时间；逐目录容错，不读取文件内容、不跟随链接。"""
+    """C4：列 0_Agent交付物/ 下的主题子文件夹（最近修改在前），供 Agent 页展示交付物主题。
+       limit=0 返回全部；正数仍保留最多 50 项的兼容限制。递归统计文件数/子目录数/最新修改时间；
+       逐目录容错，不读取文件内容、不跟随链接。"""
     import agent_ws as AW
     out = []
     try:
@@ -1137,7 +1138,8 @@ def agent_outputs(limit: int = 8):
             except OSError:
                 continue
         rows.sort(key=lambda row: row[1]["latest_mtime"], reverse=True)
-        for d, stats in rows[:max(1, min(50, limit))]:
+        selected = rows if limit == 0 else rows[:max(1, min(50, limit))]
+        for d, stats in selected:
             latest = stats["latest_mtime"]
             mt = time.strftime("%Y-%m-%d", time.localtime(latest)) if latest else ""
             out.append({"name": d.name, "mtime": mt,
@@ -1150,8 +1152,8 @@ def agent_outputs(limit: int = 8):
                         "has_readme": (d / "README.md").is_file(),
                         "dir": str(d)})
     except Exception as e:
-        return {"outputs": out, "error": str(e)}
-    return {"outputs": out}
+        return {"outputs": out, "total": len(out), "error": str(e)}
+    return {"outputs": out, "total": len(rows)}
 
 @app.post("/setup/pick_folder")
 def setup_pick_folder():
