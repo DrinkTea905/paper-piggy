@@ -42,6 +42,16 @@ class AgentOutputTests(unittest.TestCase):
         self.assertIn('id="ag-open-skills" type="button"', index_html)
         self.assertIn('id="settings-modal" class="modal" role="dialog"', index_html)
 
+    def test_output_topics_default_to_five_and_can_expand_all(self):
+        app_js = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+        index_html = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+        self.assertIn("<span>📦 交付物主题</span>", index_html)
+        self.assertIn('id="ag-outputs-toggle"', index_html)
+        self.assertIn('aria-expanded="false"', index_html)
+        self.assertIn("const AGENT_OUTPUT_COLLAPSED_COUNT = 5;", app_js)
+        self.assertIn('jget("/agent/outputs?limit=0")', app_js)
+        self.assertIn("agentOutputs.slice(0, AGENT_OUTPUT_COLLAPSED_COUNT)", app_js)
+
     def test_scaffold_creates_codex_and_claude_workflow_entry_files(self):
         with tempfile.TemporaryDirectory() as td, mock.patch.object(AW, "base_dir", return_value=Path(td)):
             AW.ensure_scaffold()
@@ -91,6 +101,23 @@ class AgentOutputTests(unittest.TestCase):
             self.assertEqual(item["name"], "定时任务")
             self.assertEqual(item["file_count"], 2)
             self.assertEqual(item["subdir_count"], 1)
+
+    def test_output_listing_limit_zero_returns_all(self):
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td) / "outputs"
+            for i in range(10):
+                topic = out / f"主题{i}"
+                topic.mkdir(parents=True)
+                (topic / "成果.md").write_text(str(i), encoding="utf-8")
+            with mock.patch.object(AW, "ensure_scaffold"), \
+                    mock.patch.object(AW, "output_dir", return_value=out):
+                all_result = server.agent_outputs(limit=0)
+                limited_result = server.agent_outputs(limit=5)
+
+            self.assertEqual(all_result["total"], 10)
+            self.assertEqual(len(all_result["outputs"]), 10)
+            self.assertEqual(limited_result["total"], 10)
+            self.assertEqual(len(limited_result["outputs"]), 5)
 
     def test_open_output_accepts_only_existing_real_child(self):
         with tempfile.TemporaryDirectory() as td:

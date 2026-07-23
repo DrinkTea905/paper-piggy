@@ -945,8 +945,8 @@ button:disabled { opacity: .6; cursor: default; }
 :root[data-theme="dark"] .ag-tasks-empty code, :root[data-theme="dark"] .ag-tasks-card code { background: #1e293b; }
 .ag-tasks-note { margin-top: 10px; }
 .ag-tasks-note small { color: var(--muted); }
-/* C4：交付物「最近主题」——独立整行卡片，响应式网格填满宽度 */
-/* 🔄 刷新按钮（定时任务 / 最近交付物 标题右侧；新增内容不必重启即可看到） */
+/* C4：交付物主题——独立整行卡片，默认五项，可展开全部 */
+/* 🔄 刷新按钮（定时任务 / 交付物主题 标题右侧；新增内容不必重启即可看到） */
 .ag-refresh { min-height: var(--control-sm); display: inline-flex; align-items: center; justify-content: center; gap: 5px;
   margin-left: auto; font-size: 11.5px; font-weight: 600; color: var(--muted);
   background: transparent; border: 1px solid var(--line); border-radius: var(--radius-control); padding: 4px 10px;
@@ -974,9 +974,18 @@ button:disabled { opacity: .6; cursor: default; }
 .boot-msg { font-size: 13px; color: var(--muted); line-height: 1.6; }
 .boot-hint { font-size: 12px; color: var(--muted); margin-top: 16px; line-height: 1.6; }
 
-/* 📦 最近的交付物主题——卡片网格（每个主题一张卡：📁 名称 + 日期·文件数·含说明） */
+/* 📦 交付物主题——默认桌面一排五张，较窄窗口响应式收窄列数 */
 .ag-recent h3 { margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
-.ag-outputs { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+.ag-output-toggle { min-height: var(--control-sm); display: inline-flex; align-items: center; justify-content: center;
+  padding: 4px 9px; border: 0; border-radius: var(--radius-control); background: transparent;
+  color: var(--accent); font-size: 11.5px; font-weight: 650; cursor: pointer; white-space: nowrap; }
+.ag-output-toggle:hover { background: rgba(216,91,124,.09); }
+.ag-output-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+:root[data-theme="dark"] .ag-output-toggle:hover { background: rgba(232,84,138,.14); }
+.ag-outputs { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; }
+@media (max-width: 1100px) { .ag-outputs { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 700px) { .ag-outputs { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 480px) { .ag-outputs { grid-template-columns: 1fr; } }
 .ag-output-item { background: var(--bg); border: 1px solid var(--line); border-radius: 12px;
   padding: 12px 14px; display: flex; flex-direction: column; gap: 8px;
   cursor: pointer; transition: border-color .15s, transform .15s, box-shadow .15s, opacity .15s; }

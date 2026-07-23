@@ -459,9 +459,9 @@
         <div class="ag-folder-path" id="ag-rely-path"></div>
       </section>
 
-      <!-- 📦 最近交付物主题（跨满一行，独立于上面两卡）——常显 + 🔄 刷新：新增交付物无需重启即可看到 -->
+      <!-- 📦 交付物主题（跨满一行，独立于上面两卡）——默认五项，可展开全部；新增交付物可直接刷新 -->
       <section class="ag-card ag-full ag-recent" id="ag-outputs-card">
-        <h3>📦 最近的交付物主题 <button class="ag-refresh" id="ag-outputs-refresh" type="button" title="重新扫描交付物文件夹（新写的交付物点这里就能看到，不用重启）">🔄 刷新</button></h3>
+        <h3><span>📦 交付物主题</span><button class="ag-output-toggle" id="ag-outputs-toggle" type="button" aria-expanded="false" aria-controls="ag-outputs" hidden>展开全部</button><button class="ag-refresh" id="ag-outputs-refresh" type="button" title="重新扫描交付物文件夹（新写的交付物点这里就能看到，不用重启）">🔄 刷新</button></h3>
         <div class="ag-outputs" id="ag-outputs"></div>
       </section>
 
