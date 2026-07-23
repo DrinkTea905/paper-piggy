@@ -49,7 +49,8 @@ Codex 配置仍应保留 `APPDATA` 与 `LOCALAPPDATA`，否则 GitHub CLI 也会
 
 ### 0.2 重建 `build/py312`（唯一不可自动重建的环节）
 
-`build_bundle.py` 只**检查** `python/python.exe` 存不存在，**不会创建它**。所以这一步必须手工做：
+`build_bundle.py` 完整构建时会把 `build/py312/` 复制为 bundle 的 `python/`，但它**不会下载或重建**
+`build/py312/` 本身。因此，换电脑或运行时损坏时仍需先手工重建这份构建素材：
 
 ```powershell
 # ① 下 python-build-standalone（CPython 3.12，install_only 版）
@@ -93,6 +94,7 @@ build\py312\python.exe -c "import onnxruntime, lancedb, pypdfium2, rapidocr, cv2
 - [ ] `rapidocr` + `cv2` 可导入，并用一页真实扫描 PDF 做过本地 OCR 冒烟测试
 - [ ] `models_manifest.json` 存在，且直链可匿名下载（私有仓库的 Release 资产会 404）
 - [ ] `app/version.json` 的 sha256 与磁盘文件一致
+- [ ] bundle 根目录含 `LICENSE` 与 `THIRD-PARTY-NOTICES.md`，安装器也明确安装这两份法律文档
 - [ ] 包内**没有** `app/data/`、`app/logs/` 残留
 - [ ] 包内**没有** `settings.json` 里的 API 密钥
 - [ ] bundle **根目录**没有非空的 `data/`、`0_Agent交付物/`、`0_Agent资料库/`
@@ -104,6 +106,8 @@ build\py312\python.exe -c "import onnxruntime, lancedb, pypdfium2, rapidocr, cv2
       Codex / Claude 等客户端持有的 PaperPiggy MCP，且安装器不会自动结束任何进程
 - [ ] 若 `installer/` 或运行依赖有改动，**禁止** `--app-only`；必须确认完整安装器实际生成，
       否则本版核心修复没有进入发布资产
+- [ ] Release 标签与 `--target` 使用合入默认分支后的**完整 SHA**；不得依赖陈旧的默认分支或预测合并 SHA
+- [ ] 只显式上传当前版本的安装器、app ZIP、ZIP SHA256 三项资产；禁止使用 `dist-installer\*`
 
 **干净机验收**（没装 VC++ 2015-2022、没装 WebView2 的全新 Windows）
 - [ ] `bundle\python\python.exe -c "import onnxruntime"` 不报 WinError 1114
@@ -175,11 +179,11 @@ build\py312\python.exe -c "import onnxruntime, lancedb, pypdfium2, rapidocr, cv2
 
 现有架构已为此铺好路：app/（代码）与 data/models/（用户资产）彻底分离，更新=只换 app/。
 
-### 设计（约 200 行）
-1. **版本地基**（✅ 已落地）：唯一版本字面量是 `config.APP_VERSION`（当前值以代码为准，别在文档里抄）；`mcp_server.py` 的 serverInfo 已引用 `C.APP_VERSION`（不再硬编码）；`build_bundle.py` 打包时生成 `app/version.json`（版本+构建日期+app.zip 的 sha256）。`check_guides ⑤` 断言版本只此一处。
-2. **检查**：server 后台（可顺搭现有 `_auto_update_loop`，注意与"知识库自动更新"是两回事，UI 文案要区分）或设置页按钮，请求 GitHub API latest release → 比版本 → UI 顶栏提示"有新版 vX.Y.Z"。
-3. **下载**：只下 `app.zip`（纯源码，约几 MB，不含 python/models）→ sha256 校验 → 解压到 `app_new/`。多镜像 fallback 复用 models_manifest.json 的思路（见 §5）。
-4. **替换**：Windows 不能替换运行中的 exe/被占用文件，所以交给**独立小脚本**：主进程写 `update_pending` 标记后退出 → run_localkb.py 启动时发现标记 → `app→app_old, app_new→app` → 失败回滚 `app_old` → 正常启动。（.py 文件本身不锁，但 server 进程活着时换代码不生效，重启替换最干净。）
+### 当前实现
+1. **版本地基**：唯一版本字面量是 `config.APP_VERSION`（当前值以代码为准，别在文档里抄）；`mcp_server.py` 的 serverInfo 引用 `C.APP_VERSION`；`build_bundle.py` 生成含完整文件清单与 SHA-256 的 `app/version.json`。`check_guides ⑤` 断言版本只此一处。
+2. **检查**：设置页和启动时的静默检查请求 GitHub latest release；发现新版后在顶栏与设置页提示，和“知识库自动更新”明确区分。
+3. **下载**：下载 app ZIP 与独立 SHA256 文件；缺少官方校验、格式错误或哈希不符时一律停止。ZIP 先解压到暂存目录，再核对 `version.json` 的完整文件集合、逐文件哈希、版本和运行时指纹。
+4. **替换**：`launcher._JsApi.apply_update()` 用 `pythonw.exe` 无窗拉起独立 `updater.py --apply`，随后关闭主窗口。updater 在暂存区验证成功后才通过同盘改名交换 `app/`；失败时回滚并再次验证旧版可导入。回滚无法确认时保留全部现场且不自动重启，绝不触碰 `data/`、`models/` 与 `0_Agent*`。
 5. **大件**：python/、models/ 极少变。requirements 新增运行组件时，app 增量包只能先更新代码、不能补
    `python/site-packages`；新版会由 `updater.missing_runtime_components()` 检测缺失组件，并在设置页和
    顶栏提示「需完整安装器」，按钮直接打开官方 Release 的安装器。用户只需覆盖安装，**不用先卸载**，
@@ -217,12 +221,13 @@ build\py312\python.exe -c "import onnxruntime, lancedb, pypdfium2, rapidocr, cv2
 - jsDelivr 单文件 50MB 上限 + 主域污染史 → 出局；Gitee 单附件 100MB + 新仓库人工审核 → 只配当小文件兜底。
 - models_manifest.json 的多镜像机制直接复用到 app.zip / 安装器下载上。
 
-## 6. 落地顺序建议
+## 6. 当前发布顺序
 
-1. **本轮**（发布前）：加 `APP_VERSION` + version.json 地基（半小时的活）。
-2. **v1.0 发布**：build_bundle 产出 → Inno Setup 打包（不再出便携 zip）→ GitHub Release（含 app.zip + sha256）→ R2 同步一份 → README/小红书写清 SmartScreen"仍要运行"步骤。
-3. **v1.0.x**：实装自更新（检查+下载+重启替换+回滚），用第一次小版本迭代实测更新链路。
-4. **之后按需**：Certum 证书（€69）→ mac 实验包（GitHub Actions）→ COS 加速 → （远期）$99 mac 公证。
+1. 修改唯一版本源 `config.APP_VERSION`，同步 `CHANGELOG.md`，运行全量测试、`gen_mcp_doc.py --check` 与 `check_guides.py`。
+2. 将发布提交合入默认分支，重新取得默认分支的完整 SHA；若合并后的树发生变化，重新测试。
+3. 运行 `build_bundle.py` 完整重建 bundle，再运行 `installer/build_installer.py` 生成完整安装器与 app 更新包；只要 `installer/` 或运行依赖有变化就禁止 `--app-only`。
+4. 校验安装器、app ZIP、ZIP SHA256 三项资产及 ZIP 内 `version.json` 的逐文件清单，然后用默认分支完整 SHA 创建标签和 GitHub Release，显式上传这三项资产。
+5. 发布后核对 latest Release、三个下载链接、文件大小与 SHA256，并确认应用内更新检查能看到新版本。国内镜像仍是后续增强，不得把尚未上线的 R2 写成当前发布步骤。
 
 ## 主要来源
 
