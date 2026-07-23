@@ -303,6 +303,17 @@ button:disabled { opacity: .6; cursor: default; }
 .bk-item .hint { margin: 2px 0 6px; }
 .bk-item .ghost { border: 1px solid var(--line); background: transparent; color: var(--muted); padding: 5px 12px; border-radius: 8px; cursor: pointer; font-size: 12.5px; }
 .bk-item .ghost.danger:hover { border-color: #b91c1c; color: #b91c1c; }
+.bk-runtime { display: flex; align-items: center; gap: 10px; margin-top: 10px; padding: 10px 12px;
+  border: 1px solid var(--line); border-radius: 9px; background: var(--card); }
+.bk-runtime-dot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; background: #94a3b8; }
+.bk-runtime.running .bk-runtime-dot { background: #f59e0b; box-shadow: 0 0 0 4px rgba(245,158,11,.15); }
+.bk-runtime.ok .bk-runtime-dot { background: #16a34a; }
+.bk-runtime.warn .bk-runtime-dot { background: #dc2626; }
+.bk-runtime-copy { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 2px; }
+.bk-runtime-copy .hint { margin: 0; }
+.bk-runtime .ghost { flex: 0 0 auto; border: 1px solid var(--line); background: transparent; color: var(--muted);
+  padding: 6px 11px; border-radius: 8px; cursor: pointer; }
+.bk-runtime .ghost.danger:hover { border-color: #b91c1c; color: #b91c1c; }
 
 /* 检索摘要（SAC）小节 */
 .sac-toggle { display: flex; align-items: center; gap: 8px; margin: 8px 0 4px; font-size: 13px; color: var(--fg); cursor: pointer; }

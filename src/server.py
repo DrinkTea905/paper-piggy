@@ -65,12 +65,24 @@ def _maintenance_busy_detail_locked():
                 "已有建库、深索或索引维护任务在运行，请等它结束后再试。",
             ),
         }
+    heal_backup = globals().get("_heal_stale_backup_locked")
+    if heal_backup:
+        heal_backup()
     if _backup_running():
+        backup = globals().get("BACKUP") or {}
+        kind = backup.get("kind") or ""
+        stage = backup.get("stage") or ""
+        if kind == "auto":
+            msg = "自动备份正在后台运行。可等它完成，或到「设置 → 数据与维护 → 备份与恢复」停止后再更新知识库。"
+        elif kind == "restore":
+            msg = "正在恢复数据；恢复不能中途停止，请等它完成后再更新知识库。"
+        else:
+            msg = f"{stage or '备份'}正在运行，请等它完成后再更新知识库。"
         return {
             "busy": True,
             "reason": "backup",
-            "stage": "backup",
-            "msg": "正在备份或恢复数据，请等它结束后再更新知识库。",
+            "stage": kind or "backup",
+            "msg": msg,
         }
     return None
 
@@ -738,6 +750,7 @@ def health():
             "rev": _lib_rev(),                  # 库修订号（分域）：前端据此在库/综述/交付物变动后自动刷可见页
             "loading": _LOADING,                # 冷启动读取库目录期间为 True → 前端显示遮罩，完成后淡出
             "retrieval": R.retrieval_status(),  # 检索组件冷/热态；设置页据此解释内存策略
+            "backup": _backup_status_view(),    # 后台备份是否真在运行；顶栏和设置页共用同一事实源
             "pid": os.getpid()}                 # launcher 只在明确身份复核后，用已打开的进程句柄终止
 
 # ── Agent / MCP 接入信息（给应用内 Agent 页，吐出本机真实可用的接入命令）──
@@ -4403,8 +4416,14 @@ def chat(q: ChatQ):
 # ⚠️ 本节所有错误一律 **HTTP 200 + {"ok": false, "error": ...}**，不用 4xx + msg。
 #    原因见 CLAUDE.md §6：前端 jpost() 在非 2xx 时只读 detail/error、**不读 msg**，
 #    真实原因会被吞成「/backup/create 400」这种没用的提示。
-BACKUP = {"running": False, "stage": "", "done": 0, "total": 0,
-          "result": None, "error": None}
+BACKUP = {
+    "running": False, "stage": "", "done": 0, "total": 0,
+    "result": None, "error": None, "kind": "", "started_at": 0.0,
+    "cancellable": False, "cancel_requested": False, "task_id": 0,
+}
+_BACKUP_CANCEL = threading.Event()
+_BACKUP_WORKER = None
+_BACKUP_SEQ = 0
 
 
 class BackupQ(BaseModel):
@@ -4425,20 +4444,147 @@ def _backup_busy_reason():
     return None
 
 
-def _claim_backup(stage):
-    """原子检查并占用备份槽，避免 check/set 之间被建库线程抢入。"""
+def _heal_stale_backup_locked():
+    """任务线程已消失却仍占槽时自动修复，避免一次异常让维护功能永久假忙。
+
+    新线程从占槽到登记句柄有极短窗口，因此只清理持续 30 秒以上且没有活线程的状态。
+    调用方必须持有 _BUILD_LOCK。
+    """
+    global _BACKUP_WORKER
+    if not BACKUP["running"]:
+        return False
+    worker_alive = bool(_BACKUP_WORKER and _BACKUP_WORKER.is_alive())
+    started = float(BACKUP.get("started_at") or 0)
+    if worker_alive or not started or time.time() - started < 30:
+        return False
+    BACKUP.update({
+        "running": False, "stage": "已自动释放异常占用",
+        "done": 0, "total": 0, "result": {"cleaned_stale": True},
+        "error": None, "kind": "", "cancellable": False,
+        "cancel_requested": False,
+    })
+    _BACKUP_CANCEL.clear()
+    _BACKUP_WORKER = None
+    BUILD["log"].append("[backup] 检测到备份线程已不存在，已自动释放异常占用。")
+    return True
+
+
+def _backup_status_view():
     with _BUILD_LOCK:
+        _heal_stale_backup_locked()
+        return {k: v for k, v in BACKUP.items()}
+
+
+def _claim_backup(stage, kind="manual", cancellable=True):
+    """原子检查并占用备份槽，避免 check/set 之间被建库线程抢入。"""
+    global _BACKUP_SEQ, _BACKUP_WORKER
+    with _BUILD_LOCK:
+        _heal_stale_backup_locked()
         busy = _backup_busy_reason()
         if busy:
             return busy
+        _BACKUP_SEQ += 1
+        _BACKUP_CANCEL.clear()
+        _BACKUP_WORKER = None
         BACKUP.update({"running": True, "stage": stage, "done": 0, "total": 0,
-                       "result": None, "error": None})
+                       "result": None, "error": None, "kind": kind,
+                       "started_at": time.time(), "cancellable": bool(cancellable),
+                       "cancel_requested": False, "task_id": _BACKUP_SEQ})
     return None
 
 
-def _release_backup():
+def _release_backup(task_id=None):
+    global _BACKUP_WORKER
     with _BUILD_LOCK:
+        if task_id is not None and BACKUP.get("task_id") != task_id:
+            return
         BACKUP["running"] = False
+        BACKUP["cancellable"] = False
+        BACKUP["cancel_requested"] = False
+        _BACKUP_WORKER = None
+
+
+def _backup_schedule(conf):
+    """返回前端可直接展示的下次自动备份时间。"""
+    auto = bool(conf.get("auto"))
+    days = max(1, int(conf.get("every_days") or 7))
+    last = conf.get("last_at") or ""
+    if not auto:
+        return {"next_at": "", "due": False}
+    if not last:
+        return {"next_at": "", "due": True}
+    try:
+        last_ts = time.mktime(time.strptime(last, "%Y-%m-%d %H:%M:%S"))
+        next_ts = last_ts + days * 86400
+        return {
+            "next_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(next_ts)),
+            "due": time.time() >= next_ts,
+        }
+    except Exception:
+        return {"next_at": "", "due": True}
+
+
+def _start_backup_worker(kind, stage, include_index=False, include_key=False):
+    """统一启动手动/自动备份；返回 (started, busy_reason)。"""
+    global _BACKUP_WORKER
+    busy = _claim_backup(stage, kind=kind, cancellable=True)
+    if busy:
+        return False, busy
+    task_id = BACKUP["task_id"]
+    import backup as BK
+
+    def work():
+        try:
+            def prog(done, total):
+                with _BUILD_LOCK:
+                    if BACKUP.get("task_id") == task_id:
+                        BACKUP["done"], BACKUP["total"] = done, total
+
+            manifest = BK.create(
+                include_index=bool(include_index),
+                include_key=bool(include_key),
+                on_progress=prog,
+                should_cancel=_BACKUP_CANCEL.is_set,
+            )
+            try:
+                import settings as S
+                S.save({"backup": {"last_at": manifest["created"]}})
+            except Exception:
+                pass
+            with _BUILD_LOCK:
+                if BACKUP.get("task_id") == task_id:
+                    BACKUP["result"] = manifest
+                    BACKUP["stage"] = "完成"
+            if kind == "auto":
+                BUILD["log"].append(
+                    f"[auto] 已自动备份 → {manifest['path']}（{manifest['size'] / 1e6:.1f} MB）"
+                )
+        except BK.BackupCancelled:
+            with _BUILD_LOCK:
+                if BACKUP.get("task_id") == task_id:
+                    BACKUP["result"] = {"cancelled": True}
+                    BACKUP["error"] = None
+                    BACKUP["stage"] = "已停止"
+            BUILD["log"].append("[backup] 用户已停止当前备份，临时文件已清理。")
+        except Exception as e:
+            log_error("auto_backup" if kind == "auto" else "backup_create", repr(e))
+            with _BUILD_LOCK:
+                if BACKUP.get("task_id") == task_id:
+                    BACKUP["error"] = str(e)
+                    BACKUP["stage"] = "失败"
+        finally:
+            _release_backup(task_id)
+
+    worker = threading.Thread(target=work, daemon=True, name=f"paperpiggy-backup-{task_id}")
+    with _BUILD_LOCK:
+        if BACKUP.get("task_id") == task_id:
+            _BACKUP_WORKER = worker
+    try:
+        worker.start()
+    except Exception:
+        _release_backup(task_id)
+        raise
+    return True, None
 
 
 def _auto_backup_tick():
@@ -4454,32 +4600,11 @@ def _auto_backup_tick():
     conf = S.load().get("backup") or {}
     if not conf.get("auto"):
         return
-    if _claim_backup("自动备份中"):
+    # 先判断是否到期，再占备份槽。旧逻辑反过来做，在“尚未到期”分支直接 return，
+    # 会永久留下 running=True，让手动更新知识库误报“仍有任务在进行”。
+    if not _backup_schedule(conf)["due"]:
         return
-
-    days = max(1, int(conf.get("every_days") or 7))
-    last = conf.get("last_at") or ""
-    if last:
-        try:
-            t = time.mktime(time.strptime(last, "%Y-%m-%d %H:%M:%S"))
-            if time.time() - t < days * 86400:
-                return
-        except Exception:
-            pass                      # 时间戳坏了 → 当作没备份过，宁可多备一次
-
-    import backup as BK
-    try:
-        m = BK.create(include_index=False, include_key=False)
-        S.save({"backup": {"last_at": m["created"]}})
-        BACKUP["result"] = m
-        BACKUP["stage"] = "完成"
-        BUILD["log"].append(f"[auto] 已自动备份 → {m['path']}（{m['size'] / 1e6:.1f} MB）")
-    except Exception as e:
-        BACKUP["error"] = str(e)
-        BACKUP["stage"] = "失败"
-        log_error("auto_backup", repr(e))
-    finally:
-        _release_backup()
+    _start_backup_worker("auto", "自动备份中", include_index=False, include_key=False)
 
 
 class BackupConfQ(BaseModel):
@@ -4497,6 +4622,7 @@ def backup_config_get():
     c = dict(S.DEFAULT["backup"])
     c.update(S.load().get("backup") or {})
     c["effective_dir"] = str(BK.backup_dir())    # dir 为空时的实际落点，前端拿来当 placeholder
+    c.update(_backup_schedule(c))
     return {"ok": True, **c}
 
 
@@ -4541,39 +4667,32 @@ def backup_estimate(with_index: int = 0):
 @app.post("/backup/create")
 def backup_create(q: BackupQ = None):
     q = q or BackupQ()
-    busy = _claim_backup("打包中")
+    started, busy = _start_backup_worker(
+        "manual", "手动备份中",
+        include_index=bool(q.include_index), include_key=bool(q.include_key),
+    )
     if busy:
         return {"ok": False, "error": busy}
-
-    import backup as BK
-
-    def work():
-        try:
-            def prog(d, t):
-                BACKUP["done"], BACKUP["total"] = d, t
-            m = BK.create(include_index=bool(q.include_index),
-                          include_key=bool(q.include_key), on_progress=prog)
-            try:
-                import settings as S
-                S.save({"backup": {"last_at": m["created"]}})
-            except Exception:
-                pass
-            BACKUP["result"] = m
-            BACKUP["stage"] = "完成"
-        except Exception as e:
-            log_error("backup_create", repr(e))
-            BACKUP["error"] = str(e)
-            BACKUP["stage"] = "失败"
-        finally:
-            _release_backup()
-
-    threading.Thread(target=work, daemon=True).start()
-    return {"ok": True, "started": True}
+    return {"ok": True, "started": started}
 
 
 @app.get("/backup/status")
 def backup_status():
-    return {"ok": True, **{k: v for k, v in BACKUP.items()}}
+    return {"ok": True, **_backup_status_view()}
+
+
+@app.post("/backup/cancel")
+def backup_cancel():
+    with _BUILD_LOCK:
+        _heal_stale_backup_locked()
+        if not BACKUP["running"]:
+            return {"ok": False, "error": "当前没有正在运行的备份。"}
+        if not BACKUP.get("cancellable"):
+            return {"ok": False, "error": "数据恢复不能中途停止，请等它完成。"}
+        BACKUP["cancel_requested"] = True
+        BACKUP["stage"] = "正在停止备份"
+        _BACKUP_CANCEL.set()
+    return {"ok": True, "msg": "已请求停止；当前文件处理完后会清理临时包。"}
 
 
 @app.post("/backup/inspect")
@@ -4597,10 +4716,11 @@ def backup_restore(q: BackupPathQ):
         return {"ok": False, "error": info.get("err") or "备份包不可用"}
 
     # inspect 可能耗时，完成后重新原子检查并占位，不能沿用检查前的空闲结论。
-    busy = _claim_backup("恢复中")
+    busy = _claim_backup("恢复中", kind="restore", cancellable=False)
     if busy:
         return {"ok": False, "error": busy}
 
+    task_id = BACKUP["task_id"]
     def work():
         try:
             r = BK.restore(q.path)
@@ -4615,9 +4735,14 @@ def backup_restore(q: BackupPathQ):
             BACKUP["error"] = str(e)
             BACKUP["stage"] = "失败"
         finally:
-            _release_backup()
+            _release_backup(task_id)
 
-    threading.Thread(target=work, daemon=True).start()
+    global _BACKUP_WORKER
+    worker = threading.Thread(target=work, daemon=True, name=f"paperpiggy-restore-{task_id}")
+    with _BUILD_LOCK:
+        if BACKUP.get("task_id") == task_id:
+            _BACKUP_WORKER = worker
+    worker.start()
     return {"ok": True, "started": True}
 
 

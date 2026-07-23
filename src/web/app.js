@@ -251,11 +251,21 @@
     // 全应用只保留「已深索/未深索」一套说法，去掉「词法就绪/全文就绪」等黑话。
     const papers = h.papers != null ? h.papers : h.n;
     const stage = st ? (st.stage || "") : "";
-    if (h.building) {
-      s.textContent = (stage === "deep") ? "深索中…" : (stage === "folder") ? "读取题录中…" : "索引中…";
+    renderBackupRuntime(h.backup);
+    if (h.backup && h.backup.running) {
+      const p = h.backup.total ? ` ${num(h.backup.done || 0)}/${num(h.backup.total)}` : "";
+      s.textContent = (h.backup.stage || "后台备份中") + p + "…";
+      s.title = h.backup.kind === "restore"
+        ? "正在恢复数据；为保护完整性，恢复不能中途停止。"
+        : "备份正在后台执行；可到「设置 → 数据与维护 → 备份与恢复」查看或停止。";
       s.className = "status warn";
     }
-    else if (!h.mode) { s.textContent = "未建库"; s.className = "status warn"; }
+    else if (h.building) {
+      s.textContent = (stage === "deep") ? "深索中…" : (stage === "folder") ? "读取题录中…" : "索引中…";
+      s.title = "知识库维护任务正在运行。";
+      s.className = "status warn";
+    }
+    else if (!h.mode) { s.textContent = "未建库"; s.title = "知识库尚未建立。"; s.className = "status warn"; }
     else {
       const withPdf = withFulltext(st);
       const deep = st ? (st.deep_done || 0) : 0;
@@ -4252,11 +4262,59 @@
   const _bkSize = (b) => b >= 1e9 ? (b / 1e9).toFixed(2) + " GB"
                        : b >= 1e6 ? (b / 1e6).toFixed(1) + " MB"
                        : Math.max(1, Math.round(b / 1e3)) + " KB";
+  let lastBackupConfig = null;
+
+  function renderBackupRuntime(state, conf) {
+    const box = $("#bk-runtime"); if (!box) return;
+    const title = $("#bk-runtime-title"), detail = $("#bk-runtime-detail"),
+          cancel = $("#bk-cancel"), create = $("#bk-create");
+    const s = state || {}, c = conf || lastBackupConfig || {};
+    box.className = "bk-runtime";
+    if (s.running) {
+      box.classList.add("running");
+      const p = s.total ? ` · ${num(s.done || 0)}/${num(s.total)} 个文件` : "";
+      const kind = s.kind === "auto" ? "后台自动备份" : s.kind === "restore" ? "数据恢复" : "手动备份";
+      if (title) title.textContent = s.stage || (kind + "中");
+      if (detail) detail.textContent = kind + p +
+        (s.cancel_requested ? " · 已请求停止，正在清理临时包" : "");
+      if (cancel) {
+        cancel.hidden = !s.cancellable;
+        cancel.disabled = !!s.cancel_requested;
+        cancel.textContent = s.cancel_requested ? "正在停止…" : "停止当前备份";
+      }
+      if (create) create.disabled = true;
+      return;
+    }
+    if (cancel) { cancel.hidden = true; cancel.disabled = false; cancel.textContent = "停止当前备份"; }
+    if (create) create.disabled = false;
+    if (s.error) {
+      box.classList.add("warn");
+      if (title) title.textContent = "上次备份未完成";
+      if (detail) detail.textContent = s.error;
+      return;
+    }
+    if (c.auto) box.classList.add("ok");
+    if (title) title.textContent = c.auto ? "自动备份已开启" : "自动备份已关闭";
+    if (detail) {
+      if (s.result && s.result.cleaned_stale) {
+        detail.textContent = "检测到异常残留占用，已自动释放；现在可以更新知识库。";
+      } else if (s.result && s.result.cancelled) {
+        detail.textContent = "上次备份已停止，未留下不完整备份包。";
+      } else if (c.auto && c.due) {
+        detail.textContent = "已到计划时间，后台下一轮检查时会自动开始。";
+      } else if (c.auto && c.next_at) {
+        detail.textContent = "下次自动备份：" + c.next_at + (c.last_at ? " · 上次成功：" + c.last_at : "");
+      } else {
+        detail.textContent = c.last_at ? "上次成功备份：" + c.last_at : "还没有成功备份过。";
+      }
+    }
+  }
 
   async function loadBackup() {
     const dirEl = $("#bk-dir"); if (!dirEl) return;
     try {
-      const c = await jget("/backup/config");
+      const [c, s] = await Promise.all([jget("/backup/config"), jget("/backup/status")]);
+      lastBackupConfig = c;
       dirEl.value = c.dir || "";
       dirEl.placeholder = "（默认：" + (c.effective_dir || "数据目录下的 backups") + "）";
       $("#bk-with-index").checked = !!c.include_index;
@@ -4265,6 +4323,7 @@
       $("#bk-keep").value = c.keep || 3;
       const msg = $("#bk-msg");
       if (msg) msg.textContent = c.last_at ? "上次备份：" + c.last_at : "还没有备份过。";
+      renderBackupRuntime(s, c);
     } catch (e) {}
     // 原生目录选择器只有 launcher 注入了 pywebview 桥时才有；浏览器回退时藏起来，别留死按钮
     const canPick = !!(window.pywebview && window.pywebview.api && window.pywebview.api.pick_folder);
@@ -4315,12 +4374,17 @@
       await new Promise(r => setTimeout(r, 700));
       let s;
       try { s = await jget("/backup/status"); } catch (e) { continue; }
+      renderBackupRuntime(s);
       if (s.running) {
         const p = s.total ? ` ${s.done}/${s.total}` : "";
         if (msg) msg.textContent = (s.stage || "处理中") + p + "…";
         continue;
       }
       if (s.error) { if (msg) msg.textContent = "❌ " + s.error; return null; }
+      if (s.result && s.result.cancelled) {
+        if (msg) msg.textContent = "已停止备份，临时文件已清理。";
+        return s.result;
+      }
       if (msg) msg.textContent = doneMsg(s.result || {});
       return s.result || {};
     }
@@ -4385,10 +4449,12 @@
     try {
       const r = await jpost("/backup/config", patch);
       if (!r.ok) { const m = $("#bk-msg"); if (m) m.textContent = "❌ " + (r.error || "保存失败"); return false; }
+      lastBackupConfig = r;
       const dirEl = $("#bk-dir");
       if (dirEl && r.effective_dir) dirEl.placeholder = "（默认：" + r.effective_dir + "）";
       await renderBkList();
-      return true;
+      try { renderBackupRuntime(await jget("/backup/status"), r); } catch (e) {}
+      return r;
     } catch (e) { return false; }
   }
 
@@ -4397,7 +4463,16 @@
     const bwi = $("#bk-with-index"); if (bwi) bwi.addEventListener("change", () => {
       refreshBkSize(); saveBkConf({ include_index: bwi.checked });
     });
-    const bka = $("#bk-auto"); if (bka) bka.addEventListener("change", () => saveBkConf({ auto: bka.checked }));
+    const bka = $("#bk-auto"); if (bka) bka.addEventListener("change", async () => {
+      const enabled = bka.checked, r = await saveBkConf({ auto: enabled });
+      const msg = $("#bk-msg");
+      if (!r || !msg) return;
+      let s = {}; try { s = await jget("/backup/status"); } catch (e) {}
+      msg.textContent = enabled
+        ? "已开启自动备份。" + (r.next_at ? "下次：" + r.next_at : "后台下一轮检查时执行首次备份。")
+        : (s.running ? "已关闭以后自动触发；当前备份仍在运行，可在上方停止。" : "已关闭自动备份。");
+      renderBackupRuntime(s, r);
+    });
     const bkd = $("#bk-days"); if (bkd) bkd.addEventListener("change", () => saveBkConf({ every_days: +bkd.value || 7 }));
     const bkk = $("#bk-keep"); if (bkk) bkk.addEventListener("change", () => saveBkConf({ keep: +bkk.value || 3 }));
     const bkdir = $("#bk-dir"); if (bkdir) bkdir.addEventListener("change", () => saveBkConf({ dir: bkdir.value.trim() }));
@@ -4410,6 +4485,20 @@
         const dir = await window.pywebview.api.pick_folder();
         if (dir) { bkdir.value = dir; await saveBkConf({ dir }); }
       } catch (e) {}
+    });
+
+    const bkCancel = $("#bk-cancel"); if (bkCancel) bkCancel.addEventListener("click", async () => {
+      const msg = $("#bk-msg");
+      bkCancel.disabled = true;
+      try {
+        const r = await jpost("/backup/cancel", {});
+        if (msg) msg.textContent = r.ok ? r.msg : "❌ " + (r.error || "无法停止备份");
+        const s = await jget("/backup/status");
+        renderBackupRuntime(s);
+      } catch (e) {
+        if (msg) msg.textContent = "❌ " + e;
+        bkCancel.disabled = false;
+      }
     });
 
     // 🧹 清空并从头重建索引（两步确认；destructive）

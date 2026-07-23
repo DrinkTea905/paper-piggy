@@ -281,7 +281,11 @@ def estimate(include_index=False):
     return total
 
 
-def create(include_index=False, include_key=False, on_progress=None):
+class BackupCancelled(RuntimeError):
+    """用户主动停止创建备份；调用方应把它当作正常取消，而不是备份失败。"""
+
+
+def create(include_index=False, include_key=False, on_progress=None, should_cancel=None):
     """打一个备份包。返回 manifest dict（含 path/size）。
 
     ⚠️ 调用方**必须**先确认没有正在建索引（server 里查 BUILD["running"]）——
@@ -322,24 +326,34 @@ def create(include_index=False, include_key=False, on_progress=None):
         "n_files": len(files),
     }
 
+    def check_cancel():
+        if should_cancel and should_cancel():
+            raise BackupCancelled("备份已停止")
+
     done = 0
     try:
+        check_cancel()
         with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
             z.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
             if settings_text is not None:
                 z.writestr("data/settings.json", settings_text)   # 单独写：key 已按需剥离
+            if on_progress:
+                on_progress(0, len(files))
             for f, arc in files:
+                check_cancel()
                 try:
                     z.write(f, arc)
                 except Exception as e:
                     # 备份最怕“看起来成功、恢复时才发现贵重文件没进去”。任何漏项都拒绝定稿。
                     raise RuntimeError(f"无法读取备份文件 {f}：{e}") from e
                 done += 1
-                if on_progress and done % 50 == 0:
+                if on_progress and (done % 10 == 0 or done == len(files)):
                     on_progress(done, len(files))
+        check_cancel()
         verified = _validate_zip(tmp, verify_crc=True)
         if not verified.get("ok"):
             raise RuntimeError(verified.get("err") or "备份包完整性校验失败")
+        check_cancel()
         tmp.replace(dst)
     except Exception:
         tmp.unlink(missing_ok=True)
