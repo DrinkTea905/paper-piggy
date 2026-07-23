@@ -255,11 +255,9 @@ $env:LOCALKB_MODELS = 'D:\00Zotero知识库\rag\data\models'
 
 **以后在本仓工作的硬规则**：未跟踪文件超过约 300 个时，不做逐文件 diff，先补忽略规则；接管 Remotion/Node/Python venv/构建型子项目时，先检查产物目录是否已忽略；可再生文件与大二进制媒体不进 Git；Windows 进程树用 Job Object，若不得不用 `taskkill`，先校验 PID 创建时间；再遇 WMI 高 CPU，先查 `taskkill` 创建频率和父进程，并用性能计数器、ETW、Toolhelp 排查。
 
-**下次进入本仓必须提醒用户的两项待办（只提醒，不擅自执行）**：
+**下次进入本仓必须提醒用户的一项待办（只提醒，不擅自执行）**：
 
-1. 仍有约 22 个应提交的文本文件，且整个 `docs/assets/论文小猪短视频素材/remotion/` 子项目尚未进入版本控制：仓库根 `AGENTS.md`；`docs/设计/自媒体短视频方案_论文小猪.md`；`docs/assets/论文小猪短视频素材/README.md` 与 `旁白与字幕.md`；该素材目录下 `remotion/src/*.tsx`、`remotion/src/*.ts`、`remotion/src/index.css`、`package.json`、`pnpm-lock.yaml`、`pnpm-workspace.yaml`、`tsconfig.json`、`remotion.config.ts`、`eslint.config.mjs`、`.prettierrc`、`README.md`，以及本次新增的三个 `.gitignore`。新子项目“源码未入库、产物未忽略”是本次事故的深层原因。
-2. 仓库根存在字面名为 `%SystemDrive%` 的目录，内部路径为 `%SystemDrive%/ProgramData/Microsoft/Windows/Caches/`，含 4 个 `.db`。这是脚本未展开环境变量产生的垃圾；删除前必须再次向用户确认，绝不自行删除。
-
+1. 仍有 18 个待验证后提交的 Remotion 源码、配置与说明文件：`docs/设计/自媒体短视频方案_论文小猪.md`；`docs/assets/论文小猪短视频素材/` 下的 `.gitignore`、`README.md`、`旁白与字幕.md`；以及 `remotion/` 下的源码、配置、锁文件、说明和 `.gitignore`。先安装 Node/pnpm 并完成类型、格式与实际渲染验证，再单独提交；生成视频、缓存和语音素材继续忽略。新子项目“源码未入库、产物未忽略”是本次事故的深层原因。
 ### 6.2 其他历史教训（2026-07-22 之前）
 
 - **硅基流动余额为 0 时，连免费的 bge-m3 都会 403（code 30001）**。`user/info` 返回的余额字段不含赠送额度，看着有钱其实没有。充 ¥1 即恢复。`.cn` 和 `.com` 账号不互通。
