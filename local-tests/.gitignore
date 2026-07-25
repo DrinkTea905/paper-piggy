@@ -6,3 +6,10 @@
 !*/
 !.gitignore
 !*.md
+
+# 测试运行时自动生成的 Agent 工作区与临时 wiki，不作为测试资料留档。
+/0_Agent交付物/
+/0_Agent资料库/
+/AGENTS.md
+/CLAUDE.md
+/wiki-review-*/

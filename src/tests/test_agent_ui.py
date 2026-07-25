@@ -45,6 +45,21 @@ class AgentOutputTests(unittest.TestCase):
         self.assertIn('jpost("/setup/retrieval_memory/release", {})', app_js)
         self.assertIn('flashToast(j.msg || "已有维护任务在运行', app_js)
 
+    def test_verified_wiki_updates_have_visible_review_controls(self):
+        app_js = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+        index_html = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+        style_css = (ROOT / "web" / "style.css").read_text(encoding="utf-8")
+        for element_id in (
+            "wiki-review-banner", "wiki-review-panel", "wiki-review-diff",
+            "wiki-review-accept", "wiki-review-edit", "wiki-review-discard",
+        ):
+            self.assertIn(f'id="{element_id}"', index_html)
+        self.assertIn('jget("/wiki/review/" + encodeURIComponent(pageId))', app_js)
+        self.assertIn('`/wiki/review/${encodeURIComponent(p.id)}/${action}`', app_js)
+        self.assertIn("p.pending_review", app_js)
+        self.assertIn(".wk-flag.pending", style_css)
+        self.assertIn("当前显示和检索的仍是你核验过的版本", index_html)
+
     def test_metadata_lookup_is_debounced_but_fulltext_stays_explicit(self):
         app_js = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
         index_html = (ROOT / "web" / "index.html").read_text(encoding="utf-8")

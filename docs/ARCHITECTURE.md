@@ -255,22 +255,25 @@ light 模式走 `search_light`（`retriever.py:547`）：只有 bm25_meta + `_ap
   **改动 `WIKI_MD_SEED` 时必须把旧 seed 的 normalized-sha1 追加进 `_FACTORY_HASHES`**，否则老用户的自动升级会断掉。
   同款机制在 agent 层也有一份：`agent_ws._LEGACY_WF_HASHES`（`agent_ws.py:353`）。
 
-### 5.3 stale 标记与排序
+### 5.3 核验版、Agent 待审稿与排序
 
 - `set_stale(page_id, stale, reason)`（`wiki_store.py:791`）、`set_verified`（`:829`，人工核验章）。
+- 已核验页的正式 Markdown 与 `index.json` 条目是当前发布版；Agent 再写同一页时，`_persist_pending` 把完整待审稿写入 `wiki/.pending/<kind-dir>/<id>.md`，不改正式 Markdown、`index.json` 或 LanceDB 检索行。
+- `pending_review_diff` 用确定性的 unified diff 比较正文，并单列标题、来源 key 和互链增删；`accept_pending_review` / 人工编辑会发布待审稿并重新核验，`discard_pending_review` 只删除待审稿。核验、提交待审、接受和放弃都进入版本历史。
+- `/wiki/answer/agent`、`/wiki/page/{id}`、`/wiki/links/{id}` 与研究助手写回入口在服务端强制 Agent 身份，不能靠客户端把 `by_agent` 伪装成人工操作。
 - 检索期降权（`retriever._wiki_effective`，`:584`）：
   - stale → `× WIKI_STALE_FACTOR = 0.3`（`config.py:201`）；
   - `kind=="answer"` → `× WIKI_ANSWER_FACTOR = 0.45`（`config.py:205`）——answer 页标题≈用户原问题，reranker 拿 query 对 query 打分天然虚高（实测 7.99 vs 真论文 4.34），不压就是「幻觉复利引擎」；
   - `by_agent` 且 `verified_at` 为空 → 再 `× WIKI_UNVERIFIED_FACTOR = 0.6`（`config.py:210`），可与 answer 折减叠乘（0.45×0.6=0.27）；
   - 其余新鲜页 → 只减 `WIKI_BASE_PENALTY = 0.05`（`config.py:196`）。
 - 降权在 **relevance / tier / blend 三种排序下都生效**（`retriever.py:651-670` 的注释：否则 agent 传 `sort=relevance` 就能绕开）。
-- `WikiWriteDenied`（`wiki_store.py:21`）：agent 不得覆盖人工核验过的页；人可以覆盖 agent 的页，反之不行。
+- `WikiWriteDenied`（`wiki_store.py:21`）：人工创建但尚未核验的页仍禁止 Agent 静默覆盖；已核验页的 Agent 更新改走待审稿。
 
 ### 5.4 三环扳机（Query / Ingest / Lint）
 
 | 环 | 触发点 | 代码 |
 |---|---|---|
-| **Query** | 人点「保存此答案」或 agent 调 `save_synthesis` → `POST /wiki/answer` → `W.save_answer` → 存盘 + 嵌入进表（`retriever.index_wiki_page`） | `server.py:1667-1670`、`wiki_store.py:584`、`retriever.py:486` |
+| **Query** | 人点「保存此答案」走 `POST /wiki/answer`；Agent 调 `save_synthesis` 走 `POST /wiki/answer/agent`。新页存盘并嵌入；目标页已有核验版时只形成待审稿 | `server.py`、`wiki_store.py`、`retriever.index_wiki_page` |
 | **Ingest** | 一批深索**成功后**自动算「这批新文献影响了哪些综述页」，结果落 `state/wiki_suggestions.json`（只建议不动手） | 队列批次：`server.py:1284-1288`（`_on_deep_done`）；整库深索：`server.py:2575-2580`（前后 `_deep_keys()` 差集）；Agent 深索：`server.py:2868`。算法 `_wiki_suggest_batch`（`server.py:1320`）→ `W.propose_updates`（`wiki_store.py:1026`） |
 | **Lint** | 自动更新循环每轮顺带跑（TTL 24h），结果落 `state/wiki_lint.json` | `_wiki_lint_refresh`（`server.py:181`），调用点 `server.py:226`（**刻意放在 `enabled` 判断之前**——体检零成本，不该被自动更新开关关掉）。算法 `W.lint()`（`wiki_store.py:1095`） |
 
