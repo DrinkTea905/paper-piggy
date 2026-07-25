@@ -2570,20 +2570,38 @@ class WikiSaveQ(BaseModel):
     answer: str
     sources: List[dict] = []      # 前端传 /chat 的 sources；服务端只认 key、重解析页级引用
     model: str = ""               # generated_by（可信度审计）
-    by_agent: bool = False        # True=agent 经 MCP 写回（默认采纳、标 🤖 待人复看/剔除）
+    by_agent: bool = False        # 兼容旧客户端；实际身份由所用服务端入口决定
 
 @app.post("/wiki/answer")
 def wiki_answer(q: WikiSaveQ):
-    """Phase 0：把一次问答沉淀成 answer 综合页（存盘 + 入表可检索）。网页由"保存此答案"、agent 由 save_synthesis 触发。"""
+    """人从应用界面保存一次问答。Agent 使用独立入口，身份不再由请求字段自报。"""
     try:
-        meta = W.save_answer(q.query, q.answer, q.sources, generated_by=q.model, by_agent=q.by_agent)
+        meta = W.save_answer(q.query, q.answer, q.sources, generated_by=q.model, by_agent=False)
         return {"ok": True, "id": meta["id"], "title": meta["title"],
-                "indexed": meta.get("indexed", False), "n_sources": len(meta.get("sources", []))}
+                "indexed": meta.get("indexed", False), "pending_review": False,
+                "n_sources": len(meta.get("sources", []))}
     except W.WikiWriteDenied as e:
-        # 正常的权限拒绝（agent 想覆盖人工核验页），不是故障，不进 errors.log
+        # 正常的写入护栏拒绝，不是故障，不进 errors.log
         return JSONResponse({"ok": False, "detail": str(e)}, status_code=409)
     except Exception as e:
         log_error("wiki/answer", repr(e), traceback.format_exc())
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
+
+
+@app.post("/wiki/answer/agent")
+def wiki_answer_agent(q: WikiSaveQ):
+    """Agent 沉淀问答；若目标页已经人工核验，只生成待审稿，不替换核验版。"""
+    try:
+        meta = W.save_answer(q.query, q.answer, q.sources, generated_by=q.model, by_agent=True)
+        return {"ok": True, "id": meta["id"], "title": meta["title"],
+                "indexed": meta.get("indexed", False),
+                "pending_review": bool(meta.get("pending_review")),
+                "verified_at": meta.get("verified_at", ""),
+                "n_sources": len(meta.get("sources", []))}
+    except W.WikiWriteDenied as e:
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=409)
+    except Exception as e:
+        log_error("wiki/answer/agent", repr(e), traceback.format_exc())
         return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
 
 @app.get("/wiki/list")
@@ -2787,9 +2805,44 @@ def wiki_verify(q: WikiVerifyQ):
         r = W.set_verified(q.page_id, q.verified)
         return {"ok": True, "verified": r["verified"], "verified_at": r["verified_at"]}
     except ValueError as e:
-        return JSONResponse({"ok": False, "detail": str(e)}, status_code=404)
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
     except Exception as e:
         log_error("wiki/verify", repr(e), traceback.format_exc())
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
+
+
+@app.get("/wiki/review/{page_id}")
+def wiki_pending_review(page_id: str):
+    try:
+        return {"ok": True, **W.pending_review_diff(page_id)}
+    except ValueError as e:
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=404)
+    except Exception as e:
+        log_error("wiki/review/read", repr(e), traceback.format_exc())
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
+
+
+@app.post("/wiki/review/{page_id}/accept")
+def wiki_pending_accept(page_id: str):
+    try:
+        r = W.accept_pending_review(page_id)
+        return {"ok": True, "id": page_id, "verified_at": r.get("verified_at", ""),
+                "pending_review": False}
+    except ValueError as e:
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
+    except Exception as e:
+        log_error("wiki/review/accept", repr(e), traceback.format_exc())
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
+
+
+@app.post("/wiki/review/{page_id}/discard")
+def wiki_pending_discard(page_id: str):
+    try:
+        return {"ok": True, **W.discard_pending_review(page_id)}
+    except ValueError as e:
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
+    except Exception as e:
+        log_error("wiki/review/discard", repr(e), traceback.format_exc())
         return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
 
 class WikiHumanEditQ(BaseModel):
@@ -2833,13 +2886,13 @@ def wiki_backlinks(key: Optional[str] = None, page_id: Optional[str] = None):
 class WikiLinksQ(BaseModel):
     links: List[str] = []
     mode: str = "replace"           # replace | add | remove
-    by_agent: bool = False          # 只用于时间线标注（MCP 侧传 true）
+    by_agent: bool = True           # 兼容旧客户端；此入口仅供 Agent，服务端强制为 True
 
 @app.post("/wiki/links/{page_id}")
 def wiki_set_links(page_id: str, q: WikiLinksQ):
     """写 links —— 把一堆孤岛补成一张图。拒绝自链与断链，返回 skipped。"""
     try:
-        return {"ok": True, **W.set_links(page_id, q.links, q.mode, by_agent=q.by_agent)}
+        return {"ok": True, **W.set_links(page_id, q.links, q.mode, by_agent=True)}
     except ValueError as e:
         return JSONResponse({"ok": False, "detail": str(e)}, status_code=404)
     except Exception as e:
@@ -2854,7 +2907,7 @@ class WikiUpdateQ(BaseModel):
     mode: str = "replace"           # replace | append
     links: Optional[List[str]] = None
     model: str = ""
-    by_agent: bool = False
+    by_agent: bool = True              # 兼容旧客户端；此入口本身即 Agent 入口，服务端强制为 True
 
 @app.post("/wiki/page/{page_id}")
 def wiki_update_page(page_id: str, q: WikiUpdateQ):
@@ -2863,9 +2916,11 @@ def wiki_update_page(page_id: str, q: WikiUpdateQ):
     try:
         m = W.update_page(page_id, kind=q.kind, title=q.title, content=q.content,
                           sources=q.sources, mode=q.mode, links=q.links,
-                          generated_by=q.model, by_agent=q.by_agent)
+                          generated_by=q.model, by_agent=True)
         return {"ok": True, "id": m["id"], "kind": m.get("kind"), "title": m.get("title"),
                 "indexed": m.get("indexed", False), "degraded": m.get("degraded", False),
+                "pending_review": bool(m.get("pending_review")),
+                "verified_at": m.get("verified_at", ""),
                 "links": m.get("links", []), "n_sources": len(m.get("sources", []))}
     except W.WikiWriteDenied as e:
         return JSONResponse({"ok": False, "detail": str(e)}, status_code=409)
@@ -2947,7 +3002,7 @@ class ResearchQ(BaseModel):
     base_url: str = ""
     api_key: str = ""
     model: str = ""
-    by_agent: bool = False
+    by_agent: bool = False        # 兼容旧客户端；研究助手写回入口由服务端强制为 Agent
 
 def _research_llm(q):
     return {"provider": q.provider, "base_url": q.base_url, "api_key": q.api_key, "model": q.model}
@@ -2970,11 +3025,13 @@ def research_digest(q: ResearchQ):
     """能力二：给一个子题 query → 带印刷页引注的综述 + 覆盖评级 + 缺口。存 kind=digest wiki 页。"""
     try:
         import research_assistant as RA
-        m = RA.digest(q.query or q.topic, topk=q.topk, llm=_research_llm(q), force=q.force, by_agent=q.by_agent)
+        m = RA.digest(q.query or q.topic, topk=q.topk, llm=_research_llm(q), force=q.force, by_agent=True)
         # 透传 degraded（未配/失效 key、LLM 调用失败、或库内无命中的降级页）：降级页不入检索表，
         # MCP/前端据此如实措辞，别再无条件宣称「已写回 wiki 页、可被检索」。
         return {"ok": True, "id": m["id"], "title": m["title"], "kind": m.get("kind"),
                 "cached": m.get("cached", False), "indexed": m.get("indexed", False),
+                "pending_review": bool(m.get("pending_review")),
+                "verified_at": m.get("verified_at", ""),
                 "degraded": m.get("degraded", False), "degraded_reason": m.get("degraded_reason"),
                 "coverage": m.get("coverage"), "n_sources": len(m.get("sources", []))}
     except W.WikiWriteDenied as e:
@@ -2988,9 +3045,11 @@ def research_scope(q: ResearchQ):
     """能力一：主题 → 范围映射 + 选题拆解 + 标题候选 + 三级大纲(★/☆)。存 kind=outline wiki 页。"""
     try:
         import research_assistant as RA
-        m = RA.scope(q.topic or q.query, topk=q.topk, llm=_research_llm(q), force=q.force, by_agent=q.by_agent)
+        m = RA.scope(q.topic or q.query, topk=q.topk, llm=_research_llm(q), force=q.force, by_agent=True)
         return {"ok": True, "id": m["id"], "title": m["title"], "kind": m.get("kind"),
                 "cached": m.get("cached", False), "indexed": m.get("indexed", False),
+                "pending_review": bool(m.get("pending_review")),
+                "verified_at": m.get("verified_at", ""),
                 "degraded": m.get("degraded", False), "degraded_reason": m.get("degraded_reason"),
                 "n_sources": len(m.get("sources", []))}
     except W.WikiWriteDenied as e:

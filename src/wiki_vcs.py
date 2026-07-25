@@ -243,10 +243,10 @@ def history(page_id, kind_dir_name=None, limit=30):
     """返回 [{rev, ts, message}]，新的在前。"""
     try:
         if backend() == "git":
-            rel = f"{kind_dir_name}/{page_id}.md" if kind_dir_name else None
-            args = ["log", f"-{limit}", "--format=%h\t%ct\t%s"]
-            if rel:
-                args += ["--follow", "--", rel]
+            # 按提交信息取该页的所有动作，才能同时覆盖已发布页和 .pending/ 待审稿。
+            # 旧的 pathspec 只能看到正式 Markdown，会把 Agent 待审修改从时间线里漏掉。
+            args = ["log", f"-{limit}", "--format=%h\t%ct\t%s",
+                    f"--grep=^{page_id}: "]
             rc, out, _ = _git(*args)
             if rc != 0:
                 return []
@@ -257,9 +257,17 @@ def history(page_id, kind_dir_name=None, limit=30):
                     msg = parts[2]
                     if msg.startswith(page_id + ": "):
                         msg = msg[len(page_id) + 2:]
-                    rows.append({"rev": parts[0], "ts": int(parts[1]), "message": msg})
+                    pending_event = (msg.startswith("agent提交待审修改")
+                                     or msg.startswith("人放弃 Agent 待审修改"))
+                    rows.append({"rev": parts[0], "ts": int(parts[1]), "message": msg,
+                                 "pending": pending_event})
             return rows
-        return _snap_history(page_id)[:limit]
+        rows = _snap_history(page_id)[:limit]
+        for row in rows:
+            msg = row.get("message") or ""
+            row["pending"] = (msg.startswith("agent提交待审修改")
+                              or msg.startswith("人放弃 Agent 待审修改"))
+        return rows
     except Exception as e:
         log(f"读 {page_id} 历史失败：", e)
         return []

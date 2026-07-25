@@ -647,12 +647,33 @@ button:disabled { opacity: .6; cursor: default; }
   padding: 4px 8px; border-radius: 8px; background: #f1f5f9; color: #475569; }
 .wk-flag .status-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; opacity: .8; }
 .wk-flag.agent { background: #fef3c7; color: #92400e; }
+.wk-flag.pending { background: #ffedd5; color: #9a3412; font-weight: 700; }
 .wk-flag.stale { background: #fff7ed; color: #b45309; }
 /* 降级页（未配 AI / 生成失败）：正文只是原文片段清单，不是综述——比 stale 更需要醒目 */
 .wk-flag.degraded { background: #fee2e2; color: #b91c1c; font-weight: 600; }
 .wk-card.degraded { border-color: #fca5a5; }
 .wk-degraded-banner { background: #fef2f2; border: 1px solid #fca5a5; color: #991b1b;
   border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; font-size: 13px; line-height: 1.6; }
+.wiki-review-banner { margin: 2px 24px 12px; padding: 10px 12px; display: flex; align-items: center;
+  justify-content: space-between; gap: 12px; border: 1px solid #fdba74; border-radius: 10px;
+  background: #fff7ed; color: #9a3412; font-size: 12.5px; line-height: 1.55; }
+.wiki-review-banner[hidden] { display: none; }
+.wiki-review-banner b { display: block; color: #7c2d12; }
+.wiki-review-panel { margin: 0 24px 14px; padding: 14px; border: 1px solid #fdba74;
+  border-radius: 12px; background: var(--card); }
+.wiki-review-panel[hidden] { display: none; }
+.wiki-review-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.wiki-review-head h4 { margin: 0 0 4px; font-size: 14px; }
+.wiki-review-head p { margin: 0; }
+.wiki-review-facts { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 7px;
+  margin: 12px 0; }
+.wiki-review-fact { padding: 8px 10px; border-radius: 8px; background: rgba(148,163,184,.10);
+  font-size: 12px; line-height: 1.5; white-space: pre-line; }
+.wiki-review-fact b { display: block; margin-bottom: 2px; color: var(--muted); font-size: 11px; }
+.wiki-review-diff { max-height: 330px; overflow: auto; margin: 0; padding: 12px;
+  border: 1px solid var(--line); border-radius: 9px; background: var(--chrome);
+  color: var(--fg); font: 12px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; }
+.wiki-review-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
 .wk-card-btns { display: flex; gap: 6px; flex-wrap: wrap; }
 
 /* 综述主题书架：左侧主题、右侧紧凑目录；保持内容优先，不再铺满一屏大卡片。 */
@@ -728,6 +749,7 @@ button:disabled { opacity: .6; cursor: default; }
   .wiki-reader { grid-template-columns: 1fr; }
   .wiki-toc { display: none; }
   .wiki-body { grid-column: 1; padding: 2px 4px 16px; }
+  .wiki-review-facts { grid-template-columns: 1fr; }
 }
 
 /* ── 综述页互链 / 反向链接：把孤立页面走成一张图 ── */
@@ -1457,6 +1479,7 @@ button.ov-chip:hover { border-color: var(--accent); color: var(--accent); }
 :root[data-theme="dark"] .snippet { background: rgba(110,168,254,.10); }
 :root[data-theme="dark"] .dash-loading, :root[data-theme="dark"] .donut-total { color: var(--fg); }
 :root[data-theme="dark"] .tag.review, :root[data-theme="dark"] .wk-flag.agent { filter: brightness(.9); }
+:root[data-theme="dark"] .wk-flag.pending, :root[data-theme="dark"] .wiki-review-banner { filter: brightness(.88); }
 :root[data-theme="dark"] .wk-flag.degraded { filter: brightness(.9); }
 :root[data-theme="dark"] .wk-degraded-banner { background: rgba(220,38,38,.12); border-color: #7f1d1d; color: #fca5a5; }
 :root[data-theme="dark"] .lint-chip { background: rgba(245,158,11,.12); border-color: #78350f; color: #fbbf24; }

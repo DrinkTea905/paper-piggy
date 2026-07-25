@@ -174,7 +174,7 @@
           <div class="ag-ch-n">6</div>
           <div class="ag-ch-c">
             <h3>让成果进入交付物和综述库</h3>
-            <p class="ag-note">论文初稿、资料汇编、报告等成品保存在<b>交付物</b>；研究方法、项目记忆、参考格式和定时任务保存在<b>资料库</b>；需要长期复用和更新的结论进入<b>综述库</b>。打开综述页可以直接编辑正文；保存后标为已核验，也可以改回未核验继续复查。标题、参考来源和版本历史由 PaperPiggy 维护。</p>
+            <p class="ag-note">论文初稿、资料汇编、报告等成品保存在<b>交付物</b>；研究方法、项目记忆、参考格式和定时任务保存在<b>资料库</b>；需要长期复用和更新的结论进入<b>综述库</b>。你核验一页后，Agent 再修改它只会提交<b>待审稿</b>：原核验版继续显示和检索，你可以查看正文、来源与互链的具体差异，再接受并核验、先编辑或放弃。标题、参考来源和版本历史由 PaperPiggy 维护。</p>
           </div>
         </section>
 
@@ -361,7 +361,7 @@
               <option value="title">标题 A–Z</option>
               <option value="sources">来源数量</option>
             </select>
-            <label class="wk-agent-only"><input type="checkbox" id="wk-agent" /><span class="wk-status-dot" aria-hidden="true"></span>只看未核验</label>
+            <label class="wk-agent-only"><input type="checkbox" id="wk-agent" /><span class="wk-status-dot" aria-hidden="true"></span>只看需核验</label>
           </div>
           <div class="wk-action-group">
             <button class="ag-refresh wk-icon-btn" data-act="refresh-wiki" title="重新加载综述列表和建议">
@@ -570,7 +570,7 @@
           <div class="ag-ch-n">5</div>
           <div class="ag-ch-c">
             <h3>综述库（wiki）：把问答沉淀成越用越厚的知识</h3>
-            <p class="ag-note">AI 每答一个问题、读完一篇文献，可把结论写成一页<b>带引用的综述</b>，下次直接命中、不重复劳动。综述页会按来源与现有 AI 主题的重合度<b>自动归类</b>；你也能新建主题、手动固定、搜索和排序。它还会<b>主动维护</b>：新文献可能推翻旧结论时会标记「过时」并写明理由。AI 写的页都标 <b>🤖 未核验</b>、<b>不覆盖</b>你亲自核验过的页；未核验页在检索里会被<b>降权</b>，不会盖过原始文献。打开一页后可以阅读、直接编辑正文、切换核验状态、查看来源与历史；保存修改后标为已核验，也可以改回未核验继续复查。标题、参考来源和版本历史由 PaperPiggy 维护。删除自定义主题只会恢复自动归类，<b>不会删除综述</b>。</p>
+            <p class="ag-note">AI 每答一个问题、读完一篇文献，可把结论写成一页<b>带引用的综述</b>，下次直接命中、不重复劳动。综述页会按来源与现有 AI 主题的重合度<b>自动归类</b>；你也能新建主题、手动固定、搜索和排序。新文献可能推翻旧结论时，Agent 会先标记「过时」并写明理由。AI 新写的页标 <b>🤖 未核验</b>，在检索里会被<b>降权</b>；你核验后，Agent 的后续修改只进入<b>待审稿</b>，原核验版继续显示和检索。打开页面可查看正文差异、来源与互链增删，再选择接受并核验、先编辑待审稿或放弃。每次核验和待审处理都会记入历史。删除自定义主题只会恢复自动归类，<b>不会删除综述</b>。</p>
           </div>
         </section>
 
@@ -600,7 +600,7 @@
           <div class="ag-ch-n">8</div>
           <div class="ag-ch-c">
             <h3>它会怎么动你的库（权限与安全）</h3>
-            <p class="ag-note">默认<b>只读检索 + 另存综合</b>，不直接改动你的原始文献或 Zotero；只有你明确要求并通过工具安全闸时，Agent 才能添加来源、建库或深索，从而更新 PaperPiggy 索引。写回的综述标 🤖 未核验、不覆盖你已核验的内容、可一键删，是否核验由你决定。原始文献与写回成果保存在本机；云端检索和 AI 助手会接收完成对应任务所需的文本。下面是 AI 必须遵守的写回规约文件（可打开查看它被约束成什么样）：</p>
+            <p class="ag-note">默认<b>只读检索 + 另存综合</b>，不直接改动你的原始文献或 Zotero；只有你明确要求并通过工具安全闸时，Agent 才能添加来源、建库或深索，从而更新 PaperPiggy 索引。Agent 新写的综述标 🤖 未核验；它更新已核验页时只提交待审稿，不覆盖、不重新索引核验版，只有你接受或编辑保存后才发布为新的核验版。综述页可一键删，是否核验由你决定。原始文献与写回成果保存在本机；云端检索和 AI 助手会接收完成对应任务所需的文本。下面是 AI 必须遵守的写回规约文件（可打开查看它被约束成什么样）：</p>
             <div class="ag-code"><code id="ag-schema"></code><button class="ag-copy" data-copy="ag-schema">复制路径</button></div>
             <p class="ag-note">💡 想更快看懂？「📚 专属资料库」里有一份通俗摘要 <code>AI写综述遵守的规约.md</code>（五条核心 + 指向上面这份完整规约）。</p>
           </div>
@@ -1002,12 +1002,35 @@
         </div>
         <div id="wiki-meta" class="hint"></div>
       </div>
+      <div id="wiki-review-banner" class="wiki-review-banner" hidden>
+        <div>
+          <b>Agent 提交了待审修改</b>
+          <span id="wiki-review-summary">当前显示和检索的仍是你核验过的版本。</span>
+        </div>
+        <button id="wiki-review-open" class="ghost2b">查看修改</button>
+      </div>
+      <section id="wiki-review-panel" class="wiki-review-panel" aria-labelledby="wiki-review-title" hidden>
+        <div class="wiki-review-head">
+          <div>
+            <h4 id="wiki-review-title">核验版与 Agent 待审版的差异</h4>
+            <p id="wiki-review-meta" class="hint"></p>
+          </div>
+          <button id="wiki-review-close" class="ghost2b">收起</button>
+        </div>
+        <div id="wiki-review-facts" class="wiki-review-facts"></div>
+        <pre id="wiki-review-diff" class="wiki-review-diff" tabindex="0"></pre>
+        <div class="wiki-review-actions">
+          <button id="wiki-review-discard" class="ghost danger">放弃待审修改</button>
+          <button id="wiki-review-edit" class="ghost">先编辑待审稿</button>
+          <button id="wiki-review-accept">接受并核验</button>
+        </div>
+      </section>
       <div class="wiki-reader">
         <nav id="wiki-toc" class="wiki-toc" aria-label="本页目录" hidden></nav>
         <div id="wiki-body" class="wiki-body"></div>
         <div id="wiki-editor" class="wiki-editor" hidden>
           <textarea id="wiki-edit-text" spellcheck="true" aria-label="编辑综述正文"></textarea>
-          <p class="hint">可编辑正文 Markdown；标题、参考来源和系统记录由 PaperPiggy 自动维护。保存后直接视为已核验。</p>
+          <p id="wiki-edit-hint" class="hint">可编辑正文 Markdown；标题、参考来源和系统记录由 PaperPiggy 自动维护。保存后直接视为已核验。</p>
           <div class="wiki-editor-actions">
             <button id="wiki-edit-cancel" class="ghost">取消</button>
             <button id="wiki-edit-save">保存修改并核验</button>

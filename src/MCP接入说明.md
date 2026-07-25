@@ -17,8 +17,8 @@
 | `search_localkb(query, topk=8, sort=blend, category?)` | 读 | 检索本地文献知识库（用户自己的 Zotero 库或导入的全文文件夹，支持 PDF、EPUB、DOCX、Markdown、TXT）。返回带期刊等级、原文定位、可回溯引用的结果，用于查找某主题的相关文献、论点或原文段落。发现型检索默认同一篇最多返回2段，不用重复弱段凑满条数，适合先广泛找文献；定向深读请再用 read_source / verify_claim。可先用 localkb_status 了解库内篇数与学科。 |
 | `list_kb_categories()` | 读 | 列出本地知识库的自建「知识库分类」及 AI 主题，返回可用于 search_localkb 的 category id。先列分类、再带 category 检索，可把检索聚焦到某一组文献。 |
 | `resolve_page(key, pdf_page)` | 读 | 把某篇文献的『PDF 顺序页号』解析成『期刊印刷页码』（读者翻期刊看到的那一页）。写带页级引注时用它把检索命中的 page 换成正确印刷页；标『页码推算』者为连续性推算、请核对。 |
-| `build_digest(query, topk=14)` | 写 | 半自动研究助手·能力二：给一个子题，返回并写回一节『带期刊印刷页引注的资料汇编综述』（含覆盖评级 ◎○△▲▽ 与诚实的资料缺口提示）。写回为 digest 页、标 🤖 未核验、可被检索命中。 |
-| `research_outline(topic)` | 写 | 半自动研究助手·能力一：给研究主题，返回并写回『选题拆解 + 标题参考 + 三级大纲(★核心/☆辅助)』的框架页。论证主线须由学者自定，本工具只做启发。写回为 outline 页、标 🤖 未核验。 |
+| `build_digest(query, topk=14)` | 写 | 半自动研究助手·能力二：给一个子题，返回并写回一节『带期刊印刷页引注的资料汇编综述』（含覆盖评级 ◎○△▲▽ 与诚实的资料缺口提示）。新页标 🤖 未核验并可被检索；若同页已有人工核验版，则只提交不参与检索的待审修改。 |
+| `research_outline(topic)` | 写 | 半自动研究助手·能力一：给研究主题，返回并写回『选题拆解 + 标题参考 + 三级大纲(★核心/☆辅助)』的框架页。论证主线须由学者自定，本工具只做启发。新页标 🤖 未核验；若同页已有人工核验版，则只提交不参与检索的待审修改。 |
 | `suggest_new_sources(topic)` | 读 | 半自动研究助手·能力三：给主题，返回『建议新增文献（脚注引文挖掘库内缺失、按被引频次）+ 库内错配（有全文附件未深索）+ 覆盖评估』。只读、不写库。 |
 | `export_disclosure(page_ids)` | 读 | 半自动研究助手·G4：按所选综合页(digest/outline 等的 id)生成《生成式 AI 使用声明》文本（规则拼装、零 LLM），用于论文投稿的 AIGC 合规披露。传入相关 wiki 页 id 列表即可。 |
 | `localkb_status()` | 读 | 查看本地知识库索引状态（词法/语义/全文各档就绪情况、已索引篇数）。查【深索】进度请用 deep_status。 |
@@ -39,8 +39,8 @@
 | `list_sources(deep=all, category?, source_type?, limit=50, offset=0)` | 读 | 列出知识库里的文献题录。可用 deep='no' 筛出**尚未深索**的篇目——那些是还没被读过、值得 ingest 的源。用于驱动「逐篇读入并维护 wiki」的循环。 |
 | `mark_stale(page_id, stale=True, reason?)` | 写 | 把某综合页标记为「已过时」（或清除标记）。当新文献推翻了旧综合、或页内断言不再成立时用。标记后该页在检索里显著降权、界面显示 ⚠ 徽标。这是健康检查(lint)的核心动作：**不要**直接覆盖别人的结论页，而应标脏并写清理由。 |
 | `get_backlinks(key?, page_id?)` | 读 | 反查关联。给 key（论文）→ 哪些综合页引用了这篇（新增或更新这篇后，据此判断哪些页要标脏/重生）；给 page_id（综合页）→ 它引用了哪些论文、与哪些页互链、是不是孤儿页。这是 ingest 后「一篇源触及多个 wiki 页」和 lint 的起点。 |
-| `update_wiki_page(page_id, kind?, title?, content, sources?, mode=replace, links?)` | 写 | 建立或修改一个 wiki 综合页。这是维护 wiki 的主要动作。 kind 可选：answer(问答沉淀) / concept(概念) / topic(主题) / digest(资料汇编) / outline(选题框架) / **entity(实体页：作者、机构、案件、制度)** / **overview(总论页：随全库演进的核心论点)**。 mode='append' 把新内容与来源并入既有页；'replace' 整体重写，显式传 sources 时会替换旧来源，可用于修正失效 key；replace 不传 sources 则保留旧来源。 护栏：不能覆盖用户人工核验过的页（会被拒绝）。每个论断带 [n] 引用，sources 填论文 key。 |
-| `set_wiki_links(page_id, links, mode=replace)` | 写 | 维护某页的交叉链接（wiki 页之间的边）。**这是把一堆孤立页面变成一张知识图的唯一途径**——没有 links，每一页都是孤儿，lint 会一直报警。只接受已存在的页 id，自动拒绝自链与断链。 |
+| `update_wiki_page(page_id, kind?, title?, content, sources?, mode=replace, links?)` | 写 | 建立或修改一个 wiki 综合页。这是维护 wiki 的主要动作。 kind 可选：answer(问答沉淀) / concept(概念) / topic(主题) / digest(资料汇编) / outline(选题框架) / **entity(实体页：作者、机构、案件、制度)** / **overview(总论页：随全库演进的核心论点)**。 mode='append' 把新内容与来源并入既有页；'replace' 整体重写，显式传 sources 时会替换旧来源，可用于修正失效 key；replace 不传 sources 则保留旧来源。 护栏：更新用户人工核验过的页时，只生成待审修改；核验版与检索结果保持不变，由用户在应用里比较后接受或放弃。每个论断带 [n] 引用，sources 填论文 key。 |
+| `set_wiki_links(page_id, links, mode=replace)` | 写 | 维护某页的交叉链接（wiki 页之间的边）。**这是把一堆孤立页面变成一张知识图的唯一途径**——没有 links，每一页都是孤儿，lint 会一直报警。只接受已存在的页 id，自动拒绝自链与断链。已核验页的互链修改同样只进入待审稿。 |
 | `lint_wiki(min_mentions=2)` | 读 | 综合层健康体检（gist 三大操作之一）。查：孤儿页、已过时页、断链、无来源论文的页、未配 AI 模型时生成的降级页、被反复提及却没有独立页的概念、无效来源 key、重复标题/研究问题。返回问题清单 + 建议动作。定期跑一次，wiki 才不会烂掉。纯读，不改任何东西。 |
 | `propose_wiki_updates(key, topk=12)` | 读 | **读完一篇文献后必调**。给论文 key，返回这篇影响了哪些既有 wiki 页、每页该怎么改。 两条线索：① 直接引用它的页（结论可能被推翻）；② 讲同一主题却没引用它的页（该更新却没人知道）。 gist 的经验：一篇源常常触及 10-15 个页。拿到清单后逐页执行 update_wiki_page / mark_stale / set_wiki_links，别只改一页就收工。 |
 | `format_citation(key, pdf_page?, position?, locator?, style=footnote)` | 读 | 把一篇文献排成规范引注（脚注格式）。写论文脚注时用：key 来自 search_localkb / list_sources。PDF 用 pdf_page（会换算期刊印刷页码）；其他格式传 position 和 locator（来自检索或 locate_quote）。返回里若有 missing_fields（题录缺字段）或 page_estimated（页码为推算）请提醒用户人工核对。注意：引领词（参见/见/转引自）由作者按引用性质自定，本工具不加。排注前建议先用 locate_quote 核对引文确实在那一页。 |
@@ -57,12 +57,12 @@
 
 > **信任模型（读—综合—写回闭环）**：agent 能**写**（建页、改页、建互链、标过时），**不能删**。
 > 三道护栏：
-> 1. **不能覆盖人工页**——`page_id` 由标题哈希而来，同标题即同页。若目标页是你人工保存/核验过的（`by_agent=false`），agent 写回会被拒（HTTP 409），只能换标题或先 `get_wiki_page` 读了再说。agent 可以覆盖 agent 自己的页；你可以覆盖 agent 的页。
+> 1. **核验版与待审稿分开**——`page_id` 由标题哈希而来，同标题即同页。Agent 更新已核验页的正文、来源或互链时，只写入独立待审稿，不覆盖正式 Markdown、`index.json` 或检索行；原核验版继续显示和检索。用户可在综述页查看逐行正文差异、来源与互链增删，再接受并核验、先编辑或放弃。人工保存但尚未核验的页仍拒绝 Agent 静默覆盖。
 > 2. **强制 provenance**——每页带来源 bibkey + 页码 + 模型 + 时间，可一跳回溯原文核对。
 > 3. **检索降权**——新鲜综合页同分让位于原始文献；被 `mark_stale` 标脏的页乘性重罚（×0.3）真正沉到真论文之下，三种 `sort` 下一致生效。未配 AI 模型时生成的「证据清单」根本不入检索表。
 >
-> 4. **版本历史**——每次写入自动记一版（装了 git 就用 git，没装则用 `.history/` 快照）。
->    在综述库里可以查看任意一页的修改历史并一键回滚。所以放手让 agent 改，改错了能退回来。
+> 4. **版本历史**——每次写入、人工核验和待审处理都自动记一版（装了 git 就用 git，没装则用 `.history/` 快照）。
+>    待审事件与当前核验版会明确区分；已发布版本仍可在综述库里查看和回滚。
 >
 > 删除只由人在网页端一键「🗑 不保存」（`DELETE /wiki/page/{id}`，**故意不做成 MCP 工具**）。回滚同理。
 > 发现旧页被新文献推翻，正确做法是 `mark_stale` 标脏 + 写清理由，而不是抹掉别人的结论。

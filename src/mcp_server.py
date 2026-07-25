@@ -84,10 +84,11 @@ _INSTRUCTIONS_HEAD = """你连接的是用户的**本地文献知识库**（Pape
 3. 下判断前先 read_source 读原文（逐页正文 + 印刷页码）。不要只凭 220 字检索片段就写综述。
 4. 不得直接修改原始文献或 Zotero。只有用户明确要求、并通过工具自身的安全闸时，
    才能 add_source、建库或深索，从而更新 PaperPiggy 索引。wiki 写回仅限综合层
-   （save_synthesis / update_wiki_page / build_digest / research_outline / mark_stale）；你能写、不能删——删除只由用户在应用里操作。
-5. 你写回的页会标记为「🤖 未核验」，立即进入检索但会被降权。请对得起这个信任。
-6. 覆盖规则：你不能覆盖用户人工保存/核验过的页（会被拒绝）。发现旧页被新文献推翻，
-   用 mark_stale 标脏并写清理由，而不是抹掉别人的结论。
+    （save_synthesis / update_wiki_page / build_digest / research_outline / mark_stale）；你能写、不能删——删除只由用户在应用里操作。
+    人工核验页的正文/来源更新会自动进入“待审修改”，不会覆盖核验版或进入检索；只有用户在应用里审阅后才能发布。
+5. 你新写回的页会标记为「🤖 未核验」，进入检索但会被降权。请对得起这个信任。
+6. 覆盖规则：人工保存但尚未核验的页拒绝 Agent 静默覆盖；人工核验页的 Agent 更新自动进入待审稿，
+   原核验版继续显示和检索。发现旧页被新文献推翻，先用 mark_stale 标脏并写清理由。
 7. 矛盾与争议只作「未核实」的只读提示，不要落成 wiki 断言。
 8. 新增/更新一篇文献后，用 get_backlinks(key=…) 查哪些综合页引用了它，逐一判断是否需要标脏或重生。
 
@@ -298,7 +299,8 @@ TOOLS = [
     {
         "name": "build_digest",
         "description": "半自动研究助手·能力二：给一个子题，返回并写回一节『带期刊印刷页引注的资料汇编综述』"
-                       "（含覆盖评级 ◎○△▲▽ 与诚实的资料缺口提示）。写回为 digest 页、标 🤖 未核验、可被检索命中。",
+                       "（含覆盖评级 ◎○△▲▽ 与诚实的资料缺口提示）。新页标 🤖 未核验并可被检索；"
+                       "若同页已有人工核验版，则只提交不参与检索的待审修改。",
         "inputSchema": {"type": "object", "properties": {
             "query": {"type": "string", "description": "子题/研究问题"},
             "topk": {"type": "integer", "description": "召回条数（默认 14）", "default": 14}},
@@ -307,7 +309,8 @@ TOOLS = [
     {
         "name": "research_outline",
         "description": "半自动研究助手·能力一：给研究主题，返回并写回『选题拆解 + 标题参考 + 三级大纲(★核心/☆辅助)』的框架页。"
-                       "论证主线须由学者自定，本工具只做启发。写回为 outline 页、标 🤖 未核验。",
+                       "论证主线须由学者自定，本工具只做启发。新页标 🤖 未核验；"
+                       "若同页已有人工核验版，则只提交不参与检索的待审修改。",
         "inputSchema": {"type": "object", "properties": {
             "topic": {"type": "string", "description": "研究主题/方向"}},
             "required": ["topic"]},
@@ -539,7 +542,8 @@ TOOLS = [
                        "outline(选题框架) / **entity(实体页：作者、机构、案件、制度)** / **overview(总论页：随全库演进的核心论点)**。\n"
                        "mode='append' 把新内容与来源并入既有页；'replace' 整体重写，显式传 sources 时会替换旧来源，"
                        "可用于修正失效 key；replace 不传 sources 则保留旧来源。\n"
-                       "护栏：不能覆盖用户人工核验过的页（会被拒绝）。每个论断带 [n] 引用，sources 填论文 key。",
+                       "护栏：更新用户人工核验过的页时，只生成待审修改；核验版与检索结果保持不变，"
+                       "由用户在应用里比较后接受或放弃。每个论断带 [n] 引用，sources 填论文 key。",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -563,7 +567,7 @@ TOOLS = [
         "name": "set_wiki_links",
         "description": "维护某页的交叉链接（wiki 页之间的边）。**这是把一堆孤立页面变成一张知识图的唯一途径**——"
                        "没有 links，每一页都是孤儿，lint 会一直报警。"
-                       "只接受已存在的页 id，自动拒绝自链与断链。",
+                       "只接受已存在的页 id，自动拒绝自链与断链。已核验页的互链修改同样只进入待审稿。",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -823,6 +827,8 @@ def do_tool(name, args):
                 tag = "📝综合"
                 if x.get("stale"):
                     tag += "·⚠已过时"
+                elif x.get("pending_review"):
+                    tag += "·🟠有待审修改"
                 elif x.get("by_agent") and not x.get("verified_at"):
                     tag += "·🤖未核实"
                 elif x.get("verified_at"):
@@ -868,6 +874,10 @@ def do_tool(name, args):
         if not r.get("ok"):
             return f"生成资料汇编失败：{r.get('detail', '未知')}"
         cov = r.get("coverage") or {}
+        if r.get("pending_review"):
+            return (f"资料汇编「{r.get('title')}」已作为 **Agent 待审修改** 提交（id={r.get('id')}，"
+                    f"覆盖 {cov.get('symbol', '')}{cov.get('label', '')}，{r.get('n_sources')} 篇来源）。"
+                    f"原人工核验版仍在检索中；请用户在 PaperPiggy 综述库查看差异并接受、编辑或放弃。")
         # 降级页（未配/失效 key、LLM 调用失败、或库内无命中）按设计不入检索表——别再无条件宣称「可被检索」。
         if r.get("degraded"):
             reason = r.get("degraded_reason") or "未配置 AI 模型 / 调用失败 / 库内无命中"
@@ -883,6 +893,10 @@ def do_tool(name, args):
                           json={"topic": args.get("topic", ""), "by_agent": True}, timeout=300).json()
         if not r.get("ok"):
             return f"生成大纲失败：{r.get('detail', '未知')}"
+        if r.get("pending_review"):
+            return (f"选题框架「{r.get('title')}」已作为 **Agent 待审修改** 提交（id={r.get('id')}，"
+                    f"{r.get('n_sources')} 篇线索）。原人工核验版仍在检索中；"
+                    f"请用户在 PaperPiggy 综述库查看差异并接受、编辑或放弃。")
         if r.get("degraded"):
             reason = r.get("degraded_reason") or "未配置 AI 模型 / 调用失败 / 库内无命中"
             return (f"已生成选题框架「{r.get('title')}」，但为**降级产物**（{reason}）：为库内线索清单、未入检索表。"
@@ -1087,9 +1101,13 @@ def do_tool(name, args):
             return "错误：知识库服务启动失败。"
         body = {"query": args.get("title", ""), "answer": args.get("content", ""),
                 "sources": [{"key": k} for k in (args.get("sources") or [])],
-                "by_agent": True, "model": "agent"}   # 标 🤖 未核验；默认采纳、立即可检索（§6.4）
-        r = requests.post(URL + "/wiki/answer", json=body, timeout=120).json()
+                "model": "agent"}
+        r = requests.post(URL + "/wiki/answer/agent", json=body, timeout=120).json()
         if r.get("ok"):
+            if r.get("pending_review"):
+                return (f"已为人工核验页「{r.get('title')}」提交待审修改（id={r.get('id')}，"
+                        f"引用 {r.get('n_sources')} 篇）。核验版和检索结果未被覆盖；"
+                        "请用户在应用的综述页查看差异后接受或放弃。")
             state = "已入表可检索" if r.get("indexed") else "已存盘，重建索引后可检索"
             return f"已沉淀为综合页：{r.get('title')}（id={r.get('id')}，{state}，引用 {r.get('n_sources')} 篇）。"
         return "沉淀失败：" + str(r.get("detail") or r)
@@ -1106,7 +1124,12 @@ def do_tool(name, args):
                     else f"offset={off} 超出范围（共 {total} 条）。")
         out = [f"综合层共 {total} 页，本页 offset={off}、返回 {len(pages)} 页（动手前先看有没有现成的）："]
         for p in pages:
-            flag = "🤖未核验" if p.get("by_agent") else "🧑"
+            if p.get("pending_review"):
+                flag = "🟠有待审修改"
+            elif p.get("verified_at"):
+                flag = "✓已核验"
+            else:
+                flag = "🤖未核验" if p.get("by_agent") else "🧑未核验"
             stale = "·⚠过时" if p.get("stale") else ""
             out.append(f"- [{p.get('id')}] {p.get('kind')}{stale} {flag} {p.get('title', '')}"
                        f"（基于 {p.get('n_sources', 0)} 篇 · {str(p.get('generated_at', ''))[:10]}）")
@@ -1124,6 +1147,9 @@ def do_tool(name, args):
         head = (f"# {p.get('title', '')}\n（{p.get('kind')} · 基于 {len(p.get('sources', []))} 篇 · "
                 f"生成于 {str(p.get('generated_at', ''))[:10]} · 模型 {p.get('generated_by', '') or '未知'}"
                 f"{'·⚠可能已过时' if p.get('stale') else ''}）")
+        if p.get("pending_review"):
+            head += ("\n\n> 🟠 Agent 已提交待审修改；下方仍是人工核验版，检索也继续使用核验版。"
+                     "请用户在应用里查看差异并决定接受或放弃。")
         srcs = "\n".join(f"[{i+1}] {s.get('citation') or s.get('key')}"
                          for i, s in enumerate(p.get("sources", [])))
         return head + "\n\n" + p.get("markdown", "") + ("\n\n来源页级引用：\n" + srcs if srcs else "")
@@ -1274,6 +1300,10 @@ def do_tool(name, args):
         if resp.status_code != 200:
             return "写入失败：" + _err_of(resp)
         r = resp.json()
+        if r.get("pending_review"):
+            return (f"已为人工核验页「{r.get('title')}」提交待审修改"
+                    f"（id={r.get('id')}，引用 {r.get('n_sources')} 篇）。"
+                    "核验版和检索结果未被覆盖；请用户在应用里审阅差异。")
         state = "已入表可检索" if r.get("indexed") else "已存盘"
         tail = f"，互链 {len(r.get('links') or [])} 条" if r.get("links") else ""
         return (f"已{'追加到' if args.get('mode') == 'append' else '写入'}「{r.get('title')}」"
@@ -1290,6 +1320,12 @@ def do_tool(name, args):
         if resp.status_code != 200:
             return "写互链失败：" + _err_of(resp)
         r = resp.json()
+        if r.get("pending_review"):
+            msg = (f"已为人工核验页「{pid}」提交互链待审修改："
+                   f"{'、'.join(r['links']) or '（无互链）'}。核验版的互链和检索结果未改变。")
+            if r.get("skipped"):
+                msg += f"\n? 已跳过 {len(r['skipped'])} 个无效目标：{'、'.join(r['skipped'])}"
+            return msg
         msg = f"「{pid}」现有 {len(r['links'])} 条互链：{'、'.join(r['links']) or '（无）'}"
         if r.get("skipped"):
             msg += f"\n⚠ 已跳过 {len(r['skipped'])} 个无效目标（自链或不存在的页）：{'、'.join(r['skipped'])}"

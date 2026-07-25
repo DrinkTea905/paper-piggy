@@ -2336,7 +2336,67 @@
     if (hist) hist.hidden = !!editing;
   }
 
+  let activeWikiPage = null;
+  let activeWikiReview = null;
+
+  function reviewChangeList(label, added, removed) {
+    const plus = (added || []).map((x) => `＋ ${x}`).join("\n");
+    const minus = (removed || []).map((x) => `－ ${x}`).join("\n");
+    return `<div class="wiki-review-fact"><b>${esc(label)}</b>${esc([plus, minus].filter(Boolean).join("\n") || "没有变化")}</div>`;
+  }
+
+  async function openWikiReview(pageId) {
+    const panel = $("#wiki-review-panel");
+    if (!panel || !pageId) return;
+    panel.hidden = false;
+    $("#wiki-review-meta").textContent = "正在读取差异…";
+    $("#wiki-review-facts").innerHTML = "";
+    $("#wiki-review-diff").textContent = "";
+    try {
+      const r = await jget("/wiki/review/" + encodeURIComponent(pageId));
+      activeWikiReview = r;
+      $("#wiki-review-meta").textContent =
+        `核验版：${(r.verified_at || "未知时间").replace("T", " ").slice(0, 19)} · ` +
+        `待审版：${(r.pending_generated_at || "未知时间").replace("T", " ").slice(0, 19)} · ` +
+        `模型：${r.pending_generated_by || "未知"}`;
+      const titleChange = r.title_before === r.title_after
+        ? "没有变化" : `原：${r.title_before || "（无标题）"}\n新：${r.title_after || "（无标题）"}`;
+      $("#wiki-review-facts").innerHTML =
+        `<div class="wiki-review-fact"><b>标题</b>${esc(titleChange)}</div>` +
+        reviewChangeList("参考来源", r.sources_added, r.sources_removed) +
+        reviewChangeList("综述互链", r.links_added, r.links_removed);
+      $("#wiki-review-diff").textContent = r.body_diff || "（正文没有文字差异）";
+    } catch (e) {
+      $("#wiki-review-meta").textContent = "读取差异失败：" + (e.message || e);
+    }
+  }
+
+  async function finishWikiReview(action) {
+    const p = activeWikiPage;
+    if (!p || !p.id) return;
+    const accepting = action === "accept";
+    const prompt = accepting
+      ? ["接受后，待审稿会替换当前核验版，并立即成为新的已核验版本。", { title: "接受这次 Agent 修改？", okText: "接受并核验" }]
+      : ["待审稿会被丢弃；当前核验版和检索内容保持不变。", { title: "放弃这次 Agent 修改？", okText: "放弃修改", danger: true }];
+    if (!(await uiConfirm(prompt[0], prompt[1]))) return;
+    const btn = $(accepting ? "#wiki-review-accept" : "#wiki-review-discard");
+    if (btn) btn.disabled = true;
+    try {
+      await jpost(`/wiki/review/${encodeURIComponent(p.id)}/${action}`, {});
+      activeWikiReview = null;
+      await loadWikiList("silent");
+      renderWiki(await jget("/wiki/page/" + encodeURIComponent(p.id)));
+      flashToast(accepting ? "待审修改已接受，并成为新的核验版。" : "待审修改已放弃，核验版没有变化。");
+    } catch (e) {
+      flashToast((accepting ? "接受" : "放弃") + "待审修改失败：" + (e.message || e));
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
   function renderWiki(p) {
+    activeWikiPage = p;
+    activeWikiReview = null;
     setWikiEditMode(false);
     $("#wiki-title").textContent = p.title || "综述页";
     const stale = p.stale ? " · ⚠ 可能已过时" : "";
@@ -2350,6 +2410,9 @@
     if (flag) {
       flag.innerHTML = p.degraded
         ? `<span class="wk-flag degraded" title="${esc(p.degraded_reason || "")}">⚠ 证据清单（非 AI 综述）</span>`
+        : p.pending_review
+        ? `<span class="wk-flag pending" title="Agent 的修改尚未发布；当前仍是人工核验版"><span class="status-dot" aria-hidden="true"></span>有待审修改</span>` +
+          `<span class="wk-flag ok" title="当前显示和检索的是已于 ${esc(p.verified_at || "")} 人工核验的版本"><span class="status-dot" aria-hidden="true"></span>核验版仍生效</span>`
         : p.verified_at
         ? `<span class="wk-flag ok" title="已于 ${esc(p.verified_at)} 人工核验"><span class="status-dot" aria-hidden="true"></span>已核验</span>` +
           `<button id="wiki-verify" class="ghost2b wiki-verify" data-verified="1" title="撤销这一页的人工核验状态">改回未核验</button>`
@@ -2374,6 +2437,17 @@
         }
       });
     }
+    const reviewBanner = $("#wiki-review-banner");
+    const reviewPanel = $("#wiki-review-panel");
+    if (reviewBanner) {
+      reviewBanner.hidden = !p.pending_review;
+      const summary = $("#wiki-review-summary");
+      if (summary && p.pending_review) {
+        const when = (p.pending_generated_at || "").replace("T", " ").slice(0, 16);
+        summary.textContent = `${when ? when + " " : ""}提交；当前显示和检索的仍是你核验过的版本。`;
+      }
+    }
+    if (reviewPanel) reviewPanel.hidden = true;
     // 降级页在正文顶部挂一条醒目横幅，说明它为什么不是综述、怎么交给 Agent 补救
     const banner = p.degraded
       ? `<div class="wk-degraded-banner">⚠ <b>这不是 AI 综述。</b>${esc(p.degraded_reason || "")}。` +
@@ -2442,7 +2516,15 @@
       editBtn.dataset.id = p.id;
       editBtn.dataset.disabled = p.degraded ? "1" : "0";
       editBtn.hidden = !!p.degraded;
+      editBtn.textContent = p.pending_review ? "✎ 编辑待审稿" : "✎ 编辑正文";
+      editBtn.title = p.pending_review
+        ? "先修改 Agent 待审正文；保存后发布并核验"
+        : "直接修改这一页的正文；保存后视为已核验";
     }
+    const editHint = $("#wiki-edit-hint");
+    if (editHint) editHint.textContent = p.pending_review
+      ? "当前编辑的是 Agent 待审稿。保存后会发布这份修改，并成为新的已核验版本；标题、来源和系统记录由 PaperPiggy 自动维护。"
+      : "可编辑正文 Markdown；标题、参考来源和系统记录由 PaperPiggy 自动维护。保存后直接视为已核验。";
     $("#wiki-modal").hidden = false;
   }
   function renderWikiToc() {
@@ -2493,12 +2575,14 @@
       const vs = h.versions || [];
       if (!vs.length) { box.innerHTML = `<div class="wh-loading">还没有历史版本。</div>`; return; }
       const fmt = (ts) => new Date(ts * 1000).toLocaleString("zh-CN", { hour12: false });
+      const currentIndex = vs.findIndex((v) => !v.pending);
       box.innerHTML = `<div class="wh-h">修改历史（${vs.length} 版）</div>` +
         vs.map((v, i) =>
           `<div class="wh-item">
              <span class="wh-ts">${esc(fmt(v.ts))}</span>
              <span class="wh-msg">${esc(v.message || "（无说明）")}</span>
-             ${i === 0 ? `<span class="wh-cur">当前</span>`
+             ${v.pending ? `<span class="wk-flag pending">待审记录</span>`
+                       : i === currentIndex ? `<span class="wh-cur">当前核验版</span>`
                        : `<button class="ghost2 wh-restore" data-rev="${esc(v.rev)}">回滚到这一版</button>`}
            </div>`).join("");
       box.querySelectorAll(".wh-restore").forEach((el) => el.addEventListener("click", async () => {
@@ -2546,8 +2630,7 @@
       editSave.textContent = "保存中…";
       try {
         const r = await jpost("/wiki/edit/" + encodeURIComponent(id), { content });
-        (WK.pages || []).forEach((pg) => { if (pg.id === id) pg.verified_at = (r && r.verified_at) || ""; });
-        if (wikiLoaded) renderWikiList();
+        if (wikiLoaded) await loadWikiList("silent");
         renderWiki(await jget("/wiki/page/" + encodeURIComponent(id)));
         flashToast("正文已保存，并标为已核验。");
       } catch (e) {
@@ -2578,6 +2661,19 @@
   }
   (function wireWikiModal() {
     const close = $("#wiki-close"); if (close) close.addEventListener("click", () => ($("#wiki-modal").hidden = true));
+    const reviewOpen = $("#wiki-review-open");
+    if (reviewOpen) reviewOpen.addEventListener("click", () => openWikiReview(activeWikiPage && activeWikiPage.id));
+    const reviewClose = $("#wiki-review-close");
+    if (reviewClose) reviewClose.addEventListener("click", () => { $("#wiki-review-panel").hidden = true; });
+    const reviewAccept = $("#wiki-review-accept");
+    if (reviewAccept) reviewAccept.addEventListener("click", () => finishWikiReview("accept"));
+    const reviewDiscard = $("#wiki-review-discard");
+    if (reviewDiscard) reviewDiscard.addEventListener("click", () => finishWikiReview("discard"));
+    const reviewEdit = $("#wiki-review-edit");
+    if (reviewEdit) reviewEdit.addEventListener("click", () => {
+      $("#wiki-review-panel").hidden = true;
+      const edit = $("#wiki-edit"); if (edit) edit.click();
+    });
     // EN-F4：正文 wikilink 点击委托——mdToHtml 输出走 innerHTML，不能挂内联 onclick；
     // 委托挂在常驻容器 #wiki-body 上，正文每次重渲染也不用重挂
     const wb = $("#wiki-body");
@@ -2675,8 +2771,8 @@
     let list = [...WK.pages];
     if (WK.theme) list = list.filter((p) => (p.theme || "未分类") === WK.theme);
     if (WK.kind) list = list.filter((p) => (p.kind || "answer") === WK.kind);
-    // 「只看未核验」覆盖所有尚未人工核验的正常综述页。
-    if (WK.agentOnly) list = list.filter((p) => !p.degraded && !p.verified_at);
+    // 「只看需核验」既包括从未核验的页，也包括已有核验版、但 Agent 新交了待审修改的页。
+    if (WK.agentOnly) list = list.filter((p) => !p.degraded && (!p.verified_at || p.pending_review));
     if (WK.search) {
       const q = WK.search.toLocaleLowerCase("zh-CN");
       list = list.filter((p) => (p.title || "").toLocaleLowerCase("zh-CN").includes(q));
@@ -2704,6 +2800,8 @@
     const kind = WK_KIND[p.kind || "answer"] || (p.kind || "");
     const prov = p.degraded
       ? `<span class="wk-flag degraded" title="${esc(p.degraded_reason || "")}">⚠ 证据清单（非 AI 综述）</span>`
+      : p.pending_review
+      ? `<span class="wk-flag pending" title="Agent 的修改等待你查看；当前核验版仍在检索"><span class="status-dot" aria-hidden="true"></span>有待审修改</span>`
       : p.verified_at
       ? `<span class="wk-flag ok" title="已于 ${esc(p.verified_at)} 人工核验"><span class="status-dot" aria-hidden="true"></span>已核验</span>`
       : `<span class="wk-flag${p.by_agent ? " agent" : ""}" title="${p.by_agent ? "agent 写回、未经人工核验" : "尚未人工核验"}"><span class="status-dot" aria-hidden="true"></span>未核验</span>`;

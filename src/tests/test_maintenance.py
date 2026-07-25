@@ -138,20 +138,21 @@ class WikiHumanEditingTests(unittest.TestCase):
                     "sources": [{"key": "K1"}], "generated_by": "agent", "stale": True,
                     "by_agent": True, "links": ["p2"]}
         with mock.patch.object(W, "index_map", return_value={"p1": existing}), \
-                mock.patch.object(W, "_persist_page", return_value={"id": "p1"}) as persist, \
-                mock.patch.object(W, "set_verified", return_value={"verified_at": "2026-07-22T01:02:03"}) as verify:
+                mock.patch.object(W, "_persist_page", return_value={"id": "p1"}) as persist:
             result = W.edit_page_by_human("p1", "修正后的正文")
         self.assertTrue(persist.call_args.kwargs["human_edit"])
         self.assertTrue(persist.call_args.kwargs["by_agent"])
-        verify.assert_called_once_with("p1", True)
-        self.assertEqual(result["verified_at"], "2026-07-22T01:02:03")
+        self.assertTrue(persist.call_args.kwargs["verified_at"])
+        self.assertEqual(result["verified_at"], persist.call_args.kwargs["verified_at"])
 
     def test_verified_state_can_be_cleared(self):
         meta = {"id": "p1", "kind": "digest", "title": "测试综述", "verified_at": "old"}
         with tempfile.TemporaryDirectory() as td, \
                 mock.patch.object(W, "load_index", return_value={"pages": [meta]}), \
                 mock.patch.object(W, "_save_index") as save_index, \
-                mock.patch.object(W, "page_path", return_value=Path(td) / "missing.md"):
+                mock.patch.object(W, "page_path", return_value=Path(td) / "missing.md"), \
+                mock.patch.object(W, "has_pending_review", return_value=False), \
+                mock.patch.object(W, "_snapshot"):
             result = W.set_verified("p1", False)
         self.assertFalse(result["verified"])
         self.assertEqual(result["verified_at"], "")
