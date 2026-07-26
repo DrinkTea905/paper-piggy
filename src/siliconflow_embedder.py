@@ -21,7 +21,7 @@ body: {"model": <id>, "input": <str|list[str]>, "encoding_format": "float"}
 resp: {"data": [{"embedding": [...], "index": i}, ...], "usage": {...}}
 可用模型：BAAI/bge-m3（免费，≤8192 token，dim=1024）、Pro/BAAI/bge-m3（付费高优先级，同空间）。
 """
-import sys, time, random
+import sys, time, random, re
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -33,6 +33,9 @@ DEFAULT_BASE = "https://api.siliconflow.cn/v1"
 DEFAULT_MODEL = "BAAI/bge-m3"
 # 单次请求最多塞多少条 input（护栏；超过则内部再细分，避免请求过大被拒/超时）
 MAX_BATCH = 64
+# OpenAI 兼容服务通常按 token 限长，而本客户端不强依赖某个远端 tokenizer。
+# 用 max_length 的 8 倍字符数作保守上界：中文最坏也明显低于 bge-m3 的 8192 token。
+CHARS_PER_REQUEST_TOKEN = 8
 
 
 # 类型化异常：让批量嵌入的调用方能区分「重试无用、立即中止」与「传输抖动、可再等」。
@@ -96,7 +99,8 @@ class SiliconFlowEmbedder:
                 last = f"{r.status_code} 服务端繁忙"
                 time.sleep(min(10, 1.5 ** attempt) + random.uniform(0, 0.3)); continue
             if 400 <= r.status_code < 500:                       # R1：4xx(密钥/额度/参数/模型名) 重试无用，快速失败
-                raise EmbedClientError(_client_err(r.status_code, self.model))
+                raise EmbedClientError(
+                    _client_err(r.status_code, self.model, _response_detail(r)))
             try:                                                # 2xx：解析（偶发坏响应/维度不符仍可重试）
                 r.raise_for_status()
                 data = sorted(r.json()["data"], key=lambda x: x.get("index", 0))
@@ -118,7 +122,7 @@ class SiliconFlowEmbedder:
     # ---- 对外主接口（与本地 Embedder 同签名）----
     def encode(self, texts, batch_size=None, max_length=None):
         """texts: list[str] -> np.ndarray(float32, (n, dim))，逐行 L2 归一。
-        max_length 仅为签名兼容（服务端自行截断，不发给 API）。"""
+        max_length 不发给远端；在客户端换算成保守字符上限，避免超长输入被服务端 400 拒绝。"""
         if texts is None:
             return np.zeros((0, self.dim), np.float32)
         if isinstance(texts, str):
@@ -127,10 +131,16 @@ class SiliconFlowEmbedder:
         if n == 0:
             return np.zeros((0, self.dim), np.float32)
         bs = max(1, min(int(batch_size or self.batch_size), MAX_BATCH))
+        safe_max_length = max(1, int(max_length or 512))
+        max_chars = safe_max_length * CHARS_PER_REQUEST_TOKEN
         out = []
         for i in range(0, n, bs):
             # 空串/纯空白保护：某些服务端对空 input 报错，替换成单空格占位
-            chunk = [(t if (t and str(t).strip()) else " ") for t in texts[i:i + bs]]
+            chunk = []
+            for value in texts[i:i + bs]:
+                text = str(value) if value is not None else ""
+                text = text if text.strip() else " "
+                chunk.append(_truncate_remote_text(text, max_chars))
             out.append(self._post(chunk))
         return np.concatenate(out) if out else np.zeros((0, self.dim), np.float32)
 
@@ -139,15 +149,40 @@ class SiliconFlowEmbedder:
         return self.encode([text], max_length=max_length)[0]
 
 
-def _client_err(code, model=""):
+def _truncate_remote_text(text, max_chars):
+    """在不引入远端模型 tokenizer 的前提下做确定性、可测试的输入保护。"""
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars]
+
+
+def _response_detail(resp):
+    """从 4xx 响应提取不含凭据的短错误说明，帮助区分模型、额度与输入过长。"""
+    detail = ""
+    try:
+        data = resp.json()
+        if isinstance(data, dict):
+            err = data.get("error")
+            if isinstance(err, dict):
+                detail = err.get("message") or err.get("detail") or ""
+            else:
+                detail = data.get("message") or data.get("detail") or err or ""
+    except Exception:
+        detail = ""
+    detail = re.sub(r"\s+", " ", str(detail or "")).strip()
+    return detail[:300]
+
+
+def _client_err(code, model="", detail=""):
     """R1：把 4xx 客户端错误翻成人话（重试无用，直接抛给用户看）。"""
+    suffix = f"；服务端：{detail}" if detail else ""
     if code in (401, 403):
-        return "密钥无效或余额不足，请检查 API Key 与余额"
+        return "密钥无效或余额不足，请检查 API Key 与余额" + suffix
     if code == 404:
-        return f"接口地址或模型不存在（404，模型 {model}），请检查 base 地址与模型名"
+        return f"接口地址或模型不存在（404，模型 {model}），请检查 base 地址与模型名" + suffix
     if code == 400:
-        return f"请求被拒（400），请检查模型名（{model}）与参数"
-    return f"嵌入 API 客户端错误（HTTP {code}），请检查 API Key / 模型 / base 地址"
+        return f"请求被拒（400），请检查输入长度、模型名（{model}）与参数" + suffix
+    return f"嵌入 API 客户端错误（HTTP {code}），请检查 API Key / 模型 / base 地址" + suffix
 
 
 def _retry_after(resp):

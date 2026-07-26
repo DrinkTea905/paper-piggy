@@ -327,20 +327,22 @@ server 侧 `GET /agent/tasks`（`server.py:649`）解析 `任务.md` 的 frontma
 
 零第三方依赖（纯 stdlib + requests，不装 `mcp` 包，`mcp_server.py:4`）。stdio + newline-delimited JSON-RPC 2.0。
 
-- **39 个 TOOLS**（以 `len(TOOLS)` 为准）。分派在 `do_tool()`，绝大多数是对 server HTTP 端点的薄封装；除原有检索、索引、Wiki、研究和记忆工具外，还包括：
+- **TOOLS 数量以 `len(TOOLS)` 为准**。分派在 `do_tool()`，绝大多数是对 server HTTP 端点的薄封装；除原有检索、索引、Wiki、研究和记忆工具外，还包括：
   `list_workflows / read_workflow`（强制工作流入口）、`maintenance_audit`（统一全量体检）、
   `get_template_upgrade_diff / merge_template_upgrade`（安全合并模板）、`submit_agent_summaries`（Agent 摘要质量检查与重嵌入）、`resolve_wiki_suggestion`（建议处理留痕）。
   原有主要工具包括：
   检索类 `search_localkb / list_kb_categories / similar_sources / whats_new / list_sources / get_source_meta / read_source`；
   索引类 `localkb_status / deep_status / deep_index / localkb_build / add_source`；
-  wiki 类 `save_synthesis / list_wiki / get_wiki_page / update_wiki_page / mark_stale / set_wiki_links / get_backlinks / lint_wiki / propose_wiki_updates / pending_wiki_updates`；
+  wiki 类 `save_synthesis / list_wiki / get_wiki_page / update_wiki_page / set_wiki_theme / mark_stale / set_wiki_links / get_backlinks / lint_wiki / propose_wiki_updates / pending_wiki_updates`；
   研究类 `build_digest / research_outline / suggest_new_sources / export_disclosure / resolve_page / format_citation / locate_quote / verify_claim`；
   记忆类 `read_project_memory / append_project_memory`。
 - **4 个 RESOURCES**（`mcp_server.py:610`）：`localkb://schema`（WIKI.md 全文）、`localkb://index`、`localkb://lint`、`localkb://memory`。
   外加 1 个 **RESOURCE_TEMPLATE** `localkb://page/{id}`（`:628`）。
 - **3 个 PROMPTS**（`mcp_server.py:635`）= gist 三环的斜杠命令：`ingest-source` / `lint-wiki` / `query-and-file`。
 - `initialize` 时下发 `instructions()`（`:174`）= 固定头 + **WIKI.md 全文** + 工作区说明（`_workspace_text`，`:130`，含项目记忆内联）。
-- server 版本号取 `config.APP_VERSION`（**全项目唯一版本字面量**，`config.py:19`；`mcp_server.py:1454` 只是引用它），协议版本 `2024-11-05`（`:23`）。
+- server 版本号取 `config.APP_VERSION`（**全项目唯一版本字面量**）。MCP 按客户端初始化请求协商
+  `2024-11-05`、`2025-03-26`、`2025-06-18` 或 `2025-11-25`：前两版返回兼容工具定义与标准文本，后两版增加标题、
+  `annotations`、`outputSchema` 与 `structuredContent`；`read_source` 的长正文始终走标准文本通道。
 - 前端 Agent 页的接入命令由 `GET /agent/mcp-config`（`server.py:396`）动态吐出（`claude mcp add localkb -- <python> <mcp_server.py>` / mcp.json / codex.toml），**工具数是运行时 `len(MCP.TOOLS)` 读出来的，不写死**（`server.py:416-420`）。
 - 文档 `MCP接入说明.md` 的工具表由 `gen_mcp_doc.py` 从 `TOOLS` 生成——**改了 TOOLS 要跑一次**（`gen_mcp_doc.py --check` 可在提交前校验）。
 

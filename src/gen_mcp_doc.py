@@ -15,13 +15,9 @@ DOC = Path(__file__).parent / "MCP接入说明.md"
 BEGIN = "<!-- TOOLS:BEGIN 由 gen_mcp_doc.py 生成，勿手改 -->"
 END = "<!-- TOOLS:END -->"
 
-# 写工具（会改动 data/wiki 或触发建库）；其余为只读
-WRITE_TOOLS = {"save_synthesis", "build_digest", "research_outline",
-               "localkb_build", "deep_index", "mark_stale",
-               "update_wiki_page", "set_wiki_links",
-               "add_source", "merge_template_upgrade",
-               "submit_agent_summaries", "resolve_wiki_suggestion",
-               "append_project_memory"}
+def _is_write(tool):
+    """读写分类复用 MCP ToolAnnotations，避免再维护第二份工具名单。"""
+    return not bool((tool.get("annotations") or {}).get("readOnlyHint"))
 
 
 def _sig(t):
@@ -48,9 +44,9 @@ def _desc(t):
 def render():
     rows = ["| 工具 | 类型 | 作用 |", "|---|---|---|"]
     for t in M.TOOLS:
-        kind = "写" if t["name"] in WRITE_TOOLS else "读"
+        kind = "写" if _is_write(t) else "读"
         rows.append(f"| {_sig(t)} | {kind} | {_desc(t)} |")
-    n_w = sum(1 for t in M.TOOLS if t["name"] in WRITE_TOOLS)
+    n_w = sum(1 for t in M.TOOLS if _is_write(t))
     head = f"共 **{len(M.TOOLS)} 个工具**（{len(M.TOOLS) - n_w} 读 / {n_w} 写）。工具清单与读写分类由 `gen_mcp_doc.py` 从代码生成。\n"
     return BEGIN + "\n" + head + "\n" + "\n".join(rows) + "\n" + END
 

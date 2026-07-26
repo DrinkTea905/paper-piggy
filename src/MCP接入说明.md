@@ -10,7 +10,7 @@
 ## 提供的工具
 
 <!-- TOOLS:BEGIN 由 gen_mcp_doc.py 生成，勿手改 -->
-共 **39 个工具**（26 读 / 13 写）。工具清单与读写分类由 `gen_mcp_doc.py` 从代码生成。
+共 **40 个工具**（26 读 / 14 写）。工具清单与读写分类由 `gen_mcp_doc.py` 从代码生成。
 
 | 工具 | 类型 | 作用 |
 |---|---|---|
@@ -40,6 +40,7 @@
 | `mark_stale(page_id, stale=True, reason?)` | 写 | 把某综合页标记为「已过时」（或清除标记）。当新文献推翻了旧综合、或页内断言不再成立时用。标记后该页在检索里显著降权、界面显示 ⚠ 徽标。这是健康检查(lint)的核心动作：**不要**直接覆盖别人的结论页，而应标脏并写清理由。 |
 | `get_backlinks(key?, page_id?)` | 读 | 反查关联。给 key（论文）→ 哪些综合页引用了这篇（新增或更新这篇后，据此判断哪些页要标脏/重生）；给 page_id（综合页）→ 它引用了哪些论文、与哪些页互链、是不是孤儿页。这是 ingest 后「一篇源触及多个 wiki 页」和 lint 的起点。 |
 | `update_wiki_page(page_id, kind?, title?, content, sources?, mode=replace, links?)` | 写 | 建立或修改一个 wiki 综合页。这是维护 wiki 的主要动作。 kind 可选：answer(问答沉淀) / concept(概念) / topic(主题) / digest(资料汇编) / outline(选题框架) / **entity(实体页：作者、机构、案件、制度)** / **overview(总论页：随全库演进的核心论点)**。 mode='append' 把新内容与来源并入既有页；'replace' 整体重写，显式传 sources 时会替换旧来源，可用于修正失效 key；replace 不传 sources 则保留旧来源。 护栏：更新用户人工核验过的页时，只生成待审修改；核验版与检索结果保持不变，由用户在应用里比较后接受或放弃。每个论断带 [n] 引用，sources 填论文 key。 |
+| `set_wiki_theme(page_id, theme)` | 写 | 把一个 wiki 综合页固定到指定研究主题。只修改整理元数据，不改正文、引用或人工核验状态；theme 传空串时恢复按来源自动归类。适合把中英文重复标签收束到用户确认的研究主线。 |
 | `set_wiki_links(page_id, links, mode=replace)` | 写 | 维护某页的交叉链接（wiki 页之间的边）。**这是把一堆孤立页面变成一张知识图的唯一途径**——没有 links，每一页都是孤儿，lint 会一直报警。只接受已存在的页 id，自动拒绝自链与断链。已核验页的互链修改同样只进入待审稿。 |
 | `lint_wiki(min_mentions=2)` | 读 | 综合层健康体检（gist 三大操作之一）。查：孤儿页、已过时页、断链、无来源论文的页、未配 AI 模型时生成的降级页、被反复提及却没有独立页的概念、无效来源 key、重复标题/研究问题。返回问题清单 + 建议动作。定期跑一次，wiki 才不会烂掉。纯读，不改任何东西。 |
 | `propose_wiki_updates(key, topk=12)` | 读 | **读完一篇文献后必调**。给论文 key，返回这篇影响了哪些既有 wiki 页、每页该怎么改。 两条线索：① 直接引用它的页（结论可能被推翻）；② 讲同一主题却没引用它的页（该更新却没人知道）。 gist 的经验：一篇源常常触及 10-15 个页。拿到清单后逐页执行 update_wiki_page / mark_stale / set_wiki_links，别只改一页就收工。 |
@@ -157,5 +158,6 @@ args = ["<你的PaperPiggy目录>\\app\\mcp_server.py"]
 - **非 MCP 生态**（自写脚本、LangChain、别家 agent 框架）可直接调 HTTP：OpenAPI 交互文档在
   <http://127.0.0.1:8770/docs>（服务运行时可开）。
 - **CLI 定位**：`localkb.py` 仅覆盖检索/建库/状态三件事，完整能力（读原文、wiki 维护、引注核验等）走 MCP。
-- 部分工具（search_localkb / read_source / list_sources / list_wiki / get_source_meta / verify_claim / locate_quote / whats_new）
-  在返回里附带 `structuredContent`（MCP 2025-06 规范）；老客户端自动忽略，文本仍是主载体。
+- MCP 会按客户端在 `initialize` 中请求的版本协商：支持 `2024-11-05`、`2025-03-26`、
+  `2025-06-18` 与 `2025-11-25`。前两版只返回标准文本；后两版为适合程序化处理的工具附带 `structuredContent`、`outputSchema`
+  和读写注解。`read_source` 的原文始终只走标准文本通道，避免部分客户端只显示结构化元数据而遮蔽正文。

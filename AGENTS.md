@@ -89,7 +89,7 @@ README / CHANGELOG / release notes 会被全世界看到。改文案时别留「
 - 把 Zotero 文库（或任意文件夹）里的论文 / 法源 / 报告建成本地索引
 - 检索：dense(LanceDB) + BM25 → RRF 融合 → reranker → 期刊权重加成
 - **综合层 wiki**：把检索答案沉淀成可持久、可引用、会标记过期（stale）的知识页
-- **Agent 层**：通过 MCP（当前 39 个工具；后续以 `mcp_server.TOOLS` 和自动生成的 `MCP接入说明.md` 为准）让 Codex 等外部 agent 直接操作这个知识库，内置「写论文与综述」「维护综述库」「跨学科发散与补文献」等工作流
+- **Agent 层**：通过 MCP（工具数以 `mcp_server.TOOLS` 和自动生成的 `MCP接入说明.md` 为准）让 Codex 等外部 agent 直接操作这个知识库，内置「写论文与综述」「维护综述库」「跨学科发散与补文献」等工作流
 
 全本地运行（也支持 API 模式）。开源，**明文 .py 分发，不编译不混淆**。
 

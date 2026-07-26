@@ -719,6 +719,75 @@ def neighbors(key, topk=8):
 
 
 # ═══ 综合层：wiki 页嵌入入表（组件热态即时；冷态下次检索回灌）══════
+_WIKI_EMBED_SEGMENT_CHARS = 1200
+_WIKI_EMBED_MAX_SEGMENTS = 24
+
+
+def _wiki_embedding_segments(title, body):
+    """把长综合页按段落切成可安全嵌入的代表片段，并让片段覆盖全文。"""
+    title = str(title or "").strip()
+    body = str(body or "").strip()
+    prefix = title + "\n" if title else ""
+    capacity = max(200, _WIKI_EMBED_SEGMENT_CHARS - len(prefix))
+    units = []
+    for paragraph in re.split(r"\n\s*\n", body):
+        paragraph = paragraph.strip()
+        if not paragraph:
+            continue
+        first_line = paragraph.split("\n", 1)[0].strip()
+        context = first_line if re.match(r"^#{1,6}\s+\S", first_line) and len(first_line) <= 160 else ""
+        first_chunk = True
+        while len(paragraph) > capacity:
+            lead = "" if first_chunk or not context else context + "\n"
+            take = max(100, capacity - len(lead))
+            cut = paragraph.rfind("\n", 0, take + 1)
+            if cut < take // 2:
+                cut = take
+            units.append((lead + paragraph[:cut]).strip())
+            paragraph = paragraph[cut:].strip()
+            first_chunk = False
+        if paragraph:
+            lead = "" if first_chunk or not context else context + "\n"
+            units.append((lead + paragraph).strip())
+
+    packed = []
+    current = ""
+    for unit in units:
+        candidate = unit if not current else current + "\n\n" + unit
+        if current and len(candidate) > capacity:
+            packed.append(prefix + current)
+            current = unit
+        else:
+            current = candidate
+    if current:
+        packed.append(prefix + current)
+    if not packed:
+        packed = [prefix.rstrip() or " "]
+
+    if len(packed) > _WIKI_EMBED_MAX_SEGMENTS:
+        last = len(packed) - 1
+        indices = [
+            round(i * last / (_WIKI_EMBED_MAX_SEGMENTS - 1))
+            for i in range(_WIKI_EMBED_MAX_SEGMENTS)
+        ]
+        packed = [packed[i] for i in indices]
+    return packed
+
+
+def _aggregate_wiki_vectors(vectors, segments):
+    """按片段文本量加权汇总并重新 L2 归一，得到一页一个稳定向量。"""
+    import numpy as np
+    matrix = np.asarray(vectors, dtype=np.float32)
+    if matrix.ndim != 2 or matrix.shape[0] != len(segments) or matrix.shape[0] == 0:
+        raise ValueError("wiki 嵌入返回形状不正确")
+    weights = np.asarray([max(1, len(x)) for x in segments], dtype=np.float32)
+    vector = np.average(matrix, axis=0, weights=weights)
+    norm = float(np.linalg.norm(vector))
+    if not norm:
+        raise ValueError("wiki 嵌入返回零向量")
+    return (vector / norm).astype(np.float32)
+
+
 def _fit_row_to_schema(full, vec):
     """按当前表 schema 逐列取值：旧表无 row_type/ingested_at 等列时自动省略，
        表有而 full 无的列填安全默认。复用 embed_index.py:54 的"按现表 schema 决定列"思路，
@@ -754,7 +823,9 @@ def _index_wiki_page_loaded(page_id, title, body, meta):
     if STATE.get("mode") != "full" or "tbl" not in M or "embed" not in M:
         return False
     try:
-        vec = [float(x) for x in M["embed"].encode([f"{title}\n{body}"], max_length=512)[0]]
+        segments = _wiki_embedding_segments(title, body)
+        vectors = M["embed"].encode(segments, max_length=512)
+        vec = [float(x) for x in _aggregate_wiki_vectors(vectors, segments)]
     except Exception as e:
         log("wiki 嵌入失败：", e); return False
     cid = f"{page_id}::wiki"

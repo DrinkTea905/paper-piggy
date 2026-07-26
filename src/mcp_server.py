@@ -21,7 +21,12 @@ except Exception:
     pass
 
 URL = C.DAEMON_URL
-PROTO = "2024-11-05"
+PROTO = "2025-11-25"
+STRUCTURED_PROTO = "2025-06-18"
+INTERMEDIATE_PROTO = "2025-03-26"
+LEGACY_PROTO = "2024-11-05"
+SUPPORTED_PROTOCOLS = (PROTO, STRUCTURED_PROTO, INTERMEDIATE_PROTO, LEGACY_PROTO)
+STRUCTURED_PROTOCOLS = {PROTO, STRUCTURED_PROTO}
 
 def log(*a):
     print("[mcp-localkb]", *a, file=sys.stderr, flush=True)
@@ -564,6 +569,19 @@ TOOLS = [
         },
     },
     {
+        "name": "set_wiki_theme",
+        "description": "把一个 wiki 综合页固定到指定研究主题。只修改整理元数据，不改正文、引用或人工核验状态；"
+                       "theme 传空串时恢复按来源自动归类。适合把中英文重复标签收束到用户确认的研究主线。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "page_id": {"type": "string", "description": "要整理的 wiki 页 id（来自 list_wiki）"},
+                "theme": {"type": "string", "description": "要固定的主题名称；空串表示恢复自动分类"},
+            },
+            "required": ["page_id", "theme"],
+        },
+    },
+    {
         "name": "set_wiki_links",
         "description": "维护某页的交叉链接（wiki 页之间的边）。**这是把一堆孤立页面变成一张知识图的唯一途径**——"
                        "没有 links，每一页都是孤儿，lint 会一直报警。"
@@ -715,6 +733,169 @@ TOOLS = [
             "required": ["text"]},
     },
 ]
+
+# MCP 2025-06-18 工具契约元数据。旧版 2024-11-05 客户端会由 tools_for_protocol()
+# 得到只含 name/description/inputSchema 的兼容视图，不会看到它不认识的新字段。
+_TOOL_TITLES = {
+    "search_localkb": "检索本地知识库",
+    "list_kb_categories": "列出知识库分类",
+    "resolve_page": "解析印刷页码",
+    "build_digest": "生成资料汇编",
+    "research_outline": "生成研究大纲",
+    "suggest_new_sources": "建议补充文献",
+    "export_disclosure": "生成 AI 使用声明",
+    "localkb_status": "查看知识库状态",
+    "list_workflows": "列出研究工作流",
+    "read_workflow": "读取研究工作流",
+    "maintenance_audit": "全量维护审计",
+    "get_template_upgrade_diff": "查看模板升级差异",
+    "merge_template_upgrade": "合并模板升级",
+    "submit_agent_summaries": "提交 Agent 检索摘要",
+    "resolve_wiki_suggestion": "记录 Wiki 建议处理结果",
+    "deep_status": "查看深索状态",
+    "deep_index": "执行全文深索",
+    "localkb_build": "构建知识库索引",
+    "save_synthesis": "保存综合结论",
+    "list_wiki": "列出 Wiki 综合页",
+    "get_wiki_page": "读取 Wiki 综合页",
+    "read_source": "读取文献原文",
+    "list_sources": "列出文献题录",
+    "mark_stale": "标记综合页过时状态",
+    "get_backlinks": "查询来源与页面反链",
+    "update_wiki_page": "建立或更新 Wiki 综合页",
+    "set_wiki_theme": "设置 Wiki 研究主题",
+    "set_wiki_links": "维护 Wiki 页面互链",
+    "lint_wiki": "检查 Wiki 健康状态",
+    "propose_wiki_updates": "分析文献影响页面",
+    "format_citation": "格式化页级引注",
+    "get_source_meta": "读取文献完整题录",
+    "similar_sources": "查找相似文献",
+    "whats_new": "查看近期新增文献",
+    "locate_quote": "定位原文引句",
+    "verify_claim": "核验论断证据",
+    "add_source": "添加全文来源",
+    "pending_wiki_updates": "列出待处理 Wiki 更新",
+    "read_project_memory": "读取项目记忆",
+    "append_project_memory": "追加项目记忆",
+}
+
+_WRITE_TOOLS = {
+    "build_digest", "research_outline", "merge_template_upgrade",
+    "submit_agent_summaries", "resolve_wiki_suggestion", "deep_index", "localkb_build",
+    "save_synthesis", "mark_stale", "update_wiki_page", "set_wiki_theme",
+    "set_wiki_links", "add_source", "append_project_memory",
+}
+_IDEMPOTENT_WRITE_TOOLS = {"mark_stale", "set_wiki_theme"}
+
+_OUTPUT_SCHEMAS = {
+    "search_localkb": {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string"},
+            "mode": {"type": ["string", "null"]},
+            "took_ms": {"type": ["number", "null"]},
+            "results": {"type": "array", "items": {"type": "object"}},
+        },
+        "required": ["query", "results"],
+    },
+    "list_wiki": {
+        "type": "object",
+        "properties": {
+            "total": {"type": "integer"},
+            "offset": {"type": "integer"},
+            "pages": {"type": "array", "items": {"type": "object"}},
+        },
+        "required": ["total", "offset", "pages"],
+    },
+    "list_sources": {
+        "type": "object",
+        "properties": {
+            "total": {"type": "integer"},
+            "offset": {"type": "integer"},
+            "papers": {"type": "array", "items": {"type": "object"}},
+        },
+        "required": ["total", "offset", "papers"],
+    },
+    "get_source_meta": {"type": "object"},
+    "whats_new": {"type": "object"},
+    "locate_quote": {"type": "object"},
+    "verify_claim": {"type": "object"},
+}
+
+for _tool in TOOLS:
+    _name = _tool["name"]
+    _readonly = _name not in _WRITE_TOOLS
+    _tool["title"] = _TOOL_TITLES[_name]
+    _tool["annotations"] = {
+        "readOnlyHint": _readonly,
+        "destructiveHint": False,
+        "idempotentHint": _readonly or _name in _IDEMPOTENT_WRITE_TOOLS,
+        "openWorldHint": False,
+    }
+    if _name in _OUTPUT_SCHEMAS:
+        _tool["outputSchema"] = _OUTPUT_SCHEMAS[_name]
+
+
+def tools_for_protocol(protocol_version):
+    """按 initialize 协商结果返回严格兼容的工具清单。"""
+    if protocol_version in STRUCTURED_PROTOCOLS:
+        return TOOLS
+    legacy_fields = {"name", "description", "inputSchema"}
+    return [{k: v for k, v in tool.items() if k in legacy_fields} for tool in TOOLS]
+
+
+def _structured_fallback(name, args, text):
+    """新协议下为无命中/不可用等文本结果补一个符合 outputSchema 的空结构。"""
+    if name == "search_localkb":
+        return {"query": str(args.get("query") or ""), "mode": None,
+                "took_ms": None, "results": []}
+    if name == "list_wiki":
+        return {"total": 0, "offset": int(args.get("offset", 0) or 0), "pages": []}
+    if name == "list_sources":
+        return {"total": 0, "offset": int(args.get("offset", 0) or 0), "papers": []}
+    if name == "get_source_meta":
+        return {"ok": False, "key": str(args.get("key") or ""), "message": str(text)}
+    if name == "whats_new":
+        return {"days": int(args.get("days", 7) or 7),
+                "new_papers": [], "affected_pages": []}
+    if name == "locate_quote":
+        return {"n": 0, "matches": [], "message": str(text)}
+    if name == "verify_claim":
+        return {"verdict": "not_in_lib", "confidence": 0.0,
+                "evidence": [], "note": str(text)}
+    return None
+
+
+def _validate_json_value(value, schema, path="arguments"):
+    """覆盖当前工具 schema 所用子集的无依赖 JSON Schema 校验。"""
+    if not isinstance(schema, dict):
+        return
+    expected = schema.get("type")
+    checks = {
+        "object": lambda x: isinstance(x, dict),
+        "array": lambda x: isinstance(x, list),
+        "string": lambda x: isinstance(x, str),
+        "integer": lambda x: isinstance(x, int) and not isinstance(x, bool),
+        "number": lambda x: isinstance(x, (int, float)) and not isinstance(x, bool),
+        "boolean": lambda x: isinstance(x, bool),
+        "null": lambda x: x is None,
+    }
+    if expected in checks and not checks[expected](value):
+        raise ValueError(f"{path} 类型错误：应为 {expected}")
+    if "enum" in schema and value not in schema["enum"]:
+        raise ValueError(f"{path} 取值无效：应为 {schema['enum']}")
+    if expected == "object":
+        required = schema.get("required") or []
+        missing = [key for key in required if key not in value]
+        if missing:
+            raise ValueError(f"{path} 缺少必填参数：" + "、".join(missing))
+        properties = schema.get("properties") or {}
+        for key, child in properties.items():
+            if key in value:
+                _validate_json_value(value[key], child, f"{path}.{key}")
+    if expected == "array" and isinstance(schema.get("items"), dict):
+        for index, item in enumerate(value):
+            _validate_json_value(item, schema["items"], f"{path}[{index}]")
 
 # ══ MCP resources：把 schema / 索引 / 页面暴露成资源，agent 可直接读 ══
 RESOURCES = [
@@ -1182,17 +1363,9 @@ def do_tool(name, args):
             pp = pg.get("printed_page") or ""
             mark = "—— " + (pg.get("locator") or (f"PDF 第 {pg.get('pdf_page')} 页" if pg.get("pdf_page") else f"位置 {pg.get('position')}")) + (f"（印刷页 {pp}）" if pp else "") + " ——"
             body.append(f"\n{mark}\n{pg.get('text', '')}")
-        # EN-M3：结构化件只带元数据+页码映射、不重复全文——正文可达 2 万字，
-        # structuredContent 若原样再带一份，token 直接翻倍，得不偿失。
-        sc = {"key": key, "title": r.get("title"), "author": r.get("author"),
-              "year": r.get("year"), "journal": r.get("journal"),
-              "n_pages_total": r.get("n_pages_total"), "returned_pages": r.get("returned_pages"),
-              "chars": r.get("chars"), "truncated": bool(r.get("truncated")),
-              "next_page": r.get("next_page"),
-              "fulltext_format": r.get("fulltext_format"),
-              "pages": [{"position": pg.get("position"), "pdf_page": pg.get("pdf_page"), "printed_page": pg.get("printed_page"), "locator": pg.get("locator")}
-                        for pg in r.get("pages", [])]}
-        return head + "\n" + "".join(body), sc
+        # 原文只走 MCP 标准 content 文本通道。正文可达 2 万字；若再放进
+        # structuredContent 会重复占用 token，若只放元数据又会被部分客户端误当成完整结果。
+        return head + "\n" + "".join(body)
 
     if name == "list_sources":
         if not ensure_up():
@@ -1308,6 +1481,25 @@ def do_tool(name, args):
         tail = f"，互链 {len(r.get('links') or [])} 条" if r.get("links") else ""
         return (f"已{'追加到' if args.get('mode') == 'append' else '写入'}「{r.get('title')}」"
                 f"（id={r.get('id')}，kind={r.get('kind')}，{state}，引用 {r.get('n_sources')} 篇{tail}）。")
+
+    if name == "set_wiki_theme":
+        if not ensure_up():
+            return "错误：知识库服务启动失败。"
+        pid = str(args.get("page_id", "")).strip()
+        if not pid:
+            return "需要 page_id（来自 list_wiki）。"
+        theme = str(args.get("theme", "") or "").strip()
+        resp = requests.post(URL + "/wiki/page/" + pid + "/theme",
+                             json={"name": theme}, timeout=30)
+        if resp.status_code != 200:
+            return "设置主题失败：" + _err_of(resp)
+        r = resp.json()
+        effective = r.get("theme") or {}
+        label = effective.get("name") or "未归类"
+        source = effective.get("source") or "auto"
+        action = (f"已固定到主题「{label}」" if source == "manual"
+                  else f"已恢复自动归类（当前为「{label}」）")
+        return f"「{pid}」{action}；正文、引用和人工核验状态均未改动。"
 
     if name == "set_wiki_links":
         if not ensure_up():
@@ -1749,39 +1941,62 @@ def _watch_parent():
 def main():
     log("MCP server 就绪（stdio）")
     threading.Thread(target=_watch_parent, daemon=True).start()
+    negotiated_protocol = PROTO
     for line in sys.stdin:
         line = line.strip()
         if not line:
             continue
         try:
             req = json.loads(line)
-        except Exception:
+        except Exception as e:
+            send({"jsonrpc": "2.0", "id": None,
+                  "error": {"code": -32700, "message": "Parse error: " + str(e)}})
             continue
         if not isinstance(req, dict):   # 非对象 JSON 行（数组/字符串/数字…）：req.get 会 AttributeError 崩掉整个进程
+            send({"jsonrpc": "2.0", "id": None,
+                  "error": {"code": -32600, "message": "Invalid Request"}})
             continue
         m, rid = req.get("method"), req.get("id")
         if m == "initialize":
             # 技能不再自动装进 <cwd>/.claude/skills（避免在用户目录里节外生枝多一个文件夹）。
             # 统一以「0_Agent资料库/技能/工作流.md」为唯一落点：任何 AI 助手（含 Claude）读它即得完整流水线，
             # initialize 的 instructions 已指向它。见 agent_ws.ensure_scaffold 写入的 工作流.md。
+            params = req.get("params") if isinstance(req.get("params"), dict) else {}
+            requested = str(params.get("protocolVersion") or "")
+            negotiated_protocol = requested if requested in SUPPORTED_PROTOCOLS else PROTO
             send({"jsonrpc": "2.0", "id": rid, "result": {
-                "protocolVersion": PROTO,
+                "protocolVersion": negotiated_protocol,
                 "capabilities": {"tools": {}, "resources": {}, "prompts": {}},
                 # 版本号不再硬编码：唯一事实源是 config.APP_VERSION（发版只改那一处）
                 "serverInfo": {"name": "localkb", "version": C.APP_VERSION},
                 "instructions": instructions()}})
         elif m == "tools/list":
-            send({"jsonrpc": "2.0", "id": rid, "result": {"tools": TOOLS}})
+            send({"jsonrpc": "2.0", "id": rid,
+                  "result": {"tools": tools_for_protocol(negotiated_protocol)}})
         elif m == "tools/call":
             try:
-                out = do_tool(req["params"]["name"], req["params"].get("arguments", {}))
-                # EN-M3：do_tool 返回 (text, dict) 时附 structuredContent（MCP 2025-06 规范：
-                # 与 content[].text 并存，老客户端不认识该键、自然忽略，无破坏性）。文本仍是主载体。
+                params = req.get("params")
+                if not isinstance(params, dict):
+                    raise ValueError("params 必须是对象")
+                name = params.get("name")
+                args = params.get("arguments", {})
+                tool_def = next((tool for tool in TOOLS if tool["name"] == name), None)
+                if tool_def is None:
+                    raise ValueError("未知工具：" + str(name))
+                if not isinstance(args, dict):
+                    raise ValueError("arguments 必须是对象")
+                _validate_json_value(args, tool_def.get("inputSchema") or {}, "arguments")
+                out = do_tool(name, args)
                 text, sc = out if isinstance(out, tuple) else (out, None)
                 result = {"content": [{"type": "text", "text": text}]}
-                if isinstance(sc, dict):
-                    result["structuredContent"] = sc
+                if negotiated_protocol in STRUCTURED_PROTOCOLS and "outputSchema" in tool_def:
+                    structured = sc if isinstance(sc, dict) else _structured_fallback(name, args, text)
+                    if isinstance(structured, dict):
+                        result["structuredContent"] = structured
                 send({"jsonrpc": "2.0", "id": rid, "result": result})
+            except (KeyError, TypeError, ValueError) as e:
+                send({"jsonrpc": "2.0", "id": rid,
+                      "error": {"code": -32602, "message": str(e)}})
             except Exception as e:
                 send({"jsonrpc": "2.0", "id": rid,
                       "result": {"content": [{"type": "text", "text": "错误：" + str(e)}], "isError": True}})

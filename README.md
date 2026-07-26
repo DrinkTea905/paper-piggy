@@ -31,7 +31,7 @@
 
 ## 🤖 Agent 能做什么（这是本项目的重点）
 
-通过 MCP 接入后，AI 拿到 **39 个工具**。它们不是"搜索"一个动作的花式包装，而是一整套研究工作流。
+通过 MCP 接入后，AI 拿到 **40 个工具**。它们不是"搜索"一个动作的花式包装，而是一整套研究工作流。
 
 ### 它能读，而且知道自己读到了原文哪里
 
@@ -209,7 +209,7 @@ $env:LOCALKB_MODELS = 'X:\path\to\models'   # 本地检索需要；SiliconFlow �
 | [docs/MAINTENANCE.md](docs/MAINTENANCE.md) | 维护：「改了 X → 必须同步 Y」映射表 |
 | [docs/RELEASE.md](docs/RELEASE.md) | 打包与自动更新 |
 | [MAC-从源码运行.md](MAC-从源码运行.md) | 在 macOS 上从源码运行（技术型个人自用） |
-| [src/MCP接入说明.md](src/MCP接入说明.md) | MCP 接入（39 个工具，由代码自动生成） |
+| [src/MCP接入说明.md](src/MCP接入说明.md) | MCP 接入（40 个工具，由代码自动生成） |
 
 ## 技术栈
 
