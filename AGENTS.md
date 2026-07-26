@@ -233,6 +233,7 @@ $env:LOCALKB_MODELS = 'D:\00Zotero知识库\rag\data\models'
 | 依赖 | `requirements.txt` + `requirements.lock`（两个都要改） |
 | 期刊评级规则 | `journal_grading/` + `journal_grading/期刊引用权重分级方案.md` |
 | wiki 页面规约 | `wiki_store.WIKI_MD_SEED`（改了**必须** bump `SCHEMA_VERSION`，见 MAINTENANCE） |
+| 索引产物兼容性 | `upgrade_health.CURRENT_INDEX_CONTRACTS`；实现变化审计登记在 `_AUDITED_IMPLEMENTATIONS`，禁止再用实现文件哈希直接决定用户重建 |
 | Agent 工作流 | `agent_ws._WF_*` 常量 |
 | 应用图标 | `web/PaperPiggy.png`（`.ico` 由 launcher 运行时生成） |
 | **数据落点** | `config._bootstrap_bundle_env()`。`run_localkb.py` 只是 `import config` 借道 —— 它曾经自己复刻过一份 HOME 解析，两处各算各的，是「启动器和 MCP 认两个数据目录」的漂移源。**别再复制出去。** |

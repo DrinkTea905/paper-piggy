@@ -133,6 +133,20 @@ DATA 之下的一切派生路径见 `config.py:56-98`：`extracted/ chunks/ lanc
 | **S 语义档** | `index_semantic.py` | 对 `papers.jsonl` 中未嵌入的篇做 bge-m3 嵌入 → LanceDB 表 `row_type="meta"` 行 → 重建主 bm25 | LanceDB `chunks` 表的 meta 行（`index_semantic.py:28-45`）、`data/bm25/`（`:126-127`）、进度 `state/meta_embedded.txt` | **约 1-2 分钟**（`index_semantic.py:3`） |
 | **F 深索档** | `extract.py` → `chunk.py` → `embed_index.py` → `page_map.py` | 读 PDF / EPUB / DOCX / Markdown / TXT → 父子块切分 → 嵌入入表（`row_type="chunk"`）+ 重建 bm25；仅 PDF 做空白页本地 OCR 与印刷页码映射 | `data/extracted/*.json`、`data/chunks/*.json`、LanceDB chunk 行、PDF 的 `data/pagemap/*.json`、进度 `state/embedded_keys.txt`、提取状态 `state/deep_extract_status.json` | **数小时**；PDF 扫描页另耗本机 CPU，开了 SAC 还有每篇 1 次 LLM 调用 |
 
+### 3.1 索引产物契约与升级判断
+
+`upgrade_health.py` 的 `CURRENT_INDEX_CONTRACTS` 是题录、全文切块、语义向量三组产物兼容性的唯一事实源，写入
+`index_manifest.json` 的 `index_contract_schema` / `index_contracts`。运行时只比较这些稳定契约，不再把整份实现文件的
+AST 哈希当作索引规则：错误文案、重试、日志或没有命中既有输入的保护性改动不会要求用户重建。
+
+旧版 `pipeline_fingerprints` 只用于一次性迁移。`manifest_contracts()` 仅翻译代码中逐项审计过的历史指纹；未知指纹或
+缺失来源不会被静默“洗成当前版”。增量切块和嵌入前由 `group_contract_is_compatible()` 阻止不同契约混写；真正完成
+对应阶段后，`record_built_contract()` 只登记该组，不能顺手更新其它组。
+
+实现文件仍由 `implementation_fingerprints()` 监控，但只在发版前生效。`check_guides.py` 会要求当前实现指纹已登记到
+`_AUDITED_IMPLEMENTATIONS`：产物不变时登记新实现指纹和理由；产物语义变化时先提升对应契约 id，再决定题录刷新、
+增量迁移或完整重建。未做这个判断不能打包。
+
 `build_all.py:39` 定义 `DEEP = [EXTRACT, CHUNK, EMBED, PAGEMAP]`；
 `:43-44` 把深索拆成 `deep_prepare`（extract+chunk）与 `deep_embed`（embed+page_map），
 好让「Agent 写摘要」插在两者之间（见 §8）。

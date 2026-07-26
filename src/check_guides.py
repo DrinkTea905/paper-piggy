@@ -318,6 +318,25 @@ def check_no_top_pinned_guide_notes():
     ok(name)
 
 
+def check_index_contract_audit():
+    """实现文件可以变，但每次发版必须明确审计它是否改变索引产物契约。"""
+    name = "⑨ 索引实现变化已登记到稳定产物契约（防升级误报/漏报）"
+    try:
+        import upgrade_health as UH
+    except Exception as e:
+        return skip(name, f"import upgrade_health 失败：{e}")
+    pending = UH.unaudited_implementation_changes()
+    if pending:
+        detail = "；".join(
+            f"{group}: 契约={item['contract']}，实现指纹={item['implementation_fingerprint']}"
+            for group, item in pending.items())
+        return bad(
+            name,
+            detail + "。请审计改动：产物语义不变则把新实现指纹及理由登记进 "
+            "upgrade_health._AUDITED_IMPLEMENTATIONS；语义变化则先提升对应契约 id。")
+    ok(name, f"{len(UH.CURRENT_INDEX_CONTRACTS)} 组契约均有当前实现审计记录")
+
+
 def main():
     print("=== 指引 ↔ 代码 一致性校验（只读）===")
     doc = SRC / "MCP接入说明.md"
@@ -333,6 +352,7 @@ def main():
     check_backup_coverage()
     check_native_browser_dialogs()
     check_no_top_pinned_guide_notes()
+    check_index_contract_audit()
     print("-" * 60)
     if FAILED:
         print(f"❌ {len(FAILED)} 项不一致——改了功能忘了同步指引。逐条修完再打包。")

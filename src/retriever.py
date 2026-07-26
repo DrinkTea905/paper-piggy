@@ -102,6 +102,15 @@ def _load_catalog_locked():
             STATE["error"] = f"索引清单损坏，已停止检索以保护结果可靠性：{e}。请清空并重建索引。"
             log(STATE["error"])
             return
+        import upgrade_health as _UH
+        contract_mismatch = _UH.incompatible_built_groups(man)
+        if contract_mismatch:
+            labels = "、".join(_UH.INDEX_CONTRACT_DETAILS[x] for x in contract_mismatch)
+            STATE["mode"] = "contract_mismatch"
+            STATE["error"] = (f"现有索引的生成契约无法确认或与当前版本不兼容（{labels}）。"
+                              "已停止检索以避免混用错误结果；请按应用提示备份后重建索引。")
+            log(STATE["error"])
+            return
         if built_backend:
             import settings as _S
             current_backend = _S.backend()

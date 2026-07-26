@@ -10,6 +10,7 @@ SRC = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SRC))
 
 import maintenance as MT  # noqa: E402
+import index_light as IL  # noqa: E402
 import sac as SAC  # noqa: E402
 import server  # noqa: E402
 import settings as S  # noqa: E402
@@ -18,54 +19,134 @@ import wiki_store as W  # noqa: E402
 
 
 class MaintenanceAuditTests(unittest.TestCase):
-    def test_compatible_deep_rule_change_is_accepted_without_rebuild(self):
-        old_deep = "961aa2cde7626605ccdd366aac8501469388d4c661252787661995153a41af30"
-        new_deep = "acfdf51ca9e89f975d16e4d1d19babaadf21fe40b8d36df655fadec10a470252"
+    def test_legacy_production_fingerprints_migrate_to_stable_contracts(self):
         with tempfile.TemporaryDirectory() as td:
             manifest = Path(td) / "index_manifest.json"
             manifest.write_text(json.dumps({"pipeline_fingerprints": {
-                "light": "same-light", "deep": old_deep, "semantic": "same-semantic",
+                "light": "aa0f394ebb75dbd71f40480d1c02544c2f26a0f3155ad534763dc040f51537c6",
+                "deep": "961aa2cde7626605ccdd366aac8501469388d4c661252787661995153a41af30",
+                "semantic": "93a677fb8f8ba9b8e7bae70e379b3a5316f6046c86e561e9633470ef64a4c09b",
             }}), encoding="utf-8")
             with mock.patch.object(UH.C, "INDEX_MANIFEST", manifest), \
-                    mock.patch.object(UH, "pipeline_fingerprints", return_value={
-                        "light": "same-light", "deep": new_deep, "semantic": "same-semantic",
-                    }):
+                    mock.patch.object(UH, "_group_has_artifacts", return_value=True):
                 result = UH.index_health()
                 saved = json.loads(manifest.read_text(encoding="utf-8"))
         self.assertEqual("current", result["state"])
-        self.assertIn("无需重新深索", result["detail"])
-        self.assertEqual(new_deep, saved["pipeline_fingerprints"]["deep"])
+        self.assertIn("无需重新深索或重建向量", result["detail"])
+        self.assertEqual(UH.INDEX_CONTRACT_SCHEMA, saved["index_contract_schema"])
+        self.assertEqual(UH.CURRENT_INDEX_CONTRACTS, saved["index_contracts"])
 
-    def test_unknown_deep_rule_change_still_requires_full_rebuild(self):
+    def test_unknown_deep_contract_still_requires_full_rebuild(self):
         with tempfile.TemporaryDirectory() as td:
             manifest = Path(td) / "index_manifest.json"
-            manifest.write_text(json.dumps({"pipeline_fingerprints": {
-                "light": "same-light", "deep": "unknown-old", "semantic": "same-semantic",
-            }}), encoding="utf-8")
+            manifest.write_text(json.dumps({
+                "index_contract_schema": UH.INDEX_CONTRACT_SCHEMA,
+                "index_contracts": {
+                    "light": UH.CURRENT_INDEX_CONTRACTS["light"],
+                    "deep": "deep-fulltext-chunks-v0",
+                    "semantic": UH.CURRENT_INDEX_CONTRACTS["semantic"],
+                }}), encoding="utf-8")
             with mock.patch.object(UH.C, "INDEX_MANIFEST", manifest), \
-                    mock.patch.object(UH, "pipeline_fingerprints", return_value={
-                        "light": "same-light", "deep": "unknown-new", "semantic": "same-semantic",
-                    }):
+                    mock.patch.object(UH, "_group_has_artifacts", return_value=True):
                 result = UH.index_health()
         self.assertEqual("stale", result["state"])
         self.assertTrue(result["full_rebuild"])
         self.assertEqual("清空并从头重建索引", result["action"])
+        self.assertIn("全文提取", result["detail"])
 
-    def test_light_rule_change_requires_only_metadata_refresh(self):
+    def test_light_contract_change_requires_only_metadata_refresh(self):
         with tempfile.TemporaryDirectory() as td:
             manifest = Path(td) / "index_manifest.json"
-            manifest.write_text(json.dumps({"pipeline_fingerprints": {
-                "light": "old", "deep": "same-deep", "semantic": "same-semantic",
-            }}), encoding="utf-8")
+            manifest.write_text(json.dumps({
+                "index_contract_schema": UH.INDEX_CONTRACT_SCHEMA,
+                "index_contracts": {
+                    "light": "light-catalog-v0",
+                    "deep": UH.CURRENT_INDEX_CONTRACTS["deep"],
+                    "semantic": UH.CURRENT_INDEX_CONTRACTS["semantic"],
+                }}), encoding="utf-8")
             with mock.patch.object(UH.C, "INDEX_MANIFEST", manifest), \
-                    mock.patch.object(UH, "pipeline_fingerprints", return_value={
-                        "light": "new", "deep": "same-deep", "semantic": "same-semantic",
-                    }):
+                    mock.patch.object(UH, "_group_has_artifacts", return_value=True):
                 result = UH.index_health()
         self.assertEqual("题录分类规则已更新", result["label"])
         self.assertEqual("手动更新知识库", result["action"])
         self.assertFalse(result["full_rebuild"])
         self.assertIn("无需清空索引", result["detail"])
+
+    def test_implementation_only_change_never_reaches_runtime_health(self):
+        with tempfile.TemporaryDirectory() as td:
+            manifest = Path(td) / "index_manifest.json"
+            manifest.write_text(json.dumps({
+                "index_contract_schema": UH.INDEX_CONTRACT_SCHEMA,
+                "index_contracts": dict(UH.CURRENT_INDEX_CONTRACTS),
+            }), encoding="utf-8")
+            with mock.patch.object(UH.C, "INDEX_MANIFEST", manifest), \
+                    mock.patch.object(UH, "_group_has_artifacts", return_value=True), \
+                    mock.patch.object(UH, "implementation_fingerprints",
+                                      return_value={k: "changed-code" for k in UH.CURRENT_INDEX_CONTRACTS}):
+                result = UH.index_health()
+        self.assertEqual("current", result["state"])
+
+    def test_missing_provenance_is_not_silently_blessed(self):
+        with tempfile.TemporaryDirectory() as td:
+            manifest = Path(td) / "index_manifest.json"
+            manifest.write_text("{}", encoding="utf-8")
+            with mock.patch.object(UH.C, "INDEX_MANIFEST", manifest), \
+                    mock.patch.object(UH, "_group_has_artifacts", return_value=True):
+                result = UH.index_health()
+                saved = json.loads(manifest.read_text(encoding="utf-8"))
+        self.assertEqual("stale", result["state"])
+        self.assertTrue(result["full_rebuild"])
+        self.assertEqual("索引生成契约无法确认", result["label"])
+        self.assertNotIn("index_contracts", saved)
+
+    def test_release_guard_catches_unreviewed_implementation_change(self):
+        fake = {group: f"changed-{group}" for group in UH.CURRENT_INDEX_CONTRACTS}
+        with mock.patch.object(UH, "implementation_fingerprints", return_value=fake):
+            pending = UH.unaudited_implementation_changes()
+        self.assertEqual(set(UH.CURRENT_INDEX_CONTRACTS), set(pending))
+
+    def test_retrieval_guard_rejects_only_incompatible_built_groups(self):
+        manifest = {
+            "index_contract_schema": UH.INDEX_CONTRACT_SCHEMA,
+            "index_contracts": {
+                "light": UH.CURRENT_INDEX_CONTRACTS["light"],
+                "deep": "deep-fulltext-chunks-v0",
+                "semantic": UH.CURRENT_INDEX_CONTRACTS["semantic"],
+            },
+        }
+        with mock.patch.object(UH, "_group_has_artifacts", return_value=True):
+            self.assertEqual(["deep"], UH.incompatible_built_groups(manifest))
+
+    def test_newer_contract_schema_is_never_overwritten(self):
+        manifest = {
+            "index_contract_schema": UH.INDEX_CONTRACT_SCHEMA + 1,
+            "index_contracts": dict(UH.CURRENT_INDEX_CONTRACTS),
+        }
+        self.assertFalse(UH.group_contract_is_compatible(
+            manifest, "semantic", has_artifacts=False))
+        with self.assertRaises(ValueError):
+            UH.record_built_contract(manifest, "light")
+
+    def test_light_stage_stops_before_overwriting_newer_contract_schema(self):
+        with tempfile.TemporaryDirectory() as td:
+            manifest = Path(td) / "index_manifest.json"
+            original = {
+                "index_contract_schema": UH.INDEX_CONTRACT_SCHEMA + 1,
+                "index_contracts": {"light": "future-light-v2"},
+            }
+            manifest.write_text(json.dumps(original), encoding="utf-8")
+            with mock.patch.object(IL.C, "INDEX_MANIFEST", manifest), \
+                    mock.patch.object(IL, "get_papers") as get_papers:
+                with self.assertRaises(SystemExit) as caught:
+                    IL.main()
+            self.assertEqual(3, caught.exception.code)
+            get_papers.assert_not_called()
+            self.assertEqual(original, json.loads(manifest.read_text(encoding="utf-8")))
+
+    def test_embed_stage_never_claims_to_generate_deep_contract(self):
+        source = (SRC / "embed_index.py").read_text(encoding="utf-8")
+        self.assertIn('C.CHUNKS.glob("*.json")', source)
+        self.assertNotIn('record_built_contract(man, "deep")', source)
 
     def test_agent_mode_classifies_simple_work_as_auto_and_external_files_as_blocked(self):
         with tempfile.TemporaryDirectory() as td:

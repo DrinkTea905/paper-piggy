@@ -86,6 +86,15 @@ def main(batch=64):
 
     db = lancedb.connect(str(C.LANCEDB_DIR))
     tbl = db.open_table(C.TABLE_NAME) if C.TABLE_NAME in db.table_names() else None
+    import upgrade_health as UH
+    manifest_before = (json.loads(C.INDEX_MANIFEST.read_text(encoding="utf-8"))
+                       if C.INDEX_MANIFEST.exists() else {})
+    has_semantic_rows = bool(tbl is not None and tbl.count_rows() > 0)
+    if not UH.group_contract_is_compatible(
+            manifest_before, "semantic", has_artifacts=has_semantic_rows):
+        print("[semantic] 现有向量的生成契约无法确认或与当前版本不同；"
+              "为避免混用两套向量，已停止增量写入。请按应用提示备份后重建索引。", flush=True)
+        sys.exit(3)
     _purge_deleted(papers, tbl)   # 先清已删条目残留，再算待嵌入（done 里被删 stem 已被 purge 剔除）
 
     done = load_done()
@@ -162,14 +171,9 @@ def main(batch=64):
             man = json.loads(C.INDEX_MANIFEST.read_text(encoding="utf-8")) if C.INDEX_MANIFEST.exists() else {}
             man["backend"] = S.backend()
             man["embedding_identity"] = S.embedding_identity()
-            # 这里只证明语义向量已按当前规则生成；不要顺手替 deep/light 洗成“已更新”。
-            import upgrade_health as UH
-            fps = man.get("pipeline_fingerprints")
-            if not isinstance(fps, dict):
-                fps = UH.pipeline_fingerprints()
-            fps["semantic"] = UH.pipeline_fingerprints()["semantic"]
-            man["pipeline_fingerprints"] = fps
-            C.INDEX_MANIFEST.write_text(json.dumps(man, ensure_ascii=False, indent=2), encoding="utf-8")
+            # 这里只证明语义向量已按当前契约生成；不要顺手替 deep/light 洗成“已更新”。
+            UH.record_built_contract(man, "semantic")
+            UH.write_index_manifest(man)
         except Exception as e:
             print(f"[semantic] 写 manifest.backend 失败：{e}", flush=True)
     print(f"[semantic] 表总行数 ≈ {tbl.count_rows() if tbl else 0}，总用时 {time.time()-t0:.0f}s", flush=True)

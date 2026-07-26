@@ -68,6 +68,18 @@ def main():
 
     db = lancedb.connect(str(C.LANCEDB_DIR))
     tbl = db.open_table(C.TABLE_NAME) if C.TABLE_NAME in db.table_names() else None
+    import upgrade_health as UH
+    manifest_before = (json.loads(C.INDEX_MANIFEST.read_text(encoding="utf-8"))
+                       if C.INDEX_MANIFEST.exists() else {})
+    has_semantic_rows = bool(tbl is not None and tbl.count_rows() > 0)
+    has_deep_chunks = next(C.CHUNKS.glob("*.json"), None) is not None
+    for group, has_artifacts in (("semantic", has_semantic_rows), ("deep", has_deep_chunks)):
+        if not UH.group_contract_is_compatible(
+                manifest_before, group, has_artifacts=has_artifacts):
+            print(f"[embed] 现有{UH.INDEX_CONTRACT_DETAILS[group]}的生成契约无法确认或与当前版本不同；"
+                  "为避免混用两套索引，已停止增量写入。请按应用提示备份后重建索引。",
+                  flush=True)
+            sys.exit(3)
 
     # 是否写 journal_tier：新建表 或 现表已含该列时才写（避免增量 add 与旧表 schema 不匹配）。
     # 旧表加列由 migrate_journal_tier.py 完成；加列后此处自动开始写。
@@ -271,6 +283,17 @@ def main():
         print(f"[bm25] 完成，{len(ids)} 文档 -> {C.BM25_DIR}", flush=True)
 
     print(f"[done] 表总行数 ≈ {tbl.count_rows() if tbl is not None else 0}", flush=True)
+    if tbl is not None and C.INDEX_MANIFEST.exists():
+        try:
+            import settings as S
+            man = json.loads(C.INDEX_MANIFEST.read_text(encoding="utf-8"))
+            man["backend"] = S.backend()
+            man["embedding_identity"] = S.embedding_identity()
+            # embed 只生成向量，不能替 chunk 阶段证明既有切块已按当前契约重建。
+            UH.record_built_contract(man, "semantic")
+            UH.write_index_manifest(man)
+        except Exception as e:
+            print(f"[embed] 写索引契约失败：{e}", flush=True)
     # ★ 铁律：只要有一篇没嵌成功，就非0退出。rc=0 必须严格等价于「全部 todo 已嵌」——
     #   否则 build_all 当成功、前端误报「深索完成」，而半个库其实没入。已嵌的篇/bm25 已落盘，可续跑。
     if aborted:

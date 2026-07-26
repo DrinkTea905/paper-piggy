@@ -147,6 +147,15 @@ def main():
     args = ap.parse_args()
     files = sorted(C.EXTRACTED.glob("*.json"))
     if args.limit: files = files[:args.limit]
+    import upgrade_health as UH
+    manifest = (json.loads(C.INDEX_MANIFEST.read_text(encoding="utf-8"))
+                if C.INDEX_MANIFEST.exists() else {})
+    has_existing_chunks = next(C.CHUNKS.glob("*.json"), None) is not None
+    if not UH.group_contract_is_compatible(
+            manifest, "deep", has_artifacts=has_existing_chunks):
+        print("[chunk] 现有全文切块的生成契约无法确认或与当前版本不同；"
+              "为避免混用两套切块，已停止增量写入。请按应用提示备份后重建索引。")
+        raise SystemExit(3)
     def _needs(f):
         cf = C.CHUNKS / f.name
         if not cf.exists():
@@ -180,6 +189,10 @@ def main():
             print(f"  {i}/{len(todo)}  累计块 {total}  {time.time()-t0:.0f}s")
     print(f"[done] {ndoc} 篇 -> {total} 块"
           + (f"，跳过损坏 {skipped}" if skipped else "") + f"  用时 {time.time()-t0:.0f}s")
+    if C.INDEX_MANIFEST.exists():
+        manifest = json.loads(C.INDEX_MANIFEST.read_text(encoding="utf-8"))
+        UH.record_built_contract(manifest, "deep")
+        UH.write_index_manifest(manifest)
 
 if __name__ == "__main__":
     main()

@@ -252,6 +252,19 @@ def _dedup_papers(papers, protect):
 def main():
     t0 = time.time()
     now = time.strftime("%Y-%m-%d %H:%M:%S")
+    import upgrade_health as UH
+    _old_manifest = {}
+    if C.INDEX_MANIFEST.exists():
+        try:
+            _old_manifest = json.loads(C.INDEX_MANIFEST.read_text(encoding="utf-8"))
+        except Exception as e:
+            print(f"[light] 索引清单无法读取，已停止更新以免覆盖兼容性证据：{e}", flush=True)
+            raise SystemExit(3)
+        if _old_manifest.get("index_contract_schema") not in (
+                None, UH.INDEX_CONTRACT_SCHEMA):
+            print("[light] 索引契约来自更新版本，当前应用不能安全覆盖；请先升级应用。",
+                  flush=True)
+            raise SystemExit(3)
     papers, source = get_papers()
     # 单一开关：仅导入有可读取全文附件的条目。设置键 import_only_pdf 为兼容旧用户保留，
     # 产品语义已扩展为 PDF/EPUB/DOCX/Markdown/TXT，HTML 网页快照不算。
@@ -318,21 +331,19 @@ def main():
     # backend 只由真正产出向量的阶段(index_semantic/embed_index)写入并作为一致性校验基准；
     # light 绝不覆写它——否则切换后端后一次轻量重建/自动增量就把「原引擎」证据抹掉，
     # 新旧两套向量混用无从检测。保留 manifest 里已有的 backend。
-    try:
-        _old = {}
-        if C.INDEX_MANIFEST.exists():
-            _old = json.loads(C.INDEX_MANIFEST.read_text(encoding="utf-8"))
-            if _old.get("backend"):
-                _man["backend"] = _old["backend"]
-        # 轻量更新只证明 light 规则已重跑；deep/semantic 的旧指纹必须保留，不能假装也更新过。
-        import upgrade_health as UH
-        current_fp = UH.pipeline_fingerprints()
-        old_fp = _old.get("pipeline_fingerprints") if isinstance(_old, dict) else None
-        _man["pipeline_fingerprints"] = dict(old_fp) if isinstance(old_fp, dict) else current_fp
-        _man["pipeline_fingerprints"]["light"] = current_fp["light"]
-    except Exception:
-        pass
-    _atomic_write_text(C.INDEX_MANIFEST, json.dumps(_man, ensure_ascii=False, indent=2))
+    for field in ("backend", "embedding_identity"):
+        if _old_manifest.get(field):
+            _man[field] = _old_manifest[field]
+    # 轻量更新只证明 light 契约已重跑；deep/semantic 必须保留原契约，
+    # 不能因实现文件恰好随版本变化就假装其它昂贵产物也更新过。
+    old_fp = _old_manifest.get("pipeline_fingerprints")
+    if isinstance(old_fp, dict):
+        _man["pipeline_fingerprints"] = dict(old_fp)  # 仅留作旧版迁移审计，不再参与健康判断
+    old_contracts, _accepted, _unknown = UH.manifest_contracts(_old_manifest)
+    if old_contracts:
+        _man["index_contracts"] = old_contracts
+    UH.record_built_contract(_man, "light")
+    UH.write_index_manifest(_man)
     print(f"[light] 完成 {len(papers)} 篇（源：{source}），用时 {time.time()-t0:.1f}s", flush=True)
     return stats
 

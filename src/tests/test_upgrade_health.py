@@ -114,6 +114,8 @@ class UpgradeUiContractTests(unittest.TestCase):
         self.assertIn('id="ag-upgrade"', html)
         self.assertIn("复制给 Agent 合并", js)
         self.assertIn("/upgrade/replace", js)
+        self.assertIn("singleSystemDetail", js)
+        self.assertIn("x.detail", js)
         self.assertNotIn("window.confirm(", js)
 
 

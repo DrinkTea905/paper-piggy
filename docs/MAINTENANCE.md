@@ -73,6 +73,7 @@
 | 全类型文献评价、客观标签或四档映射 | `source_rules.py` + `grading_svc.py` + `journal_grading/`；同步检索/浏览/单篇详情/wiki 来源/MCP 契约与库总览，跑 `test_source_grading*.py` 和 `journal_grading/selftest.py`。新增目录还要登记 `catalog_registry.py` 的来源、上游版本、检查日期 | ✅ 单测 + selftest；UI 文案人肉 |
 | 文献页查找与来源筛选 | `server.py /papers(query, source_type, objective_label)` + `mcp_server.py list_sources.source_type` + 文献页题录查找、十二类性质和动态客观标签；分类/状态/排序/分页组合必须一起测 | ✅ `test_source_grading_api.py`；UI 组合人肉 |
 | Agent 工作流或出厂定时任务 | 修改 `agent_ws._WF_*` / 任务模板后，同步 `_template_specs()`，运行 `agent_ws.py --print-hashes` 并把新 hash 追加到 `_FACTORY_HASHES`（旧值不删） | ✅ 模板 hash 构建检查 |
+| `upgrade_health._IMPLEMENTATION_GROUPS` 内任一索引实现文件 | 先判断题录、切块或向量产物语义是否变化。兼容改动：把新实现指纹和理由登记到当前 `_AUDITED_IMPLEMENTATIONS`；不兼容改动：提升 `CURRENT_INDEX_CONTRACTS` 对应 id，并补迁移、提示和重建/增量测试。禁止用文件哈希直接决定用户是否重建 | ✅ check_guides ⑨ + `test_maintenance.py` |
 | 依赖 | `requirements.txt` **和** `requirements.lock` 同时改；同步 `THIRD-PARTY-NOTICES.md` 并核许可证；分发包需要重建 `build/py312`。含新依赖的首版必须走完整安装器，应用内 app 增量包不会补 Python wheel。⚠️ 平台专属包用标记：Windows-only 加 `; sys_platform=="win32"`（如 `pythonnet`），macOS-only 加 `; sys_platform=="darwin"`（如 `pyobjc-*`）。`.lock` 是 Windows 实机冻结，**macOS 用 `.txt` 不用 `.lock`** | ❌ |
 | 版本号 | **只改 `config.APP_VERSION`**(`config.py:19`) | ✅ check_guides ⑤（断言全源码没有第二处版本字面量） |
 | **新增任何 `C.DATA / "xxx"` 落点** | **必须**在 `backup.py` 的四个清单里给它选一个座位：`CORE_IN_DATA`（备份）/ `INDEX_IN_DATA`（可选索引）/ `NEVER_IN_DATA`（永不）/ `SPECIAL_IN_DATA` | ✅ check_guides ⑥（未分类 → 直接中止打包） |
@@ -136,7 +137,7 @@ const n = (AG.cfg && AG.cfg.tool_count) || AG_TOOLS.length;   // 后端真值优
 在 `src/check_guides.py`，已进 `build_bundle.py` 的 DEV_ONLY 名单（不进分发包）。
 **`build_bundle.py` 开头会跑它（`verify_guides()`），退出码非 0 直接中止打包**（`--skip-checks` 可临时跳过，正式发版不许跳）。
 
-现在断言这 9 项（编号即输出里的 ①~⑧，其中 ④b 单列）：
+现在断言这 10 项（编号即输出里的 ①~⑨，其中 ④b 单列）：
 
 1. ① 调 `gen_mcp_doc.main(--check)`（工具表 ↔ `mcp_server.TOOLS`）
 2. ② `RESOURCES` + `RESOURCE_TEMPLATES` ↔ `MCP接入说明.md` 的 Resources 表（双向集合比对）；`PROMPTS` ↔ Prompts 表
@@ -147,6 +148,7 @@ const n = (AG.cfg && AG.cfg.tool_count) || AG_TOOLS.length;   // 后端真值优
 7. ⑥ 所有 `C.DATA / "xxx"` 落点都在 `backup.py` 的备份分类清单中
 8. ⑦ 前端 JS 不得调用浏览器原生 `confirm()` / `alert()`，统一使用应用内对话框
 9. ⑧ `#home-guide` / `#ag-guide` 的标题下方、第一章之前不得出现独立 `ag-note`；功能说明必须归入对应章节
+10. ⑨ `upgrade_health._IMPLEMENTATION_GROUPS` 的当前实现指纹必须登记在当前稳定产物契约下；未审计变化直接中止打包
 
 **仍未机器化（靠人）**：`ensure_scaffold()` 写的其余文件名（项目记忆.md / 变更日志.md / 交付说明书模板.md……）
 是否都在 `_README_RELY` / `_README_OUTPUT` 里被提到——那两份是散文体，正则误报率高，硬凑不如不做。

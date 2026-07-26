@@ -3203,6 +3203,8 @@
     const warnings = system.filter(([, x]) => x && ["stale", "missing", "unknown"].includes(x.state));
     const lightIndexOnly = !pendingItems.length && warnings.length === 1 && warnings[0][0] === "索引"
       && Array.isArray((warnings[0][1] || {}).changed) && warnings[0][1].changed.join(",") === "light";
+    const singleSystemDetail = !pendingItems.length && warnings.length === 1
+      ? (warnings[0][1].detail || "") : "";
     box.hidden = AG.upgradeDismissed || (!pendingItems.length && !warnings.length);
     if (box.hidden) return;
     const n = pendingItems.length;
@@ -3211,7 +3213,7 @@
     $("#ag-upgrade-sub").textContent = n
       ? "你的版本没有被覆盖。先看差异，推荐复制给 Agent 合并；也可带备份直接采用新版。"
       : (lightIndexOnly ? (warnings[0][1].detail || "手动更新一次知识库即可，无需清空或重新深索。")
-        : "应用已更新，但下面的配套内容仍需人工处理。");
+        : (singleSystemDetail || "应用已更新，但下面的配套内容仍需人工处理。"));
     list.innerHTML = pendingItems.map((x) =>
       `<div class="ag-upgrade-item" data-upgrade-i="${x._upgradeIndex}">` +
       `<div class="agu-name">${esc(x.label)}${x.status === "customized" ? "（新版旁本写入失败）" : ""}</div>` +
@@ -3225,7 +3227,8 @@
       const tip = x.action ? `；建议：${x.action}` : "";
       const action = name === "索引" && x.action === "手动更新知识库" && !x.full_rebuild
         ? `<button class="agu-health-action" data-uhealth="index">手动更新知识库</button>` : "";
-      return `<div class="agu-health-line"><span class="agu-health warn" title="${esc((x.label || "") + tip)}">${esc(name)}：${esc(x.label || "未知")}</span>${action}</div>`;
+      const detail = x.detail ? `；${x.detail}` : "";
+      return `<div class="agu-health-line"><span class="agu-health warn" title="${esc((x.label || "") + detail + tip)}">${esc(name)}：${esc(x.label || "未知")}</span>${action}</div>`;
     }).join("");
     const refreshIndex = health.querySelector('[data-uhealth="index"]');
     if (refreshIndex) refreshIndex.addEventListener("click", doManualUpdate);
