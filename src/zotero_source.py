@@ -16,6 +16,28 @@ import document_formats as DF
 def _clean(s):
     return re.sub(r'\s+', ' ', (s or '').replace('\n', ' ').replace('\r', ' ')).strip()
 
+def _creator_display_name(last_name, first_name, field_mode=0):
+    """把 Zotero creator 转成人类可读姓名，同时保留机构作者原样。
+
+    Zotero 的单字段/机构 creator（fieldMode=1）把完整名称放在 lastName；
+    双字段姓名则按文字系统显示：中文姓名保持「姓+名」，拉丁姓名显示「名 姓」。
+    """
+    last = _clean(last_name)
+    first = _clean(first_name)
+    if int(field_mode or 0) == 1:
+        return last or first
+    if not first:
+        return last
+    if not last:
+        return first
+    if re.search(r'[\u3400-\u9fff]', last + first):
+        return last + first
+    return f"{first} {last}"
+
+def _role_names(creators, role):
+    return "; ".join(c["name"] for c in creators
+                     if c.get("role") == role and c.get("name"))
+
 def _utc_to_local(s):
     """BF1：Zotero 的 dateAdded 存 UTC "YYYY-MM-DD HH:MM:SS"，直接展示会差 8 小时——转成本地时间串。"""
     try:
@@ -68,7 +90,7 @@ def detect_data_dir():
     # ② Zotero profile 的 prefs.js 里记录的 dataDir（自定义目录的唯一可靠来源；也能接住「用户搬过库」）
     for prefs in _zotero_prefs_files():
         try:
-            txt = open(prefs, encoding="utf-8", errors="replace").read()
+            txt = Path(prefs).read_text(encoding="utf-8", errors="replace")
             m = re.search(r'extensions\.zotero\.dataDir",\s*"([^"]+)"', txt)
             if m:
                 d = Path(m.group(1).replace("\\\\", "\\"))
@@ -89,7 +111,7 @@ def _base_attachment_path():
     返回存在的 Path，或 None（未设置/目录不存在）。探测方式复用 detect_data_dir 里对 prefs.js 的解析。"""
     for prefs in _zotero_prefs_files():
         try:
-            txt = open(prefs, encoding="utf-8", errors="replace").read()
+            txt = Path(prefs).read_text(encoding="utf-8", errors="replace")
             m = re.search(r'extensions\.zotero\.baseAttachmentPath",\s*"([^"]+)"', txt)
             if m:
                 d = Path(m.group(1).replace("\\\\", "\\"))
@@ -149,11 +171,23 @@ def load_papers(data_dir=None, library_id=1):
           JOIN fields f ON id.fieldID=f.fieldID
           JOIN itemDataValues idv ON id.valueID=idv.valueID"""):
             fld.setdefault(iid, {})[fn] = val
-        # 作者（按顺序）
-        au = {}
-        for iid, ln, fn in q("""SELECT ic.itemID, c.lastName, c.firstName FROM itemCreators ic
-          JOIN creators c ON ic.creatorID=c.creatorID ORDER BY ic.itemID, ic.orderIndex"""):
-            au.setdefault(iid, []).append(_clean((ln or "") + (fn or "")))
+        # Creator（按 Zotero 原顺序、保留角色与机构/双字段姓名）。
+        # 旧实现没有 JOIN creatorTypes，导致 author/editor/translator 全被压进 author 字符串。
+        creators = {}
+        for iid, ln, fn, field_mode, role in q("""SELECT ic.itemID, c.lastName, c.firstName,
+                                                        COALESCE(c.fieldMode, 0), ct.creatorType
+          FROM itemCreators ic
+          JOIN creators c ON ic.creatorID=c.creatorID
+          JOIN creatorTypes ct ON ic.creatorTypeID=ct.creatorTypeID
+          ORDER BY ic.itemID, ic.orderIndex"""):
+            name = _creator_display_name(ln, fn, field_mode)
+            creators.setdefault(iid, []).append({
+                "role": _clean(role),
+                "name": name,
+                "first_name": _clean(fn),
+                "last_name": _clean(ln),
+                "is_institution": bool(int(field_mode or 0) == 1),
+            })
         # 标签 → 当作 keywords（BBT 也是把 tags 导成 keywords）
         tags = {}
         for iid, name in q("""SELECT it.itemID, t.name FROM itemTags it JOIN tags t ON it.tagID=t.tagID"""):
@@ -208,6 +242,7 @@ def load_papers(data_dir=None, library_id=1):
     papers = []
     for iid, key, typ, dadd in items:
         f = fld.get(iid, {})
+        item_creators = creators.get(iid, [])
         # statute 的标题在 nameOfAct（法规名称）字段——漏读会让全部法规被当"无标题"丢弃
         title = _clean(f.get("title") or f.get("caseName") or f.get("nameOfAct") or f.get("subject") or "")
         if not title:
@@ -216,9 +251,16 @@ def load_papers(data_dir=None, library_id=1):
         paper = {
             "key": key,
             "title": title,
-            "author": "; ".join(au.get(iid, [])),
+            # author 保留为兼容显示字段，但只含真正的 author；完整顺序与角色在 creators。
+            "author": _role_names(item_creators, "author"),
+            "authors": _role_names(item_creators, "author"),
+            "editors": _role_names(item_creators, "editor"),
+            "translators": _role_names(item_creators, "translator"),
+            "creators": item_creators,
             "year": ym.group(0) if ym else "",
             "journal": _clean(f.get("publicationTitle") or f.get("bookTitle") or f.get("proceedingsTitle") or ""),
+            "volume": _clean(f.get("volume", "")),
+            "issue": _clean(f.get("issue", "")),
             "doi": _clean(f.get("DOI", "")),
             # ISSN：期刊识别引擎的 ISSN 通道数据源；extra：Zotero「Extra」字段，供法条时效状态检测。
             # 两者已在上面的 EAV 全字段拉取里（fld），此处直接透传即可。

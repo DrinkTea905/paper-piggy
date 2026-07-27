@@ -24,6 +24,15 @@ class AgentOutputTests(unittest.TestCase):
         self.assertIn("全量审查", AW._WF_WIKI)
         self.assertIn("简单事项直接处理", AW._WF_WIKI)
 
+    def test_review_workflows_classify_themes_and_hide_raw_keys_from_deliverables(self):
+        self.assertIn("set_wiki_theme", AW._WF_PAPER)
+        self.assertIn("set_wiki_theme", AW._WF_WIKI)
+        self.assertIn("既有主题", AW._WF_PAPER)
+        self.assertIn("主题归类", AW._WF_WIKI)
+        for body in (AW._README_OUTPUT, AW._WF_PAPER, AW._WF_WIKI, AW._WF_DIVERGENCE):
+            self.assertIn("key", body)
+            self.assertTrue("裸 key" in body or "裸文献 key" in body)
+
     def test_agent_safety_copy_matches_available_maintenance_tools(self):
         self.assertIn("用户明确要求", AW._WF_PAPER)
         self.assertIn("建库 / 深索工具更新 PaperPiggy 索引", AW._WF_PAPER)

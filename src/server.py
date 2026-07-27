@@ -3100,6 +3100,10 @@ def paper_detail(key: str):
         log_error("paper detail retrieval summary", repr(e))
     result = {
         "key": key, "title": p.get("title", ""), "author": p.get("author", ""),
+        "authors": p.get("authors", p.get("author", "")),
+        "editors": p.get("editors", ""),
+        "translators": p.get("translators", ""),
+        "creators": p.get("creators", []),
         "year": p.get("year", ""), "journal": p.get("journal", ""),
         "itemtype": p.get("itemtype", ""),
         "weight_tier": (g["band_name"] if g else p.get("journal_tier", "")),
@@ -3129,7 +3133,7 @@ def paper_detail(key: str):
             "hit_catalogs", "explain", "manual", "src",
         )})
     for field in (
-        "doi", "issn", "url", "website_title", "access_date", "publisher", "place", "isbn",
+        "doi", "issn", "volume", "issue", "url", "website_title", "access_date", "publisher", "place", "isbn",
         "edition", "series", "book_title", "university", "thesis_type", "institution",
         "report_type", "report_number", "conference_name", "proceedings_title", "court",
         "docket_number", "decision_date", "standard_number", "version",
@@ -3174,28 +3178,8 @@ def cite_paper(key: str, page: Optional[int] = None, position: Optional[int] = N
                                        or float(pm.get("conf") or 0) < 0.7))
         except Exception as e:
             log_error("cite printed", repr(e))
-    # 缺字段按 itemtype 分派（与 cite_format 的模板字段一一对应）
     it = (p.get("itemtype") or "").strip()
-    miss = []
-    has_pg = bool(printed_disp or (p.get("official_pages") or "").strip()
-                  or hit.get("locator") or (pos is not None and p.get("fulltext_format") != "pdf"))
-    if it == "statute":
-        if not (p.get("title") or "").strip(): miss.append("title")
-        # 与 cite_format._statute_cite 同口径：法规标题惯例「（2018修正）」不含「年」字，判四位数字
-        if not str(p.get("year") or "").strip() and not re.search(r"\d{4}", p.get("title") or ""):
-            miss.append("year")
-    elif it == "report":
-        if not ((p.get("author") or "").strip() or (p.get("journal") or "").strip()):
-            miss.append("author")      # 机构作者：author 首位，退 journal 位（模板同款回退）
-        if not (p.get("title") or "").strip(): miss.append("title")
-        if not str(p.get("year") or "").strip(): miss.append("year")
-    else:                              # 期刊式（含 itemtype 不认识的回退）
-        for f, v in (("author", p.get("author")), ("title", p.get("title")),
-                     ("journal", p.get("journal")), ("year", p.get("year"))):
-            if not str(v or "").strip():
-                miss.append(f)
-        if not has_pg:
-            miss.append("page")        # 手册脚注式没页码是硬伤，必须让 agent 知道
+    miss = CF.missing_fields(hit)
     return {"ok": True, "key": key, "style": style, "page": page, "position": pos,
             "locator": hit.get("locator", ""), "fulltext_format": p.get("fulltext_format", ""),
             "printed_page": printed_disp, "itemtype": it,
@@ -3335,7 +3319,8 @@ _SOURCE_TYPE_FILTERS = {
 
 
 _PAPER_QUERY_FIELDS = (
-    "title", "author", "journal", "year", "doi", "isbn", "issn", "publisher",
+    "title", "author", "authors", "editors", "translators", "journal", "year",
+    "doi", "isbn", "issn", "publisher",
     "book_title", "website_title", "institution", "university", "conference_name",
     "court", "docket_number", "standard_number", "report_number",
 )
@@ -3448,6 +3433,10 @@ def papers(collection: Optional[str] = None, topic: Optional[int] = None,
             continue
         out.append({
             "key": p["key"], "title": p.get("title", ""), "author": p.get("author", ""),
+            "authors": p.get("authors", p.get("author", "")),
+            "editors": p.get("editors", ""),
+            "translators": p.get("translators", ""),
+            "creators": p.get("creators", []),
             "year": p.get("year", ""), "journal": p.get("journal", ""),
             "journal_tier": p.get("journal_tier", ""), "tier_rank": p.get("tier_rank", 6),
             "weight_tier": g.get("band_name", ""),

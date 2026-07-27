@@ -1079,7 +1079,9 @@
   function metaRow(o) {
     const bits = [];
     const who = (o.author || "").split(";")[0].trim();
+    const editor = (o.editors || "").split(";")[0].trim();
     if (who) bits.push(`<span class="m-author">${esc(who)}</span>`);
+    else if (editor) bits.push(`<span class="m-author">${esc(editor)}（编）</span>`);
     if (o.year) bits.push(`<span class="m-year">${esc(String(o.year))}</span>`);
     if (o.journal) bits.push(`<span class="m-journal">${esc(o.journal)}</span>`);
     if (o.official_pages) bits.push(`<span class="pg">第 ${esc(o.official_pages)} 页</span>`);

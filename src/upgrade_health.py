@@ -15,7 +15,7 @@ APP = Path(__file__).resolve().parent
 # 由发布者明确判断“契约不变”或提升契约版本，不把这个判断推给用户。
 INDEX_CONTRACT_SCHEMA = 1
 CURRENT_INDEX_CONTRACTS = {
-    "light": "light-catalog-v1",
+    "light": "light-zotero-creators-v2",
     "deep": "deep-fulltext-chunks-v1",
     "semantic": "semantic-bge-m3-input-v1",
 }
@@ -68,10 +68,16 @@ _LEGACY_FINGERPRINT_CONTRACTS = {
 # 若产物契约不变，把新实现指纹连同理由登记在当前契约下；若契约变了，先提升
 # CURRENT_INDEX_CONTRACTS 对应 id。
 _AUDITED_IMPLEMENTATIONS = {
-    "light": {CURRENT_INDEX_CONTRACTS["light"]: {
+    "light": {
+        "light-catalog-v1": {
         "a840ea8220ae839a408353786ed9a412d69f6d8378236810f0c8d0c521c4b8dc":
             "改为稳定 light 契约登记，并防止旧应用覆盖更高版本契约；题录产物语义不变",
-    }},
+        },
+        CURRENT_INDEX_CONTRACTS["light"]: {
+        "b0bdb6feecdb83f50eb4cfc84e02bb390831870c45e82c2c1113a3cdfd386d11":
+            "保留 Zotero creator 顺序、角色与机构身份，并按条目类型生成题录和引注；只需刷新轻量题录",
+        },
+    },
     "deep": {CURRENT_INDEX_CONTRACTS["deep"]: {
         "b4bb9b7cca3f8e396010c3ec067d3b15d9f612c100c61f40f58bd826d46c73d0":
             "仅增加切块契约防混用与原子落盘；提取、定位和切块算法不变",

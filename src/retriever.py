@@ -520,12 +520,28 @@ def _page_cite(r):
         if gen:
             s += f" · 生成于 {gen}"
         return s + "（来自既有综合，可能已过时）"
-    parts = []
-    if r.get("author"): parts.append(r["author"].split(";")[0].strip() + ("等" if ";" in r["author"] else ""))
-    if r.get("year"):   parts.append(f"({r['year']})")
-    s = " ".join(parts) + f"《{r.get('title','')}》"
-    if r.get("journal"): s += f"，{r['journal']}"
     paper = (M.get("papers") or {}).get(r.get("key"), {})
+    # 题录展示优先使用 papers.jsonl 的当前值。这样补充 creator 角色后只需轻量增量更新，
+    # 不必为了替换 LanceDB 旧行里的展示字段而重嵌入全文。
+    meta = dict(r)
+    meta.update(paper)
+    meta["page"] = r.get("page")
+    meta["heading"] = r.get("heading", "")
+    meta["has_pdf"] = r.get("has_pdf", paper.get("has_pdf", False))
+    try:
+        import cite_format as CF
+        return CF.compact(meta).strip("[]")
+    except Exception:
+        pass
+    parts = []
+    if meta.get("author"):
+        parts.append(meta["author"].split(";")[0].strip()
+                     + ("等" if ";" in meta["author"] else ""))
+    if meta.get("year"):
+        parts.append(f"({meta['year']})")
+    s = " ".join(parts) + f"《{meta.get('title','')}》"
+    if meta.get("journal"):
+        s += f"，{meta['journal']}"
     fmt = paper.get("fulltext_format") or ("pdf" if r.get("has_pdf") else "")
     if fmt and fmt != "pdf":
         locator = DF.locator_label(fmt, r.get("page"), r.get("heading"))
@@ -601,13 +617,19 @@ def search_full(query, topk, sort, keys=None, max_per_key=None):
         deep = (r.get("row_type") != "meta")
         paper = (M.get("papers") or {}).get(r.get("key", ""), {})
         fmt = paper.get("fulltext_format") or ("pdf" if r.get("has_pdf") else "")
+        current = lambda field, default="": (
+            paper[field] if field in paper else r.get(field, default)
+        )
         d = {
             "chunk_id": cid, "score": round(sc, 4),
             "journal_tier": tier, "tier_rank": JT.rank_of(tier),
-            "title": r.get("title", ""), "author": r.get("author", ""),
-            "year": r.get("year", ""), "journal": r.get("journal", ""),
-            "doi": r.get("doi", ""), "page": r.get("page"), "key": r.get("key", ""),
-            "official_pages": r.get("official_pages", ""),
+            "title": current("title"), "author": current("author"),
+            "authors": current("authors", current("author")),
+            "editors": current("editors"), "translators": current("translators"),
+            "creators": current("creators", []),
+            "year": current("year"), "journal": current("journal"),
+            "doi": current("doi"), "page": r.get("page"), "key": r.get("key", ""),
+            "official_pages": current("official_pages"),
             "row_type": r.get("row_type", "chunk"),
             "depth": "full" if deep else "abstract",
             "has_pdf": r.get("has_pdf", True),
@@ -617,7 +639,7 @@ def search_full(query, topk, sort, keys=None, max_per_key=None):
             "heading": r.get("heading", ""),
             # EN-L2/L5：itemtype 供引注模板分派（statute/report），statute_status 是
             # 法条时效徽标（契约11：""｜"已修订"｜"已废止"；按 papers.jsonl 现算，不动表 schema）
-            "itemtype": r.get("itemtype", ""),
+            "itemtype": current("itemtype"),
             "statute_status": _statute_status_of(r.get("key", "")),
             "text": r.get("text", ""), "context": r.get("parent_text", ""),
             "citation": _page_cite(r),
@@ -689,13 +711,19 @@ def _neighbors_loaded(key, topk=8):
         deep = (r.get("row_type") != "meta")
         paper = (M.get("papers") or {}).get(k, {})
         fmt = paper.get("fulltext_format") or ("pdf" if r.get("has_pdf") else "")
+        current = lambda field, default="": (
+            paper[field] if field in paper else r.get(field, default)
+        )
         d = {
             "chunk_id": h.get("chunk_id"), "score": sim,
             "journal_tier": tier, "tier_rank": JT.rank_of(tier),
-            "title": r.get("title", ""), "author": r.get("author", ""),
-            "year": r.get("year", ""), "journal": r.get("journal", ""),
-            "doi": r.get("doi", ""), "page": r.get("page"), "key": k,
-            "official_pages": r.get("official_pages", ""),
+            "title": current("title"), "author": current("author"),
+            "authors": current("authors", current("author")),
+            "editors": current("editors"), "translators": current("translators"),
+            "creators": current("creators", []),
+            "year": current("year"), "journal": current("journal"),
+            "doi": current("doi"), "page": r.get("page"), "key": k,
+            "official_pages": current("official_pages"),
             "row_type": r.get("row_type", "chunk"),
             "depth": "full" if deep else "abstract",
             "has_pdf": r.get("has_pdf", True),
@@ -704,7 +732,7 @@ def _neighbors_loaded(key, topk=8):
             "locator": DF.locator_label(fmt, r.get("page"), r.get("heading")) if deep else "",
             "heading": r.get("heading", ""),
             # EN-L2/L5：与 search_full 输出保持同构（前端复用 resultCard）
-            "itemtype": r.get("itemtype", ""),
+            "itemtype": current("itemtype"),
             "statute_status": _statute_status_of(k),
             "text": r.get("text", ""), "context": r.get("parent_text", ""),
             "citation": _page_cite(r), "is_wiki": False,
@@ -921,6 +949,10 @@ def search_light(query, topk, sort, keys=None):
             "chunk_id": f"{p['key']}::meta", "score": round(sc, 4),
             "journal_tier": tier, "tier_rank": JT.rank_of(tier),
             "title": p.get("title", ""), "author": p.get("author", ""),
+            "authors": p.get("authors", p.get("author", "")),
+            "editors": p.get("editors", ""),
+            "translators": p.get("translators", ""),
+            "creators": p.get("creators", []),
             "year": p.get("year", ""), "journal": p.get("journal", ""),
             "doi": p.get("doi", ""), "page": None, "key": p.get("key", ""),
             "official_pages": p.get("official_pages", ""),

@@ -645,7 +645,7 @@ TOOLS = [
     },
     {
         "name": "get_source_meta",
-            "description": "取**单篇**文献的完整题录与状态：作者/年份、真实文献性质、唯一客观标签、四档评价、有无全文附件、主全文格式、是否深索、"
+            "description": "取**单篇**文献的完整题录与状态：按原顺序保留的 creator 角色（作者/编者/译者/机构作者）、年份、真实文献性质、唯一客观标签、四档评价、有无全文附件、主全文格式、是否深索、"
                        "题录摘要（bibliographic_abstract）与 SAC 检索摘要（retrieval_summary，二者明确分开）、"
                        "法条时效（statute_status）、以及哪些 wiki 综合页引用了它（cited_by_wiki）。"
                        "替代『list_sources 翻找 + get_backlinks 反查』两跳——精读一篇前先调它一次拿全貌。",
@@ -1701,7 +1701,7 @@ def do_tool(name, args):
             p.get("source_type_name"), p.get("objective_label"), p.get("band_name")
         ) if x)
         out = [f"《{p.get('title', '')}》 «key:{key}»",
-               f"{p.get('author', '')}，{p.get('journal', '')}，{p.get('year', '')}"
+               f"{p.get('author') or ((p.get('editors') or '') + ('（编）' if p.get('editors') else ''))}，{p.get('journal', '')}，{p.get('year', '')}"
                f"（{evaluation or p.get('itemtype', '')}）",
                f"官方页码：{p.get('official_pages') or '未知'}　收藏夹：{'、'.join(p.get('collections') or []) or '（无）'}",
                f"状态：{'；'.join(flags)}　入库：{str(p.get('ingested_at', ''))[:10]}"]
