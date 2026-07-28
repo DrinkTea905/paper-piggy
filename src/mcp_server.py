@@ -77,6 +77,7 @@ _INSTRUCTIONS_HEAD = """你连接的是用户的**本地文献知识库**（Pape
 
 工作流闸门（最高优先级）：
 - 用户请求命中已有工作流时，必须先调 list_workflows / read_workflow，明确声明采用哪一份；未读取不得开始执行或宣布完成。
+- 研究任务先按任务类型（论文初稿 / 综述）、再按领域（少年司法 / 其他）路由到四条研究工作流。少年司法论文初稿默认先给教义学、理论—制度建构两张路线方案卡；明确推荐一条并说明理由，用户选择前不得起草全文。只有用户已明确路线且明确不要比较时才可跳过双卡。
 - 用户只要提到“维护”，一律先读《维护综述库》并调 maintenance_audit 做全量审查。简单事项直接处理；只把付费、删除/重建、外部修复或真实内容取舍交给用户决定。
 - 看到待办却只解释原因不算完成。结束前必须重新审查，并给出全面的前后对照总结。
 
@@ -180,7 +181,8 @@ def _workspace_text():
         "\n\n══ 你的专属工作区（都在用户本机、人类可读；换任何 AI 助手都读这套，务必先看）══\n"
         + mem_block
         + upgrade_block
-        + f"· 技能/工作流：{p.get('skills_dir','')}（**一个工作流一个文件**：写论文与综述.md / 维护综述库.md / 跨学科发散与补文献.md……"
+        + f"· 技能/工作流：{p.get('skills_dir','')}（**一个工作流一个文件**。四条研究工作流：论文初稿（少年司法版）.md / "
+        "综述（少年司法版）.md / 论文初稿（通用暂用版）.md / 综述.md；另有维护综述库.md / 跨学科发散与补文献.md 两条支持工作流。"
         "动手写作或系统性维护 wiki 前，先读相关那份照着做。用户要你建一条新工作流时，**新建一个 .md 文件**写清"
         "「何时用/分几步/注意事项」，别往已有文件里塞。）\n"
         f"· 参考格式：{p.get('formats_dir','')}（用户放的排版范本；改 docx 格式时保护 Zotero 引注域、不重建文档）\n"
@@ -350,7 +352,7 @@ TOOLS = [
         "name": "read_workflow",
         "description": "读取指定工作流全文。开始写作、维护或跨学科发散前必须先读匹配工作流并照完成标准执行。",
         "inputSchema": {"type": "object", "properties": {
-            "name": {"type": "string", "description": "工作流文件名或名称，如 维护综述库 / 写论文与综述"}},
+            "name": {"type": "string", "description": "工作流文件名或名称，如 论文初稿（少年司法版） / 综述 / 维护综述库"}},
             "required": ["name"]},
     },
     {
@@ -1118,12 +1120,25 @@ def do_tool(name, args):
     if name == "list_workflows":
         import agent_ws as AW
         AW.ensure_scaffold()
-        files = [p for p in sorted(AW.skills_dir().glob("*.md"))
-                 if p.stem not in {"说明"} and ".new" not in p.stem and ".user-backup-" not in p.stem]
-        if not files:
+        eligible = [p for p in AW.skills_dir().glob("*.md")
+                    if p.stem not in {"说明"} and ".new" not in p.stem
+                    and ".user-backup-" not in p.stem]
+        builtin = [
+            path for key, path, _text, _mask, _seed in AW._template_specs()
+            if key.startswith("rely/技能/") and key != "rely/技能/说明.md" and path in eligible
+        ]
+        builtin_set = set(builtin)
+        custom = sorted((p for p in eligible if p not in builtin_set), key=lambda p: p.name)
+        if not builtin and not custom:
             return "当前没有工作流文件。"
-        return "现有工作流（请求命中时必须先用 read_workflow 读取）：\n" + "\n".join(
-            f"- {p.stem}：{p}" for p in files)
+        out = ["现有工作流（请求命中时必须先用 read_workflow 读取）："]
+        if builtin:
+            out.append("\n内置工作流（固定顺序）：")
+            out.extend(f"- {p.stem}：{p}" for p in builtin)
+        if custom:
+            out.append("\n自定义或迁移保留文件（仅在任务明确命中时读取）：")
+            out.extend(f"- {p.stem}：{p}" for p in custom)
+        return "\n".join(out)
     if name == "read_workflow":
         import agent_ws as AW
         AW.ensure_scaffold()
@@ -1959,8 +1974,8 @@ def main():
         m, rid = req.get("method"), req.get("id")
         if m == "initialize":
             # 技能不再自动装进 <cwd>/.claude/skills（避免在用户目录里节外生枝多一个文件夹）。
-            # 统一以「0_Agent资料库/技能/工作流.md」为唯一落点：任何 AI 助手（含 Claude）读它即得完整流水线，
-            # initialize 的 instructions 已指向它。见 agent_ws.ensure_scaffold 写入的 工作流.md。
+            # 统一以「0_Agent资料库/技能/」的一文件一工作流为落点：任何 AI 助手（含 Claude）先列出并读取匹配文件，
+            # initialize 的 instructions 已指向该目录。见 agent_ws.ensure_scaffold 写入的六条内置工作流。
             params = req.get("params") if isinstance(req.get("params"), dict) else {}
             requested = str(params.get("protocolVersion") or "")
             negotiated_protocol = requested if requested in SUPPORTED_PROTOCOLS else PROTO

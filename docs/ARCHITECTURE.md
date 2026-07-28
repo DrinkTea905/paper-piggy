@@ -267,7 +267,7 @@ light 模式走 `search_light`（`retriever.py:547`）：只有 bm25_meta + `_ap
   一旦用户手改过（哪怕只在末尾追加一行），就**保留用户版本**，只打印提示（`:163-165`）。
   注释 `:170-171` 解释了为什么不能用「含有某几个特征串」来判断。
   **改动 `WIKI_MD_SEED` 时必须把旧 seed 的 normalized-sha1 追加进 `_FACTORY_HASHES`**，否则老用户的自动升级会断掉。
-  同款机制在 agent 层也有一份：`agent_ws._LEGACY_WF_HASHES`（`agent_ws.py:353`）。
+  同款机制在 agent 层也有一份：`agent_ws._LEGACY_WF_HASHES`。
 
 ### 5.3 核验版、Agent 待审稿与排序
 
@@ -317,9 +317,10 @@ AGENTS.md / CLAUDE.md          # Agent 根入口：强制先读匹配工作流
   定时任务/
 0_Agent资料库/          # AGENT_RELY_NAME，config.py:84
   README.md
-  AI写综述遵守的规约.md      # 由 _rules_summary_text() 生成，agent_ws.py:315
+  AI写综述遵守的规约.md      # 由 agent_ws._rules_summary_text() 生成
   记忆/  项目记忆.md（当前真相）、变更日志.md（只增不改）
-  技能/  说明.md、写论文与综述.md、维护综述库.md、跨学科发散与补文献.md
+  技能/  说明.md、论文初稿（少年司法版）.md、综述（少年司法版）.md
+         论文初稿（通用暂用版）.md、综述.md、维护综述库.md、跨学科发散与补文献.md
   参考格式/ 说明.md
   交付模板/ 交付说明书模板.md
   定时任务/ 说明.md
@@ -329,13 +330,21 @@ AGENTS.md / CLAUDE.md          # Agent 根入口：强制先读匹配工作流
 若 folder 模式的受管文件夹里已有非空的 `0_Agent资料库`，就跟着它走（避免老用户记忆孤儿化）。
 历史坑：落点曾随 folder/zotero 模式漂移，表现为「记忆凭空清零」。
 
-**内置工作流常量**：`_WF_PAPER`（写论文/综述）、`_WF_WIKI`（维护知识库与综述库）、`_WF_DIVERGENCE`（跨学科发散与补文献）。
+**内置工作流常量**：`_WF_JJ_DRAFT`（论文初稿·少年司法）、`_WF_JJ_REVIEW`（综述·少年司法）、
+`_WF_GENERAL_DRAFT`（论文初稿·通用暂用）、`_WF_REVIEW`（通用综述）、`_WF_WIKI`（维护知识库与综述库）、
+`_WF_DIVERGENCE`（跨学科发散与补文献）。
 一个工作流一个 `.md`，agent 中立（Claude Code / Codex 都是读文件夹）。
-三份工作流都有“触发条件 / 开工前检查 / 用户决策点 / 完成标准 / 最终报告”强制契约；根入口与 MCP 初始化指令要求 Agent 在命中工作流时先读后做。“维护”会进入统一全量审查，不能把只列待办当作完成。
-旧版单文件 `技能/工作流.md` 由 `_migrate_legacy_workflow()`（`:359`）拆分迁移。
+六份工作流都有“触发条件 / 开工前检查 / 用户决策点 / 完成标准 / 最终报告”强制契约；根入口与 MCP 初始化指令要求 Agent
+先按任务类型、再按研究领域路由，命中后先读后做。少年司法论文初稿默认先提交“教义学 / 理论—制度建构”两张完整方案卡，
+用户选定前不得起草全文；通用初稿会明确提示“尚未经过其他部门法训练验证”。“维护”仍进入统一全量审查，不能把只列待办当作完成。
 
-**定时任务**：应用**不执行**任务（`_TASKS_README`，`agent_ws.py:152` 明说「本应用不执行任务」）——只登记/展示，定时触发由 agent 自己的调度器（如 Claude Code 的 scheduled-tasks）负责。
-server 侧 `GET /agent/tasks`（`server.py:649`）解析 `任务.md` 的 frontmatter，`GET /agent/outputs`（`server.py:693`）列最近交付物。
+旧版单文件 `技能/工作流.md` 仍由 `_migrate_legacy_workflow()` 迁移；旧 `技能/写论文与综述.md` 由
+`_migrate_combined_paper_workflow()` 安全迁入 `综述.md`。历史出厂原文可静默升级，用户修改版则改名保留，
+不会删除或覆盖。normalized 历史 hash 继续保存在 `_FACTORY_HASHES`；工作流的覆盖、删除与并发校验只认
+保留 Markdown 空白语义的 `_WORKFLOW_FACTORY_EXACT_HASHES`。更早的 `工作流.md` 因无 exact 历史正文而一律改名保留。
+
+**定时任务**：应用**不执行**任务（`agent_ws._TASKS_README` 明说「本应用不执行任务」）——只登记/展示，定时触发由 agent 自己的调度器（如 Claude Code 的 scheduled-tasks）负责。
+server 侧 `GET /agent/tasks` 解析 `任务.md` 的 frontmatter，`GET /agent/outputs` 列最近交付物。
 
 ### 6.2 `mcp_server.py`——给外部 AI 编码助手用
 
@@ -350,14 +359,13 @@ server 侧 `GET /agent/tasks`（`server.py:649`）解析 `任务.md` 的 frontma
   wiki 类 `save_synthesis / list_wiki / get_wiki_page / update_wiki_page / set_wiki_theme / mark_stale / set_wiki_links / get_backlinks / lint_wiki / propose_wiki_updates / pending_wiki_updates`；
   研究类 `build_digest / research_outline / suggest_new_sources / export_disclosure / resolve_page / format_citation / locate_quote / verify_claim`；
   记忆类 `read_project_memory / append_project_memory`。
-- **4 个 RESOURCES**（`mcp_server.py:610`）：`localkb://schema`（WIKI.md 全文）、`localkb://index`、`localkb://lint`、`localkb://memory`。
-  外加 1 个 **RESOURCE_TEMPLATE** `localkb://page/{id}`（`:628`）。
-- **3 个 PROMPTS**（`mcp_server.py:635`）= gist 三环的斜杠命令：`ingest-source` / `lint-wiki` / `query-and-file`。
-- `initialize` 时下发 `instructions()`（`:174`）= 固定头 + **WIKI.md 全文** + 工作区说明（`_workspace_text`，`:130`，含项目记忆内联）。
+- **5 个资源入口**：4 个固定 `RESOURCES`——`localkb://schema`（WIKI.md 全文）、`localkb://index`、`localkb://lint`、`localkb://memory`；另有 1 个 `RESOURCE_TEMPLATE`——`localkb://page/{id}`。
+- **3 个 PROMPTS**（`mcp_server.PROMPTS`）= gist 三环的斜杠命令：`ingest-source` / `lint-wiki` / `query-and-file`。
+- `initialize` 时下发 `instructions()` = 固定头 + **WIKI.md 全文** + 工作区说明（`_workspace_text`，含项目记忆内联）。
 - server 版本号取 `config.APP_VERSION`（**全项目唯一版本字面量**）。MCP 按客户端初始化请求协商
   `2024-11-05`、`2025-03-26`、`2025-06-18` 或 `2025-11-25`：前两版返回兼容工具定义与标准文本，后两版增加标题、
   `annotations`、`outputSchema` 与 `structuredContent`；`read_source` 的长正文始终走标准文本通道。
-- 前端 Agent 页的接入命令由 `GET /agent/mcp-config`（`server.py:396`）动态吐出（`claude mcp add localkb -- <python> <mcp_server.py>` / mcp.json / codex.toml），**工具数是运行时 `len(MCP.TOOLS)` 读出来的，不写死**（`server.py:416-420`）。
+- 前端 Agent 页的接入命令由 `GET /agent/mcp-config` 动态吐出（`claude mcp add localkb -- <python> <mcp_server.py>` / mcp.json / codex.toml），**工具数是运行时 `len(MCP.TOOLS)` 读出来的，不写死**。
 - 文档 `MCP接入说明.md` 的工具表由 `gen_mcp_doc.py` 从 `TOOLS` 生成——**改了 TOOLS 要跑一次**（`gen_mcp_doc.py --check` 可在提交前校验）。
 
 工具清单与数量不得在散文里另建事实源；面向用户的完整表由 `gen_mcp_doc.py` 从 `TOOLS` 自动生成。
@@ -365,7 +373,7 @@ server 侧 `GET /agent/tasks`（`server.py:649`）解析 `任务.md` 的 frontma
 ### 6.3 技能包 `skills/localkb-paper/`（**已删除**）
 
 早期随源码分发一个 Claude Code 技能包，要用户自己复制到 `.claude/skills/`。已于 2026-07-14 删除：
-它与 `agent_ws.py` 的内置工作流（`_WF_PAPER` 等，应用自动写进「0_Agent资料库/技能/」）是**同一条流水线的两份事实源**，只会打架。
+它与 `agent_ws.py` 的内置工作流（`_WF_*`，应用自动写进「0_Agent资料库/技能/」）是**同一条流水线的两份事实源**，只会打架。
 现状：技能**不**自动装进 `<cwd>/.claude/skills`（`mcp_server.py:1447-1449`），「0_Agent资料库/技能/」是唯一落点；
 `GET /agent/mcp-config` 的 `skill_src_dir` 字段同批删除，前端只用 `/agent/open_folder?which=skills`。
 

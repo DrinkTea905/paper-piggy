@@ -1069,8 +1069,8 @@ def agent_open_folder(q: AgentOpenQ):
                  "skills": AW.skills_dir, "tasks": AW.tasks_dir}
         if q.which not in roots:
             raise HTTPException(status_code=400, detail="不支持的 Agent 文件夹")
-        # 技能统一落点=「0_Agent资料库/技能」（含 agent 中立的 工作流.md）；不再打开 app/skills，
-        # 也不再往 .claude/skills 自动装——技能只此一处，任何助手读它即可。
+        # 工作流统一落点=「0_Agent资料库/技能」（一文件一工作流）；不再打开 app/skills，
+        # 也不再往 .claude/skills 自动装——任何助手先列出并读取匹配文件即可。
         d = Path(roots[q.which]())
         d.mkdir(parents=True, exist_ok=True)
         _open_system_dir(d)

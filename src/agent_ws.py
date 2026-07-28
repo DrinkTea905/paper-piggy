@@ -72,8 +72,8 @@ _README_RELY = """# 0_Agent资料库 —— 你的 AI 助手的专属资料库
 
 - **记忆/** —— 项目记忆。`项目记忆.md` 记「当前定了什么」（决策 / 偏好 / 进度，保持简短），
   `变更日志.md` 记历史流水账（只增不改）。二者刻意分开，别让记忆膨胀成流水账。
-- **技能/** —— AI 助手的工作流，**一个工作流一个文件**（详见里面的 `说明.md`）：`写论文与综述.md`、`维护综述库.md`、`跨学科发散与补文献.md`……
-  **任何 AI 助手**（Claude Code / Codex / …）读这个文件夹即可照着干。要加新工作流就**新建一个 .md**，别往已有文件里塞。
+- **技能/** —— AI 助手的工作流，**一个工作流一个文件**（详见里面的 `说明.md`）。研究任务按“初稿 / 综述”与“少年司法 / 其他领域”路由，
+  另有维护、跨学科发散两条支持工作流。**任何 AI 助手**（Claude Code / Codex / …）读这个文件夹即可照着干。要加新工作流就**新建一个 .md**，别往已有文件里塞。
 - **参考格式/** —— 论文 / 文书的排版范本。把范本 .docx 放进来，AI 助手就能照着帮你改格式。
 - **交付模板/** —— 交付形态模板。改这里 = 改 AI 助手给你产出的样子。
 - **定时任务/** —— 定时任务的定义（搜什么、多久一次、成果放哪）。换助手也能照着重建。
@@ -181,13 +181,20 @@ _TASKS_README = """# 定时任务
 """
 
 # agent 中立的工作流——**一个工作流一个文件**放进「技能/」。让任何 AI 助手（不止 Claude）读文件夹即得工作流。
-# 拆成两条独立工作流 + 一份说明，避免一个文件塞太多、也方便用户/agent 增删单条工作流。
+# 四条研究工作流与两条支持工作流各自独立，避免一个文件塞多条流程，也方便用户/agent 增删单条工作流。
 _SKILLS_README = """# 技能 / 工作流
 
 > 这个文件夹放你和 AI 助手约定的**工作流**。**一个工作流一个文件**（一个 .md）——别把多条工作流塞进同一个文件。
 
 ## 现有工作流
-- `写论文与综述.md` —— 基于文献库写论文 / 综述 / 研究报告的完整流水线（检索→提纲→起草→核验→引注→沉淀）。
+
+### 四条研究工作流
+- `论文初稿（少年司法版）.md` —— 少年司法论文初稿；默认先给教义学、理论—制度建构两张路线方案卡，用户选路前不写全文。
+- `综述（少年司法版）.md` —— 少年司法综述；组织理论谱系、概念演进、竞争模式、证据基础、作者内部修正和未决争议。
+- `论文初稿（通用暂用版）.md` —— 其他领域论文初稿的暂用流程；**尚未经过其他部门法训练验证**。
+- `综述.md` —— 其他领域的一般研究综述；由旧版合并工作流的综述部分安全迁移而来。
+
+### 两条支持工作流
 - `维护综述库.md` —— 只要提到维护就全量审查：模板 / 索引 / 深索 / 摘要 / wiki，简单事项直接处理，最后全面总结。
 - `跨学科发散与补文献.md` —— 写作前打开理论视野：把窄题接到法学近学科 / 政治学·心理学等远学科，理出该补的（尤其外文）文献。
 
@@ -206,6 +213,11 @@ _ROOT_AGENTS = """# PaperPiggy Agent 工作入口
 ## 工作流闸门（最高优先级）
 
 - 用户请求命中 `0_Agent资料库/技能/` 中的现有工作流时，必须先读取并明确声明采用哪一份工作流；未读取不得开始执行或宣布完成。
+- 研究任务先按**任务类型**路由，再按**领域**路由：
+  - 要写论文正文、章节或论文提纲：少年司法用 `论文初稿（少年司法版）.md`；其他领域暂用 `论文初稿（通用暂用版）.md`。
+  - 要做文献综述、研究现状、理论谱系或争议地图：少年司法用 `综述（少年司法版）.md`；其他领域用 `综述.md`。
+  - “研究报告 / 研究提纲 / 系统整理”无法判断是初稿还是综述时，只问一个澄清问题，不要凭标题猜。
+- 少年司法论文初稿默认先提交教义学、理论—制度建构两张路线方案卡；明确推荐一条并说明理由，用户选择前不得起草全文。
 - 用户只要提到“维护”，一律读取 `维护综述库.md` 并执行全量审查：简单、可逆、无需取舍的事项直接处理；需要付费、删除/重建、外部修复或真实内容取舍时再询问用户。
 - 工作结束必须按工作流的“完成标准”复核，并给出全面总结；看到待办却只解释原因，不算完成。
 - PaperPiggy 的实时数据与写入一律走 `localkb` MCP；不要凭文件名或模型记忆猜测状态。
@@ -213,60 +225,182 @@ _ROOT_AGENTS = """# PaperPiggy Agent 工作入口
 
 _ROOT_CLAUDE = _ROOT_AGENTS.replace("# PaperPiggy Agent 工作入口", "# PaperPiggy Claude 工作入口")
 
-_WF_PAPER = """# 工作流：基于本地文献库写论文 / 综述 / 研究报告
+_WF_JJ_DRAFT = """# 工作流：论文初稿（少年司法版）
 
-> **这是默认工作流，你可以改**——和 AI 助手商量着直接编辑本文件（加步骤 / 改引注风格 / 定制交付形态）。
-> 一个工作流一个文件：这是「写作」流程；「维护综述库」另见同目录 `维护综述库.md`。
-> 所有工具来自 `localkb` MCP。没连上（工具列表看不到 search_localkb 等）先让用户在应用「🤖 Agent」页复制接入命令、
-> 新开会话再继续——**没连上时别凭记忆假装做完任何一步**。
+> 用于少年司法论文初稿。只有两条主路线：**教义学路线**、**理论—制度建构路线**。
+> 实证诊断、比较法和制度史只能作为可叠加模块，不得另造第三条主路线。
+> 所有工具来自 `localkb` MCP；没连上时先让用户按应用「Agent」页接入，新开会话后再继续。
 
 ## 触发条件
-- 用户要求写论文、文献综述、研究报告、章节草稿、研究提纲或系统整理某一研究问题时使用。
+- 用户要求撰写少年司法、未成年人犯罪/罪错处遇、少年法庭、未成年人刑事程序、分流、社会调查、监督考察、专门矫治教育等领域的论文初稿、章节或论文型研究提纲时使用。
+- 用户要求的是文献综述、研究现状、理论谱系或争议地图时，改用 `综述（少年司法版）.md`。
 
 ## 开工前检查
-- 先读项目记忆，确认研究主题、用户偏好与既有成果；再确认 localkb 已连接、核心文献是否已深索。
-- 开工时明确告诉用户：本次采用《写论文与综述》工作流。
+1. 先读项目记忆、既有交付物和相关 wiki 页；明确声明采用《论文初稿（少年司法版）》。
+2. 确认 localkb 已连接，检索并检查核心来源是否可 `read_source` 逐页读取；题录摘要和检索片段只能发现文献。
+3. 固定题目对象、年龄范围、程序/处遇阶段、法域、法制时点、篇幅、受众和引注要求；现行法必须另核时效。
+4. 不直接修改原始文献或 Zotero；只有用户明确要求并通过工具安全闸时才更新 PaperPiggy。wiki 写回仅限综合层，核验页只提交待审稿。
 
-## 三条铁律（每步都遵守）
-1. **无来源不落笔**：正文每个实质论断都要绑定库内来源（key + 原文位置）并经 `verify_claim` 核验。
-   核不出（not_in_lib）的要么删、要么明确标「作者观点/库外知识」——not_in_lib 不等于论断为假，但绝不许伪装成有出处。
-   key 只用于 Agent 内部取证和 wiki `sources`；任何交给用户的文件必须改为“作者/机构 + 题名 + 年份 + 页码”等人类可读引注，不得暴露裸 key。
-2. **原始资料与写回安全**：不得直接修改原始文献或 Zotero。只有用户明确要求、并通过工具自身的安全闸时，才能用 add_source 收 PDF / EPUB / DOCX / Markdown / TXT，或用建库 / 深索工具更新 PaperPiggy 索引。
-   wiki 写回仅限综合层（save_synthesis / update_wiki_page / mark_stale）；更新人工核验页时只提交待审修改，不覆盖核验版、不进入检索，须由用户查看差异后接受或放弃。删除只由用户在应用里做。
-3. **人工确认闸**：提纲必须经用户确认才动笔；「页码推算」的引注、AI 抽取的题录，都要提醒用户人工核对。
+## 双路线方案卡（用户选择前的硬闸门）
+1. 默认同时提交两张卡，名称固定为“教义学路线”和“理论—制度建构路线”。
+2. 每张卡必须逐项包含：
+   - 适配度；
+   - 完整拟题；
+   - 核心问题；
+   - 中心观点；
+   - 三级提纲（章—节—目）；
+   - 各部分主要内容；
+   - 所需规范、理论、事实材料（逐项注明完整原文与印刷页核验任务）；
+   - 优势；
+   - 风险；
+   - 不适用边界。
+3. 两卡必须在核心问题、中心观点、三级提纲、材料任务和不适用边界上形成实质差异，不能只换标题或章节顺序。
+4. 明确推荐一条，并用题目中心任务、可获得材料、论证闭合度和主要风险说明理由。
+5. **用户选择前不得起草摘要、引言、章节正文或全文。**
+6. 只有用户已经明确选定路线，且明确表示“不需要比较”时，才可跳过双卡；缺少任一条件都不能跳过。
 
-## 流水线
-① **意图澄清（最多 3 问）**：研究问题 / 篇幅 / 受众。用户已说清的别重复问，问完即进入检索。
-② **迭代检索（先广后深）**：同一问题换 3~5 组措辞各检一轮（概念名/制度名/争点/英文术语）；可先 list_kb_categories 聚焦分类。
-   `search_localkb` 是发现阶段：默认同一篇最多给 2 段，而且不会用重复弱段凑数——条数少不等于失败，先看覆盖了多少篇不同文献。
-   对核心文献用 similar_sources 找同题；对候选精读篇用 get_source_meta / read_source 深读；到论断核验阶段再用 verify_claim(keys=[...]) 在选定文献内多段取证。whats_new 看新入库；覆盖不足用 suggest_new_sources。
-   **先反向追踪库内参考文献**：确定 3~10 篇核心文献后，先读取其参考文献表并提取作者、题名、年份、期刊/出版社和 DOI；
-   合并多篇核心文献重复引用的条目，优先核对这些条目是否已在库内，再用 search_localkb / get_source_meta 深读。
-   每条候选必须保留“由哪篇库内核心文献、哪一页或参考文献序号追到”的出处；只有这条链覆盖不足时，才转向库外补文献。
-   同等相关时优先保留外文与台湾来源，但不能因此降低相关性、真实性和可核验要求。
-③ **主题归位 + grounded 提纲（人工确认闸）**：先用 list_wiki 查看既有综述主题和相关页，确定本稿应归入的既有主题、复用入口与必要互链，避免按单篇文献散建页面；再用 research_outline 生成拆解+三级大纲（会写回 wiki、标🤖未核验）。结合②调整，内部工作提纲可标每节依托的 key；
-   **呈给用户确认，没点头不进④**。
-④ **分节起草**：每节先 read_source 精读依托文献（PDF 按页并尽量带印刷页码；其他格式按章节/段落/行号，长文按 next_page 续读），别只凭 220 字片段；
-   每个论断后先用〔KEY p.X〕作**仅限内部草稿**的取证标记；直接引语必须来自 read_source 的原文。进入交付物前必须把这些标记全部替换为人类可读引注。
-⑤ **逐条核验**：每个实质论断跑 verify_claim(claim, keys=[本节来源])——supported 留、mismatch 重读改写、not_in_lib 删或标库外；
-    每处直接引语跑 locate_quote 确认在原文什么位置。
-⑥ **引注排版**：每个引用点调用 format_citation；PDF 传核实过的 pdf_page，其他格式传 position + locator；missing_fields/page_estimated 警告汇总给用户人工核对；
-   引领词（参见/见/转引自）由作者自定，工具不代劳。排版后全文扫描裸 key；除 wiki 正文/元数据和 Agent 内部核验记录外，交付文件出现 key 就不得交付。
-⑦ **按主题沉淀回 wiki + 落交付物**：成稿/成节后优先 update_wiki_page 充实现有相关页；确需新建时才用 save_synthesis。sources 填全部依托 key，并用 set_wiki_theme 归入③确定的既有主题、用 set_wiki_links 接进图；不得留下与现有分类脱节的散乱页面。
-   收尾调 pending_wiki_updates 拉「本轮新读文献影响了哪些既有页」逐页处理；**成品写进 0_Agent交付物/<主题>/**（每主题一子夹+README）。
-   成品必须增加独立的「文献使用与缺口」一节：逐项说明核心文献实际用于哪个论证、由哪些库内参考文献链追到、
-   外文与台湾来源覆盖到什么程度，以及仍缺哪些文献类型或观点。不得把“没检到”写成“学界没有”。
-⑧ **披露提醒**：如需披露 AI 参与，可用 export_disclosure（或 HTTP POST /research/disclosure {page_ids:[...]}）生成《生成式 AI 使用声明》。
+## 选路后的执行步骤
+1. **共同证据底座**：按概念、规范、理论、机构/阶段、法律效果/救济、实施/反方分轮检索；核心文献必须完整 `read_source`，实体论断核到精确印刷页。分别建立规范、理论、事实材料表，不互相替代。
+2. **教义学路线**：界定规范对象和法制时点，排列法源位阶，分开解释论与立法论；闭合“机构—权限—程序—法律效果—例外—救济”，并从真实负担而非温和名称判断措施性质。材料能否用于某种法律效果的规范资格，与其来源结构和事实可靠性分成两道阈值；按构成要件分配证明责任，不合成单一分值。控方承担入罪构成要件证明，儿童一方只须提出有根据的合理怀疑，无须证明完整替代故事；沉默、片段化表达、前后差异、不同意、拒绝活动或要求退出，不得直接作不利推定或无能力推定；当前支持不能倒流创造行为时责任或改变法定年龄。
+3. **理论—制度建构路线**：从反常事实或解释失败提出问题，拆分概念层级，比较竞争模式，以中层命题连接理论与制度；闭合“原则—机构—权限—程序—措施—效果—救济—实施/信息链”。作者模型、功能分类或多篇重复主张不能证明某种组织方案唯一、穷尽或当然正确。
+4. **辅助模块**：实证材料只做描述、诊断、机制或效果检验，必须交代设计、样本、测量、分母、比较、因果和外推边界；比较法/制度史必须说明可比前提、异质性和中国法承接。发展科学、严重个案、问卷、地方试点、技术可行性均不能直接生成规范结论，辅助模块不能独立成为主路线。
+5. **能力与专业材料（条件模块）**：题目涉及时，分开行为时责任能力、当前受审能力、具体决定理解、参与偏好、处遇需要与国家支持义务；先提供适龄说明、时间、法律帮助、合适成年人和合理调整，再评价具体能力。社会调查、心理评估、观护记录等按“字段—阶段—效果—主体—数据—救济”审查；家庭、贫困、心理、支持需要或观护表现不得补足犯罪事实、责任能力或危险。
+6. **机构、信息与救济（条件模块）**：分开调查、支持、协商、决定和复核角色，列明信息来源、取得、转换、共享、保存、更正、禁用与删除；角色不同不等于功能独立，来源不同不等于统计独立。每个重大不利效果须反向追到法定权限、中立决定、书面理由和可达救济；先按被违反规则的法源和保护目的区分无效、禁用/排除、更正、减免、替换、中止、撤回及补充救济，不得把所有违法统一处理为当然无效、事实不成立、补正或量刑利益，内部纠错也不得冒充独立救济；不起诉、轻缓处置等有利结果不能自动吸收前序违法。
+7. **少年司法八项迁移闸门**：每个核心主张逐项检查最有利于未成年人、发展中能力、支持性参与、关系自主、最小干预、比例原则、机构支持义务、有效审查与救济。最有利原则不能替代法定性、责任、无罪推定和比例；成年刑诉、证据法或一般治理结论只迁移方法，不直接变成少年司法答案。
+8. **合意性安排特别检查**：对附条件不起诉、监督考察协议等，区分一次签字与持续、知情、可撤回且受支持的参与；逐项检查说明、资源核验、合理调整、履行能力、条件变更、技术性违约、撤销和救济。签字、律师在场或表面履约不自动证明能力、公平或真实协商。
+9. **双向压力测试**：同时测试严重案件/现实风险与低风险/高需要案件；风险限制强制，需要生成支持，贫困、资源不足或机构失败不得自动提高控制强度。严重性提高事实、安全和复核密度，不降低年龄、责任、证明、参与与救济标准。
+10. **争议保留协议**：对终局法律效果、措施性质、组织模式或权利排序无法由现行法和原文裁定时，只生成具名争议矩阵；用户选择立场后仍保留最强反驳、现行法障碍和不适用边界。只有新增原文或规范解决争议字段并重新通过八项闸门，才可升级为正面结论。
+11. **grounded 三级提纲（第二个人工闸门）**：把标题—问题—观点—提纲—各部分内容对齐，列明每节证据、最强反方和边界，呈给用户确认；未确认不写正文。
+12. **分节起草与核验**：逐节读原文，内部可用 key 定位；每个实质论断用 `verify_claim`，直接引语用 `locate_quote`，再用 `format_citation` 生成作者/题名/年份/页码等人类可读引注。交付物不得出现裸 key。
+13. **交付与沉淀**：成品写入 `0_Agent交付物/<主题>/` 并附 README；按既有主题更新/新建 wiki 页，调用 `set_wiki_theme` 设置主题并维护互链，处理本轮新读来源触发的 wiki 待办。
 
 ## 用户决策点
-- 研究问题、篇幅或受众不明确时最多问 3 个问题；grounded 提纲必须经用户确认后再起草正文。
-- 删除内容、采用库外来源或改变既定引注规则时单独询问。
+- 第一闸门：用户选择教义学或理论—制度建构路线；未选不得起草全文。
+- 第二闸门：用户确认 grounded 三级提纲后才进入正文。
+- 采用库外来源、改变引注规则、删除内容或发生真实制度取舍时单独询问。
 
 ## 完成标准
-- 约定的交付物已落盘；每个实质论断有可追溯来源并完成核验；直接引语已定位；待核项已集中列出；本轮新读文献触发的 wiki 待办已处理；新增/更新综述已归入既有主题并完成互链；所有用户交付文件均已扫描确认不含裸文献 key。
+- 双卡或合法跳过条件有记录；选定路线、标题、中心观点、三级提纲和正文一致。
+- 实体论断均来自完整原文并核到精确位置；规范、理论、事实材料分层；最强反方和不适用边界未被删去。
+- 八项少年司法闸门、严重/低风险双向测试和合意性安排检查按题目实际完成。
+- 交付物已落盘，用户文件无裸 key；待核项、文献使用与缺口、wiki 主题归类与维护待办已处理。
 
 ## 最终报告
-- 总结交付物路径、使用来源、核验结果、仍待用户核对的引注/元数据，以及沉淀到 wiki 的内容。
+- 报告所选路线及跳过/选择依据、交付物路径、使用来源和页码核验、少年司法闸门、反方与边界、待核项、wiki 写回和仍需用户决定的事项。
+"""
+
+_WF_JJ_REVIEW = """# 工作流：综述（少年司法版）
+
+> 用于少年司法领域的证据可回溯综述。目标是组织理论谱系、概念演进、竞争模式、证据基础、作者内部修正和未决争议，不是按作者或年份流水账。
+
+## 触发条件
+- 用户要求少年司法领域的文献综述、研究现状、理论谱系、制度模式、争议地图、证据评估、宽综述或窄争点综述时使用。
+- 用户要求论文初稿、章节正文或论文型提纲时，改用 `论文初稿（少年司法版）.md`。
+
+## 开工前检查
+1. 先读项目记忆、既有 wiki 和相关交付物；明确声明采用《综述（少年司法版）》。
+2. 固定对象年龄、制度阶段、法域、法制时点、材料类型、研究问题和交付形态；宽题必须主动收窄。
+3. 确认 localkb 已连接、候选原文可逐页读取；题录、摘要、SAC 和检索片段只用于发现。
+4. 不改原始文献或 Zotero；只有用户明确要求并通过工具安全闸时才更新索引或来源。wiki 只写综合层，人工核验页只形成待审稿。
+
+## 执行步骤
+1. **范围与纳排**：先写范围声明，把纳入、排除、仅作背景、仅作比较和待核材料分栏；成人、域外、地方试点、异年数据和历史法不得静默并入当前中国少年司法事实。
+2. **结构化迭代检索**：至少建立核心概念、法定/历史名称、理论/模式、机构/阶段、法律效果/救济、实证/实施/批评六类词族。每轮台账必须记录：轮次、精确检索式、范围/排序/Top-k、命中数、去重后新增数、纳入/排除/待核数、新词及来源、下一轮理由。零命中只写未检出，不写“学界没有”。
+3. **逐页精读**：进入实体评价的来源必须 `read_source` 读到终页并记录印刷页；摘要、引言或结论不能替代全文。保存文献—问题—证据—反例—不能证明事项矩阵。
+4. **按争点组织**：依问题重建理论前提、概念拆分、竞争模式、制度功能、证据基础、内部风险和未决争议，不用作者/年份排队。核心概念逐项制作“对象—时点—主体—标准—效果”卡；能力议题必须分开法定年龄线、行为时责任能力、当前受审能力、具体决定理解、参与偏好、处遇需要和国家支持义务；参与要素只作过程检查，不直接改写为正式能力测验。
+5. **归属三分法**：逐段标明“作者原说”“同作者纵向重构”“跨作者综合”。没有跨年精确页证时，只写并列、承接、扩展或张力，不写作者转向。
+6. **规范—实证分层**：规范材料回答应当，理论材料回答评价/设计理由，实证材料回答实际发生什么。经验结论按研究设计、样本、测量、描述、关联、因果、外推和限制书写；分母、小计、类别数和表格必须回原文复算。现行法、历史法、地方试点、作者倡议与技术能力分别核定时点和证明能力。每个核心命题同时通过“规范资格—法律效果”与“来源结构—事实可靠性”双阈值；另分列规范上应否、实践中如何、效果上是否，实施诊断不得自动升级为合法性或效果证明；用规范链、实施链和信息链标明连接与断点。
+7. **材料与信息（条件模块）**：涉及社会调查、心理评估、观护记录、信息平台或算法时，按“字段—阶段—效果—主体—取得—共享—保存—纠错/救济”组织，并逐项记录目的、接收者、最少字段、访问记录、限制使用、删除和泄露通知；报告名称、技术可行或来源不同不能代替用途合法性、可靠性和信息隔离审查，拒绝测评或提供资料不得作不利推定。
+8. **争议与反方**：竞争观点分别写主张、依据、前提、制度后果、最强反驳、适用条件和待补证据；不以作者声望、篇数多数或叙事顺滑制造共识，不把作者模型或功能分类写成唯一、穷尽答案。
+9. **少年司法迁移闸门**：逐项检查最有利于未成年人、发展中能力、支持性参与、关系自主、最小干预、比例原则、机构支持义务、有效审查与救济；同时做严重案件与低风险案件压力测试。成年刑诉、证据或协商材料只迁移方法，实体结论须由少年司法核心证据重新证成。
+10. **合意性安排**：涉及附条件不起诉、监督考察或分流时，区分形式签字与持续、知情、可撤回且受支持的参与；检查说明、资源、调整、能力、变更、技术性违约、撤销和救济。
+11. **成文与核验**：标题—综合问题—章节—结论一致；每个实体判断可回到精确页码，直接引语定位，交付引注人类可读且无裸 key。证据缺口必须分开未检索到、未纳入、无全文、未深索、研究未报告和证据不足，待核材料不得写成证据空白。按既有主题沉淀 wiki，调用 `set_wiki_theme` 设置主题并处理本轮来源触发的维护待办。
+
+## 用户决策点
+- 范围存在两种实质不同且都会改变纳排与篇幅的方案时，集中让用户选择；能由题目和既有约定判断的不要反复询问。
+- 采用库外未核来源、改变引注规则或对真实争议作价值取舍时单独询问。
+
+## 完成标准
+- 范围、结构化逐轮检索台账、纳排记录、证据矩阵和逐页阅读台账齐全。
+- 作者原说/纵向重构/跨作者综合显式分离；规范、理论、描述、关联、因果和外推边界没有越级。
+- 所有分母、小计和类别数已回原文表格复算；最强反方、严重/低风险边界和有界证据缺口均有可定位处理。
+- 少年司法八项闸门及适用的合意性安排检查完成；交付物落盘、无裸 key，wiki 主题与待办已处理。
+
+## 最终报告
+- 汇总范围与检索覆盖、纳排数字、核心来源及页码、理论/概念/模式/证据地图、作者纵向与争议、反方和边界、证据缺口、交付物及 wiki 写回。
+"""
+
+_WF_GENERAL_DRAFT = """# 工作流：论文初稿（通用暂用版）
+
+> **尚未经过其他部门法训练验证。**
+> 这是从少年司法初稿流程抽去领域专门规则后派生的暂用版；不得把它描述成已经适配所有部门法。
+
+## 触发条件
+- 用户要求撰写少年司法以外领域的法学/社科论文初稿、章节或论文型研究提纲时暂用。
+- 少年司法任务必须改用 `论文初稿（少年司法版）.md`；文献综述任务用相应综述工作流。
+
+## 开工前检查
+1. 先读项目记忆、相关交付物和 wiki；明确声明采用《论文初稿（通用暂用版）》并提示“尚未经过其他部门法训练验证”。
+2. 确认 localkb 已连接、核心来源可完整读取；固定问题、法域、法制时点、篇幅、受众和引注。
+3. 先识别该领域是否有本版未覆盖的专门原则、程序或证据规则；发现时列为待核限制，不凭类比补齐。
+4. 不修改原始文献或 Zotero；索引写入须用户明确要求并通过工具闸门。
+
+## 执行步骤
+1. 在教义学与理论—制度建构两种方法之间诊断：前者优先处理现行规范对象、法源位阶、解释、权限、效果与救济；后者优先处理理论前提、概念拆分、竞争模式、机构程序和实施条件。
+2. 两种方法都真实可行时，给出比较方案并推荐；用户确认写作路线后再检索和拟提纲。实证、比较法和制度史只作叠加模块。
+3. 分轮检索概念、规范、理论、争点、反方与实证；核心来源必须 `read_source` 完整阅读并核到精确位置。分别建立规范、理论、事实材料表。
+4. 教义学写作闭合“机构—权限—程序—法律效果—例外—救济”，分开解释论与立法论；理论—制度建构写作闭合“理论—中层命题—制度—实施/信息链”。
+5. 提出可反驳的中心观点和章—节—目三级提纲，使标题、问题、观点、提纲、各部分内容与所需材料一致；列最强反方、实施条件和不适用边界。
+6. 呈给用户确认提纲；未确认不写正文。
+7. 分节起草，每个实质论断 `verify_claim`，直接引语 `locate_quote`，引注用作者/题名/年份/页码等人类可读信息，交付物不得出现裸 key。
+8. 成品落 `0_Agent交付物/<主题>/`；按既有主题沉淀 wiki，调用 `set_wiki_theme` 设置主题并处理本轮来源触发的维护待办。
+
+## 用户决策点
+- 方法路线与 grounded 三级提纲均由用户确认；采用库外来源、改变引注规则或作领域专门取舍时单独询问。
+
+## 完成标准
+- 路线、标题、中心观点、三级提纲和正文一致；规范、理论、事实材料分层，反方与边界齐全。
+- 每个实体论断来自完整原文并可定位；交付物已落盘、无裸 key，wiki 主题与待办已处理。
+- 最终交付显式保留“尚未经过其他部门法训练验证”的适用边界，不把暂用流程宣传为普适方法。
+
+## 最终报告
+- 先提示“尚未经过其他部门法训练验证”，再报告所选路线、交付物、来源与页码核验、反方与边界、领域专门规则缺口、待核项及 wiki 写回。
+"""
+
+_WF_REVIEW = """# 工作流：综述
+
+> 这是少年司法以外领域的一般综述工作流，由旧 `写论文与综述.md` 的综述部分安全迁移而来。
+> 它只负责综述，不起草论文全文；少年司法综述改用 `综述（少年司法版）.md`。
+
+## 触发条件
+- 用户要求少年司法以外领域的文献综述、研究现状、理论谱系、争议整理、证据地图或系统性资料汇编时使用。
+
+## 开工前检查
+1. 先读项目记忆、既有 wiki 和交付物；明确声明采用《综述》。
+2. 固定研究问题、对象、法域、时点、材料类型、篇幅和引注要求；宽题主动收窄。
+3. 确认 localkb 已连接、核心全文可 `read_source`；题录摘要、SAC 和检索片段只用于发现。
+4. 不修改原始文献或 Zotero；索引或来源写入须用户明确要求并通过工具闸门。
+
+## 执行步骤
+1. 写范围声明和纳入、排除、背景、比较、待核标准。
+2. 用概念、规范/历史名称、理论/模式、机构/阶段、法律效果/救济、实证/批评等词族迭代检索；保存每轮检索式、范围、命中、去重、新词和候选流转。
+3. 进入实体评价的来源必须完整 `read_source`，保存精确位置；建立文献—问题—证据—反例—不能证明事项矩阵。
+4. 按争点组织理论前提、概念演进、竞争观点、制度机制、证据基础和未决问题，不按作者或年份流水账。
+5. 分开作者原说、同作者纵向重构和跨作者综合；没有精确跨年页证不写“作者转向”。
+6. 分开规范、理论和经验材料；经验结论报告设计、样本、分母、测量、比较、因果、外推和限制，回原文复算分母、小计与类别数。
+7. 保留最强反方、适用边界、相反证据和有界缺口，不把“未检出”写成“学界没有”。
+8. 成文后逐项 `verify_claim`，直接引语 `locate_quote`，引注人类可读且无裸 key；成品落交付物并按既有主题沉淀 wiki，调用 `set_wiki_theme` 设置主题。
+
+## 用户决策点
+- 范围、材料类型或价值取舍存在会显著改变综述结构的真实分支时集中询问；采用库外未核来源或改变引注规则时单独询问。
+
+## 完成标准
+- 范围、逐轮检索、纳排、证据矩阵和逐页阅读台账齐全；作者归属与证据能力分层。
+- 分母、小计和类别数已复算；反方、边界、相反证据和有界缺口齐全。
+- 交付物已落盘且无裸 key；引用可回溯，wiki 主题归类、互链和维护待办已处理。
+
+## 最终报告
+- 汇总范围、检索与纳排、核心来源和页码、理论/概念/争议/证据地图、反方与缺口、交付物和 wiki 写回。
 """
 
 _WF_WIKI = """# 工作流：维护知识库与综述库（wiki）
@@ -314,7 +448,7 @@ _WF_WIKI = """# 工作流：维护知识库与综述库（wiki）
 _WF_DIVERGENCE = """# 工作流：跨学科发散与补文献（写作前，打开理论视野）
 
 > **这是默认工作流，你可以改**——和 AI 助手商量着直接编辑本文件。
-> 一个工作流一个文件：这是「向外发散」的前置流程；写作在 `写论文与综述.md`、wiki 维护在 `维护综述库.md`。
+> 一个工作流一个文件：这是「向外发散」的前置流程；产物再进入匹配的论文初稿/综述工作流，wiki 维护在 `维护综述库.md`。
 > 库内工具都来自 `localkb` MCP。没连上（工具列表看不到 search_localkb 等）先让用户在应用「🤖 Agent」页复制接入命令、新开会话再继续——**没连上时别凭记忆假装做完任何一步**。
 
 ## 触发条件
@@ -325,7 +459,7 @@ _WF_DIVERGENCE = """# 工作流：跨学科发散与补文献（写作前，打�
 
 ## 什么时候用
 - 选题初期、或写不动想拓宽视野时；精准索引让你只在原学科打转、agent 也只盯着那个精准的点时。
-- **定位**：这是 `写论文与综述.md` 的**上游**——先用它把窄题接到邻近学科、理出该补的（尤其外文）文献，产物（跨学科视角矩阵）再喂给写作流水线。
+- **定位**：这是四条研究工作流的**上游**——先用它把窄题接到邻近学科、理出该补的（尤其外文）文献，产物（跨学科视角矩阵）再交给匹配的论文初稿或综述流程。
 - 它**不主张研究空白、不主张新颖**（那是另一回事，别把发散联想误当「研究空白」去下结论）。它只主张一件事：**「你的阅读面偏窄——这些邻接学科 / 理论 / 外文经典该纳入视野」**。
 
 ## 三条铁律（每步都遵守）
@@ -363,7 +497,7 @@ _WF_DIVERGENCE = """# 工作流：跨学科发散与补文献（写作前，打�
 低分标「牵强」**默认丢弃**（用户可在确认闸手动救回，决定权始终在你）。遵循「非典型组合植根于常规」：**每篇只主推 1~2 个大胆连接、其余保持本学科稳健**，别全面猎奇稀释论证力（Uzzi 的经验规律）。每个保留的连接产出一个**边界概念**（如「未成年人利益最大化」可作法学-心理学-教育学的共用概念），写清「本学科怎么看 / 邻学科怎么看」，确保是真对接、不是贴标签。
 
 ⑤ **库内能落地的，走正规 grounded 通道**
-对每个视角问题回 `search_localkb` 做跨文献发现；选定来源后再用 `read_source` 深读、`verify_claim(keys=[...])` 在指定文献内多段取证。凡能对上库内来源的论断，supported 才留，再用 `format_citation` 排脚注——与 `写论文与综述.md` 同一套核验 / 引注范式。这部分是「已 grounded」的可靠产物。
+对每个视角问题回 `search_localkb` 做跨文献发现；选定来源后再用 `read_source` 深读、`verify_claim(keys=[...])` 在指定文献内多段取证。凡能对上库内来源的论断，supported 才留，再用 `format_citation` 排脚注——与四条研究工作流使用同一套核验 / 引注范式。这部分是「已 grounded」的可靠产物。
 
 ⑥ **库外·外文补充（能力自检 → A/B 双轨，防幻觉的关键环）**
 先自检当前 agent 有没有联网 / 学术检索工具（WebSearch/WebFetch），**把判定结果显式告诉用户**，再择路：
@@ -375,7 +509,7 @@ _WF_DIVERGENCE = """# 工作流：跨学科发散与补文献（写作前，打�
 回看 ② 的检索结果与 ③ 的菜单，专门追问两类遗漏：「库里被检到、却没进视角矩阵的边角线索」和「菜单里完全没出现、但本题其实相关的邻近学科」。逼出 unknown unknowns，再补一轮 ③④。
 
 ⑧ **交付物 + 写回 wiki（两区物理隔离）**
-- 标准交付物 = 一张**跨学科视角矩阵**：`视角/学科 × 该视角的追问 × 命中的库内来源(人类可读引注) × 库外待补外文(未核验) × 成效评分 × 边界概念`。key 只保留在 Agent 内部核验记录和 wiki `sources`，用户成品不得出现裸 key。**成品落 `0_Agent交付物/<主题>/` + 一个 README**（注明：外文清单由 AI 依世界知识 / 联网线索给出、**未经本库核验**；取得 PDF、EPUB、DOCX、Markdown 或 TXT 后可 `add_source` 收进库、再走 `写论文与综述.md` 的正规核验流程）。
+- 标准交付物 = 一张**跨学科视角矩阵**：`视角/学科 × 该视角的追问 × 命中的库内来源(人类可读引注) × 库外待补外文(未核验) × 成效评分 × 边界概念`。key 只保留在 Agent 内部核验记录和 wiki `sources`，用户成品不得出现裸 key。**成品落 `0_Agent交付物/<主题>/` + 一个 README**（注明：外文清单由 AI 依世界知识 / 联网线索给出、**未经本库核验**；取得 PDF、EPUB、DOCX、Markdown 或 TXT 后可 `add_source` 收进库、再走匹配研究工作流的正规核验流程）。
 - 写回 wiki 用 `save_synthesis`（kind=`topic`）：页内**强制分两区**——「**库内已覆盖**（带 key、grounded）」与「**库外待补**（外文、未核验、不作断言、不排脚注）」，两区不得混写；`set_wiki_links` 把它接进已有的图。**别用 answer/overview**（会被 `lint_wiki` 当无来源页报警）。
 - 成品末尾增加「**文献使用与缺口**」：逐项说明核心文献实际用于哪个视角或论证、参考文献反向追踪链、
   外文与台湾来源覆盖情况、仍缺的学科/地区/文献类型，以及下一轮应如何补证。不得把暂未命中夸大成研究空白。
@@ -451,15 +585,30 @@ def _norm_hash(text, mask=None):
     return hashlib.sha1(re.sub(r"\s+", "", t).encode("utf-8")).hexdigest()
 
 
+def _exact_hash(text, mask=None):
+    """保留 Markdown 空白语义的出厂指纹；只统一 CRLF / CR 为 LF。
+
+    工作流的缩进、行尾双空格和空行都可能改变含义。任何覆盖、删除、并发校验和“已是当前版”判断
+    必须使用本指纹。旧 normalized hash 继续保留，只用于识别历史版本来源，不能单独授权破坏性动作。
+    """
+    t = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    if mask is not None:
+        t = mask.sub("«VAR»", t)
+    return hashlib.sha1(t.encode("utf-8")).hexdigest()
+
+
 # 各出厂模板的**历史** normalized-sha1 名单（新版往对应集合里 add，旧的永不删）。
 _FACTORY_HASHES = {
-    "home/AGENTS.md":                     {"4484e95570ece0386e0734797a7ccd487fc464cc"},
-    "home/CLAUDE.md":                     {"4e7fc7f0d4ba2a199e11897b8c7fdc5c286cab04"},
+    "home/AGENTS.md":                     {"4484e95570ece0386e0734797a7ccd487fc464cc",
+                                             "e50c7cafd16ca2c6e8ba88b6b607465605e65af5"},
+    "home/CLAUDE.md":                     {"4e7fc7f0d4ba2a199e11897b8c7fdc5c286cab04",
+                                             "d7d13de421a115ad0eab0b3ae72b1097155dd053"},
     "output/README.md":                 {"0e59bde65651fba0a5bd3a54f45484ea1864ed5e",
                                              "58902f982ad4222627b011e0ee0dc3bc9c82537d"},   # v2 成品禁止裸 key
     "rely/README.md":                   {"8a596c19896e457c57437faa0d759049a319f16c",
                                              "b31c3884a02e6f21429f92856dea6b8bd4b3d23f",
-                                             "d4345590a32767766515e21a9e376503efcefef2"},   # v3 待审稿边界
+                                             "d4345590a32767766515e21a9e376503efcefef2",
+                                             "994f3370bdee7a172fe538f09f49f60e08039457"},   # v4 任务/领域路由
     "rely/记忆/项目记忆.md":            {"3c8387860ad95913a602b87b9447bc80bf5a7403"},   # v1 2026-07-14
     "rely/记忆/变更日志.md":            {"4d9a267ca46f94ff7d257c8c7b9ac486ec15f1fc"},   # v1 2026-07-14
     "rely/交付模板/交付说明书模板.md":  {"ad22abdf9bfa208e19f761c42e4ddcceb93031a2"},   # v1 2026-07-14
@@ -467,7 +616,9 @@ _FACTORY_HASHES = {
     "rely/定时任务/说明.md":            {"3a3e8897533e902d48eaa21c20bd1d9143dcd2e8",
                                              "5006ec14550e234e40d9d2fd575c57a1d0b058f9"},   # v2 调度与联网边界
     "rely/技能/说明.md":                {"de19ded63470c2c7975a19eb0f012f14214b62a7",
-                                             "33f52df5011ac84f49139577c2f67eaa162513c0"},   # v2 强工作流入口
+                                             "33f52df5011ac84f49139577c2f67eaa162513c0",
+                                             "9d6fda0eb3f9c2f2287035f4af10dcaf431aa585",
+                                             "39483ed6b1244c2c7432cbdbc1b0a8e4ede5b442"},   # v3 四研究 + 两支持
     "rely/技能/写论文与综述.md":        {"5027f5d8e6c6837907e5ddbc294de7b2f10d5de3",
                                              "ee9f25dc732f19acc62a95094b9159669ef74326",
                                              "04951705502b6cced56dca9cca145ec64e01a876",
@@ -476,6 +627,18 @@ _FACTORY_HASHES = {
                                              "7ef669e2afd43e55a97a0091bbcdcab908aa6f5e",
                                              "e428cd8eef744cde51f4097a0d3b4b5929db39bd",
                                              "12151bfb320db1cd52fb91bb0fa1580e900c736e"},   # v8 主题归类与成品引注
+    "rely/技能/论文初稿（少年司法版）.md": {"b2bc7584dba5803a7da155d875d503110a391841",
+                                             "30e0d1af2a9fe9bfb8f50cdf0bcf3933fe2a86ec",
+                                             "f5899bca17fdb867fa0f8eb961b3002df23ac696",
+                                             "b5cc328f23e1a82aaec6f98c5e00ded5f94cec92"},
+    "rely/技能/综述（少年司法版）.md":     {"67416c20a8e18100417c381b3c367fa3e8e56251",
+                                             "03fc842fbe92f766fca610b43f994a00fc7ca2f3",
+                                             "78813da32536db7a4400d2e4673958825bfe2fa2",
+                                             "909eb2daed265f857763f0370c59fa2021ad9217"},
+    "rely/技能/论文初稿（通用暂用版）.md": {"acce553594c4fe91963856b5a838b3cfbb5e1289",
+                                             "0530522f7424fd5319f31ae47f6e796eb2b81b4c"},
+    "rely/技能/综述.md":                   {"5b9a828cdf7ed37087d236615d6f486194610ed1",
+                                             "5df136580f83f5840a7c5d24cb9e45793963d70d"},
     "rely/技能/维护综述库.md":          {"ada886d3bf34277de35f6530a02874efcffaac92",
                                              "25646a2433e3a913d32803e3bf895f062424bba2",
                                              "8fd036b38a135c0a7e4e930e3a6b3a3cc74c22b8",
@@ -488,11 +651,58 @@ _FACTORY_HASHES = {
                                              "9d11e6c36bbf7fb7d87a780648024f77834eda2e",
                                              "65eebc4e0bac45cb51c968d6e00540281fdc23e5",
                                              "d10b7e4a057592aede311a20f69e58bf462b8a28",
-                                             "3e4dc3dcd90ab59f7d95ebebb799d7d63a2467ef"},   # v7 成品引注人类可读
+                                             "3e4dc3dcd90ab59f7d95ebebb799d7d63a2467ef",
+                                             "c4df1b1d216e65247c8cd4121df3cfd75608681f"},   # v8 按四研究工作流分流
     "rely/AI写综述遵守的规约.md":       {"0e792f4d4c0b698d187d59623f835b76d6056d7d",
                                              "c5d41ca5ba5c44774e38d8b20bbe59695cc1459e",
                                              "b48b2a9ee2e5dae23557d6587a22fcbab10161d2"},   # v3 待审稿安全边界
 }
+
+# 工作流历史出厂正文的 exact-sha1：破坏性升级只认这里，不再仅凭“去所有空白”的旧指纹。
+# 既有工作流的值从 git 历史正文复算；本轮新增工作流保留每次已登记的出厂候选指纹，旧值不删。
+_WORKFLOW_FACTORY_EXACT_HASHES = {
+    "rely/技能/论文初稿（少年司法版）.md": {
+        "cef90fa0caa5ecc9a114594f0aa4b42906127e74",
+        "14bbdb70138279391a48afc0576af3db07d1b29a",
+    },
+    "rely/技能/综述（少年司法版）.md": {
+        "0fdc017f9a124b3e0080c143faa96317b34a7ac0",
+        "a935caeda73581e18af7e489448c9bf7dd333ca2",
+    },
+    "rely/技能/论文初稿（通用暂用版）.md": {
+        "05c18647c0a711310ef8f62078c5a36f7c2fab34",
+    },
+    "rely/技能/综述.md": {
+        "19d8d07b6822e5920ecd73a9c34e4c8913947700",
+    },
+    "rely/技能/维护综述库.md": {
+        "06f8d02417c02b5ce885c0e76fc645a5b78fb8f4",
+        "425fa4c8b9c8698aa035ba134f1efa5b7611d5ad",
+        "61f0c5dad98a19187f76d0acec14ab75d6ef33de",
+        "42269c82a699624e52560c3085dadde6f75bbd1b",
+        "94bdefa8c0bb07b729c751eb4c4dcf3881410480",
+    },
+    "rely/技能/跨学科发散与补文献.md": {
+        "849a752f1553be909a124066c67e6c378e82e91b",
+        "83aef592b31b1a8dedf7dd7113329f98ecc948db",
+        "2a91b1846718a3dd8f91786d568fed2b84449695",
+        "af8b159974feb9dea18c54f2c45a81f192ce3a81",
+        "b01cc6419811181981381532fbcff39eb001a42a",
+        "99df608855b75ee4ee740b7304cf665663ca6f3c",
+        "a59f9be921895e7554d93dfc067870865e21a7ff",
+        "644e2508b6ddc70c07a34bc75e731b06d5094f5b",
+    },
+}
+
+
+def _template_hash(key, text, mask=None):
+    """工作流保留空白语义；其他历史模板沿用既有 normalized 指纹。"""
+    return _exact_hash(text, mask) if key in _WORKFLOW_FACTORY_EXACT_HASHES else _norm_hash(text, mask)
+
+
+def _factory_hashes_for(key):
+    """返回真正可授权静默覆盖的历史指纹集合。"""
+    return _WORKFLOW_FACTORY_EXACT_HASHES.get(key, _FACTORY_HASHES.get(key, set()))
 
 
 def _template_specs():
@@ -512,7 +722,10 @@ def _template_specs():
         ("rely/参考格式/说明.md",           formats_dir() / "说明.md",               _FORMATS_README,       None, False),
         ("rely/定时任务/说明.md",           tasks_dir() / "说明.md",                 _TASKS_README,         None, False),
         ("rely/技能/说明.md",               skills_dir() / "说明.md",                _SKILLS_README,        None, False),
-        ("rely/技能/写论文与综述.md",       skills_dir() / "写论文与综述.md",        _WF_PAPER,             None, False),
+        ("rely/技能/论文初稿（少年司法版）.md", skills_dir() / "论文初稿（少年司法版）.md", _WF_JJ_DRAFT,       None, False),
+        ("rely/技能/综述（少年司法版）.md",     skills_dir() / "综述（少年司法版）.md",     _WF_JJ_REVIEW,      None, False),
+        ("rely/技能/论文初稿（通用暂用版）.md", skills_dir() / "论文初稿（通用暂用版）.md", _WF_GENERAL_DRAFT,  None, False),
+        ("rely/技能/综述.md",                   skills_dir() / "综述.md",                   _WF_REVIEW,         None, False),
         ("rely/技能/维护综述库.md",         skills_dir() / "维护综述库.md",          _WF_WIKI,              None, False),
         ("rely/技能/跨学科发散与补文献.md", skills_dir() / "跨学科发散与补文献.md",  _WF_DIVERGENCE,        None, False),
         ("rely/AI写综述遵守的规约.md",      rely_dir() / "AI写综述遵守的规约.md",    _rules_summary_text(), _MASK_WIKI_PATH, False),
@@ -543,13 +756,13 @@ def _save_update_state(d):
     os.replace(tmp, p)
 
 
-def _current_sidecar(path, current_text, mask=None):
+def _current_sidecar(key, path, current_text, mask=None):
     """找出内容等于当前出厂版的 .new 旁本；用户改过的旁本不会被误认。"""
-    wanted = _norm_hash(current_text, mask)
+    wanted = _template_hash(key, current_text, mask)
     for p in [path.with_name(path.stem + ".new" + path.suffix)] + [
             path.with_name(f"{path.stem}.new.{i}{path.suffix}") for i in range(2, 100)]:
         try:
-            if p.exists() and _norm_hash(p.read_text(encoding="utf-8"), mask) == wanted:
+            if p.exists() and _template_hash(key, p.read_text(encoding="utf-8"), mask) == wanted:
                 return p
         except Exception:
             continue
@@ -564,15 +777,15 @@ def upgrade_status(include_ignored=False):
     for key, path, text, mask, seed in _template_specs():
         if seed:
             continue
-        cur_h = _norm_hash(text, mask)
+        cur_h = _template_hash(key, text, mask)
         try:
-            main_h = _norm_hash(path.read_text(encoding="utf-8"), mask)
+            main_h = _template_hash(key, path.read_text(encoding="utf-8"), mask)
         except Exception:
             main_h = ""
         if main_h == cur_h:
             status, sidecar = "current", None
         else:
-            sidecar = _current_sidecar(path, text, mask)
+            sidecar = _current_sidecar(key, path, text, mask)
             status = "pending" if sidecar else "customized"
             if state.get(key) == cur_h:
                 status = "ignored"
@@ -606,7 +819,7 @@ def template_diff(key):
 
 def acknowledge_update(key, current_hash):
     spec = next((x for x in _template_specs() if x[0] == key and not x[4]), None)
-    if not spec or _norm_hash(spec[2], spec[3]) != current_hash:
+    if not spec or _template_hash(key, spec[2], spec[3]) != current_hash:
         raise ValueError("这条升级提醒已经过期，请刷新后再试")
     d = _load_update_state()
     d[key] = current_hash
@@ -619,7 +832,7 @@ def replace_with_factory(key, current_hash):
     if not spec:
         raise KeyError("不支持的模板")
     _key, path, text, mask, _seed = spec
-    if _norm_hash(text, mask) != current_hash:
+    if _template_hash(key, text, mask) != current_hash:
         raise ValueError("新版已变化，请刷新后再试")
     path.parent.mkdir(parents=True, exist_ok=True)
     backup = None
@@ -649,12 +862,12 @@ def merge_template(key, current_hash, main_hash, merged_text):
     if not spec:
         raise KeyError("不支持的模板")
     _key, path, text, mask, _seed = spec
-    if _norm_hash(text, mask) != current_hash:
+    if _template_hash(key, text, mask) != current_hash:
         raise ValueError("新版已变化，请刷新差异后再合并")
     if not isinstance(merged_text, str) or not merged_text.strip():
         raise ValueError("合并后的内容不能为空")
     old = path.read_text(encoding="utf-8") if path.exists() else ""
-    if _norm_hash(old, mask) != main_hash:
+    if _template_hash(key, old, mask) != main_hash:
         raise ValueError("你的文件在读取差异后又发生了变化，请重新读取再合并")
     path.parent.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%d-%H%M%S")
@@ -673,7 +886,7 @@ def merge_template(key, current_hash, main_hash, merged_text):
     return str(backup)
 
 
-def _ensure_template(path, current_text, factory_hashes, mask=None, seed=False):
+def _ensure_template(path, current_text, factory_hashes, mask=None, seed=False, key=None):
     """出厂模板的幂等落盘 + 升级。返回 created|current|upgraded|kept|forked|error（仅供测试/日志，调用方可忽略）。
 
     绝不丢用户内容 —— **覆盖一个已存在的文件，当且仅当它与某个历史出厂版一字不差**（= 用户没碰过）。
@@ -687,9 +900,11 @@ def _ensure_template(path, current_text, factory_hashes, mask=None, seed=False):
             path.write_text(current_text, encoding="utf-8")
             return "created"
         old = path.read_text(encoding="utf-8")
-        cur_h, old_h = _norm_hash(current_text, mask), _norm_hash(old, mask)
+        hash_fn = (lambda value: _template_hash(key, value, mask)) if key else (
+            lambda value: _norm_hash(value, mask))
+        cur_h, old_h = hash_fn(current_text), hash_fn(old)
         if old_h == cur_h:
-            return "current"                                   # 已是最新（纯空白差异也算最新）：一个字节都别写
+            return "current"                                   # 已是最新：一个字节都别写
         if old_h in factory_hashes:
             path.write_text(current_text, encoding="utf-8")    # 历史出厂原样、用户没改过 → 静默升级
             return "upgraded"
@@ -700,9 +915,9 @@ def _ensure_template(path, current_text, factory_hashes, mask=None, seed=False):
         # ⚠️ 旁本**也是用户的东西**：提示语让他「对照合并」，他就很可能直接在旁本里做合并笔记。
         #    老代码在这里无条件 write_text，等于每次启动都把他的笔记盖回出厂原文（静默、无备份）。
         #    现在：旁本一旦被改过，就换个不冲突的名字放新版，绝不覆盖。
-        newp = path.with_name(path.stem + ".new" + path.suffix)   # 写论文与综述.md → 写论文与综述.new.md
+        newp = path.with_name(path.stem + ".new" + path.suffix)   # 综述.md → 综述.new.md
         if newp.exists():
-            new_h = _norm_hash(newp.read_text(encoding="utf-8"), mask)
+            new_h = hash_fn(newp.read_text(encoding="utf-8"))
             if new_h == cur_h:
                 return "kept"                                  # 旁本已是这一版：别重复写、更别每次启动刷屏
             if new_h not in factory_hashes:                     # 旁本被用户改过 → 另起一个名字
@@ -711,7 +926,7 @@ def _ensure_template(path, current_text, factory_hashes, mask=None, seed=False):
                     if not alt.exists():
                         newp = alt
                         break
-                    if _norm_hash(alt.read_text(encoding="utf-8"), mask) == cur_h:
+                    if hash_fn(alt.read_text(encoding="utf-8")) == cur_h:
                         return "kept"                          # 这一版的旁本已经躺在那儿了
                 else:
                     return "kept"                              # 攒了 98 个没合并的旁本？别再刷了。
@@ -724,8 +939,8 @@ def _ensure_template(path, current_text, factory_hashes, mask=None, seed=False):
         return "error"                                         # 落模板绝不阻断主流程
 
 
-# 各历史出厂 技能/工作流.md 的 normalized（去所有空白）sha1。仅当旧文件与某出厂版一字不差时才自动删
-# （内容已拆进 写论文与综述.md + 维护综述库.md）；被用户改过则保留、改名提示并入，绝不丢用户的改动。
+# 更早的 技能/工作流.md 只有 normalized 指纹，没有可复算的精确历史正文。
+# 因而这里只用于给保留件命名，绝不再据此删除：无法证明空白也一字未改，就选择多留一份。
 _LEGACY_WF_HASHES = {
     "58418033f3f47a30830ed73c3c96ac9768b34ada",   # v1（无「可自定义」头）
     "1e99b26c49277780ecd8f6aa4b6584a49abdc027",   # v2（有「可自定义」头）
@@ -734,25 +949,109 @@ _LEGACY_WF_HASHES = {
 
 def _migrate_legacy_workflow():
     """旧版把「写论文」和「维护 wiki」两条流程塞在一个 技能/工作流.md 里。现拆成一文件一工作流。
-       出厂原样 → 删（内容已拆入新文件）；用户改过 → 改名保留，请他并进新文件。永不抛异常。"""
+       因缺少保留空白的历史指纹，任何旧文件都改名保留，请用户按需并入；永不静默删除。"""
     try:
         old = skills_dir() / "工作流.md"
         if not old.exists():
-            return
+            return "absent"
         txt = old.read_text(encoding="utf-8")
-        h = _norm_hash(txt)              # 与上面的升级器同一套 normalized-sha1（算法别分叉）
-        if h in _LEGACY_WF_HASHES:
-            old.unlink()
-            print("[agent_ws] 旧 技能/工作流.md 已拆分为 写论文与综述.md + 维护综述库.md（内容不变）",
-                  file=sys.stderr, flush=True)
-        else:
-            keep = skills_dir() / "工作流(你改过的·请并入新文件).md"
-            if not keep.exists():
-                old.rename(keep)
-                print("[agent_ws] 你改过的 技能/工作流.md 已改名保留，请把你的修改并进 写论文与综述.md / 维护综述库.md",
-                      file=sys.stderr, flush=True)
+        label = "旧出厂参考" if _norm_hash(txt) in _LEGACY_WF_HASHES else "你改过的"
+        keep = skills_dir() / f"工作流({label}·请并入对应新文件).md"
+        i = 2
+        while keep.exists():
+            keep = skills_dir() / f"工作流({label}·请并入对应新文件).{i}.md"
+            i += 1
+        old.rename(keep)
+        print(f"[agent_ws] 旧 技能/工作流.md 已原样保留为 {keep.name}，请按需并入对应新工作流",
+              file=sys.stderr, flush=True)
+        return "preserved"
     except Exception:
-        pass
+        return "error"
+
+
+_LEGACY_COMBINED_PAPER_HASHES = set(
+    _FACTORY_HASHES["rely/技能/写论文与综述.md"]
+)
+
+# 从 git 历史中逐版提取旧 _WF_PAPER 正文后计算；保留缩进、行尾空格和空行，仅统一换行符。
+_LEGACY_COMBINED_PAPER_EXACT_HASHES = {
+    "a66372e9ea318878438511bc1fbb29fcc0a72e84",
+    "b008ca6fb7111fa5a0c6514e6c9d1c95cb77f854",
+    "35aceb8efff9e97a6b5d4521e7b20b8dfe083823",
+    "0de9a729de4e7948f1a6222ba1b13df43fd7266f",
+    "8c36ea9487624a315e6e1c136a623167aa75c798",
+    "035e79339e240262cd01522585f5613d1ad7a6e6",
+    "6d65e7cd0a6ae8d6d118727ebc04e12e033007ec",
+    "1fde4ecc14ece667a55c7b7b07b96407ddb2e8d7",
+}
+
+
+def _migrate_combined_paper_workflow():
+    """把旧「写论文与综述.md」安全迁入新的通用「综述.md」。
+
+    历史出厂原样（必须命中保留空白的 exact 指纹）：
+    - 目标不存在时原子写入新的通用综述，再移除可重建的旧出厂副本。
+    - 目标已经存在时删除这份可重建的旧出厂副本。
+
+    用户改过：
+    - 无论目标是否存在，都改名为明确的保留件；绝不覆盖、删除或把它误当成出厂模板。
+    """
+    def preserve(old_path):
+        keep = skills_dir() / "写论文与综述(你改过的·请并入综述或通用初稿).md"
+        i = 2
+        while keep.exists():
+            keep = skills_dir() / f"写论文与综述(你改过的·请并入综述或通用初稿).{i}.md"
+            i += 1
+        old_path.rename(keep)
+        print(f"[agent_ws] 你改过的「写论文与综述.md」已原样保留为「{keep.name}」",
+              file=sys.stderr, flush=True)
+        return "custom_preserved"
+
+    def create_target_exclusively(path, text):
+        """只在目标仍不存在时创建；并发新建的用户文件必须获胜，绝不被迁移覆盖。"""
+        try:
+            with path.open("x", encoding="utf-8") as f:
+                f.write(text)
+            return True
+        except FileExistsError:
+            return False
+
+    try:
+        old = skills_dir() / "写论文与综述.md"
+        if not old.exists():
+            return "absent"
+        target = skills_dir() / "综述.md"
+        old_text = old.read_text(encoding="utf-8")
+        old_exact = _exact_hash(old_text)
+        if old_exact in _LEGACY_COMBINED_PAPER_EXACT_HASHES:
+            if target.exists() and not target.is_file():
+                return preserve(old)
+            if target.exists():
+                if _exact_hash(old.read_text(encoding="utf-8")) != old_exact:
+                    return preserve(old)
+                old.unlink()
+                print("[agent_ws] 已移除可重建的旧出厂「写论文与综述.md」；现使用「综述.md」",
+                      file=sys.stderr, flush=True)
+                return "factory_removed"
+            if not create_target_exclusively(target, _WF_REVIEW):
+                if not target.is_file():
+                    return preserve(old)
+                if _exact_hash(old.read_text(encoding="utf-8")) != old_exact:
+                    return preserve(old)
+                old.unlink()
+                print("[agent_ws] 迁移期间已出现「综述.md」；已保留该文件并移除可重建的旧出厂工作流",
+                      file=sys.stderr, flush=True)
+                return "factory_removed"
+            if _exact_hash(old.read_text(encoding="utf-8")) != old_exact:
+                return preserve(old)
+            old.unlink()
+            print("[agent_ws] 旧出厂「写论文与综述.md」已安全迁入「综述.md」",
+                  file=sys.stderr, flush=True)
+            return "factory_renamed"
+
+        return preserve(old)
+    except Exception:
+        return "error"
 
 
 def _remove_obsolete_catalog_check_task():
@@ -784,12 +1083,13 @@ def ensure_scaffold():
                 d.mkdir(parents=True, exist_ok=True)
             except Exception:
                 pass
-        # 顺序要紧：先把旧单文件 技能/工作流.md 拆掉（删/改名），再铺新模板——反过来会先生成新文件、
-        # 让迁移提示显得莫名其妙。
+        # 顺序要紧：先迁移旧文件，再铺新模板；反过来会先生成目标文件，让迁移提示和保护判断失真。
         _migrate_legacy_workflow()
+        acts["migration/写论文与综述.md"] = _migrate_combined_paper_workflow()
         _remove_obsolete_catalog_check_task()
         for key, path, text, mask, seed in _template_specs():
-            acts[key] = _ensure_template(path, text, _FACTORY_HASHES.get(key, set()), mask, seed)
+            acts[key] = _ensure_template(
+                path, text, _factory_hashes_for(key), mask, seed, key=key)
     except Exception:
         pass
     return acts
@@ -813,13 +1113,22 @@ def paths_info():
 if __name__ == "__main__":
     # 维护用：改完任一出厂模板文本后跑
     #     build\py312\python.exe src\agent_ws.py --print-hashes
-    # 把变了的那几行 hash **追加**进 _FACTORY_HASHES 对应集合（旧的别删）。
+    # normalized hash 追加进 _FACTORY_HASHES；工作流还必须把 exact hash 追加进
+    # _WORKFLOW_FACTORY_EXACT_HASHES。两张表的旧值都别删。
     # 只读不写：不落任何文件、不碰 0_Agent* 工作区。
     if "--print-hashes" in sys.argv:
         print("# 当前出厂模板的 normalized-sha1（追加进 _FACTORY_HASHES，旧 hash 一个都别删）")
         for key, _path, text, mask, _seed in _template_specs():
             h = _norm_hash(text, mask)
             hit = h in _FACTORY_HASHES.get(key, set())
+            print(f'    "{key}":{" " * max(1, 36 - len(key.encode("utf-8")))}{{"{h}"}},'
+                  f'   # {"名单里已有" if hit else "★ 新版：请追加"}')
+        print("\n# 工作流当前 exact-sha1（追加进 _WORKFLOW_FACTORY_EXACT_HASHES）")
+        for key, _path, text, mask, _seed in _template_specs():
+            if key not in _WORKFLOW_FACTORY_EXACT_HASHES:
+                continue
+            h = _exact_hash(text, mask)
+            hit = h in _WORKFLOW_FACTORY_EXACT_HASHES.get(key, set())
             print(f'    "{key}":{" " * max(1, 36 - len(key.encode("utf-8")))}{{"{h}"}},'
                   f'   # {"名单里已有" if hit else "★ 新版：请追加"}')
     else:

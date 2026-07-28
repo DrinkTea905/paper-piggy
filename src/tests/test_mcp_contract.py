@@ -3,12 +3,14 @@ import inspect
 import io
 import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import mcp_server as MCP
+import agent_ws as AW
 
 
 class _Response:
@@ -40,6 +42,24 @@ def _run_rpc(requests, tool_result=None):
 
 
 class McpContractTests(unittest.TestCase):
+    def test_list_workflows_keeps_builtin_order_and_separates_custom_files(self):
+        with tempfile.TemporaryDirectory() as td, mock.patch.object(AW, "base_dir", return_value=Path(td)):
+            AW.ensure_scaffold()
+            custom = AW.skills_dir() / "我的自定义流程.md"
+            custom.write_text("# 自定义\n", encoding="utf-8")
+
+            text = MCP.do_tool("list_workflows", {})
+
+        names = [
+            "论文初稿（少年司法版）", "综述（少年司法版）",
+            "论文初稿（通用暂用版）", "综述", "维护综述库", "跨学科发散与补文献",
+        ]
+        positions = [text.index(f"- {name}：") for name in names]
+        self.assertEqual(positions, sorted(positions))
+        self.assertIn("内置工作流（固定顺序）", text)
+        self.assertIn("自定义或迁移保留文件", text)
+        self.assertGreater(text.index("- 我的自定义流程："), positions[-1])
+
     def test_every_tool_has_new_contract_and_dispatch(self):
         names = [tool["name"] for tool in MCP.TOOLS]
         self.assertEqual(40, len(names))

@@ -18,26 +18,87 @@ from fastapi import HTTPException  # noqa: E402
 class AgentOutputTests(unittest.TestCase):
     def test_all_factory_workflows_have_mandatory_contract_sections(self):
         required = ("## 触发条件", "## 开工前检查", "## 用户决策点", "## 完成标准", "## 最终报告")
-        for body in (AW._WF_PAPER, AW._WF_WIKI, AW._WF_DIVERGENCE):
+        workflows = (
+            AW._WF_JJ_DRAFT, AW._WF_JJ_REVIEW, AW._WF_GENERAL_DRAFT,
+            AW._WF_REVIEW, AW._WF_WIKI, AW._WF_DIVERGENCE,
+        )
+        self.assertEqual(len(workflows), 6)
+        for body in workflows:
             for heading in required:
                 self.assertIn(heading, body)
         self.assertIn("全量审查", AW._WF_WIKI)
         self.assertIn("简单事项直接处理", AW._WF_WIKI)
 
     def test_review_workflows_classify_themes_and_hide_raw_keys_from_deliverables(self):
-        self.assertIn("set_wiki_theme", AW._WF_PAPER)
         self.assertIn("set_wiki_theme", AW._WF_WIKI)
-        self.assertIn("既有主题", AW._WF_PAPER)
         self.assertIn("主题归类", AW._WF_WIKI)
-        for body in (AW._README_OUTPUT, AW._WF_PAPER, AW._WF_WIKI, AW._WF_DIVERGENCE):
+        research = (AW._WF_JJ_DRAFT, AW._WF_JJ_REVIEW, AW._WF_GENERAL_DRAFT, AW._WF_REVIEW)
+        for body in research:
+            self.assertIn("既有主题", body)
+        for body in (AW._README_OUTPUT, *research, AW._WF_WIKI, AW._WF_DIVERGENCE):
             self.assertIn("key", body)
             self.assertTrue("裸 key" in body or "裸文献 key" in body)
 
     def test_agent_safety_copy_matches_available_maintenance_tools(self):
-        self.assertIn("用户明确要求", AW._WF_PAPER)
-        self.assertIn("建库 / 深索工具更新 PaperPiggy 索引", AW._WF_PAPER)
+        for body in (AW._WF_JJ_DRAFT, AW._WF_JJ_REVIEW, AW._WF_GENERAL_DRAFT, AW._WF_REVIEW):
+            self.assertTrue(any(x in body for x in ("不直接修改原始文献", "不修改原始文献", "不改原始文献")))
+            self.assertIn("用户明确要求", body)
         self.assertIn("云端检索或使用外部 AI 助手", AW._rules_summary_text())
         self.assertNotIn("不联网、不含大模型", AW._TASKS_README)
+
+    def test_juvenile_draft_has_two_route_cards_and_stop_gate(self):
+        body = AW._WF_JJ_DRAFT
+        for route in ("教义学路线", "理论—制度建构路线"):
+            self.assertIn(route, body)
+        for field in (
+            "适配度", "完整拟题", "核心问题", "中心观点", "三级提纲",
+            "各部分主要内容", "所需规范、理论、事实材料", "优势", "风险", "不适用边界",
+        ):
+            self.assertIn(field, body)
+        self.assertIn("用户选择前不得起草", body)
+        self.assertIn("明确选定路线", body)
+        self.assertIn("明确表示“不需要比较”", body)
+        for gate in (
+            "最有利于未成年人", "发展中能力", "支持性参与", "关系自主",
+            "最小干预", "比例原则", "机构支持义务", "有效审查与救济",
+        ):
+            self.assertIn(gate, body)
+        for consent_check in (
+            "持续、知情、可撤回且受支持", "说明", "资源核验", "合理调整",
+            "履行能力", "条件变更", "技术性违约", "撤销", "救济",
+        ):
+            self.assertIn(consent_check, body)
+        self.assertIn("严重案件", body)
+        self.assertIn("低风险", body)
+
+    def test_juvenile_review_has_reproducible_log_and_numeric_recalculation(self):
+        body = AW._WF_JJ_REVIEW
+        for field in (
+            "轮次", "精确检索式", "范围/排序/Top-k", "命中数", "去重后新增数",
+            "纳入/排除/待核数", "新词及来源", "下一轮理由",
+        ):
+            self.assertIn(field, body)
+        self.assertIn("分母、小计、类别数", body)
+        self.assertIn("作者原说", body)
+        self.assertIn("同作者纵向重构", body)
+        self.assertIn("跨作者综合", body)
+
+    def test_general_draft_is_explicitly_temporary_and_unvalidated(self):
+        body = AW._WF_GENERAL_DRAFT
+        self.assertIn("尚未经过其他部门法训练验证", body)
+        self.assertIn("暂用版", body)
+        self.assertNotIn("少年司法八项迁移闸门", body)
+
+    def test_root_entry_routes_by_task_then_domain(self):
+        body = AW._ROOT_AGENTS
+        self.assertIn("任务类型", body)
+        self.assertIn("领域", body)
+        for name in (
+            "论文初稿（少年司法版）.md", "综述（少年司法版）.md",
+            "论文初稿（通用暂用版）.md", "综述.md",
+        ):
+            self.assertIn(name, body)
+        self.assertIn("用户选择前不得起草全文", body)
 
     def test_frontend_destructive_and_error_guards_are_wired(self):
         app_js = (ROOT / "web" / "app.js").read_text(encoding="utf-8")

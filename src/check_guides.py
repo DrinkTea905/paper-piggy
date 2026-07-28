@@ -177,18 +177,28 @@ def check_wiki_schema():
 
 
 def check_template_factory_hashes():
-    name = "④b Agent 出厂模板当前 hash 全部已登记"
+    name = "④b Agent 出厂模板当前 hash 全部已登记（工作流含精确指纹）"
     try:
         import agent_ws as A
     except Exception as e:
         return skip(name, f"import agent_ws 失败：{e}")
     missing = []
+    missing_exact = []
     for key, _path, text, mask, _seed in A._template_specs():
         h = A._norm_hash(text, mask)
         if h not in A._FACTORY_HASHES.get(key, set()):
             missing.append(f"{key}={h}")
-    if missing:
-        return bad(name, "请运行 agent_ws.py --print-hashes，并把新版 hash 追加进 _FACTORY_HASHES：" + "；".join(missing))
+        if key.startswith("rely/技能/") and key != "rely/技能/说明.md":
+            exact = A._exact_hash(text, mask)
+            if exact not in A._WORKFLOW_FACTORY_EXACT_HASHES.get(key, set()):
+                missing_exact.append(f"{key}={exact}")
+    if missing or missing_exact:
+        parts = []
+        if missing:
+            parts.append("normalized 缺失：" + "；".join(missing))
+        if missing_exact:
+            parts.append("工作流 exact 缺失：" + "；".join(missing_exact))
+        return bad(name, "请运行 agent_ws.py --print-hashes 并追加对应指纹：" + "；".join(parts))
     ok(name, f"{len(A._template_specs())} 份模板全部已登记")
 
 

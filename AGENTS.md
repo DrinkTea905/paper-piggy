@@ -89,7 +89,9 @@ README / CHANGELOG / release notes 会被全世界看到。改文案时别留「
 - 把 Zotero 文库（或任意文件夹）里的论文 / 法源 / 报告建成本地索引
 - 检索：dense(LanceDB) + BM25 → RRF 融合 → reranker → 期刊权重加成
 - **综合层 wiki**：把检索答案沉淀成可持久、可引用、会标记过期（stale）的知识页
-- **Agent 层**：通过 MCP（工具数以 `mcp_server.TOOLS` 和自动生成的 `MCP接入说明.md` 为准）让 Codex 等外部 agent 直接操作这个知识库，内置「写论文与综述」「维护综述库」「跨学科发散与补文献」等工作流
+- **Agent 层**：通过 MCP（工具数以 `mcp_server.TOOLS` 和自动生成的 `MCP接入说明.md` 为准）让 Codex 等外部 agent 直接操作这个知识库。研究任务先按任务类型、再按领域路由到「论文初稿（少年司法版）」「综述（少年司法版）」「论文初稿（通用暂用版）」「综述」；另有「维护综述库」「跨学科发散与补文献」两条支持工作流
+
+少年司法论文初稿只设教义学、理论—制度建构两条主路线，默认先交两张完整路线方案卡并推荐一条，用户选定前不得起草全文；只有用户已经明确选路且明确不要比较时才可跳过。通用初稿必须提示“尚未经过其他部门法训练验证”。旧 `写论文与综述.md` 迁移时，历史出厂原文可升级到 `综述.md`，用户改过的文件必须改名保留，绝不删除或覆盖。
 
 全本地运行（也支持 API 模式）。开源，**明文 .py 分发，不编译不混淆**。
 
@@ -235,6 +237,7 @@ $env:LOCALKB_MODELS = 'D:\00Zotero知识库\rag\data\models'
 | wiki 页面规约 | `wiki_store.WIKI_MD_SEED`（改了**必须** bump `SCHEMA_VERSION`，见 MAINTENANCE） |
 | 索引产物兼容性 | `upgrade_health.CURRENT_INDEX_CONTRACTS`；实现变化审计登记在 `_AUDITED_IMPLEMENTATIONS`，禁止再用实现文件哈希直接决定用户重建 |
 | Agent 工作流 | `agent_ws._WF_*` 常量 |
+| **专题工作流训练方法** | `docs/设计/专题工作流训练方法.md`。新建、重训或从素材蒸馏任何专题工作流前必须先读；训练默认采用原文精读、子代理对抗与规则总结，不自动采用付费模型或匿名 A/B |
 | 应用图标 | `web/PaperPiggy.png`（`.ico` 由 launcher 运行时生成） |
 | **数据落点** | `config._bootstrap_bundle_env()`。`run_localkb.py` 只是 `import config` 借道 —— 它曾经自己复刻过一份 HOME 解析，两处各算各的，是「启动器和 MCP 认两个数据目录」的漂移源。**别再复制出去。** |
 | Agent 工作区落点 | `agent_ws.base_dir()`（= `C.DATA.parent`，与 folder/zotero 模式无关） |
@@ -270,11 +273,12 @@ $env:LOCALKB_MODELS = 'D:\00Zotero知识库\rag\data\models'
 - **`STATE["mode"]` 是在 `_load_wiki_index()` 之后才设的**，所以依赖 `STATE["mode"]` 的函数在 `_load_wiki_index` 内部会静默失效。改用 `"tbl" in M` 来判断。**日志打印「成功」不等于真的成功。**
 - **wiki 的 stale 降权曾经是纸糊的**：reranker 分数尺度是 0~10+，而当时的 penalty 只有 0.05/0.5，等于没有。加惩罚项之前，先量一下真实分数的尺度。
 - **OneDrive 目录下曾有过 Write 静默失败**（视为已解决）。写完关键文件后核对一下内容，别盲信写入成功。
-- **出厂模板曾经推不动**：旧的 `_write_if_absent` 只在文件不存在时写 —— 改了工作流模板的文本，**所有已经跑过一次的机器（包括开发机自己）永远收不到新版**。已用 hash 比对的升级器替换（`agent_ws.py` 的 `_FACTORY_HASHES` / `_ensure_template`）：出厂原样→静默升级，用户改过→保留原文件并写一份 `.new.md`。
-  ⚠️ **改完任何模板文本，必须跑 `python src/agent_ws.py --print-hashes` 把新 hash 追加进 `_FACTORY_HASHES`（旧的一个都别删）**，否则下下版会把这一版的出厂文件误判成「用户改过」，用户机器上凭空多出一堆 `.new.md`。
+- **出厂模板曾经推不动**：旧的 `_write_if_absent` 只在文件不存在时写 —— 改了工作流模板的文本，**所有已经跑过一次的机器（包括开发机自己）永远收不到新版**。已用 hash 比对的升级器替换（`agent_ws.py` 的 `_FACTORY_HASHES` / `_ensure_template`）：出厂原样→静默升级，用户改过→保留原文件并写一份 `.new.md`。工作流另用 `_WORKFLOW_FACTORY_EXACT_HASHES` 保留 Markdown 空白语义，去所有空白的旧指纹不得单独授权覆盖或删除。
+  ⚠️ **改完任何模板文本，必须跑 `python src/agent_ws.py --print-hashes`**：新 normalized hash 追加进 `_FACTORY_HASHES`；工作流的新 exact hash 还要追加进 `_WORKFLOW_FACTORY_EXACT_HASHES`（两张表的旧值都别删）。否则下下版会把这一版的出厂文件误判成「用户改过」，用户机器上凭空多出一堆 `.new.md`。
 
 - **`.new.md` 旁本曾被静默覆盖**（2026-07-14 已修）：提示语请用户「对照合并」，用户就真在旁本里写合并笔记 —— 而老代码对旁本是**无条件 `write_text`**，下一次启动（或 agent 连一次 MCP）就把笔记盖回出厂原文，无备份无提示。现在旁本被改过就另起名字（`.new.2.md`…）。
   **教训不在 bug 本身**：当时 `_ensure_template` 的 docstring 白纸黑字写着「唯一会覆盖已有文件的分支，是它与历史出厂版一字不差」——**这句话是假的**，把每个读代码的人（包括 AI）都骗了。
+  2026-07-28 又确认“去所有空白”的 normalized hash 也不能证明 Markdown 一字不差：缩进和行尾双空格有语义。现有工作流升级和迁移的破坏性判定必须命中 exact 历史指纹；只有 normalized 命中一律按用户修改件保留。
 - **启动器的 `SW_HIDE` 把窗口藏了，表现成「点了没反应」**（2026-07-14，用户实机反馈）：`PaperPiggy.vbs` 里 `s.Run cmd, 0, False` 的那个 `0` = SW_HIDE，本意是「别闪黑窗」，结果经由 `STARTUPINFO.wShowWindow` 传给子进程，pywebview 建窗口时**继承成隐藏** —— 应用**每次都启动成功、但窗口不可见**。用户点一次快捷方式就多一个看不见的幽灵进程（实测攒到 8 个，其中一个占着 8770）。而 `启动.bat` 走 `start ""`（SW_SHOWNORMAL）所以正常，于是现象是「bat 能启动、桌面快捷方式点了没反应」。
   **两个教训**：① `pythonw.exe` 自带无控制台，VBS 那一层从一开始就是多余的 —— 现在快捷方式直接指向 `python\pythonw.exe`；② **「点了没反应」不等于「没启动」** —— 先去任务管理器/`Get-Process` 看进程在不在，再去找窗口。差点就往「杀软拦 VBS」「VBScript 被弃用」的方向白跑一天。
 - **凭印象列清单 = 静默丢数据**（2026-07-14，做备份功能时）：`backup.py` 的第一版备份清单是照着记忆写的，结果漏了三样 —— `grading_memo.json`（689 条 LLM 期刊分级，**花过真钱**）、`summaries/`（SAC 检索摘要，**花过 API 钱**）、`tier_overrides.json`（用户一条条**手动改**的期刊档位）；而清单里却煞有介事地写了一个**根本不存在**的 `journal_tiers.json`。
