@@ -13,6 +13,7 @@ if str(SRC) not in sys.path:
 
 import retriever as R
 import server
+import upgrade_health as UH
 
 
 class PurgeDeletedSafetyTests(unittest.TestCase):
@@ -217,7 +218,11 @@ class RetrieverBackendGuardTests(unittest.TestCase):
             with tempfile.TemporaryDirectory() as td:
                 root = Path(td)
                 manifest = root / "index_manifest.json"
-                manifest.write_text(json.dumps({"backend": "local"}), encoding="utf-8")
+                manifest.write_text(json.dumps({
+                    "backend": "local",
+                    "index_contract_schema": UH.INDEX_CONTRACT_SCHEMA,
+                    "index_contracts": dict(UH.CURRENT_INDEX_CONTRACTS),
+                }), encoding="utf-8")
                 meta = root / "bm25_meta"
                 meta.mkdir()
                 fake_db = mock.Mock()
