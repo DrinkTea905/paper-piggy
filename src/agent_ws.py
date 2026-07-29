@@ -16,7 +16,7 @@ Agent 专属工作区：两个人类可读、留在知识库本地的文件夹�
   见下方「出厂模板升级器」注释——**绝不覆盖**用户或 agent 写过一个字的文件。
 理念：换任何 agent（Claude Code / Codex / …），新 agent 读这两个文件夹 + MCP 接入时下发的指令即可无缝接上。
 """
-import sys, hashlib, re, json, difflib, time, os, shutil
+import sys, hashlib, re, json, difflib, time, os, shutil, uuid
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import config as C
@@ -52,6 +52,7 @@ def output_dir():    return base_dir() / C.AGENT_OUTPUT_NAME
 def rely_dir():      return base_dir() / C.AGENT_RELY_NAME
 def memory_dir():    return rely_dir() / "记忆"
 def skills_dir():    return rely_dir() / "技能"
+def handbooks_dir(): return skills_dir() / "参考手册"
 def formats_dir():   return rely_dir() / "参考格式"
 def templates_dir(): return rely_dir() / "交付模板"
 def tasks_dir():     return rely_dir() / "定时任务"
@@ -73,7 +74,8 @@ _README_RELY = """# 0_Agent资料库 —— 你的 AI 助手的专属资料库
 - **记忆/** —— 项目记忆。`项目记忆.md` 记「当前定了什么」（决策 / 偏好 / 进度，保持简短），
   `变更日志.md` 记历史流水账（只增不改）。二者刻意分开，别让记忆膨胀成流水账。
 - **技能/** —— AI 助手的工作流，**一个工作流一个文件**（详见里面的 `说明.md`）。研究任务按“初稿 / 综述”与“少年司法 / 其他领域”路由，
-  另有维护、跨学科发散两条支持工作流。**任何 AI 助手**（Claude Code / Codex / …）读这个文件夹即可照着干。要加新工作流就**新建一个 .md**，别往已有文件里塞。
+  另有维护、跨学科发散两条支持工作流；`参考手册/` 放由主工作流自动附带、但不单独列出的详细材料。
+  **任何 AI 助手**（Claude Code / Codex / …）读这个文件夹即可照着干。要加新工作流就**新建一个 .md**，别往已有文件里塞。
 - **参考格式/** —— 论文 / 文书的排版范本。把范本 .docx 放进来，AI 助手就能照着帮你改格式。
 - **交付模板/** —— 交付形态模板。改这里 = 改 AI 助手给你产出的样子。
 - **定时任务/** —— 定时任务的定义（搜什么、多久一次、成果放哪）。换助手也能照着重建。
@@ -198,6 +200,13 @@ _SKILLS_README = """# 技能 / 工作流
 - `维护综述库.md` —— 只要提到维护就全量审查：模板 / 索引 / 深索 / 摘要 / wiki，简单事项直接处理，最后全面总结。
 - `跨学科发散与补文献.md` —— 写作前打开理论视野：把窄题接到法学近学科 / 政治学·心理学等远学科，理出该补的（尤其外文）文献。
 
+## 自动附带的参考手册
+
+- 读取 `论文初稿（少年司法版）.md` 时，`read_workflow` 会自动附带
+  `参考手册/论文初稿（少年司法版）—成文技艺手册.md`。它展开结构原型、论证动作、篇幅规划和法学表达，
+  **不是第七条顶层工作流**；路线、两个人工闸门和完成标准仍以主工作流为准。
+- 手册和工作流一样可以由你定制。升级时用户修改会原样保留，新版只形成受保护的 `.new.md` 旁本。
+
 ## 想加一条新工作流？
 **新建一个 .md 文件**放这里（如「每周判例梳理.md」「读书笔记整理.md」），写清三件事：
 ① 什么时候用；② 分几步、每步用哪个工具做什么；③ 注意事项 / 铁律。
@@ -227,8 +236,10 @@ _ROOT_CLAUDE = _ROOT_AGENTS.replace("# PaperPiggy Agent 工作入口", "# PaperP
 
 _WF_JJ_DRAFT = """# 工作流：论文初稿（少年司法版）
 
-> 用于少年司法论文初稿。只有两条主路线：**教义学路线**、**理论—制度建构路线**。
-> 实证诊断、比较法和制度史只能作为可叠加模块，不得另造第三条主路线。
+> 用于少年司法论文初稿。现有 v1 的研究可靠性、领域规则和防错要求全部保留，本版在其上增加成文技艺层。
+> 只有两条主路线：**教义学路线**、**理论—制度建构路线**。实证诊断、比较法和制度史只能作为可叠加模块，
+> 不得另造第三条路线。`read_workflow` 读取本文件时会自动附带《论文初稿（少年司法版）—成文技艺手册》；
+> 手册展开结构和表达方法，但不得改写本文件的路线、两个人工闸门、证据要求或完成标准。
 > 所有工具来自 `localkb` MCP；没连上时先让用户按应用「Agent」页接入，新开会话后再继续。
 
 ## 触发条件
@@ -236,12 +247,12 @@ _WF_JJ_DRAFT = """# 工作流：论文初稿（少年司法版）
 - 用户要求的是文献综述、研究现状、理论谱系或争议地图时，改用 `综述（少年司法版）.md`。
 
 ## 开工前检查
-1. 先读项目记忆、既有交付物和相关 wiki 页；明确声明采用《论文初稿（少年司法版）》。
+1. 先读项目记忆、既有交付物和相关 wiki 页；明确声明采用《论文初稿（少年司法版）》，并确认本次读取结果已经自动附带成文技艺手册。
 2. 确认 localkb 已连接，检索并检查核心来源是否可 `read_source` 逐页读取；题录摘要和检索片段只能发现文献。
-3. 固定题目对象、年龄范围、程序/处遇阶段、法域、法制时点、篇幅、受众和引注要求；现行法必须另核时效。
+3. 固定题目对象、年龄范围、程序/处遇阶段、法域、法制时点、正文目标字数、受众和引注要求；现行法必须另核时效。
 4. 不直接修改原始文献或 Zotero；只有用户明确要求并通过工具安全闸时才更新 PaperPiggy。wiki 写回仅限综合层，核验页只提交待审稿。
 
-## 双路线方案卡（用户选择前的硬闸门）
+## 双路线方案卡（第一人工闸门）
 1. 默认同时提交两张卡，名称固定为“教义学路线”和“理论—制度建构路线”。
 2. 每张卡必须逐项包含：
    - 适配度；
@@ -251,15 +262,16 @@ _WF_JJ_DRAFT = """# 工作流：论文初稿（少年司法版）
    - 三级提纲（章—节—目）；
    - 各部分主要内容；
    - 所需规范、理论、事实材料（逐项注明完整原文与印刷页核验任务）；
+   - 拟采用的问题切入、可能创新及其待证环节；
    - 优势；
    - 风险；
    - 不适用边界。
-3. 两卡必须在核心问题、中心观点、三级提纲、材料任务和不适用边界上形成实质差异，不能只换标题或章节顺序。
+3. 两卡必须在核心问题、中心观点、三级提纲、材料任务、创新风险和不适用边界上形成实质差异，不能只换标题、理论名称或章节顺序。
 4. 明确推荐一条，并用题目中心任务、可获得材料、论证闭合度和主要风险说明理由。
 5. **用户选择前不得起草摘要、引言、章节正文或全文。**
 6. 只有用户已经明确选定路线，且明确表示“不需要比较”时，才可跳过双卡；缺少任一条件都不能跳过。
 
-## 选路后的执行步骤
+## 选路后的研究可靠性与领域底座
 1. **共同证据底座**：按概念、规范、理论、机构/阶段、法律效果/救济、实施/反方分轮检索；核心文献必须完整 `read_source`，实体论断核到精确印刷页。分别建立规范、理论、事实材料表，不互相替代。
 2. **教义学路线**：界定规范对象和法制时点，排列法源位阶，分开解释论与立法论；闭合“机构—权限—程序—法律效果—例外—救济”，并从真实负担而非温和名称判断措施性质。材料能否用于某种法律效果的规范资格，与其来源结构和事实可靠性分成两道阈值；按构成要件分配证明责任，不合成单一分值。控方承担入罪构成要件证明，儿童一方只须提出有根据的合理怀疑，无须证明完整替代故事；沉默、片段化表达、前后差异、不同意、拒绝活动或要求退出，不得直接作不利推定或无能力推定；当前支持不能倒流创造行为时责任或改变法定年龄。
 3. **理论—制度建构路线**：从反常事实或解释失败提出问题，拆分概念层级，比较竞争模式，以中层命题连接理论与制度；闭合“原则—机构—权限—程序—措施—效果—救济—实施/信息链”。作者模型、功能分类或多篇重复主张不能证明某种组织方案唯一、穷尽或当然正确。
@@ -270,23 +282,429 @@ _WF_JJ_DRAFT = """# 工作流：论文初稿（少年司法版）
 8. **合意性安排特别检查**：对附条件不起诉、监督考察协议等，区分一次签字与持续、知情、可撤回且受支持的参与；逐项检查说明、资源核验、合理调整、履行能力、条件变更、技术性违约、撤销和救济。签字、律师在场或表面履约不自动证明能力、公平或真实协商。
 9. **双向压力测试**：同时测试严重案件/现实风险与低风险/高需要案件；风险限制强制，需要生成支持，贫困、资源不足或机构失败不得自动提高控制强度。严重性提高事实、安全和复核密度，不降低年龄、责任、证明、参与与救济标准。
 10. **争议保留协议**：对终局法律效果、措施性质、组织模式或权利排序无法由现行法和原文裁定时，只生成具名争议矩阵；用户选择立场后仍保留最强反驳、现行法障碍和不适用边界。只有新增原文或规范解决争议字段并重新通过八项闸门，才可升级为正面结论。
-11. **grounded 三级提纲（第二个人工闸门）**：把标题—问题—观点—提纲—各部分内容对齐，列明每节证据、最强反方和边界，呈给用户确认；未确认不写正文。
-12. **分节起草与核验**：逐节读原文，内部可用 key 定位；每个实质论断用 `verify_claim`，直接引语用 `locate_quote`，再用 `format_citation` 生成作者/题名/年份/页码等人类可读引注。交付物不得出现裸 key。
-13. **交付与沉淀**：成品写入 `0_Agent交付物/<主题>/` 并附 README；按既有主题更新/新建 wiki 页，调用 `set_wiki_theme` 设置主题并维护互链，处理本轮新读来源触发的 wiki 待办。
+
+## 选路后的成文设计与起草
+1. **写作设计单**：在起草前固定对象、法域/时点、目标字数、受众、路线、可核事实或规范入口、既有研究的最强答案及有效域、具体失败点、核心问题、一句话中心命题、作者拟主张的贡献、经现有材料实际可成立的增量、理论及替代理论、结构原型、主要证据缺口、最强反方和边界。多个现象只有存在共享概念、前提、机制或规范结构时才合并为一个深层问题。
+2. **问题切入与创新诊断**：从可核事实异常、规范张力、真实学说分歧、概念混乱或理论解释失败中选择入口；先钢人化既有答案，再定位它无法回答的具体命题。把“拟主张的创新”和“已由材料成立的增量”分栏；新区分、新框架、新类型、新机制、新材料或制度转译只有继续生成解释、标准、规则、机制或边界，并承受硬反例，才可作为创新。
+3. **理论选择与操作化**：只有上一层留下具体未解问题时才增加理论层。比较替代理论并说明选择标准；把所选理论至少转成与本题有关的中层命题和可观察评价项，需要制度建构时再转成制度动作与权力边界。理论须暴露目的、手段、成立条件、失败风险和受影响权利；善意、教育、保护或治理效果不直接授权强制干预。
+4. **路线内结构原型推荐**：从自动附带手册中的有限原型选择最接近者，再按本题证明依赖调整；不复制单篇文章目录，也不把“现状—问题—完善”当默认结构。结构须包含精确问题、不可省略的转换层、检验/诊断、可追溯输出和有限回收；转换层可以是概念区分、中层命题、研究设计、规范接口或机制模型。
+5. **章节功能表（第二人工闸门）**：对每个一级、二级单元列明局部问题、局部结论、输入前提、规范/理论/事实依据、论证方法、最强反方、输出命题、与前后部分的关系、粗略字数预算，以及删除或调换后的断裂。明确关系属于并列分类、累积支撑、镜像对应、步骤依赖还是可选增厚；印刷顺序和数字对称不能冒充推理顺序。把标题—问题—中心命题—结构—材料逐项对齐后呈给用户确认，**未确认不得写正文**。
+6. **分节论证契约**：每节起草前先填写主张、前提、材料及证据身份、从材料到结论的推理桥梁、最强反方、回应射程、边界、进入方式、退出到下一节的命题和预定引注位置。每项规范或制度输出另标明是前文直接推出、经验有限支持、额外规范论证还是待验证政策候选。
+7. **正文起草顺序**：先写最能决定中心命题成败的核心证明节，再写规则/制度输出和边界，随后补足章节接口与过渡；最后依据正文实际完成情况回写引言、标题、摘要和结论。过渡须说明已经回答什么、仍未回答什么、为何需要新增层及其预期输出；连接词、权威引文或材料并列不能代替桥梁。
+8. **分节起草与核验**：逐节读原文，内部可用 key 定位；每个实质论断用 `verify_claim`，直接引语用 `locate_quote`，再用 `format_citation` 生成作者/题名/年份/页码等人类可读引注。区分法源、作者主张、数据描述、相关关系、结构推断、机制假说、因果结论和规范建议，命题强度不得超过证据身份。交付物不得出现裸 key。
+9. **首尾兑现**：摘要只承诺问题、方法/转换层、主要产出和边界，不能替正文补证；引言只提出正文会解决的具体问题；标题不得承诺正文未证明的对象、冲突、方法或范围；结论只回收已证明的产出、适用条件、边界和未完成任务，不引入新材料或新主张。
+10. **五轮独立修改**：
+    - 结构轮：检查每章独立功能、输入输出、依赖、重复和删除/调换后果；
+    - 论证轮：检查最强反方、推理桥梁、理论中层转译、机制闭合和反驳射程；
+    - 证据与引注轮：检查来源身份、印刷页、法源时效、引注贴合、事实/规范分层和政策候选标记；
+    - 语言轮：删除宏大空话、模板句、无主体政策套话和强度失真的绝对句，保留必要限定、转折与小结；
+    - 原创性轮：检查单篇目录、作者分类/原则群/阶段链、比喻、连续句式和近似改写；只迁移跨作者功能，作者框架必须保留归属。
+11. **硬失败回退**：出现虚构法源/文献/页码、未选路即写正文、两路线或原型塌缩、章节无独立功能、理论只有名称、证据与结论无桥梁、最强反方稻草人化、模仿或近似改写单一作者、照搬单篇结构、少年司法规则被宏观写作要求冲掉中的任一项，不得交付；回到设计单、原文或对应论证契约修正，不在文末临时补一句警告。
+12. **交付与沉淀**：成品写入 `0_Agent交付物/<主题>/` 并附 README；同时保存写作设计单、章节功能表、分节论证契约、来源核验和五轮修改记录。按既有主题更新/新建 wiki 页，调用 `set_wiki_theme` 设置主题并维护互链，处理本轮新读来源触发的 wiki 待办。
 
 ## 用户决策点
-- 第一闸门：用户选择教义学或理论—制度建构路线；未选不得起草全文。
-- 第二闸门：用户确认 grounded 三级提纲后才进入正文。
+- 第一闸门：用户选择教义学或理论—制度建构路线；未选不得起草正文。
+- 第二闸门：用户确认带章节功能表和材料任务的 grounded 三级提纲后才进入正文。
 - 采用库外来源、改变引注规则、删除内容或发生真实制度取舍时单独询问。
 
 ## 完成标准
-- 双卡或合法跳过条件有记录；选定路线、标题、中心观点、三级提纲和正文一致。
-- 实体论断均来自完整原文并核到精确位置；规范、理论、事实材料分层；最强反方和不适用边界未被删去。
-- 八项少年司法闸门、严重/低风险双向测试和合意性安排检查按题目实际完成。
-- 交付物已落盘，用户文件无裸 key；待核项、文献使用与缺口、wiki 主题归类与维护待办已处理。
+- 双卡或合法跳过条件有记录；写作设计单、创新诊断、理论操作化、结构原型选择、章节功能表和分节论证契约齐全。
+- 选定路线、标题、摘要、引言、中心命题、三级提纲、正文和结论相互兑现；每章有独立论证功能，核心推理桥梁可见。
+- 实体论断均来自完整原文并核到精确位置；规范、理论、事实材料分层；来源归属、最强反方和不适用边界未被删去。
+- 八项少年司法闸门、严重/低风险双向测试、适用的合意性安排检查和结构—论证—证据与引注—语言—原创性五轮修改均已完成。
+- 没有任何硬失败；交付物已落盘，用户文件无裸 key；待核项、文献使用与缺口、wiki 主题归类与维护待办已处理。
 
 ## 最终报告
-- 报告所选路线及跳过/选择依据、交付物路径、使用来源和页码核验、少年司法闸门、反方与边界、待核项、wiki 写回和仍需用户决定的事项。
+- 报告所选路线及跳过/选择依据、两个人工闸门记录、交付物路径、写作设计和实际创新、结构原型与章节功能、使用来源和页码核验、少年司法闸门、五轮修改、反方与边界、待核项、wiki 写回和仍需用户决定的事项。
+"""
+
+_JJ_DRAFT_CRAFT_HANDBOOK = """# 论文初稿（少年司法版）—成文技艺手册
+
+> 本手册由 `read_workflow` 随《论文初稿（少年司法版）》自动附带，不是独立工作流。
+> 主工作流中的两条路线、两个人工闸门、完整原文核验、少年司法专门规则和完成标准优先。
+> 本手册只迁移跨作者稳定的结构与论证功能，不提供作者句子库，不允许照搬单篇目录、分类、比喻或连续句式。
+
+## 1. 使用顺序
+
+1. 先完成主工作流的双路线卡并取得用户选路。
+2. 完成写作设计单、问题与创新诊断、理论选择表。
+3. 从本手册选择一个最接近的路线内结构原型；原型只是功能起点，须按本题调整。
+4. 制作章节功能表并通过第二人工闸门。
+5. 每节先写论证契约，再起草核心证明。
+6. 正文基本完成后回写标题、摘要、引言和结论，最后做五轮修改。
+
+若原型、篇幅建议或表达示例与本题材料、法源或少年司法规则冲突，应放弃示例，不得降低可靠性要求。
+
+## 2. 问题切入与创新
+
+### 2.1 五类可用入口
+
+| 入口 | 先确认什么 | 应形成的问题 | 常见失败 |
+|---|---|---|---|
+| 事实异常 | 事实可核、范围和时点清楚 | 现有规则或理论为何无法解释该异常 | 以个案、新闻或趋势口号代替总体事实 |
+| 规范张力 | 法源、位阶、时效和适用对象清楚 | 两项规范要求在何种情形下发生真实冲突 | 把价值不适写成法条冲突 |
+| 学说分歧 | 恢复各方最强答案和有效域 | 分歧由何种前提、对象或法律效果差异造成 | 把弱化版本当靶子 |
+| 概念混乱 | 区分对象、主体、时点、标准和效果 | 同一名称是否遮蔽了不同法律问题 | 只换名词，没有改变判断或制度动作 |
+| 理论失败 | 旧理论面对的事实和未解命题明确 | 哪个解释环节失败，替代理论须完成什么任务 | 用宏大理论统一本来并列的问题 |
+
+问题升维的最低条件是存在共享的先决概念、隐藏前提、机制或规范结构。找不到共享变量时，应保留多个并列问题。
+
+### 2.2 既有答案与失败点
+
+先写出可被原作者认可的最强版本，再问：
+
+- 它已经解释了什么，在哪个法域、时点和对象范围内有效？
+- 它无法回答的是一个可定位命题，还是研究者只是不同意其价值选择？
+- 失败会造成何种法律效果、程序断点、证据误用或权利风险？
+- 若删除拟新增的概念或理论，问题是否仍能由既有答案解决？
+
+负例（自拟）：
+“既有研究重保护、轻权利，因此本文引入关系视角。”——没有恢复既有研究的真实答案，也没有说明哪个法律命题未解。
+
+正例（自拟）：
+“现有解释能够说明支持措施的目的，却没有回答支持失败后不利决定是否仍可维持。本文只处理这一法律效果断点。”——有效域、失败点和研究射程均可核。
+
+### 2.3 创新增量的七种形态
+
+创新可以是新对象、新区分、新解释链、新类型、新机制、新材料或制度转译，但须继续产生至少一项下游增量：
+
+- 改变了一个争点的解释坐标；
+- 形成可观察的评价标准；
+- 推出了具有法源层级的规则或法律效果；
+- 解释了此前未解释的机制；
+- 确定了适用、例外或失效边界。
+
+始终分两栏记录：
+
+| 拟主张的贡献 | 由当前材料实际成立的增量 |
+|---|---|
+| 作者希望如何描述贡献 | 原文、结构、桥梁、反方和硬反例检验后还能保留什么 |
+
+只换标题、改名、增加数字分类、重排旧材料或宣称“首次”都不能自行证明创新。没有检索到相同答案时，只能报告检索范围内未检得。
+
+## 3. 理论选择与操作化
+
+### 3.1 何时不需要增加命名理论
+
+窄法条解释、明确的法律效果冲突、以研究设计为中心的实施诊断，可能只需要规范框架、概念区分或证据标准。不能为了显得“有深度”增加一个删除后不影响结论的理论章。
+
+### 3.2 理论选择表
+
+| 候选理论 | 它解决的具体未解问题 | 替代理论及差异 | 中层命题 | 可观察评价项 | 制度动作 | 失败风险／权力边界 |
+|---|---|---|---|---|---|---|
+| 按本题填写 | 不写“提供视角” | 比较有效域 | 可反驳、能接制度 | 能由材料或程序检查 | 主体、权限、程序、效果、救济 | 谁受不利、谁审查、如何退出 |
+
+理论操作化的最短链条是：
+
+> 上位理由 → 与本题有关的中层命题 → 可观察评价项 →（需要制度建构时）制度动作与权力边界
+
+每个箭头都须说明推理桥梁。理论不能直接代替现行法、比例、资源、程序和救济论证。新增理论层只有在上一层留下具体未解问题时成立，并须回接前文。
+
+负例（自拟）：
+“基于儿童友好理论，应建立智能风险平台。”——理论只是标签，平台的权限、数据、错误和救济均未推出。
+
+正例（自拟）：
+“若参与必须以理解当前程序选择为条件，则中层命题是说明义务须针对具体决定而履行。评价项包括说明对象、表达方式、理解复核和再次说明；任何不利推定还须有独立法源。”——理论已经转成可检查的程序动作。
+
+## 4. 两条路线的有限结构原型
+
+原型按功能命名，不规定固定标题。优先选择一个主原型，最多叠加一个辅助变体；不得拼成第三路线。
+
+### 4.1 教义学路线
+
+#### D1：窄争点—法律效果型
+
+1. 精确界定争点、对象、法制时点和待决定的法律效果；
+2. 恢复现行规范、主要竞说及各自有效域；
+3. 找出共同解释缺口，建立能改变争论坐标的中层区分；
+4. 把区分接到要件、权限、程序、证明或法律效果接口；
+5. 用最强竞说、困难案件和例外检验；
+6. 输出分层规则、救济和不适用边界。
+
+适合规范性质、证据资格、程序违反后果、证明责任等窄题。若核心问题是因果效果，不适用。
+
+#### D2：体系协调—规则建构型
+
+1. 绘制法源、位阶、时间效力、一般法/特别法和实体/程序冲突图；
+2. 区分表面冲突与真实冲突，定位共享概念或制度接口；
+3. 选择解释、类型化、要件分解、原则—例外或漏洞填补动作；
+4. 逐项推出主体、权限、程序、效果、例外和救济；
+5. 检查相邻制度、严重/低风险案件和实施条件；
+6. 分开现行法解释、额外规范论证与未来立法建议。
+
+适合跨规范协调、制度竞合和成套规则题。不能把制度清单当作体系闭合。
+
+#### D3：实证辅助—规范诊断型
+
+1. 先提出独立的规范标准和材料能回答的问题；
+2. 公开研究设计、样本、测量、分母、比较和外推限制；
+3. 按同一标准定位实施断点，不把相关写成因果；
+4. 对每项改革建议补足额外规范桥梁、权限和资源条件；
+5. 输出“已由经验有限支持／仍需规范论证／待验证政策候选”三类结论。
+
+它仍是教义学主路线的辅助变体，不是“实证路线”。
+
+### 4.2 理论—制度建构路线
+
+#### T1：解释失败—理论重构型
+
+1. 从真实落差或旧理论无法回答的命题进入；
+2. 限定对象和适用域，恢复旧理论的最强版本；
+3. 比较替代理论并说明选择标准；
+4. 把所选理论转成中层命题和评价项；
+5. 以成立条件、硬反例、权利风险和权力边界压力测试；
+6. 只输出由上述链条支持的制度含义、例外和救济。
+
+适合原则重构、理论竞争和正当性题。不得堆叠多个只负责命名的理论。
+
+#### T2：机制—制度生命周期型
+
+1. 界定制度目标、参与者、输入材料和观察到的落差；
+2. 建立行动者—条件—处理—输出的机制模型；
+3. 沿准入、说明/协商、决定、执行、变更、退出/撤销、复核追踪；
+4. 在每个节点配置权限、信息、书面理由、资源、纠错和救济；
+5. 检查失败风险、技术性违约、贫困惩罚和机构失灵；
+6. 输出有边界的制度方案和实施条件。
+
+适合分流、监督考察、支持服务、风险评估和组织机制题。
+
+#### T3：比较／制度史转译型
+
+1. 先提出中国法中的具体未解问题；
+2. 说明域外或历史制度原来的功能、法源和社会条件；
+3. 用统一维度比较共同点和不可比差异；
+4. 从材料抽出中层评价标准，而非复制制度名称；
+5. 另证中国法的权限、程序、资源、信息和救济承接；
+6. 标明只能作线索、可以有限转译和不得迁移的内容。
+
+比较法和制度史仍是叠加模块；材料相似不等于规范可移植。
+
+## 5. 章节功能与粗略篇幅
+
+### 5.1 章节功能表
+
+每个一级、二级单元至少填写：
+
+| 单元 | 局部问题 | 局部结论 | 输入前提 | 依据与方法 | 最强反方 | 输出到下一单元 | 关系类型 | 字数预算 | 删除／调换后果 |
+|---|---|---|---|---|---|---|---|---:|---|
+| 按本题填写 | 一个可回答的问题 | 不写“进行分析” | 前文已成立什么 | 法源/理论/事实＋动作 | 最强版本 | 一句可复用命题 | 并列/累积/镜像/步骤/可选 | 粗略即可 | 具体断裂 |
+
+同级标题可能只是并列分类，数字对称也不证明步骤依赖。背景、制度史或比较材料若删除后不影响中心命题，应压缩、改作说明或删除。
+
+### 5.2 按正文 2 万字的可调起点
+
+训练样本只支持描述性规划，不支持硬配额：
+
+- 一级功能区可先按约 4—6 个规划；真实样本为 3—7 个，中位约 5 个；
+- 二级单元可先按约 8—15 个规划；真实样本为 2—20 个，中位约 10.5 个；
+- 问题进入约 1000—2000 字；
+- 两至三个核心证明区合计约 11000—14000 字；
+- 规则／制度输出和边界约 3000—5000 字；
+- 另设独立结论时约 600—1200 字。
+
+这些区间有重叠空间，不能机械相加。先完成章节功能表，再按争点数量、材料密度和证明责任重分；无独立结论时，把回收功能放进末章。
+
+### 5.3 关键段落组的粗略起点
+
+承担一个完整论证动作的段落组可先按约 425—975 字、7—15 句观察，中位约 638 字、10 句。它不是“单段字数”，也不是硬限制：简短转折可以更短，核心证明可以由多个自然段组成。
+
+引注不按“每几句一个”机械安插：
+
+- 法源、事实、他人观点、比较材料之后就近引注；
+- 同一段末集中引注，只适用于整组句子确实共享同一来源；
+- 研究者自己的推理桥梁须明确作为推理，不能让邻近脚注伪装成来源明示；
+- 直接引语尽量短，并定位到精确印刷页。
+
+## 6. 争点与论证方法矩阵
+
+| 题型 | 主要输入 | 首选动作 | 应生成的输出 | 最强替代检查 | 常见硬伤 |
+|---|---|---|---|---|---|
+| 法条含义／冲突 | 有效法源、位阶、时点 | 文义边界、体系、目的、一般/特别法协调 | 有条件的解释规则 | 替代解释及法律效果 | 只列方法名，不发生推理 |
+| 概念混乱 | 对象、主体、时点、标准、效果 | 概念分层或重新限定 | 改变判断的中层区分 | 原概念能否已解决 | 换名词不产生下游结果 |
+| 类型／要件 | 案型差异、法源与效果 | 类型化、要件分解、原则—例外 | 可操作标准与边界案 | 反例、交叉类型、遗漏类型 | 数字分类冒充周延 |
+| 法律效果／救济 | 被违反规则及保护目的 | 权限—程序—效果—救济链 | 分层效果和可达救济 | 补正、禁用、无效等替代 | 所有违法一律当然无效 |
+| 理论选择 | 旧理论有效域与未解问题 | 替代理论比较、中层转译 | 命题、评价项、动作和边界 | 删除理论后能否照样得结论 | 理论只有名称 |
+| 制度机制 | 行动者、输入、条件、信息 | 机制链和生命周期分析 | 权限、程序、纠错、退出 | 机构失败和权利风险 | 组件清单没有因果或规范桥梁 |
+| 实证诊断 | 设计、样本、测量、分母 | 描述/关联/机制/效果分层 | 有限诊断和待证建议 | 选择偏差、替代解释、外推 | 从地方样本直推全国规范 |
+| 比较／制度史 | 功能语境、法源和条件 | 同维比较、差异控制、本土承接 | 可转译标准和不可迁移项 | 中国法接口是否另证 | 以制度名称相同代替可比性 |
+
+## 7. 分节与段落动作
+
+### 7.1 一个核心论证单元
+
+按需要组合下列动作，不要求每段机械齐备：
+
+1. **进入**：承接上一单元的已答命题，指出仍未回答的一个问题；
+2. **主张**：给出本单元要证明、可被反驳的结论；
+3. **理由与材料**：分开法源、作者观点、事实、数据或比较材料；
+4. **桥梁**：解释材料为何支持该结论，而非只把引文排在一起；
+5. **最强反方**：恢复其合理警告、适用条件和真实后果；
+6. **回应**：用内部一致性、适用范围、替代解释或硬反例回应，射程不超过证据；
+7. **边界**：说明哪些情形、法域、时点或材料仍不能覆盖；
+8. **退出**：形成下一单元可以直接使用的一句命题。
+
+### 7.2 八类关键段落组
+
+- **引言转折**：已知事实／规则 → 现有答案 → 未解后果 → 本文问题；
+- **研究缺口**：最强答案及有效域 → 具体失败点 → 缺口为何影响法律判断；
+- **中心命题／创新限定**：本文主张 → 下游产出 → 当前只证明到哪里；
+- **核心证明**：命题 → 多类依据 → 桥梁 → 最强替代 → 有界结论；
+- **概念／类型**：分类目的 → 区分标准 → 边界案 → 法律效果；
+- **最强反驳**：钢人化 → 命中点 → 未命中点 → 修正后的主张；
+- **章节过渡**：已经回答 → 仍未回答 → 新层必要性 → 预期输出；
+- **结论回收**：主要产出 → 适用条件 → 证据/规范边界 → 未完成任务。
+
+负例（自拟）：
+“上述研究具有重要启示。进一步而言，有必要完善相关制度。”——没有说明已答、未答和为何需要新层。
+
+正例（自拟）：
+“前述分析只确定该材料不能直接证明责任事实，尚未回答它能否用于支持性处遇决定。下一节因此转向用途与法律效果，而不是继续争论材料名称。”——过渡产生了可检验的依赖。
+
+## 8. 标题、摘要、引言与结论
+
+### 8.1 标题
+
+标题可按需要限定对象、冲突／任务、方法或范围，但不能为了完整把四项都塞入。逐词检查正文是否兑现：
+
+- 对象是否与实际材料一致；
+- “重构、体系、机制、证成”等强词是否有对应证明；
+- 副标题是否真实限制法域、时点或观察角度；
+- 删除一个华丽概念后，题目是否反而更准确。
+
+### 8.2 摘要
+
+摘要是承诺清单，不是证明。至少能识别：
+
+1. 具体问题；
+2. 使用的转换层或方法；
+3. 主要产出；
+4. 适用边界或证据限度。
+
+正文未证明的结论从摘要删除；正文新增的中心产出须回填摘要。不要用“意义重大、亟待完善、具有启示”等词代替信息。
+
+### 8.3 引言
+
+引言可以从五类入口中的任一种进入，但功能顺序通常是：
+
+> 可核入口 → 既有最强答案 → 尚未解决的具体后果 → 深层问题 → 范围与任务
+
+不固定为“背景—意义—不足—创新”四段式，不用虚构趋势或宏大政策口号制造必要性。引言完成后逐项标注：正文哪一节兑现了这里的承诺。
+
+### 8.4 结论
+
+结论可以没有独立标题，但必须在某处回收：
+
+- 本文真正形成了什么解释、标准、机制或制度含义；
+- 在何种对象、时点和条件下适用；
+- 哪些结论只得到有限支持；
+- 哪些反例、材料或规范问题仍未解决。
+
+不得在结尾新增法源、数据、概念或未经证明的价值宣言。
+
+## 9. 功能性中性法学表达
+
+表达强度服从证据身份，不建立固定作者腔。下表是功能提示，不是可整段套用的句库：
+
+| 证据或动作 | 较稳妥的功能表达 | 避免 |
+|---|---|---|
+| 转述作者 | “该研究主张／区分……”并就近引注 | 把作者观点写成无主语事实 |
+| 规范文本 | “该规范明确规定……”或“可由……解释为……” | 把解释意见写成法条明文 |
+| 样本描述 | “在该样本／地区／时段内可观察到……” | “实践普遍证明……” |
+| 关联信号 | “与……同时出现／存在关联信号” | 直接写“导致、决定” |
+| 结构推断 | “据其论证结构可理解为……” | 冒充作者明示 |
+| 机制假说 | “可能通过……发生，仍须排除……” | 以流程图证明因果 |
+| 规范建议 | “在……法源和条件下，可考虑／宜……” | “因此必须”而无额外规范桥梁 |
+| 强结论 | “只有在……条件成立时，才……” | 没有法源或严格证据的绝对句 |
+
+### 9.1 限定
+
+限定应回答“限定什么”：样本、法域、时点、对象、证据能力、因果强度或规范射程。机械添加“可能、一定程度上”不能修复桥梁缺失。
+
+### 9.2 转折
+
+有效转折改变的是论证任务：
+
+- “这一解释能够解决 A，但尚不能处理 B”；
+- “该材料支持描述 C，不能单独推出规范结论 D”；
+- “即便接受反方关于 E 的警告，仍需另行回答法律效果 F”。
+
+无效转折只是连接词替换，前后没有真实张力。
+
+### 9.3 反驳
+
+先写反方最有力之处，再限定回应：
+
+负例（自拟）：
+“有观点担心程序成本，但这种担心忽略儿童利益，因而不足采。”
+
+正例（自拟）：
+“增加独立复核确会提高时间成本，这一警告在紧急情形下尤其成立。本文主张只限于会产生重大不利效果的决定，并保留紧急处置后的迅速复核，因此并未否认全部效率理由。”
+
+### 9.4 小结
+
+小结不重复材料，而要交付一个后文可用的命题，并标明边界：
+
+> “本节只证明了该材料的用途受限，尚未证明其事实内容不可靠；下一节分别审查可靠性和救济。”
+
+## 10. 来源、引注与原创性
+
+1. 法源、事实、他人观点和比较材料均就近归属；训练者的综合与推理不能借邻近脚注伪装成来源原说。
+2. 作者提出的分类、原则群、阶段链、指标矩阵、理论组合和制度方案保持归属锁；多篇引用不自动把它变成通用结构。
+3. 可以准确引用必要术语和短句，但须定位、归属并说明用途；不得复制长段落。
+4. 近义替换、调换词序、保留同一数字框架或标题对称，仍可能是近似改写。
+5. 成年刑诉、证据法和一般治理材料只迁移问题化、竞说复原、桥梁检验等方法动作；实体结论须由少年司法证据重新证明。
+6. 对照成稿与所有核心来源，专门搜索高识别比喻、口号、反问、连续句式和单篇目录；发现时重写为功能表达或明确归属。
+
+## 11. 常见失败
+
+- 用“现状—问题—完善”把材料分三堆，章节之间没有命题依赖；
+- 摘要宣称一个强结论，正文只讨论邻近问题；
+- 以理论名称、作者声望、政策目标或文章数量代替推理；
+- 新概念不生成标准、规则、机制或边界；
+- 把地方样本、严重个案、技术可行或比较材料直接升级为全国规范结论；
+- 反方只有一句弱化概括，回应射程超过证据；
+- 引文串联，来源与结论之间缺少研究者自己的桥梁；
+- 段落只进不出，下一节重新开始另一个话题；
+- 用绝对句、宣传口号或精确数字掩盖证据不足；
+- 模仿单一作者、近似改写来源或照搬单篇数字结构；
+- 为宏观结构牺牲法定性、责任、证明、参与、支持和救济等少年司法底线。
+
+## 12. 成稿检查表
+
+### 结构
+
+- [ ] 每个一级、二级单元有局部问题、局部结论、输入和输出。
+- [ ] 章节关系已标为并列、累积、镜像、步骤或可选；没有把印刷顺序当推理顺序。
+- [ ] 删除或调换测试没有暴露可有可无的理论章、比较章或背景章。
+- [ ] 标题、摘要、引言、正文和结论逐项兑现。
+
+### 论证
+
+- [ ] 既有答案已按最强版本和有效域恢复。
+- [ ] 创新增量产生下游结果并承受硬反例。
+- [ ] 理论已转成中层命题、评价项和必要的制度动作。
+- [ ] 每个核心证明均有材料—结论桥梁、最强反方、回应射程和边界。
+- [ ] 规范输出已标明来源层级，解释论与立法论分开。
+
+### 证据与引注
+
+- [ ] 核心来源完整逐页阅读，法源时效和印刷页已核。
+- [ ] 描述、关联、机制、因果、结构推断和规范建议强度没有越级。
+- [ ] 引注贴近实际承担的命题，没有用脚注替代推理。
+- [ ] 交付物只含人类可读引注，没有裸 key。
+
+### 语言
+
+- [ ] 限定语具体指向样本、法域、时点、对象或证明能力。
+- [ ] 转折、过渡和小结都改变或交付论证任务，不是模板连接词。
+- [ ] 已删除宏大空话、无主体政策套话、宣传式结尾和没有依据的绝对句。
+
+### 原创性与少年司法边界
+
+- [ ] 作者分类、原则群、阶段链、理论组合和制度方案均保持归属。
+- [ ] 没有复制单篇目录、比喻、口号、数字组合、连续句式或近似改写。
+- [ ] 成年法材料只迁移方法；八项少年司法闸门和严重/低风险双向测试没有被成文要求冲掉。
+- [ ] 不存在主工作流列出的任一硬失败。
 """
 
 _WF_JJ_REVIEW = """# 工作流：综述（少年司法版）
@@ -527,6 +945,31 @@ _WF_DIVERGENCE = """# 工作流：跨学科发散与补文献（写作前，打�
 先广撒（③ 菜单尽量全）、再按判据收敛（④ 硬门槛克制），库内能核实就走 grounded、库外外文能联网核实就核实、不能核实只给检索线索——**打开视野，但绝不用编造的文献填空**。
 """
 
+_JJ_DRAFT_HANDBOOK_KEY = "rely/技能/参考手册/论文初稿（少年司法版）—成文技艺手册.md"
+
+# 顶层工作流 → 自动附带材料。键用顶层文件名，值用 _template_specs 的模板键。
+# 路径必须在调用时由 _template_specs 懒计算，不能在 import 时缓存绝对路径；
+# 隔离测试和用户数据目录切换都依赖 base_dir() 的实时结果。
+_WORKFLOW_COMPANION_KEYS = {
+    "论文初稿（少年司法版）.md": (_JJ_DRAFT_HANDBOOK_KEY,),
+}
+
+
+def workflow_companion_specs(workflow_name):
+    """返回指定顶层工作流应自动附带的模板规格，顺序稳定。
+
+    返回磁盘实际路径而不是模板正文，调用方必须读取用户当前文件；`.new.md` 只是待合并旁本，
+    不能在运行时偷偷替代主手册。
+    """
+    filename = Path(str(workflow_name or "")).name
+    if filename and not filename.endswith(".md"):
+        filename += ".md"
+    wanted = _WORKFLOW_COMPANION_KEYS.get(filename, ())
+    if not wanted:
+        return []
+    specs = {spec[0]: spec for spec in _template_specs()}
+    return [specs[key] for key in wanted if key in specs]
+
 
 def _rules_summary_text():
     """「AI 写综述遵守的规约」通俗摘要——放资料库供人类一眼看懂 AI 被约束成什么样；
@@ -608,7 +1051,8 @@ _FACTORY_HASHES = {
     "rely/README.md":                   {"8a596c19896e457c57437faa0d759049a319f16c",
                                              "b31c3884a02e6f21429f92856dea6b8bd4b3d23f",
                                              "d4345590a32767766515e21a9e376503efcefef2",
-                                             "994f3370bdee7a172fe538f09f49f60e08039457"},   # v4 任务/领域路由
+                                             "994f3370bdee7a172fe538f09f49f60e08039457",
+                                             "459f767e0b9861a5413d12a516017fb8474d6860"},   # v5 自动附带参考手册
     "rely/记忆/项目记忆.md":            {"3c8387860ad95913a602b87b9447bc80bf5a7403"},   # v1 2026-07-14
     "rely/记忆/变更日志.md":            {"4d9a267ca46f94ff7d257c8c7b9ac486ec15f1fc"},   # v1 2026-07-14
     "rely/交付模板/交付说明书模板.md":  {"ad22abdf9bfa208e19f761c42e4ddcceb93031a2"},   # v1 2026-07-14
@@ -618,7 +1062,8 @@ _FACTORY_HASHES = {
     "rely/技能/说明.md":                {"de19ded63470c2c7975a19eb0f012f14214b62a7",
                                              "33f52df5011ac84f49139577c2f67eaa162513c0",
                                              "9d6fda0eb3f9c2f2287035f4af10dcaf431aa585",
-                                             "39483ed6b1244c2c7432cbdbc1b0a8e4ede5b442"},   # v3 四研究 + 两支持
+                                             "39483ed6b1244c2c7432cbdbc1b0a8e4ede5b442",
+                                             "3a020266b1dcc65a1384323a01dccc21c7633eac"},   # v4 自动附带参考手册
     "rely/技能/写论文与综述.md":        {"5027f5d8e6c6837907e5ddbc294de7b2f10d5de3",
                                              "ee9f25dc732f19acc62a95094b9159669ef74326",
                                              "04951705502b6cced56dca9cca145ec64e01a876",
@@ -630,7 +1075,9 @@ _FACTORY_HASHES = {
     "rely/技能/论文初稿（少年司法版）.md": {"b2bc7584dba5803a7da155d875d503110a391841",
                                              "30e0d1af2a9fe9bfb8f50cdf0bcf3933fe2a86ec",
                                              "f5899bca17fdb867fa0f8eb961b3002df23ac696",
-                                             "b5cc328f23e1a82aaec6f98c5e00ded5f94cec92"},
+                                             "b5cc328f23e1a82aaec6f98c5e00ded5f94cec92",
+                                             "b432f520692d71409a73b1edb57253da003e902d"},
+    _JJ_DRAFT_HANDBOOK_KEY:                 {"a978fe29eaf7e474ff61df2650731d09085bcdc8"},
     "rely/技能/综述（少年司法版）.md":     {"67416c20a8e18100417c381b3c367fa3e8e56251",
                                              "03fc842fbe92f766fca610b43f994a00fc7ca2f3",
                                              "78813da32536db7a4400d2e4673958825bfe2fa2",
@@ -664,6 +1111,10 @@ _WORKFLOW_FACTORY_EXACT_HASHES = {
     "rely/技能/论文初稿（少年司法版）.md": {
         "cef90fa0caa5ecc9a114594f0aa4b42906127e74",
         "14bbdb70138279391a48afc0576af3db07d1b29a",
+        "f5e2bf5cc65a74bb2b29f500df9dd8317394d81c",
+    },
+    _JJ_DRAFT_HANDBOOK_KEY: {
+        "bf6404cc7ea7a99907c46dc8fd20e1999755ed2c",
     },
     "rely/技能/综述（少年司法版）.md": {
         "0fdc017f9a124b3e0080c143faa96317b34a7ac0",
@@ -723,6 +1174,8 @@ def _template_specs():
         ("rely/定时任务/说明.md",           tasks_dir() / "说明.md",                 _TASKS_README,         None, False),
         ("rely/技能/说明.md",               skills_dir() / "说明.md",                _SKILLS_README,        None, False),
         ("rely/技能/论文初稿（少年司法版）.md", skills_dir() / "论文初稿（少年司法版）.md", _WF_JJ_DRAFT,       None, False),
+        (_JJ_DRAFT_HANDBOOK_KEY,               handbooks_dir() / "论文初稿（少年司法版）—成文技艺手册.md",
+                                                     _JJ_DRAFT_CRAFT_HANDBOOK,        None, False),
         ("rely/技能/综述（少年司法版）.md",     skills_dir() / "综述（少年司法版）.md",     _WF_JJ_REVIEW,      None, False),
         ("rely/技能/论文初稿（通用暂用版）.md", skills_dir() / "论文初稿（通用暂用版）.md", _WF_GENERAL_DRAFT,  None, False),
         ("rely/技能/综述.md",                   skills_dir() / "综述.md",                   _WF_REVIEW,         None, False),
@@ -792,7 +1245,9 @@ def upgrade_status(include_ignored=False):
         if status == "current" or (status == "ignored" and not include_ignored):
             continue
         label = path.name
-        if key.startswith("rely/技能/"):
+        if key.startswith("rely/技能/参考手册/"):
+            label = "伴随手册 · " + path.stem
+        elif key.startswith("rely/技能/"):
             label = "工作流 · " + path.stem
         elif key == "rely/README.md":
             label = "专属资料库说明"
@@ -886,18 +1341,167 @@ def merge_template(key, current_hash, main_hash, merged_text):
     return str(backup)
 
 
+def _write_text_exclusively(path, text):
+    """仅在目标仍不存在时创建文本文件；并发创建的用户文件必须获胜。"""
+    try:
+        with path.open("x", encoding="utf-8") as f:
+            f.write(text)
+        return True
+    except FileExistsError:
+        return False
+
+
+def _automatic_upgrade_backup_path(path):
+    """为自动模板升级分配唯一、可恢复且不会进入工作流列表的旁路备份名。"""
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    for _ in range(100):
+        token = uuid.uuid4().hex[:12]
+        backup = path.with_name(
+            f"{path.stem}.user-backup-auto-upgrade-{stamp}-{token}{path.suffix}")
+        if not backup.exists():
+            return backup
+    raise FileExistsError(f"无法为 {path.name} 分配自动升级备份名")
+
+
+def _restore_upgrade_backup_if_missing(path, backup):
+    """升级中断时恢复主路径；并发出现的文件获胜，恢复动作绝不覆盖它。"""
+    if path.exists():
+        return True
+    try:
+        # 同目录硬链接是原子的：目标已被并发创建时只会报 EEXIST，不会覆盖。
+        os.link(backup, path)
+        return True
+    except FileExistsError:
+        return True
+    except OSError:
+        pass
+    if os.name == "nt":
+        try:
+            # Windows 的 os.rename 不覆盖既有目标；适用于不支持硬链接的 FAT/exFAT。
+            os.rename(backup, path)
+            return True
+        except FileExistsError:
+            return True
+        except OSError:
+            pass
+    try:
+        # 非 Windows 或原子回移不可用时，最后退回“读取备份 + 独占创建”。
+        return _write_text_exclusively(
+            path, backup.read_text(encoding="utf-8")) or path.exists()
+    except Exception:
+        return path.exists()
+
+
+def _capture_workflow_for_migration(path):
+    """把待迁移路径原子移进本次专用恢复目录，且永不复用一个既有目标。
+
+    不能继续使用 ``exists() -> rename()`` 选择可读保留名：POSIX 的 rename 会覆盖并发创建的
+    同名目标。这里先以 ``mkdir(exist_ok=False)`` 独占一个同目录、随机命名的私有恢复目录，
+    再把源文件移入该目录。目录不会被工作流的顶层 ``*.md`` 列表读到，也会永久保留，以承接
+    编辑器在改名后才落下的迟到保存。
+    """
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    for _ in range(100):
+        recovery_dir = path.parent / (
+            f".agent-ws-migration-backup-{stamp}-{uuid.uuid4().hex[:12]}")
+        try:
+            recovery_dir.mkdir(mode=0o700)
+        except FileExistsError:
+            continue
+        captured = recovery_dir / path.name
+        try:
+            path.rename(captured)
+        except Exception:
+            try:
+                recovery_dir.rmdir()
+            except Exception:
+                pass
+            raise
+        return captured
+    raise FileExistsError(f"无法为 {path.name} 分配迁移恢复目录")
+
+
+def _restore_migration_capture_if_missing(original, captured):
+    """迁移失败时恢复原路径；并发出现的原路径获胜，恢复绝不覆盖它。"""
+    if original.exists():
+        return True
+    try:
+        # 同目录硬链接既能独占创建，也能让后续经旧句柄写入 captured 的内容同步到恢复路径。
+        os.link(captured, original)
+        return True
+    except FileExistsError:
+        return True
+    except OSError:
+        pass
+    try:
+        return _write_text_exclusively(
+            original, captured.read_text(encoding="utf-8")) or original.exists()
+    except Exception:
+        return original.exists()
+
+
+def _preserve_migration_capture(original, captured, candidate_for_index):
+    """把已捕获工作流显式保留到首个空闲名字；任何并发目标都不得被覆盖。
+
+    优先使用硬链接，因而编辑器若仍握着改名前的文件句柄，其迟到保存会同时出现在显式保留件；
+    不支持硬链接的文件系统则用 ``open('x')`` 独占复制。无论哪条路径，私有恢复件都不删除。
+    返回显式保留路径；失败时尽力恢复原路径并返回 ``None``。
+    """
+    for index in range(1, 100):
+        keep = candidate_for_index(index)
+        try:
+            os.link(captured, keep)
+            return keep
+        except FileExistsError:
+            continue
+        except OSError:
+            pass
+        try:
+            text = captured.read_text(encoding="utf-8")
+            if _write_text_exclusively(keep, text):
+                return keep
+        except FileExistsError:
+            continue
+        except Exception:
+            _restore_migration_capture_if_missing(original, captured)
+            return None
+    _restore_migration_capture_if_missing(original, captured)
+    return None
+
+
+def _fork_current_template(path, current_text, hash_fn, cur_h):
+    """把当前出厂版写入新的旁本；任何已存在旁本都只读、绝不原地更新。"""
+    for i in range(1, 100):
+        newp = path.with_name(
+            path.stem + ".new" + path.suffix if i == 1
+            else f"{path.stem}.new.{i}{path.suffix}")
+        try:
+            existing = newp.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            if not _write_text_exclusively(newp, current_text):
+                continue
+            print(f"[agent_ws] 「{path.name}」你改过，已原样保留；新版出厂模板另存为「{newp.name}」，"
+                  f"可对照合并（用不上就直接删掉 {newp.name}）", file=sys.stderr, flush=True)
+            return "forked"
+        except Exception:
+            continue
+        if hash_fn(existing) == cur_h:
+            return "kept"                                  # 当前版旁本已经存在
+        # 即使它仍是某个历史出厂旁本，也可能在本次读取后被用户保存；绝不原地更新。
+    return "kept"                                          # 攒满旁本时不再刷文件
+
+
 def _ensure_template(path, current_text, factory_hashes, mask=None, seed=False, key=None):
     """出厂模板的幂等落盘 + 升级。返回 created|current|upgraded|kept|forked|error（仅供测试/日志，调用方可忽略）。
 
-    绝不丢用户内容 —— **覆盖一个已存在的文件，当且仅当它与某个历史出厂版一字不差**（= 用户没碰过）。
-    这条规矩对**主文件和 .new.md 旁本一视同仁**：旁本被改过，就另起名字（.new.2.md…），不覆盖。
-    （历史 bug：旁本曾经是无条件覆盖的 —— 提示语请用户「对照合并」，用户就在旁本里写笔记，
-      然后下一次启动/下一次 agent 连 MCP，笔记就被出厂原文静默盖掉。而那时这行 docstring
-      还宣称「唯一会覆盖的分支是一字不差」，把读代码的人也一起骗了。）"""
+    绝不丢用户内容：
+    - 历史出厂主文件先原子移到 `.user-backup-auto-upgrade-*`，再独占创建新版；校验后并发保存的
+      内容会留在主文件或该备份中，不再对已存在路径直接 write_text。
+    - 任何已存在的 `.new.md` 旁本都只读；需要新版时递增创建 `.new.2.md`，绝不原地更新。
+    （历史 bug：主文件和旁本都曾在“读取校验通过”后直接写回；检查与写入之间仍可能撞上用户保存。）"""
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        if not path.exists():
-            path.write_text(current_text, encoding="utf-8")
+        if _write_text_exclusively(path, current_text):
             return "created"
         old = path.read_text(encoding="utf-8")
         hash_fn = (lambda value: _template_hash(key, value, mask)) if key else (
@@ -906,35 +1510,69 @@ def _ensure_template(path, current_text, factory_hashes, mask=None, seed=False, 
         if old_h == cur_h:
             return "current"                                   # 已是最新：一个字节都别写
         if old_h in factory_hashes:
-            path.write_text(current_text, encoding="utf-8")    # 历史出厂原样、用户没改过 → 静默升级
-            return "upgraded"
+            # 不能在“读出厂版 → 直接写新版”之间留下竞态窗口。先把现有名字原子让给
+            # 一个不会进入工作流列表的恢复备份，再用独占创建写新版；备份不自动删除，
+            # 因为某些编辑器可能仍握着旧文件句柄，并在改名后才把用户内容写进去。
+            backup = _automatic_upgrade_backup_path(path)
+            try:
+                path.rename(backup)
+            except (FileNotFoundError, FileExistsError, PermissionError, OSError):
+                # 路径可能已被用户/另一进程改写、移走或锁住。此时不碰主文件，只另存新版。
+                try:
+                    if hash_fn(path.read_text(encoding="utf-8")) == cur_h:
+                        return "current"
+                except Exception:
+                    if _write_text_exclusively(path, current_text):
+                        return "upgraded"
+                if seed:
+                    return "kept"
+                return _fork_current_template(path, current_text, hash_fn, cur_h)
+
+            try:
+                moved = backup.read_text(encoding="utf-8")
+                moved_h = hash_fn(moved)
+                if moved_h != old_h:
+                    # 用户恰好在初次校验后、改名完成前保存：把其内容优先恢复为主文件。
+                    restored = _write_text_exclusively(path, moved)
+                    if not restored:
+                        # 另一升级进程可能已放入当前出厂版；若仍能原子移走，就给用户内容让位。
+                        try:
+                            live_h = hash_fn(path.read_text(encoding="utf-8"))
+                        except Exception:
+                            live_h = None
+                        if live_h == cur_h:
+                            live_backup = _automatic_upgrade_backup_path(path)
+                            try:
+                                path.rename(live_backup)
+                            except (FileNotFoundError, FileExistsError, PermissionError, OSError):
+                                pass
+                            else:
+                                _write_text_exclusively(path, moved)
+                    if seed:
+                        return "kept"
+                    return _fork_current_template(path, current_text, hash_fn, cur_h)
+
+                if _write_text_exclusively(path, current_text):
+                    return "upgraded"
+                # 并发创建者获胜：若它已放入当前版，升级已完成；否则保留它并另存新版。
+                try:
+                    if hash_fn(path.read_text(encoding="utf-8")) == cur_h:
+                        return "upgraded"
+                except Exception:
+                    pass
+                if seed:
+                    return "kept"
+                return _fork_current_template(path, current_text, hash_fn, cur_h)
+            except Exception:
+                # 改名已经成功，后续读取/创建失败时必须先恢复主路径；备份仍保留供人工恢复。
+                _restore_upgrade_backup_if_missing(path, backup)
+                return "error"
         if seed:
             return "kept"                                      # 用户数据种子：写过了就是他的东西，安静走开
 
         # 用户改过主文件 → 保留主文件，新版出厂模板另存为旁本。
-        # ⚠️ 旁本**也是用户的东西**：提示语让他「对照合并」，他就很可能直接在旁本里做合并笔记。
-        #    老代码在这里无条件 write_text，等于每次启动都把他的笔记盖回出厂原文（静默、无备份）。
-        #    现在：旁本一旦被改过，就换个不冲突的名字放新版，绝不覆盖。
-        newp = path.with_name(path.stem + ".new" + path.suffix)   # 综述.md → 综述.new.md
-        if newp.exists():
-            new_h = hash_fn(newp.read_text(encoding="utf-8"))
-            if new_h == cur_h:
-                return "kept"                                  # 旁本已是这一版：别重复写、更别每次启动刷屏
-            if new_h not in factory_hashes:                     # 旁本被用户改过 → 另起一个名字
-                for i in range(2, 100):
-                    alt = path.with_name(f"{path.stem}.new.{i}{path.suffix}")
-                    if not alt.exists():
-                        newp = alt
-                        break
-                    if hash_fn(alt.read_text(encoding="utf-8")) == cur_h:
-                        return "kept"                          # 这一版的旁本已经躺在那儿了
-                else:
-                    return "kept"                              # 攒了 98 个没合并的旁本？别再刷了。
-            # else：旁本还是某个历史出厂版（用户没碰过它）→ 直接换成新版，安全。
-        newp.write_text(current_text, encoding="utf-8")
-        print(f"[agent_ws] 「{path.name}」你改过，已原样保留；新版出厂模板另存为「{newp.name}」，"
-              f"可对照合并（用不上就直接删掉 {newp.name}）", file=sys.stderr, flush=True)
-        return "forked"
+        # 旁本也是用户可能直接编辑的文件；无论它像不像历史出厂版，都不再原地更新。
+        return _fork_current_template(path, current_text, hash_fn, cur_h)
     except Exception:
         return "error"                                         # 落模板绝不阻断主流程
 
@@ -950,22 +1588,32 @@ _LEGACY_WF_HASHES = {
 def _migrate_legacy_workflow():
     """旧版把「写论文」和「维护 wiki」两条流程塞在一个 技能/工作流.md 里。现拆成一文件一工作流。
        因缺少保留空白的历史指纹，任何旧文件都改名保留，请用户按需并入；永不静默删除。"""
+    captured = None
     try:
         old = skills_dir() / "工作流.md"
         if not old.exists():
             return "absent"
-        txt = old.read_text(encoding="utf-8")
+        # 先把源路径原子移入私有恢复目录。之后无论显式保留件创建成功与否，均不再 unlink 源路径；
+        # 编辑器迟到保存会落在恢复件，原路径被并发重建时也由用户文件获胜。
+        captured = _capture_workflow_for_migration(old)
+        txt = captured.read_text(encoding="utf-8")
         label = "旧出厂参考" if _norm_hash(txt) in _LEGACY_WF_HASHES else "你改过的"
-        keep = skills_dir() / f"工作流({label}·请并入对应新文件).md"
-        i = 2
-        while keep.exists():
-            keep = skills_dir() / f"工作流({label}·请并入对应新文件).{i}.md"
-            i += 1
-        old.rename(keep)
-        print(f"[agent_ws] 旧 技能/工作流.md 已原样保留为 {keep.name}，请按需并入对应新工作流",
+        keep = _preserve_migration_capture(
+            old,
+            captured,
+            lambda i: skills_dir() / (
+                f"工作流({label}·请并入对应新文件).md" if i == 1
+                else f"工作流({label}·请并入对应新文件).{i}.md"),
+        )
+        if keep is None:
+            return "error"
+        print(f"[agent_ws] 旧 技能/工作流.md 已原样保留为 {keep.name}，"
+              f"迁移恢复件在「{captured}」；请按需并入对应新工作流",
               file=sys.stderr, flush=True)
         return "preserved"
     except Exception:
+        if captured is not None:
+            _restore_migration_capture_if_missing(old, captured)
         return "error"
 
 
@@ -990,32 +1638,28 @@ def _migrate_combined_paper_workflow():
     """把旧「写论文与综述.md」安全迁入新的通用「综述.md」。
 
     历史出厂原样（必须命中保留空白的 exact 指纹）：
-    - 目标不存在时原子写入新的通用综述，再移除可重建的旧出厂副本。
-    - 目标已经存在时删除这份可重建的旧出厂副本。
+    - 目标不存在时独占写入新的通用综述，再移除旧入口；私有恢复件继续保留。
+    - 目标已经存在时只移除旧入口，既有目标和私有恢复件均不覆盖。
 
     用户改过：
-    - 无论目标是否存在，都改名为明确的保留件；绝不覆盖、删除或把它误当成出厂模板。
+    - 无论目标是否存在，都独占生成明确的保留件并留下私有恢复件；绝不覆盖、删除或误判。
     """
-    def preserve(old_path):
-        keep = skills_dir() / "写论文与综述(你改过的·请并入综述或通用初稿).md"
-        i = 2
-        while keep.exists():
-            keep = skills_dir() / f"写论文与综述(你改过的·请并入综述或通用初稿).{i}.md"
-            i += 1
-        old_path.rename(keep)
-        print(f"[agent_ws] 你改过的「写论文与综述.md」已原样保留为「{keep.name}」",
+    def preserve(original, captured):
+        keep = _preserve_migration_capture(
+            original,
+            captured,
+            lambda i: skills_dir() / (
+                "写论文与综述(你改过的·请并入综述或通用初稿).md" if i == 1
+                else f"写论文与综述(你改过的·请并入综述或通用初稿).{i}.md"),
+        )
+        if keep is None:
+            return "error"
+        print(f"[agent_ws] 你改过的「写论文与综述.md」已原样保留为「{keep.name}」；"
+              f"迁移恢复件在「{captured}」",
               file=sys.stderr, flush=True)
         return "custom_preserved"
 
-    def create_target_exclusively(path, text):
-        """只在目标仍不存在时创建；并发新建的用户文件必须获胜，绝不被迁移覆盖。"""
-        try:
-            with path.open("x", encoding="utf-8") as f:
-                f.write(text)
-            return True
-        except FileExistsError:
-            return False
-
+    captured = None
     try:
         old = skills_dir() / "写论文与综述.md"
         if not old.exists():
@@ -1023,34 +1667,40 @@ def _migrate_combined_paper_workflow():
         target = skills_dir() / "综述.md"
         old_text = old.read_text(encoding="utf-8")
         old_exact = _exact_hash(old_text)
+        # 捕获先于任何删除式操作。即使编辑器在上面的校验刚结束后才保存，内容也会被原子移入
+        # 私有恢复件；该恢复件永不删除，且不会出现在顶层工作流列表。
+        captured = _capture_workflow_for_migration(old)
+        try:
+            captured_exact = _exact_hash(captured.read_text(encoding="utf-8"))
+        except Exception:
+            _restore_migration_capture_if_missing(old, captured)
+            return "error"
         if old_exact in _LEGACY_COMBINED_PAPER_EXACT_HASHES:
+            if captured_exact != old_exact:
+                return preserve(old, captured)
             if target.exists() and not target.is_file():
-                return preserve(old)
+                return preserve(old, captured)
             if target.exists():
-                if _exact_hash(old.read_text(encoding="utf-8")) != old_exact:
-                    return preserve(old)
-                old.unlink()
-                print("[agent_ws] 已移除可重建的旧出厂「写论文与综述.md」；现使用「综述.md」",
+                print(f"[agent_ws] 已将旧出厂「写论文与综述.md」移出顶层；现使用「综述.md」。"
+                      f"恢复件保留在「{captured}」",
                       file=sys.stderr, flush=True)
                 return "factory_removed"
-            if not create_target_exclusively(target, _WF_REVIEW):
+            if not _write_text_exclusively(target, _WF_REVIEW):
                 if not target.is_file():
-                    return preserve(old)
-                if _exact_hash(old.read_text(encoding="utf-8")) != old_exact:
-                    return preserve(old)
-                old.unlink()
-                print("[agent_ws] 迁移期间已出现「综述.md」；已保留该文件并移除可重建的旧出厂工作流",
+                    return preserve(old, captured)
+                print(f"[agent_ws] 迁移期间已出现「综述.md」；已保留该文件。"
+                      f"旧工作流恢复件保留在「{captured}」",
                       file=sys.stderr, flush=True)
                 return "factory_removed"
-            if _exact_hash(old.read_text(encoding="utf-8")) != old_exact:
-                return preserve(old)
-            old.unlink()
-            print("[agent_ws] 旧出厂「写论文与综述.md」已安全迁入「综述.md」",
+            print(f"[agent_ws] 旧出厂「写论文与综述.md」已安全迁入「综述.md」；"
+                  f"恢复件保留在「{captured}」",
                   file=sys.stderr, flush=True)
             return "factory_renamed"
 
-        return preserve(old)
+        return preserve(old, captured)
     except Exception:
+        if captured is not None:
+            _restore_migration_capture_if_missing(old, captured)
         return "error"
 
 
@@ -1078,7 +1728,7 @@ def ensure_scaffold():
     acts = {}
     try:
         for d in (output_dir(), output_dir() / "定时任务", rely_dir(),
-                  memory_dir(), skills_dir(), formats_dir(), templates_dir(), tasks_dir()):
+                  memory_dir(), skills_dir(), handbooks_dir(), formats_dir(), templates_dir(), tasks_dir()):
             try:
                 d.mkdir(parents=True, exist_ok=True)
             except Exception:
@@ -1102,6 +1752,7 @@ def paths_info():
         "rely_dir": str(rely_dir()),
         "memory_file": str(memory_dir() / "项目记忆.md"),
         "skills_dir": str(skills_dir()),
+        "handbooks_dir": str(handbooks_dir()),
         "formats_dir": str(formats_dir()),
         "templates_dir": str(templates_dir()),
         "tasks_dir": str(tasks_dir()),

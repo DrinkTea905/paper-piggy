@@ -41,7 +41,8 @@
 
 | 你改了 | 必须同步 | 校验 |
 |---|---|---|
-| `_WF_JJ_DRAFT` / `_WF_JJ_REVIEW` / `_WF_GENERAL_DRAFT` / `_WF_REVIEW` / `_WF_WIKI` / `_WF_DIVERGENCE` —— 六个内置工作流 | ① 改完模板必须跑 `python agent_ws.py --print-hashes`，把新 normalized hash 追加进 `_FACTORY_HASHES`，并把新 exact hash 追加进 `_WORKFLOW_FACTORY_EXACT_HASHES`（两表旧值都不删，见 §2.1）② 保留每份工作流的“触发条件 / 开工前检查 / 用户决策点 / 完成标准 / 最终报告”五段强制契约 ③ `index.html` 第 3 章的工作流卡 ④ `_SKILLS_README` 里列出的工作流清单 ⑤ 四条研究工作流保持“任务类型 → 研究领域”路由，少年司法初稿保留双卡与用户选择闸门，通用初稿保留“尚未经过其他部门法训练验证”警告 | ✅ check_guides ③ + ④b |
+| `_WF_JJ_DRAFT` / `_WF_JJ_REVIEW` / `_WF_GENERAL_DRAFT` / `_WF_REVIEW` / `_WF_WIKI` / `_WF_DIVERGENCE` —— 六个内置工作流 | ① 改完模板必须跑 `python agent_ws.py --print-hashes`，把新 normalized hash 追加进 `_FACTORY_HASHES`，并把新 exact hash 追加进 `_WORKFLOW_FACTORY_EXACT_HASHES`（两表旧值都不删，见 §2.1）② 保留每份工作流的“触发条件 / 开工前检查 / 用户决策点 / 完成标准 / 最终报告”五段强制契约 ③ `index.html` 第 3 章的工作流卡 ④ `_SKILLS_README` 里列出的工作流清单 ⑤ 四条研究工作流保持“任务类型 → 研究领域”路由，少年司法初稿保留双卡、两个用户闸门和自动附带手册，通用初稿保留“尚未经过其他部门法训练验证”警告 | ✅ check_guides ③ + ④b |
+| `_JJ_DRAFT_CRAFT_HANDBOOK` 或 `_WORKFLOW_COMPANION_KEYS` —— 非顶层伴随材料 | 手册物理落点固定在 `技能/参考手册/` 子目录，常量不得以 `_WF_` 命名，也不得列进 `## 现有工作流`；`read_workflow` 必须读取磁盘上的用户当前手册，不读代码常量或 `.new.md`。手册和工作流一样登记 normalized 与 exact 历史指纹、保护 Markdown 空白与用户修改；同步 `_SKILLS_README` 的独立“自动附带”小节、产品内说明和读取契约测试 | ✅ check_guides ③ + ④b；`test_mcp_contract.py` |
 | 新建、重训或从素材蒸馏专题工作流 | 先完整读取 `docs/设计/专题工作流训练方法.md`；区分“领域 × 任务类型”，先冻结语言、地区、类型、期刊等级和全文等素材准入条件，再以原文精读、子代理复核/对抗和规则裁决形成候选工作流。同一任务只有方法路线不同时优先做内部路线与用户选择卡，不滥增顶层工作流。训练记录留在设计文档，运行时模板只保留执行步骤、闸门和失败警告；默认不调用付费模型，也不把匿名 A/B 当作常规步骤 | ❌ 人工；候选工作流落地后仍须执行本表其余校验 |
 | `_ROOT_AGENTS` / `_ROOT_CLAUDE` —— Agent 工作区根入口 | 两份内容都要保持“先读取匹配工作流、维护即全量审查、完成后复核总结”的同一口径；同步追加模板 hash；新增 home 级文件要落入 `backup.CORE_IN_HOME` | ✅ check_guides ④b；备份归类仍需人读 |
 | `_README_RELY`(:58) / `_README_OUTPUT`(:81) | 同样要追加 hash（否则老用户凭空多出 `.new.md`）；`#ag-guide` 对应章节 | ✅ check_guides ④b（散文正文仍需人读） |
@@ -76,7 +77,7 @@
 |---|---|---|
 | 全类型文献评价、客观标签或四档映射 | `source_rules.py` + `grading_svc.py` + `journal_grading/`；同步检索/浏览/单篇详情/wiki 来源/MCP 契约与库总览，跑 `test_source_grading*.py` 和 `journal_grading/selftest.py`。新增目录还要登记 `catalog_registry.py` 的来源、上游版本、检查日期 | ✅ 单测 + selftest；UI 文案人肉 |
 | 文献页查找与来源筛选 | `server.py /papers(query, source_type, objective_label)` + `mcp_server.py list_sources.source_type` + 文献页题录查找、十二类性质和动态客观标签；分类/状态/排序/分页组合必须一起测 | ✅ `test_source_grading_api.py`；UI 组合人肉 |
-| Agent 工作流或出厂定时任务 | 修改 `agent_ws._WF_*` / 任务模板后，同步 `_template_specs()`，运行 `agent_ws.py --print-hashes`；普通模板把新 normalized hash 追加到 `_FACTORY_HASHES`，工作流还须把 exact hash 追加到 `_WORKFLOW_FACTORY_EXACT_HASHES`（旧值不删） | ✅ 模板 hash 构建检查 |
+| Agent 工作流、伴随手册或出厂定时任务 | 修改 `agent_ws._WF_*`、伴随手册或任务模板后，同步 `_template_specs()`，运行 `agent_ws.py --print-hashes`；普通模板把新 normalized hash 追加到 `_FACTORY_HASHES`，工作流和伴随手册还须把 exact hash 追加到 `_WORKFLOW_FACTORY_EXACT_HASHES`（旧值不删） | ✅ 模板 hash 构建检查 |
 | `upgrade_health._IMPLEMENTATION_GROUPS` 内任一索引实现文件 | 先判断题录、切块或向量产物语义是否变化。兼容改动：把新实现指纹和理由登记到当前 `_AUDITED_IMPLEMENTATIONS`；不兼容改动：提升 `CURRENT_INDEX_CONTRACTS` 对应 id，并补迁移、提示和重建/增量测试。禁止用文件哈希直接决定用户是否重建 | ✅ check_guides ⑨ + `test_maintenance.py` |
 | 依赖 | `requirements.txt` **和** `requirements.lock` 同时改；同步 `THIRD-PARTY-NOTICES.md` 并核许可证；分发包需要重建 `build/py312`。含新依赖的首版必须走完整安装器，应用内 app 增量包不会补 Python wheel。⚠️ 平台专属包用标记：Windows-only 加 `; sys_platform=="win32"`（如 `pythonnet`），macOS-only 加 `; sys_platform=="darwin"`（如 `pyobjc-*`）。`.lock` 是 Windows 实机冻结，**macOS 用 `.txt` 不用 `.lock`** | ❌ |
 | 版本号 | **只改 `config.APP_VERSION`**(`config.py:19`) | ✅ check_guides ⑤（断言全源码没有第二处版本字面量） |
@@ -102,22 +103,30 @@
 「功能变更 → 指引同步」这条链上最后一环是断的。
 
 **现在的实现**（`agent_ws.py` 的 `_FACTORY_HASHES` / `_WORKFLOW_FACTORY_EXACT_HASHES` + `_template_specs()` + `_ensure_template()`）：
-普通 Agent 模板沿用历史 normalized-sha1；工作流另外保存仅统一换行符、保留缩进/行尾空格/空行的 exact-sha1。工作流只有命中 exact 历史指纹才允许静默覆盖；normalized 只保留版本识别兼容性，不能单独授权删除或覆盖。`ensure_scaffold()` 逐份比对磁盘文件：
+普通 Agent 模板沿用历史 normalized-sha1；工作流及其自动附带手册另外保存仅统一换行符、保留缩进/行尾空格/空行的 exact-sha1。工作流和手册只有命中 exact 历史指纹才允许静默覆盖；normalized 只保留版本识别兼容性，不能单独授权删除或覆盖。`ensure_scaffold()` 逐份比对磁盘文件：
 
 - 文件不存在 → `created`
 - 与**当前**模板一字不差 → `current`（一个字节都不写）
-- 命中**历史**出厂版 → 用户没动过 → `upgraded`（静默换成新版）
+- 命中**历史**出厂版 → 用户没动过 → `upgraded`（旧件先原子移入
+  `.user-backup-auto-upgrade-*` 恢复备份，再独占创建新版）
 - 谁都不像 → 用户改过 → `forked`：**保留用户的文件**，旁边写一份 `<名>.new.md` 供合并
 - 「项目记忆.md / 变更日志.md」这类**用户数据种子**被写过 → `kept`（不塞 .new.md）
 
 旧 `写论文与综述.md` 拆分时还多一道迁移保护：命中从真实 git 历史正文复算的 exact hash 才能自动迁入新的 `综述.md` 并升级；
-用户改过的旧文件会改名原样保留，供人工并入 `综述.md` 或 `论文初稿（通用暂用版）.md`；目标文件已经存在时不得覆盖。
+迁移前先将旧入口原子移入 `.agent-ws-migration-backup-*` 私有恢复目录，恢复件永久保留且不进入顶层工作流列表；
+用户改过的旧文件再从恢复件生成可见保留件，供人工并入 `综述.md` 或 `论文初稿（通用暂用版）.md`。
+可见保留件使用硬链接优先、独占复制回退，POSIX 下也不得覆盖并发创建的同名目标；目标 `综述.md` 已存在时不得覆盖，
+最终 exact 校验后的迟到保存不得再经 `unlink` 删除。
 更早的 `工作流.md` 只留下 normalized 指纹、无法证明 Markdown 空白未改，因此现在一律改名保留，不再自动删除。
 
 此前 `forked` 只有终端日志，用户看不到。现在 `upgrade_health.py` 把 Agent 模板与 `WIKI.md` 汇总到 Agent 页：
 可查看统一差异、复制一份带路径与保护规则的合并任务给 Agent、对当前版本停止提醒，或在自动留
 `user-backup` 后直接采用新版。MCP 初始化也会把待合并项告诉外部 Agent，禁止它擅自覆盖。
-旁本若被用户写过，继续用 `.new.2.md` 递增，绝不覆盖合并笔记。
+任何已存在旁本——即使仍与历史出厂版相同——都只读不改；新版继续用 `.new.2.md` 递增，绝不覆盖合并笔记。
+主文件和新旁本的首次落盘都使用独占创建；历史出厂主文件升级前先原子移入自动恢复备份，且该备份不自动删除，
+以承接编辑器在改名后才完成的迟到保存。改名后的读取或创建若失败，升级器必须先以硬链接或独占创建恢复主路径，
+不得只留下被列表过滤的备份。若用户或另一进程在检查期间并发创建或保存同名文件，用户文件优先，
+出厂版改存受保护的旁本；回归测试必须同时覆盖“校验后保存主文件”和“历史旁本并发保存”两个窗口。
 
 > ⚠️ **维护 SOP（改模板必做）**：改完任何模板文本后跑
 > `build\py312\python.exe src\agent_ws.py --print-hashes`，

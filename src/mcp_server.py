@@ -350,7 +350,7 @@ TOOLS = [
     },
     {
         "name": "read_workflow",
-        "description": "读取指定工作流全文。开始写作、维护或跨学科发散前必须先读匹配工作流并照完成标准执行。",
+        "description": "读取指定工作流全文，并自动附带该工作流登记的参考手册。开始写作、维护或跨学科发散前必须先读匹配工作流并照完成标准执行。",
         "inputSchema": {"type": "object", "properties": {
             "name": {"type": "string", "description": "工作流文件名或名称，如 论文初稿（少年司法版） / 综述 / 维护综述库"}},
             "required": ["name"]},
@@ -1150,7 +1150,22 @@ def do_tool(name, args):
             hits = [p for p in files if wanted and wanted in p.stem]
         if len(hits) != 1:
             return "未找到唯一匹配的工作流；请先调 list_workflows。"
-        return f"工作流文件：{hits[0]}\n\n" + hits[0].read_text(encoding="utf-8")
+        workflow = hits[0]
+        out = [f"工作流文件：{workflow}", "", workflow.read_text(encoding="utf-8")]
+        for _key, path, _text, _mask, _seed in AW.workflow_companion_specs(workflow.name):
+            out.extend([
+                "",
+                "---",
+                "",
+                f"自动附带参考手册：{path}",
+                "本手册不是独立工作流；主工作流的路线、人工闸门、证据要求和完成标准优先。",
+                "",
+            ])
+            try:
+                out.append(path.read_text(encoding="utf-8"))
+            except Exception as e:
+                out.append(f"【自动附带失败】应读取该手册但无法打开：{type(e).__name__}: {e}")
+        return "\n".join(out)
     if name == "maintenance_audit":
         if not ensure_up():
             return "错误：知识库服务启动失败。"

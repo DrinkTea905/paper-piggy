@@ -71,6 +71,35 @@ class AgentOutputTests(unittest.TestCase):
         self.assertIn("严重案件", body)
         self.assertIn("低风险", body)
 
+    def test_juvenile_draft_v2_has_craft_contract_and_companion_handbook(self):
+        body = AW._WF_JJ_DRAFT
+        for phrase in (
+            "写作设计单", "问题切入与创新诊断", "理论选择与操作化",
+            "路线内结构原型推荐", "章节功能表", "第二人工闸门",
+            "分节论证契约", "正文起草顺序", "首尾兑现", "五轮独立修改",
+        ):
+            self.assertIn(phrase, body)
+        for revision in ("结构轮", "论证轮", "证据与引注轮", "语言轮", "原创性轮"):
+            self.assertIn(revision, body)
+        self.assertIn("自动附带", body)
+        self.assertIn("不得改写本文件的路线、两个人工闸门", body)
+
+        manual = AW._JJ_DRAFT_CRAFT_HANDBOOK
+        for phrase in (
+            "教义学路线", "理论—制度建构路线", "问题切入与创新",
+            "理论选择与操作化", "争点与论证方法矩阵", "章节功能",
+            "分节与段落动作", "标题、摘要、引言与结论",
+            "功能性中性法学表达", "常见失败", "成稿检查表",
+            "负例（自拟）", "正例（自拟）", "2 万字",
+            "425—975 字", "7—15 句", "引注",
+        ):
+            self.assertIn(phrase, manual)
+        for heading in ("## 触发条件", "## 开工前检查", "## 用户决策点", "## 完成标准", "## 最终报告"):
+            self.assertNotIn(heading, manual)
+        companions = AW.workflow_companion_specs("论文初稿（少年司法版）")
+        self.assertEqual(1, len(companions))
+        self.assertEqual(AW._JJ_DRAFT_HANDBOOK_KEY, companions[0][0])
+
     def test_juvenile_review_has_reproducible_log_and_numeric_recalculation(self):
         body = AW._WF_JJ_REVIEW
         for field in (

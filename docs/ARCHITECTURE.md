@@ -308,7 +308,9 @@ light 模式走 `search_light`（`retriever.py:547`）：只有 bm25_meta + `_ap
 
 ### 6.1 `agent_ws.py`——两个人类可读的文件夹
 
-`ensure_scaffold()` 在 server 启动时幂等创建并升级出厂模板。未改过的历史出厂版静默升级；用户改过的文件原样保留并生成 `.new.md` 旁本；合并写回前会留 `user-backup`，不会无提示覆盖用户定制：
+`ensure_scaffold()` 在 server 启动时幂等创建并升级出厂模板。未改过的历史出厂版先原子移入
+`.user-backup-auto-upgrade-*` 恢复备份，再独占创建新版；用户改过的文件原样保留并生成 `.new.md` 旁本；
+合并写回前也会留 `user-backup`，不会无提示覆盖用户定制：
 
 ```
 AGENTS.md / CLAUDE.md          # Agent 根入口：强制先读匹配工作流
@@ -321,6 +323,7 @@ AGENTS.md / CLAUDE.md          # Agent 根入口：强制先读匹配工作流
   记忆/  项目记忆.md（当前真相）、变更日志.md（只增不改）
   技能/  说明.md、论文初稿（少年司法版）.md、综述（少年司法版）.md
          论文初稿（通用暂用版）.md、综述.md、维护综述库.md、跨学科发散与补文献.md
+         参考手册/论文初稿（少年司法版）—成文技艺手册.md（读取主工作流时自动附带）
   参考格式/ 说明.md
   交付模板/ 交付说明书模板.md
   定时任务/ 说明.md
@@ -336,12 +339,22 @@ AGENTS.md / CLAUDE.md          # Agent 根入口：强制先读匹配工作流
 一个工作流一个 `.md`，agent 中立（Claude Code / Codex 都是读文件夹）。
 六份工作流都有“触发条件 / 开工前检查 / 用户决策点 / 完成标准 / 最终报告”强制契约；根入口与 MCP 初始化指令要求 Agent
 先按任务类型、再按研究领域路由，命中后先读后做。少年司法论文初稿默认先提交“教义学 / 理论—制度建构”两张完整方案卡，
-用户选定前不得起草全文；通用初稿会明确提示“尚未经过其他部门法训练验证”。“维护”仍进入统一全量审查，不能把只列待办当作完成。
+用户选定前不得起草全文；选路后还要经过带章节功能表的第二提纲闸门。详细结构原型、篇幅参考、论证动作和法学表达存于
+`技能/参考手册/论文初稿（少年司法版）—成文技艺手册.md`，由 `read_workflow` 自动附带实际磁盘版本。手册位于子目录、
+常量不以 `_WF_` 命名，因此不进入六条顶层工作流列表；主工作流的路线、人工闸门和可靠性要求优先。通用初稿会明确提示
+“尚未经过其他部门法训练验证”。“维护”仍进入统一全量审查，不能把只列待办当作完成。
 
 旧版单文件 `技能/工作流.md` 仍由 `_migrate_legacy_workflow()` 迁移；旧 `技能/写论文与综述.md` 由
-`_migrate_combined_paper_workflow()` 安全迁入 `综述.md`。历史出厂原文可静默升级，用户修改版则改名保留，
-不会删除或覆盖。normalized 历史 hash 继续保存在 `_FACTORY_HASHES`；工作流的覆盖、删除与并发校验只认
-保留 Markdown 空白语义的 `_WORKFLOW_FACTORY_EXACT_HASHES`。更早的 `工作流.md` 因无 exact 历史正文而一律改名保留。
+`_migrate_combined_paper_workflow()` 安全迁入 `综述.md`。迁移先把旧入口原子移进同目录的
+`.agent-ws-migration-backup-*` 私有恢复目录；目录永久保留但不会被顶层 `*.md` 工作流列表读到。
+历史出厂原文可静默升级；用户修改版从恢复件生成可见保留件。保留名采用硬链接优先、独占复制回退，
+POSIX 下也不会以 `rename` 覆盖并发出现的同名文件；最终校验后的迟到保存会留在恢复件，不再被删除。
+normalized 历史 hash 继续保存在 `_FACTORY_HASHES`；工作流的覆盖、删除与并发校验只认
+保留 Markdown 空白语义的 `_WORKFLOW_FACTORY_EXACT_HASHES`；自动附带手册也同时登记 normalized 与 exact 指纹并使用相同保护。
+普通模板和 `.new.md` 旁本的首次创建采用独占创建，并发出现的用户文件优先。任何已经存在的旁本都只读不改，
+新版递增写入 `.new.2.md`；自动升级备份不删除，以保存发生在校验之后或原子改名之后的迟到写入。
+若改名后的备份读取或新版创建失败，事务会在不覆盖并发文件的前提下恢复主路径，避免工作流在列表和读取阶段消失。
+更早的 `工作流.md` 因无 exact 历史正文而一律改名保留。
 
 **定时任务**：应用**不执行**任务（`agent_ws._TASKS_README` 明说「本应用不执行任务」）——只登记/展示，定时触发由 agent 自己的调度器（如 Claude Code 的 scheduled-tasks）负责。
 server 侧 `GET /agent/tasks` 解析 `任务.md` 的 frontmatter，`GET /agent/outputs` 列最近交付物。
@@ -351,7 +364,7 @@ server 侧 `GET /agent/tasks` 解析 `任务.md` 的 frontmatter，`GET /agent/o
 零第三方依赖（纯 stdlib + requests，不装 `mcp` 包，`mcp_server.py:4`）。stdio + newline-delimited JSON-RPC 2.0。
 
 - **TOOLS 数量以 `len(TOOLS)` 为准**。分派在 `do_tool()`，绝大多数是对 server HTTP 端点的薄封装；除原有检索、索引、Wiki、研究和记忆工具外，还包括：
-  `list_workflows / read_workflow`（强制工作流入口）、`maintenance_audit`（统一全量体检）、
+  `list_workflows / read_workflow`（强制工作流入口；读取少年司法初稿时自动附带成文技艺手册）、`maintenance_audit`（统一全量体检）、
   `get_template_upgrade_diff / merge_template_upgrade`（安全合并模板）、`submit_agent_summaries`（Agent 摘要质量检查与重嵌入）、`resolve_wiki_suggestion`（建议处理留痕）。
   原有主要工具包括：
   检索类 `search_localkb / list_kb_categories / similar_sources / whats_new / list_sources / get_source_meta / read_source`；
