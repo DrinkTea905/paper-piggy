@@ -1,0 +1,6 @@
+# These frozen training records use two trailing spaces as intentional Markdown hard breaks.
+docs/设计/少年司法论文初稿工作流v2-B01-B08盲测与规则回源.md whitespace=-blank-at-eol
+docs/设计/少年司法论文初稿工作流v2-最终实施与验证报告.md whitespace=-blank-at-eol
+docs/设计/少年司法论文初稿工作流v2-正文级前向验证-*.md whitespace=-blank-at-eol
+docs/设计/少年司法论文初稿工作流v2-正文级前向验证任务集与判定表.md whitespace=-blank-at-eol
+docs/设计/综述成文训练-关系自主素材新对话实施提示词.md whitespace=-blank-at-eol
