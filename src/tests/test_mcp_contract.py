@@ -92,6 +92,10 @@ class McpContractTests(unittest.TestCase):
         self.assertIn("自动附带参考手册：", text)
         self.assertIn(AW._JJ_DRAFT_CRAFT_HANDBOOK, text)
         self.assertIn("本手册不是独立工作流", text)
+        self.assertIn("最终论文成稿必须交付可正常打开的 `.docx`", text)
+        self.assertIn("Markdown 只可保存中间稿、写作设计和核验记录", text)
+        self.assertIn("### DOCX 成稿交付", text)
+        self.assertIn("Markdown 只保存中间稿或核验记录", text)
 
     def test_read_juvenile_draft_preserves_user_main_and_handbook(self):
         with tempfile.TemporaryDirectory() as td, mock.patch.object(AW, "base_dir", return_value=Path(td)):

@@ -29,10 +29,19 @@ def read(name):
 
 
 class JuvenileForwardValidationRecordsTests(unittest.TestCase):
-    def test_frozen_runtime_and_task_inputs_are_unchanged(self):
-        expected = {
-            "workflow": "e0549417f34d64042525ccf581e669008f5b2041e4ad1553b0a16288d8c867ce",
-            "handbook": "64006a99fb61e8e068e3f1bb372307edee5cb1989c2c5b06f20e4b3215297328",
+    def test_frozen_provenance_and_current_delivery_revision_are_explicit(self):
+        frozen = read(f"{PREFIX}冻结清单.md")
+        self.assertIn(
+            "e0549417f34d64042525ccf581e669008f5b2041e4ad1553b0a16288d8c867ce",
+            frozen,
+        )
+        self.assertIn(
+            "64006a99fb61e8e068e3f1bb372307edee5cb1989c2c5b06f20e4b3215297328",
+            frozen,
+        )
+        expected_current = {
+            "workflow": "b45c5c9a50eec7b989ed2ee6f05b9958b63b0076473146978dc863ba1c19b281",
+            "handbook": "2887b5141c1f3a1a6ad5470f32d49fd984e8f63073737fa6ae63fc5466bc1bb5",
             "rules": "288f0760342cb00ef7450b8d95d8a1ab091f8f3e09891b3f587f112fa975e612",
             "tasks": "3d6f033ba98fd1d9375dceca800fe60349b100be2e7f697647fb6ce0255f8e58",
         }
@@ -46,7 +55,9 @@ class JuvenileForwardValidationRecordsTests(unittest.TestCase):
                 doc("少年司法论文初稿工作流v2-正文级前向验证任务集与判定表.md").read_bytes()
             ).hexdigest(),
         }
-        self.assertEqual(expected, actual)
+        self.assertEqual(expected_current, actual)
+        self.assertIn("最终论文成稿必须交付可正常打开的 `.docx`", AW._WF_JJ_DRAFT)
+        self.assertIn("### DOCX 成稿交付", AW._JJ_DRAFT_CRAFT_HANDBOOK)
 
     def test_six_raw_outputs_exist_and_do_not_contain_blind_keys(self):
         for run_id in ("D01", "D02", "T03", "T04", "M05", "S06"):
