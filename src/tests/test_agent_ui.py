@@ -46,55 +46,55 @@ class AgentOutputTests(unittest.TestCase):
         self.assertIn("云端检索或使用外部 AI 助手", AW._rules_summary_text())
         self.assertNotIn("不联网、不含大模型", AW._TASKS_README)
 
-    def test_juvenile_draft_has_two_route_cards_and_stop_gate(self):
+    def test_juvenile_draft_has_two_skeleton_cards_and_stop_gate(self):
+        """v3：路线不再是固定二分法，改为决策树选出两类结构原型。"""
         body = AW._WF_JJ_DRAFT
-        for route in ("教义学路线", "理论—制度建构路线"):
-            self.assertIn(route, body)
+        # 旧的固定二分法已废除
+        for stale in ("名称固定为“教义学路线”", "只有两条主路线"):
+            self.assertNotIn(stale, body)
         for field in (
-            "适配度", "完整拟题", "核心问题", "中心观点", "三级提纲",
-            "各部分主要内容", "所需规范、理论、事实材料", "优势", "风险", "不适用边界",
+            "决策树", "骨架卡", "逐字一级标题树", "各章字数占比",
+            "多动词路线图", "每章章首第一句", "不可调换处",
         ):
             self.assertIn(field, body)
-        self.assertIn("用户选择前不得起草", body)
-        self.assertIn("明确选定路线", body)
-        self.assertIn("明确表示“不需要比较”", body)
-        for gate in (
-            "最有利于未成年人", "发展中能力", "支持性参与", "关系自主",
-            "最小干预", "比例原则", "机构支持义务", "有效审查与救济",
-        ):
-            self.assertIn(gate, body)
-        for consent_check in (
-            "持续、知情、可撤回且受支持", "说明", "资源核验", "合理调整",
-            "履行能力", "条件变更", "技术性违约", "撤销", "救济",
-        ):
-            self.assertIn(consent_check, body)
-        self.assertIn("严重案件", body)
-        self.assertIn("低风险", body)
+        self.assertIn("用户选定前不得写摘要、引言或任何章节正文", body)
+        self.assertIn("两个不同叶子", body)
+        self.assertIn("少年司法 12 条", body)
 
-    def test_juvenile_draft_v2_has_craft_contract_and_companion_handbook(self):
+    def test_juvenile_draft_v3_has_measurable_gates_and_companion_handbook(self):
+        """v3：判据必须可数、可 grep，不能只是自我声明。"""
         body = AW._WF_JJ_DRAFT
         for phrase in (
-            "写作设计单", "问题切入与创新诊断", "理论选择与操作化",
-            "路线内结构原型推荐", "章节功能表", "第二人工闸门",
-            "分节论证契约", "正文起草顺序", "首尾兑现", "五轮独立修改",
+            "骨架落位表", "本章交付的那个名词", "删掉本章后失去指涉的那一句",
+            "章首过渡", "段末回收", "编号词四套不混用", "硬失败", "完成标准",
         ):
             self.assertIn(phrase, body)
-        for revision in ("结构轮", "论证轮", "证据与引注轮", "语言轮", "原创性轮"):
-            self.assertIn(revision, body)
+        # 事实命题与规范命题分开管——不因缺数据而降低规范论断强度
+        self.assertIn("事实命题与规范命题分开管", body)
+        self.assertIn("缺少实证材料不是降低论断强度的理由", body)
+        self.assertIn("解释论", body)
+        self.assertIn("立法论", body)
+        # 书面语层与工作流术语泄漏
+        self.assertIn("书面语层", body)
+        self.assertIn("工作流术语泄漏", body)
+        # 旧的填表式条款已删除
+        for stale in ("写作设计单", "分节论证契约", "五轮独立修改"):
+            self.assertNotIn(stale, body)
         self.assertIn("自动附带", body)
-        self.assertIn("不得改写本文件的路线、两个人工闸门", body)
 
         manual = AW._JJ_DRAFT_CRAFT_HANDBOOK
         for phrase in (
-            "教义学路线", "理论—制度建构路线", "问题切入与创新",
-            "理论选择与操作化", "争点与论证方法矩阵", "章节功能",
-            "分节与段落动作", "标题、摘要、引言与结论",
-            "功能性中性法学表达", "常见失败", "成稿检查表",
-            "负例（自拟）", "正例（自拟）", "2 万字",
-            "425—975 字", "7—15 句", "引注",
+            "选型决策树", "骨架卡", "底盘八条", "句型库", "标题词组池",
+            "少年司法专门约束", "不得挪用的自造命名表", "成稿自检",
+            "上户口型", "编格子型", "定性辨异型", "立论型",
+            "清点型", "出清单型", "换轨型",
         ):
             self.assertIn(phrase, manual)
-        for heading in ("## 触发条件", "## 开工前检查", "## 用户决策点", "## 完成标准", "## 最终报告"):
+        # 手册必须挂真实论文出处（v2 的通病是全部「自拟」）
+        self.assertIn("印", manual)
+        self.assertNotIn("负例（自拟）", manual)
+        # 手册不得复制主工作流的闸门章节
+        for heading in ("## 触发条件", "## 开工前检查", "## 用户决策点", "## 最终报告"):
             self.assertNotIn(heading, manual)
         companions = AW.workflow_companion_specs("论文初稿（少年司法版）")
         self.assertEqual(1, len(companions))

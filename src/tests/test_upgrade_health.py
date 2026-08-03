@@ -386,7 +386,7 @@ class AgentTemplateUpgradeTests(unittest.TestCase):
             AW.ensure_scaffold()
             key, path, current, _mask, _seed = next(
                 x for x in AW._template_specs() if x[0] == AW._JJ_DRAFT_HANDBOOK_KEY)
-            changed = current.replace("\n1. 先完成", "\n  1. 先完成", 1)
+            changed = current.replace("\n1. 首章与末章一律不分节", "\n  1. 首章与末章一律不分节", 1)
             self.assertEqual(AW._norm_hash(changed), AW._norm_hash(current))
             self.assertNotEqual(AW._exact_hash(changed), AW._exact_hash(current))
             path.write_text(changed, encoding="utf-8")
