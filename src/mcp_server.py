@@ -171,7 +171,7 @@ def _workspace_text():
         if pending:
             names = "、".join(x.get("label", x.get("key", "")) for x in pending)
             upgrade_block = ("\n⚠ 专属资料库有新版待合并：" + names + "。\n"
-                             "用户原文件已保留，新版在对应 .new.md 旁本。不要擅自覆盖；开始相关工作前先比较两版，"
+                             "用户原文件已保留，新版集中放在「升级与备份/待合并」。不要擅自覆盖；开始相关工作前先比较两版，"
                              "保留用户个性化规则，把新版新增要求合并进去；冲突处先问用户。\n")
         else:
             upgrade_block = ""
@@ -369,7 +369,7 @@ TOOLS = [
     },
     {
         "name": "merge_template_upgrade",
-        "description": "提交 Agent 合并后的模板正文；写前校验文件未变化并自动留 user-backup。只有真实语义冲突才应先问用户。",
+        "description": "提交 Agent 合并后的模板正文；写前校验文件未变化并自动存入集中历史备份。只有真实语义冲突才应先问用户。",
         "inputSchema": {"type": "object", "properties": {
             "key": {"type": "string"}, "current_hash": {"type": "string"},
             "main_hash": {"type": "string"}, "merged_text": {"type": "string"}},

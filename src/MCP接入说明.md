@@ -26,7 +26,7 @@
 | `read_workflow(name)` | 读 | 读取指定工作流全文，并自动附带该工作流登记的参考手册。开始写作、维护或跨学科发散前必须先读匹配工作流并照完成标准执行。 |
 | `maintenance_audit()` | 读 | 全量维护统一入口：一次盘点模板、索引、全文附件深索/PDF OCR、检索摘要、wiki 待办和体检，并区分自动处理/需决策/外部阻塞。用户只要提到维护就先调用。 |
 | `get_template_upgrade_diff(key)` | 读 | 读取某条 Agent 模板/工作流升级的差异与并发校验 hash，供 Agent 保留用户定制后完成语义合并。 |
-| `merge_template_upgrade(key, current_hash, main_hash, merged_text)` | 写 | 提交 Agent 合并后的模板正文；写前校验文件未变化并自动留 user-backup。只有真实语义冲突才应先问用户。 |
+| `merge_template_upgrade(key, current_hash, main_hash, merged_text)` | 写 | 提交 Agent 合并后的模板正文；写前校验文件未变化并自动存入集中历史备份。只有真实语义冲突才应先问用户。 |
 | `submit_agent_summaries(summaries)` | 写 | 在设置选择“交给 Agent 生成”时，提交你根据 read_source 原文写好的检索摘要；整批质量检查后只重嵌入指定文献。 |
 | `resolve_wiki_suggestion(key, status, reason?, related_page_ids?)` | 写 | 记录一条 wiki 建议的真实处理结果。更新/建页后标 updated/created；无需写入或阻塞时必须写理由。 |
 | `deep_status()` | 读 | 查看本地库【深索】进度：已深索篇数 / 有全文附件总数 / 队列真实状态 / 摘要有效、异常与缺失数 / 预计剩余时间（ETA）/ 当前在深索或队首的篇。深索前后可随时查，了解深到哪了。 |
