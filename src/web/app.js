@@ -3220,11 +3220,11 @@
         : (singleSystemDetail || "应用已更新，但下面的配套内容仍需人工处理。"));
     list.innerHTML = pendingItems.map((x) =>
       `<div class="ag-upgrade-item" data-upgrade-i="${x._upgradeIndex}">` +
-      `<div class="agu-name">${esc(x.label)}${x.status === "customized" ? "（新版旁本写入失败）" : ""}</div>` +
+      `<div class="agu-name">${esc(x.label)}${x.status === "customized" ? "（待合并文件写入失败）" : ""}</div>` +
       `<div class="agu-actions">` +
       `<button data-uact="diff">查看差异</button><button data-uact="agent">复制给 Agent 合并</button>` +
       `<button data-uact="ack">本版不再提醒</button><button class="agu-use" data-uact="replace">备份后采用新版</button>` +
-      `</div><div class="agu-path">你的文件：${esc(x.main_path)}${x.new_path ? `<br>新版旁本：${esc(x.new_path)}` : ""}</div></div>`
+      `</div><div class="agu-path">你的文件：${esc(x.main_path)}${x.new_path ? `<br>待合并新版：${esc(x.new_path)}` : ""}</div></div>`
     ).join("");
     // 正常状态不占警告卡；这里只显示确实需要处理的项目。
     health.innerHTML = warnings.map(([name, x]) => {
@@ -3245,9 +3245,9 @@
   }
   function mergePrompt(x) {
     return `请帮我安全合并 PaperPiggy 的一项出厂内容升级。\n\n` +
-      `我的版本：${x.main_path}\n新版旁本：${x.new_path || "（请以应用当前出厂版为准）"}\n\n` +
+      `我的版本：${x.main_path}\n待合并新版：${x.new_path || "（请以应用当前出厂版为准）"}\n\n` +
       `要求：1. 先读取并比较两个文件；2. 保留我的个性化规则、措辞和项目习惯；` +
-      `3. 把新版新增且不冲突的要求合并进我的版本；4. 不删除任何备份或旁本；` +
+      `3. 把新版新增且不冲突的要求合并进我的版本；4. 不删除“升级与备份”里的任何历史备份或待合并文件；` +
       `5. 遇到冲突先用大白话告诉我并让我决定；6. 完成后说明保留了什么、新增了什么。`;
   }
   async function handleUpgradeAction(btn) {
@@ -3270,7 +3270,7 @@
       await refreshUpgradeHealth(); return;
     }
     if (act === "replace") {
-      if (!(await uiConfirm("你的当前文件会先在同一目录保存为 user-backup 备份，然后主文件改成最新版。新版旁本和备份都不会删除。",
+      if (!(await uiConfirm("你的当前文件会先保存到“升级与备份/历史备份”，然后主文件改成最新版。待合并文件和历史备份都不会删除。",
         { title: `采用新版「${x.label}」？`, okText: "备份后采用新版", danger:true }))) return;
       const r = await jpost("/upgrade/replace", { kind:x.kind, key:x.key, current_hash:x.current_hash, confirm:"replace_with_factory" });
       await uiNotice(r.backup ? `已采用新版。你的原版本备份在：\n${r.backup}` : "已采用新版。", { title:"处理完成" });

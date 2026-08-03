@@ -89,7 +89,7 @@ class AgentTemplateUpgradeTests(unittest.TestCase):
             self.assertFalse(old.exists())
             self.assertEqual(target.read_text(encoding="utf-8"), target_text)
             self.assertEqual(actions["migration/写论文与综述.md"], "factory_removed")
-            self.assertTrue((skills / "综述.new.md").exists())
+            self.assertTrue(AW._pending_candidates("rely/技能/综述.md", target)[0].exists())
 
     def test_review_created_during_migration_is_never_overwritten(self):
         with tempfile.TemporaryDirectory() as td, mock.patch.object(AW, "base_dir", return_value=Path(td)):
@@ -113,7 +113,9 @@ class AgentTemplateUpgradeTests(unittest.TestCase):
             self.assertFalse(old.exists())
             self.assertEqual(target.read_text(encoding="utf-8"), user_text)
             self.assertEqual(actions["migration/写论文与综述.md"], "factory_removed")
-            self.assertEqual((skills / "综述.new.md").read_text(encoding="utf-8"), AW._WF_REVIEW)
+            self.assertEqual(
+                AW._pending_candidates("rely/技能/综述.md", target)[0].read_text(encoding="utf-8"),
+                AW._WF_REVIEW)
 
     def test_combined_factory_late_save_after_final_exact_read_survives_in_recovery(self):
         with tempfile.TemporaryDirectory() as td, mock.patch.object(AW, "base_dir", return_value=Path(td)):
@@ -142,8 +144,8 @@ class AgentTemplateUpgradeTests(unittest.TestCase):
                     Path, "read_text", autospec=True, side_effect=late_save_after_read):
                 action = AW._migrate_combined_paper_workflow()
 
-            recovery = list(skills.glob(
-                ".agent-ws-migration-backup-*/写论文与综述.md"))
+            recovery = list(AW.history_dir().glob(
+                "工作流迁移/**/写论文与综述.md"))
             self.assertTrue(fired)
             self.assertEqual(2, old_name_reads)
             self.assertFalse(old.exists())
@@ -162,8 +164,9 @@ class AgentTemplateUpgradeTests(unittest.TestCase):
             old = skills / "工作流.md"
             old_text = "# 旧单文件工作流\n\n  - 用户自定义缩进\n"
             old.write_text(old_text, encoding="utf-8")
-            first = skills / "工作流(你改过的·请并入对应新文件).md"
-            second = skills / "工作流(你改过的·请并入对应新文件).2.md"
+            base = AW.pending_dir() / "技能" / "工作流（你改过的，待并入对应新文件）.md"
+            first = base
+            second = AW._numbered_path(base, 2)
             concurrent_text = "# 用户并发创建的同名保留件\n"
             real_link = AW.os.link
             raced = False
@@ -192,8 +195,9 @@ class AgentTemplateUpgradeTests(unittest.TestCase):
             old = skills / "写论文与综述.md"
             old_text = "# 用户修改过的合并工作流\n\n  - 原文必须完整保留\n"
             old.write_text(old_text, encoding="utf-8")
-            first = skills / "写论文与综述(你改过的·请并入综述或通用初稿).md"
-            second = skills / "写论文与综述(你改过的·请并入综述或通用初稿).2.md"
+            base = AW.pending_dir() / "技能" / "写论文与综述（你的旧版，待并入综述或通用初稿）.md"
+            first = base
+            second = AW._numbered_path(base, 2)
             concurrent_text = "# 用户并发创建的同名合并笔记\n"
             real_link = AW.os.link
             raced = False
@@ -225,7 +229,7 @@ class AgentTemplateUpgradeTests(unittest.TestCase):
             real_exclusive = AW._write_text_exclusively
 
             def fail_visible_preserve(path, text):
-                if path.name.startswith("写论文与综述(你改过的·请并入"):
+                if path.name.startswith("写论文与综述（你的旧版，待并入"):
                     raise OSError("模拟显式保留件写入失败")
                 return real_exclusive(path, text)
 
@@ -236,8 +240,8 @@ class AgentTemplateUpgradeTests(unittest.TestCase):
             ):
                 action = AW._migrate_combined_paper_workflow()
 
-            recovery = list(skills.glob(
-                ".agent-ws-migration-backup-*/写论文与综述.md"))
+            recovery = list(AW.history_dir().glob(
+                "工作流迁移/**/写论文与综述.md"))
             self.assertEqual("error", action)
             self.assertTrue(old.exists())
             self.assertEqual(old_text, old.read_text(encoding="utf-8"))
@@ -282,7 +286,8 @@ class AgentTemplateUpgradeTests(unittest.TestCase):
 
             actions = AW.ensure_scaffold()
 
-            kept = list(skills.glob("写论文与综述(你改过的·请并入综述或通用初稿)*.md"))
+            kept = list((AW.pending_dir() / "技能").glob(
+                "写论文与综述（你的旧版，待并入综述或通用初稿）*.md"))
             self.assertEqual(actions["migration/写论文与综述.md"], "custom_preserved")
             self.assertEqual(len(kept), 1)
             self.assertEqual(kept[0].read_text(encoding="utf-8"), changed)
@@ -302,7 +307,8 @@ class AgentTemplateUpgradeTests(unittest.TestCase):
 
             actions = AW.ensure_scaffold()
 
-            kept = list(skills.glob("写论文与综述(你改过的·请并入综述或通用初稿)*.md"))
+            kept = list((AW.pending_dir() / "技能").glob(
+                "写论文与综述（你的旧版，待并入综述或通用初稿）*.md"))
             self.assertEqual(actions["migration/写论文与综述.md"], "custom_preserved")
             self.assertEqual(len(kept), 1)
             self.assertEqual(kept[0].read_text(encoding="utf-8"), changed)
@@ -318,7 +324,8 @@ class AgentTemplateUpgradeTests(unittest.TestCase):
 
             actions = AW.ensure_scaffold()
 
-            kept = list(skills.glob("写论文与综述(你改过的·请并入综述或通用初稿)*.md"))
+            kept = list((AW.pending_dir() / "技能").glob(
+                "写论文与综述（你的旧版，待并入综述或通用初稿）*.md"))
             self.assertFalse(old.exists())
             self.assertEqual(len(kept), 1)
             self.assertEqual(kept[0].read_text(encoding="utf-8"), custom)
@@ -339,7 +346,7 @@ class AgentTemplateUpgradeTests(unittest.TestCase):
 
             self.assertEqual(action, "forked")
             self.assertEqual(path.read_text(encoding="utf-8"), changed)
-            self.assertEqual(path.with_name("综述.new.md").read_text(encoding="utf-8"), current)
+            self.assertEqual(AW._pending_candidates(key, path)[0].read_text(encoding="utf-8"), current)
 
     def test_very_old_single_workflow_is_always_preserved_and_migration_is_idempotent(self):
         with tempfile.TemporaryDirectory() as td, mock.patch.object(AW, "base_dir", return_value=Path(td)):
@@ -352,7 +359,8 @@ class AgentTemplateUpgradeTests(unittest.TestCase):
             first = AW.ensure_scaffold()
             second = AW.ensure_scaffold()
 
-            kept = list(skills.glob("工作流(*请并入对应新文件)*.md"))
+            kept = list((AW.pending_dir() / "技能").glob(
+                "工作流（*待并入对应新文件）*.md"))
             self.assertFalse(old.exists())
             self.assertEqual(len(kept), 1)
             self.assertEqual(kept[0].read_text(encoding="utf-8"), content)
@@ -368,9 +376,64 @@ class AgentTemplateUpgradeTests(unittest.TestCase):
             old_sidecar = path.with_name(path.stem + ".new" + path.suffix)
             old_sidecar.write_text("用户在旁本里的合并笔记", encoding="utf-8")
             AW.ensure_scaffold()
-            self.assertEqual(old_sidecar.read_text(encoding="utf-8"), "用户在旁本里的合并笔记")
+            self.assertFalse(old_sidecar.exists())
+            self.assertEqual(
+                AW._pending_candidates(key, path)[0].read_text(encoding="utf-8"),
+                "用户在旁本里的合并笔记")
             item = next(x for x in AW.upgrade_status()["items"] if x["key"] == key)
-            self.assertTrue(item["new_path"].endswith(".new.2.md"))
+            self.assertTrue(item["new_path"].endswith(".新版待合并.2.md"))
+
+    def test_legacy_scattered_maintenance_files_are_centralized_idempotently(self):
+        with tempfile.TemporaryDirectory() as td, mock.patch.object(AW, "base_dir", return_value=Path(td)):
+            AW.ensure_scaffold()
+            root = Path(td)
+            rely = AW.rely_dir()
+            skills = AW.skills_dir()
+            workflow = skills / "综述.md"
+
+            root_backup = root / "AGENTS.user-backup-auto-upgrade-20260803-174728-abc.md"
+            root_backup.write_text("旧 AGENTS", encoding="utf-8")
+            readme_backup = rely / "README.user-backup-20260726-163559.md"
+            readme_backup.write_text("旧资料库说明", encoding="utf-8")
+            first = workflow.with_name("综述.new.md")
+            second = workflow.with_name("综述.new.2.md")
+            first.write_text("待合并笔记一", encoding="utf-8")
+            second.write_text("待合并笔记二", encoding="utf-8")
+            recovery = skills / ".agent-ws-migration-backup-20260803-174728-test"
+            recovery.mkdir()
+            (recovery / "写论文与综述.md").write_text("旧迁移恢复件", encoding="utf-8")
+            legacy_state = rely / AW._LEGACY_UPDATE_STATE
+            legacy_state.write_text('{"rely/技能/说明.md":"old"}', encoding="utf-8")
+
+            first_actions = AW.ensure_scaffold()
+            second_actions = AW.ensure_scaffold()
+
+            self.assertFalse(root_backup.exists())
+            self.assertFalse(readme_backup.exists())
+            self.assertFalse(first.exists())
+            self.assertFalse(second.exists())
+            self.assertFalse(recovery.exists())
+            self.assertFalse(legacy_state.exists())
+            self.assertTrue(AW._state_path().exists())
+            pending_texts = {
+                p.read_text(encoding="utf-8")
+                for p in (AW.pending_dir() / "技能").glob("综述.新版待合并*.md")
+            }
+            self.assertEqual({"待合并笔记一", "待合并笔记二"}, pending_texts)
+            self.assertEqual(
+                ["旧 AGENTS"],
+                [p.read_text(encoding="utf-8") for p in AW.history_dir().glob("自动升级/**/AGENTS.md")],
+            )
+            self.assertEqual(
+                ["旧资料库说明"],
+                [p.read_text(encoding="utf-8") for p in AW.history_dir().glob("人工采用新版/**/README.md")],
+            )
+            self.assertEqual(
+                ["旧迁移恢复件"],
+                [p.read_text(encoding="utf-8") for p in AW.history_dir().glob("工作流迁移/**/写论文与综述.md")],
+            )
+            self.assertGreaterEqual(first_actions["migration/升级与备份布局"]["sidecars"], 2)
+            self.assertEqual(0, second_actions["migration/升级与备份布局"]["sidecars"])
 
     def test_new_install_creates_nested_juvenile_craft_handbook(self):
         with tempfile.TemporaryDirectory() as td, mock.patch.object(AW, "base_dir", return_value=Path(td)):
@@ -397,7 +460,7 @@ class AgentTemplateUpgradeTests(unittest.TestCase):
             self.assertEqual(changed, path.read_text(encoding="utf-8"))
             self.assertEqual(
                 current,
-                path.with_name(path.stem + ".new" + path.suffix).read_text(encoding="utf-8"),
+                AW._pending_candidates(key, path)[0].read_text(encoding="utf-8"),
             )
 
     def test_concurrent_handbook_creation_preserves_user_file(self):
@@ -420,7 +483,7 @@ class AgentTemplateUpgradeTests(unittest.TestCase):
             self.assertEqual("forked", actions[AW._JJ_DRAFT_HANDBOOK_KEY])
             self.assertEqual(
                 AW._JJ_DRAFT_CRAFT_HANDBOOK,
-                target.with_name(target.stem + ".new" + target.suffix).read_text(encoding="utf-8"),
+                AW._pending_candidates(AW._JJ_DRAFT_HANDBOOK_KEY, target)[0].read_text(encoding="utf-8"),
             )
 
     def test_concurrent_handbook_sidecar_creation_is_never_overwritten(self):
@@ -428,7 +491,8 @@ class AgentTemplateUpgradeTests(unittest.TestCase):
             AW.ensure_scaffold()
             target = AW.handbooks_dir() / "论文初稿（少年司法版）—成文技艺手册.md"
             target.write_text("# 用户主手册\n", encoding="utf-8")
-            sidecar = target.with_name(target.stem + ".new" + target.suffix)
+            candidates = AW._pending_candidates(AW._JJ_DRAFT_HANDBOOK_KEY, target)
+            sidecar = candidates[0]
             user_sidecar = "# 用户并发创建的旁本\n保留笔记。\n"
             real_open = Path.open
 
@@ -441,7 +505,7 @@ class AgentTemplateUpgradeTests(unittest.TestCase):
             with mock.patch.object(Path, "open", autospec=True, side_effect=race_open):
                 action = AW.ensure_scaffold()[AW._JJ_DRAFT_HANDBOOK_KEY]
 
-            second = target.with_name(target.stem + ".new.2" + target.suffix)
+            second = candidates[1]
             self.assertEqual("forked", action)
             self.assertEqual(user_sidecar, sidecar.read_text(encoding="utf-8"))
             self.assertEqual(AW._JJ_DRAFT_CRAFT_HANDBOOK, second.read_text(encoding="utf-8"))
@@ -465,15 +529,15 @@ class AgentTemplateUpgradeTests(unittest.TestCase):
                 action = AW._ensure_template(
                     target, current, {AW._exact_hash(historical)}, key=key)
 
-            backups = list(target.parent.glob(
-                target.stem + ".user-backup-auto-upgrade-*" + target.suffix))
+            backups = list((target.parent / "升级与备份" / "历史备份" / "自动升级").glob(
+                f"**/{target.name}"))
             self.assertEqual("forked", action)
             self.assertEqual(user_text, target.read_text(encoding="utf-8"))
             self.assertEqual(1, len(backups))
             self.assertEqual(user_text, backups[0].read_text(encoding="utf-8"))
             self.assertEqual(
                 current,
-                target.with_name(target.stem + ".new" + target.suffix).read_text(encoding="utf-8"),
+                AW._pending_candidates(key, target)[0].read_text(encoding="utf-8"),
             )
 
     def test_historical_factory_sidecar_is_never_updated_in_place(self):
@@ -483,8 +547,8 @@ class AgentTemplateUpgradeTests(unittest.TestCase):
             historical = "# 历史出厂旁本\n"
             current = "# 当前出厂旁本\n"
             target.write_text("# 用户主文件\n", encoding="utf-8")
-            first = target.with_name(target.stem + ".new" + target.suffix)
-            second = target.with_name(target.stem + ".new.2" + target.suffix)
+            first, second = AW._pending_candidates(key, target)[:2]
+            first.parent.mkdir(parents=True, exist_ok=True)
             first.write_text(historical, encoding="utf-8")
 
             action = AW._ensure_template(
@@ -505,8 +569,8 @@ class AgentTemplateUpgradeTests(unittest.TestCase):
             action = AW._ensure_template(
                 target, current, {AW._exact_hash(historical)}, key=key)
 
-            backups = list(target.parent.glob(
-                target.stem + ".user-backup-auto-upgrade-*" + target.suffix))
+            backups = list((target.parent / "升级与备份" / "历史备份" / "自动升级").glob(
+                f"**/{target.name}"))
             self.assertEqual("upgraded", action)
             self.assertEqual(current, target.read_text(encoding="utf-8"))
             self.assertEqual(1, len(backups))
@@ -530,8 +594,8 @@ class AgentTemplateUpgradeTests(unittest.TestCase):
                 action = AW._ensure_template(
                     target, current, {AW._exact_hash(historical)}, key=key)
 
-            backups = list(target.parent.glob(
-                target.stem + ".user-backup-auto-upgrade-*" + target.suffix))
+            backups = list((target.parent / "升级与备份" / "历史备份" / "自动升级").glob(
+                f"**/{target.name}"))
             self.assertEqual("error", action)
             self.assertTrue(target.exists())
             self.assertEqual(historical, target.read_text(encoding="utf-8"))
@@ -548,7 +612,7 @@ class AgentTemplateUpgradeTests(unittest.TestCase):
             real_read_text = Path.read_text
 
             def fail_backup_read(path, *args, **kwargs):
-                if ".user-backup-auto-upgrade-" in path.name:
+                if "自动升级" in path.parts and path.name == target.name:
                     raise OSError("模拟恢复备份读取失败")
                 return real_read_text(path, *args, **kwargs)
 
@@ -556,8 +620,8 @@ class AgentTemplateUpgradeTests(unittest.TestCase):
                 action = AW._ensure_template(
                     target, current, {AW._exact_hash(historical)}, key=key)
 
-            backups = list(target.parent.glob(
-                target.stem + ".user-backup-auto-upgrade-*" + target.suffix))
+            backups = list((target.parent / "升级与备份" / "历史备份" / "自动升级").glob(
+                f"**/{target.name}"))
             self.assertEqual("error", action)
             self.assertTrue(target.exists())
             self.assertEqual(historical, target.read_text(encoding="utf-8"))
@@ -600,7 +664,7 @@ class AgentTemplateUpgradeTests(unittest.TestCase):
             real_read_text = Path.read_text
 
             def fail_backup_read(path, *args, **kwargs):
-                if ".user-backup-auto-upgrade-" in path.name:
+                if "自动升级" in path.parts and path.name == target.name:
                     raise OSError("模拟恢复备份读取失败")
                 return real_read_text(path, *args, **kwargs)
 

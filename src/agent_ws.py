@@ -12,7 +12,8 @@ Agent 专属工作区：两个人类可读、留在知识库本地的文件夹�
   ⚠️ 旧版这里写的是「folder 模式建在受管文件夹内部」—— **那个行为已废止**，
      别照着旧描述推理（folder_source.scan 仍排除 0_Agent* 前缀目录，这一条没变）。
 所有子目录/模板【幂等】创建。出厂模板（README/技能/工作流/规约摘要…）会**随版本升级**：
-  与某个历史出厂版一字不差（= 用户没改过）→ 静默换成新版；被用户改过 → 原样保留，新版另存 <名>.new.md。
+  与某个历史出厂版一字不差（= 用户没改过）→ 静默换成新版；被用户改过 → 原样保留，
+  新版集中放进「升级与备份/待合并」。自动恢复件与人工备份集中放进「升级与备份/历史备份」。
   见下方「出厂模板升级器」注释——**绝不覆盖**用户或 agent 写过一个字的文件。
 理念：换任何 agent（Claude Code / Codex / …），新 agent 读这两个文件夹 + MCP 接入时下发的指令即可无缝接上。
 """
@@ -56,6 +57,9 @@ def handbooks_dir(): return skills_dir() / "参考手册"
 def formats_dir():   return rely_dir() / "参考格式"
 def templates_dir(): return rely_dir() / "交付模板"
 def tasks_dir():     return rely_dir() / "定时任务"
+def maintenance_dir(): return rely_dir() / "升级与备份"
+def pending_dir():     return maintenance_dir() / "待合并"
+def history_dir():     return maintenance_dir() / "历史备份"
 
 
 def resolve(which):
@@ -79,12 +83,37 @@ _README_RELY = """# 0_Agent资料库 —— 你的 AI 助手的专属资料库
 - **参考格式/** —— 论文 / 文书的排版范本。把范本 .docx 放进来，AI 助手就能照着帮你改格式。
 - **交付模板/** —— 交付形态模板。改这里 = 改 AI 助手给你产出的样子。
 - **定时任务/** —— 定时任务的定义（搜什么、多久一次、成果放哪）。换助手也能照着重建。
+- **升级与备份/** —— 模板升级产生的待合并版本和历史备份统一放这里，不再散落在资料库根目录、
+  技能或参考格式旁边。日常使用只看前面五个资料区；需要比较新版或恢复旧内容时再打开这里。
 - **AI写综述遵守的规约.md** —— AI 往综述库写回时必须遵守的规则摘要（原文只读、另存综合、新页标未核验、核验页修改转待审、可删，并说明联网边界）。完整规约由应用维护，见文件内指路。
 
 ## 约定
 
 - 这个文件夹**不会被当成文献索引**（名字以 `0_Agent` 开头的目录已被检索排除）。
 - 成品（论文、资料汇编、周报）不放这里，放隔壁 `0_Agent交付物/`。
+- `升级与备份/历史备份/` 由应用保留，不会自动删除；它不属于当前生效的工作流，也不会被列进技能清单。
+"""
+
+_MAINTENANCE_README = """# 升级与备份
+
+> 这里统一收纳 PaperPiggy 更新 Agent 工作区时产生的维护材料。它们与当前生效的记忆、技能、
+> 参考格式、交付模板和定时任务分开，因此主资料区会一直保持清楚、可读。
+
+## 待合并
+
+当你改过一份出厂工作流或说明，而新版又增加了内容，PaperPiggy 会保留你的原文件，并把新版放进
+`待合并/`。应用的 Agent 页可以查看差异、复制任务给 Agent 合并，或在备份原文件后采用新版。
+
+这里的文件**不会自动成为当前规则**。当前真正生效的版本仍在原来的 `技能/`、`参考格式/` 等位置。
+如果你在待合并文件里写了笔记，后续升级也不会覆盖它；新版会另起一个文件。
+
+## 历史备份
+
+`历史备份/` 按产生原因分为自动升级、人工采用新版、工作流迁移和旧版整理。每次备份使用独立的
+日期目录，里面保留原文件名和原有内容。PaperPiggy 不会自动删除这些恢复件。
+
+完整的数据备份仍请使用应用内“设置 → 数据与维护 → 备份与恢复”。完整备份包会把当前资料、
+待合并内容和这里的历史备份一起保存，恢复时仍能保留完整工作区。
 """
 
 _README_OUTPUT = """# 0_Agent交付物 —— AI 助手的成品都在这
@@ -205,7 +234,7 @@ _SKILLS_README = """# 技能 / 工作流
 - 读取 `论文初稿（少年司法版）.md` 时，`read_workflow` 会自动附带
   `参考手册/论文初稿（少年司法版）—成文技艺手册.md`。它展开结构原型、论证动作、篇幅规划和法学表达，
   **不是第七条顶层工作流**；路线、两个人工闸门和完成标准仍以主工作流为准。
-- 手册和工作流一样可以由你定制。升级时用户修改会原样保留，新版只形成受保护的 `.new.md` 旁本。
+- 手册和工作流一样可以由你定制。升级时用户修改会原样保留，新版集中放进 `升级与备份/待合并/`。
 
 ## 想加一条新工作流？
 **新建一个 .md 文件**放这里（如「每周判例梳理.md」「读书笔记整理.md」），写清三件事：
@@ -977,7 +1006,7 @@ _WORKFLOW_COMPANION_KEYS = {
 def workflow_companion_specs(workflow_name):
     """返回指定顶层工作流应自动附带的模板规格，顺序稳定。
 
-    返回磁盘实际路径而不是模板正文，调用方必须读取用户当前文件；`.new.md` 只是待合并旁本，
+    返回磁盘实际路径而不是模板正文，调用方必须读取用户当前文件；集中待合并版本
     不能在运行时偷偷替代主手册。
     """
     filename = Path(str(workflow_name or "")).name
@@ -1024,13 +1053,13 @@ def _rules_summary_text():
 # 为每个出厂模板记住**历次出厂版**的 normalized-sha1（去掉所有空白后算），然后
 #   · 文件不存在                                   → 直接写（等同旧 _write_if_absent）；
 #   · 文件 hash ∈ 名单（= 某个历史出厂版，用户一个字没改）→ **静默升级**到新版；
-#   · 文件 hash 不在名单（= 用户/agent 改过）        → **保留用户的文件**，把新版另存为 <名>.new.md 并提示合并。
+#   · 文件 hash 不在名单（= 用户/agent 改过）        → **保留用户的文件**，把新版集中放进待合并区并提示合并。
 # 不能靠「含有某几个特征串」判断出厂原样——用户在文件末尾追加自己的规矩后特征串依然都在，那样会覆盖掉他写的东西。
 #
 # 【维护方式：改完模板文本后必做】跑一次
 #     build\py312\python.exe src\agent_ws.py --print-hashes
 # 把打出来的新 hash 追加进下面 _FACTORY_HASHES 对应条目（**旧 hash 一个都别删**——删了老用户的出厂原样
-# 文件就会被误判成「用户改过」，白白多出一堆 .new.md）。当前这一版的 hash 已经在名单里，所以下次改模板时
+# 文件就会被误判成「用户改过」，白白多出一堆待合并文件）。当前这一版的 hash 已经在名单里，所以下次改模板时
 # 它自动就成了「历史出厂版」，老机器照样能静默升级。
 
 # 机器相关的可变片段掩码：规约摘要里内嵌了 WIKI.md 的**绝对路径**（因机而异），不抹掉就没法把 hash 写死。
@@ -1074,8 +1103,10 @@ _FACTORY_HASHES = {
     "rely/README.md":                   {"8a596c19896e457c57437faa0d759049a319f16c",
                                              "b31c3884a02e6f21429f92856dea6b8bd4b3d23f",
                                              "d4345590a32767766515e21a9e376503efcefef2",
-                                             "994f3370bdee7a172fe538f09f49f60e08039457",
-                                             "459f767e0b9861a5413d12a516017fb8474d6860"},   # v5 自动附带参考手册
+                                              "994f3370bdee7a172fe538f09f49f60e08039457",
+                                              "459f767e0b9861a5413d12a516017fb8474d6860",
+                                              "a554e6c0d7244c2701ce0c83076029541fdf7152"},   # v6 集中升级与备份
+    "rely/升级与备份/说明.md":          {"a2c6dd7d34fe37f6d12bb769501417fd8dd77591"},
     "rely/记忆/项目记忆.md":            {"3c8387860ad95913a602b87b9447bc80bf5a7403"},   # v1 2026-07-14
     "rely/记忆/变更日志.md":            {"4d9a267ca46f94ff7d257c8c7b9ac486ec15f1fc"},   # v1 2026-07-14
     "rely/交付模板/交付说明书模板.md":  {"ad22abdf9bfa208e19f761c42e4ddcceb93031a2"},   # v1 2026-07-14
@@ -1086,9 +1117,10 @@ _FACTORY_HASHES = {
                                              "33f52df5011ac84f49139577c2f67eaa162513c0",
                                              "9d6fda0eb3f9c2f2287035f4af10dcaf431aa585",
                                              "39483ed6b1244c2c7432cbdbc1b0a8e4ede5b442",
-                                             "3a020266b1dcc65a1384323a01dccc21c7633eac",
-                                             "399d9c21475aba81a83b1ef0b9257ff686bb0999",
-                                            "a11b31ba048a4bfa658759f0184b08f1df69b323",
+                                              "3a020266b1dcc65a1384323a01dccc21c7633eac",
+                                              "399d9c21475aba81a83b1ef0b9257ff686bb0999",
+                                             "a11b31ba048a4bfa658759f0184b08f1df69b323",
+                                             "7242faccc204aed97cc53cd6120fca7c5b267107",
     },   # v5 DOCX 成稿说明
     "rely/技能/写论文与综述.md":        {"5027f5d8e6c6837907e5ddbc294de7b2f10d5de3",
                                              "ee9f25dc732f19acc62a95094b9159669ef74326",
@@ -1194,15 +1226,16 @@ def _factory_hashes_for(key):
 
 def _template_specs():
     """全部出厂模板的清单：(名单键, 落点, 当前文本, 掩码, 是否「用户数据种子」)。
-       ensure_scaffold 与 --print-hashes 共用这一份，防止两边漂移（漏算 hash = 老用户平白多出 .new.md）。
+       ensure_scaffold 与 --print-hashes 共用这一份，防止两边漂移（漏算 hash = 老用户平白多出待合并文件）。
        seed=True 的两份是**给用户/agent 写满的空表**（项目记忆 / 变更日志），不是给他读的指引：
-       出厂原样时照样升级（没有用户内容可丢），但一旦被写过就**安静保留**、不再塞 .new.md 骚扰——
+       出厂原样时照样升级（没有用户内容可丢），但一旦被写过就**安静保留**、不再塞待合并文件骚扰——
        模板头改几个字就往人家记忆旁边扔个新文件，纯属噪音。"""
     return [
         ("home/AGENTS.md",                    base_dir() / "AGENTS.md",                    _ROOT_AGENTS,           None, False),
         ("home/CLAUDE.md",                    base_dir() / "CLAUDE.md",                    _ROOT_CLAUDE,           None, False),
         ("output/README.md",                output_dir() / "README.md",              _README_OUTPUT,        None, False),
         ("rely/README.md",                  rely_dir() / "README.md",                _README_RELY,          None, False),
+        ("rely/升级与备份/说明.md",         maintenance_dir() / "说明.md",           _MAINTENANCE_README,   None, False),
         ("rely/记忆/项目记忆.md",           memory_dir() / "项目记忆.md",            _PROJECT_MEMORY,       None, True),
         ("rely/记忆/变更日志.md",           memory_dir() / "变更日志.md",            _CHANGELOG,            None, True),
         ("rely/交付模板/交付说明书模板.md", templates_dir() / "交付说明书模板.md",   _DELIVERY_TEMPLATE,    None, False),
@@ -1221,11 +1254,21 @@ def _template_specs():
     ]
 
 
-_UPDATE_STATE = ".paperpiggy-template-updates.json"
+_UPDATE_STATE = "agent-template-updates.json"
+_LEGACY_UPDATE_STATE = ".paperpiggy-template-updates.json"
 
 
 def _state_path():
-    return rely_dir() / _UPDATE_STATE
+    """标准安装使用固定状态名；旧外置工作区各自隔离，测试替换 base_dir 时也不会串状态。"""
+    try:
+        current_base = base_dir().resolve()
+        stable_base = C.DATA.parent.resolve()
+    except Exception:
+        current_base, stable_base = base_dir(), C.DATA.parent
+    if current_base == stable_base:
+        return C.STATE / _UPDATE_STATE
+    token = hashlib.sha1(str(current_base).casefold().encode("utf-8")).hexdigest()[:12]
+    return C.STATE / f"agent-template-updates-{token}.json"
 
 
 def _load_update_state():
@@ -1237,7 +1280,7 @@ def _load_update_state():
 
 
 def _save_update_state(d):
-    """升级提醒状态属于应用元数据；原子写，且跟随 0_Agent资料库进入备份。"""
+    """升级提醒状态属于应用元数据；放进 data/state，不再污染人类资料区。"""
     p = _state_path()
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_suffix(p.suffix + ".tmp")
@@ -1245,11 +1288,111 @@ def _save_update_state(d):
     os.replace(tmp, p)
 
 
+def _workspace_parts_for_key(key, path):
+    """把模板键翻译成人类可读的原位置层级，用于待合并和历史备份。"""
+    raw = str(key or "")
+    if raw.startswith("rely/"):
+        parts = Path(raw[5:]).parts
+    elif raw.startswith("output/"):
+        parts = (C.AGENT_OUTPUT_NAME, *Path(raw[7:]).parts)
+    elif raw.startswith("home/"):
+        parts = ("安装目录", *Path(raw[5:]).parts)
+    else:
+        parts = ("其他", path.name)
+    return tuple(parts) or (path.name,)
+
+
+def _is_in_workspace(path):
+    try:
+        Path(path).relative_to(base_dir())
+        return True
+    except ValueError:
+        return False
+
+
+def _workspace_parts_for_path(path, clean_name=None):
+    """为旧版散落文件恢复原位置层级；只在已知 Agent 工作区内取相对路径。"""
+    path = Path(path)
+    roots = (
+        (rely_dir(), ()),
+        (output_dir(), (C.AGENT_OUTPUT_NAME,)),
+        (base_dir(), ("安装目录",)),
+    )
+    for root, prefix in roots:
+        try:
+            rel = path.relative_to(root)
+        except ValueError:
+            continue
+        parts = list(prefix + rel.parts)
+        if clean_name:
+            parts[-1] = clean_name
+        return tuple(parts)
+    return (clean_name or path.name,)
+
+
+def _numbered_path(base, index):
+    if index == 1:
+        return base
+    return base.with_name(f"{base.stem}.{index}{base.suffix}")
+
+
+def _pending_candidates(key, path):
+    inside = _is_in_workspace(path)
+    root = pending_dir() if inside else path.parent / "升级与备份" / "待合并"
+    parts = list(_workspace_parts_for_key(key, path) if inside else (path.name,))
+    filename = parts.pop()
+    source = Path(filename)
+    base = root.joinpath(*parts, source.stem + ".新版待合并" + source.suffix)
+    return [_numbered_path(base, i) for i in range(1, 100)]
+
+
+def _history_event_dir(category):
+    """独占创建一次历史事件目录；时间可读，短随机串只用于并发消歧。"""
+    root = history_dir() / category
+    root.mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime("%Y-%m-%d_%H-%M-%S")
+    for _ in range(100):
+        event = root / f"{stamp}_{uuid.uuid4().hex[:8]}"
+        try:
+            event.mkdir()
+            return event
+        except FileExistsError:
+            continue
+    raise FileExistsError(f"无法在「{category}」中分配历史备份目录")
+
+
+def _history_path(category, key, path):
+    if _is_in_workspace(path):
+        event = _history_event_dir(category)
+        parts = _workspace_parts_for_key(key, path)
+    else:
+        root = path.parent / "升级与备份" / "历史备份" / category
+        root.mkdir(parents=True, exist_ok=True)
+        stamp = time.strftime("%Y-%m-%d_%H-%M-%S")
+        for _ in range(100):
+            event = root / f"{stamp}_{uuid.uuid4().hex[:8]}"
+            try:
+                event.mkdir()
+                break
+            except FileExistsError:
+                continue
+        else:
+            raise FileExistsError(f"无法在「{category}」中分配历史备份目录")
+        parts = (path.name,)
+    target = event.joinpath(*parts)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    return target
+
+
+def _legacy_sidecar_paths(path):
+    return [path.with_name(path.stem + ".new" + path.suffix)] + [
+        path.with_name(f"{path.stem}.new.{i}{path.suffix}") for i in range(2, 100)]
+
+
 def _current_sidecar(key, path, current_text, mask=None):
-    """找出内容等于当前出厂版的 .new 旁本；用户改过的旁本不会被误认。"""
+    """找出内容等于当前出厂版的待合并文件；用户改过的旧件不会被误认。"""
     wanted = _template_hash(key, current_text, mask)
-    for p in [path.with_name(path.stem + ".new" + path.suffix)] + [
-            path.with_name(f"{path.stem}.new.{i}{path.suffix}") for i in range(2, 100)]:
+    for p in _pending_candidates(key, path):
         try:
             if p.exists() and _template_hash(key, p.read_text(encoding="utf-8"), mask) == wanted:
                 return p
@@ -1318,7 +1461,7 @@ def acknowledge_update(key, current_hash):
 
 
 def replace_with_factory(key, current_hash):
-    """采用新版前先在原目录留用户备份；不删除 .new 旁本，操作可人工恢复。"""
+    """采用新版前先集中保存用户备份；不删除待合并文件，操作可人工恢复。"""
     spec = next((x for x in _template_specs() if x[0] == key and not x[4]), None)
     if not spec:
         raise KeyError("不支持的模板")
@@ -1328,12 +1471,7 @@ def replace_with_factory(key, current_hash):
     path.parent.mkdir(parents=True, exist_ok=True)
     backup = None
     if path.exists():
-        stamp = time.strftime("%Y%m%d-%H%M%S")
-        backup = path.with_name(f"{path.stem}.user-backup-{stamp}{path.suffix}")
-        i = 2
-        while backup.exists():
-            backup = path.with_name(f"{path.stem}.user-backup-{stamp}-{i}{path.suffix}")
-            i += 1
+        backup = _history_path("人工采用新版", key, path)
         backup.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(text, encoding="utf-8")
@@ -1347,7 +1485,7 @@ def replace_with_factory(key, current_hash):
 def merge_template(key, current_hash, main_hash, merged_text):
     """写入 Agent 合并后的模板；写前校验主文件没被并发改动，并始终留用户备份。
 
-    合并后记录“这一版已处理”，保留 .new 旁本不删；下一版 factory hash 变化时会重新提醒。
+    合并后记录“这一版已处理”，保留待合并文件不删；下一版 factory hash 变化时会重新提醒。
     """
     spec = next((x for x in _template_specs() if x[0] == key and not x[4]), None)
     if not spec:
@@ -1361,12 +1499,7 @@ def merge_template(key, current_hash, main_hash, merged_text):
     if _template_hash(key, old, mask) != main_hash:
         raise ValueError("你的文件在读取差异后又发生了变化，请重新读取再合并")
     path.parent.mkdir(parents=True, exist_ok=True)
-    stamp = time.strftime("%Y%m%d-%H%M%S")
-    backup = path.with_name(f"{path.stem}.user-backup-{stamp}{path.suffix}")
-    i = 2
-    while backup.exists():
-        backup = path.with_name(f"{path.stem}.user-backup-{stamp}-{i}{path.suffix}")
-        i += 1
+    backup = _history_path("人工采用新版", key, path)
     backup.write_text(old, encoding="utf-8")
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(merged_text, encoding="utf-8")
@@ -1387,16 +1520,9 @@ def _write_text_exclusively(path, text):
         return False
 
 
-def _automatic_upgrade_backup_path(path):
-    """为自动模板升级分配唯一、可恢复且不会进入工作流列表的旁路备份名。"""
-    stamp = time.strftime("%Y%m%d-%H%M%S")
-    for _ in range(100):
-        token = uuid.uuid4().hex[:12]
-        backup = path.with_name(
-            f"{path.stem}.user-backup-auto-upgrade-{stamp}-{token}{path.suffix}")
-        if not backup.exists():
-            return backup
-    raise FileExistsError(f"无法为 {path.name} 分配自动升级备份名")
+def _automatic_upgrade_backup_path(key, path):
+    """为自动模板升级分配集中、唯一且与主资料区隔离的恢复路径。"""
+    return _history_path("自动升级", key, path)
 
 
 def _restore_upgrade_backup_if_missing(path, backup):
@@ -1428,33 +1554,30 @@ def _restore_upgrade_backup_if_missing(path, backup):
         return path.exists()
 
 
-def _capture_workflow_for_migration(path):
-    """把待迁移路径原子移进本次专用恢复目录，且永不复用一个既有目标。
+def _capture_workflow_for_migration(path, category="工作流迁移"):
+    """把待迁移路径原子移进集中恢复目录，且永不复用一个既有目标。
 
     不能继续使用 ``exists() -> rename()`` 选择可读保留名：POSIX 的 rename 会覆盖并发创建的
-    同名目标。这里先以 ``mkdir(exist_ok=False)`` 独占一个同目录、随机命名的私有恢复目录，
-    再把源文件移入该目录。目录不会被工作流的顶层 ``*.md`` 列表读到，也会永久保留，以承接
-    编辑器在改名后才落下的迟到保存。
+    同名目标。这里先独占创建一个集中恢复目录，再把源文件移入其中。恢复目录不会被工作流的
+    顶层 ``*.md`` 列表读到，也会永久保留，以承接编辑器在改名后才落下的迟到保存。
     """
-    stamp = time.strftime("%Y%m%d-%H%M%S")
-    for _ in range(100):
-        recovery_dir = path.parent / (
-            f".agent-ws-migration-backup-{stamp}-{uuid.uuid4().hex[:12]}")
+    recovery_dir = _history_event_dir(category)
+    captured = recovery_dir.joinpath(*_workspace_parts_for_path(path))
+    captured.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        path.rename(captured)
+    except Exception:
         try:
-            recovery_dir.mkdir(mode=0o700)
-        except FileExistsError:
-            continue
-        captured = recovery_dir / path.name
-        try:
-            path.rename(captured)
+            parent = captured.parent
+            while True:
+                parent.rmdir()
+                if parent == recovery_dir:
+                    break
+                parent = parent.parent
         except Exception:
-            try:
-                recovery_dir.rmdir()
-            except Exception:
-                pass
-            raise
-        return captured
-    raise FileExistsError(f"无法为 {path.name} 分配迁移恢复目录")
+            pass
+        raise
+    return captured
 
 
 def _restore_migration_capture_if_missing(original, captured):
@@ -1486,6 +1609,11 @@ def _preserve_migration_capture(original, captured, candidate_for_index):
     for index in range(1, 100):
         keep = candidate_for_index(index)
         try:
+            keep.parent.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            _restore_migration_capture_if_missing(original, captured)
+            return None
+        try:
             os.link(captured, keep)
             return keep
         except FileExistsError:
@@ -1505,19 +1633,17 @@ def _preserve_migration_capture(original, captured, candidate_for_index):
     return None
 
 
-def _fork_current_template(path, current_text, hash_fn, cur_h):
-    """把当前出厂版写入新的旁本；任何已存在旁本都只读、绝不原地更新。"""
-    for i in range(1, 100):
-        newp = path.with_name(
-            path.stem + ".new" + path.suffix if i == 1
-            else f"{path.stem}.new.{i}{path.suffix}")
+def _fork_current_template(key, path, current_text, hash_fn, cur_h):
+    """把当前出厂版写入集中待合并区；任何已存在文件都只读、绝不原地更新。"""
+    for newp in _pending_candidates(key, path):
         try:
             existing = newp.read_text(encoding="utf-8")
         except FileNotFoundError:
+            newp.parent.mkdir(parents=True, exist_ok=True)
             if not _write_text_exclusively(newp, current_text):
                 continue
-            print(f"[agent_ws] 「{path.name}」你改过，已原样保留；新版出厂模板另存为「{newp.name}」，"
-                  f"可对照合并（用不上就直接删掉 {newp.name}）", file=sys.stderr, flush=True)
+            print(f"[agent_ws] 「{path.name}」你改过，已原样保留；新版出厂模板集中放在「{newp}」，"
+                  "可在 Agent 页对照合并", file=sys.stderr, flush=True)
             return "forked"
         except Exception:
             continue
@@ -1531,9 +1657,9 @@ def _ensure_template(path, current_text, factory_hashes, mask=None, seed=False, 
     """出厂模板的幂等落盘 + 升级。返回 created|current|upgraded|kept|forked|error（仅供测试/日志，调用方可忽略）。
 
     绝不丢用户内容：
-    - 历史出厂主文件先原子移到 `.user-backup-auto-upgrade-*`，再独占创建新版；校验后并发保存的
+    - 历史出厂主文件先原子移到「升级与备份/历史备份/自动升级」，再独占创建新版；校验后并发保存的
       内容会留在主文件或该备份中，不再对已存在路径直接 write_text。
-    - 任何已存在的 `.new.md` 旁本都只读；需要新版时递增创建 `.new.2.md`，绝不原地更新。
+    - 任何已存在的待合并文件都只读；需要新版时递增创建，绝不原地更新。
     （历史 bug：主文件和旁本都曾在“读取校验通过”后直接写回；检查与写入之间仍可能撞上用户保存。）"""
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -1549,7 +1675,7 @@ def _ensure_template(path, current_text, factory_hashes, mask=None, seed=False, 
             # 不能在“读出厂版 → 直接写新版”之间留下竞态窗口。先把现有名字原子让给
             # 一个不会进入工作流列表的恢复备份，再用独占创建写新版；备份不自动删除，
             # 因为某些编辑器可能仍握着旧文件句柄，并在改名后才把用户内容写进去。
-            backup = _automatic_upgrade_backup_path(path)
+            backup = _automatic_upgrade_backup_path(key, path)
             try:
                 path.rename(backup)
             except (FileNotFoundError, FileExistsError, PermissionError, OSError):
@@ -1562,7 +1688,7 @@ def _ensure_template(path, current_text, factory_hashes, mask=None, seed=False, 
                         return "upgraded"
                 if seed:
                     return "kept"
-                return _fork_current_template(path, current_text, hash_fn, cur_h)
+                return _fork_current_template(key, path, current_text, hash_fn, cur_h)
 
             try:
                 moved = backup.read_text(encoding="utf-8")
@@ -1577,7 +1703,7 @@ def _ensure_template(path, current_text, factory_hashes, mask=None, seed=False, 
                         except Exception:
                             live_h = None
                         if live_h == cur_h:
-                            live_backup = _automatic_upgrade_backup_path(path)
+                            live_backup = _automatic_upgrade_backup_path(key, path)
                             try:
                                 path.rename(live_backup)
                             except (FileNotFoundError, FileExistsError, PermissionError, OSError):
@@ -1586,7 +1712,7 @@ def _ensure_template(path, current_text, factory_hashes, mask=None, seed=False, 
                                 _write_text_exclusively(path, moved)
                     if seed:
                         return "kept"
-                    return _fork_current_template(path, current_text, hash_fn, cur_h)
+                    return _fork_current_template(key, path, current_text, hash_fn, cur_h)
 
                 if _write_text_exclusively(path, current_text):
                     return "upgraded"
@@ -1598,7 +1724,7 @@ def _ensure_template(path, current_text, factory_hashes, mask=None, seed=False, 
                     pass
                 if seed:
                     return "kept"
-                return _fork_current_template(path, current_text, hash_fn, cur_h)
+                return _fork_current_template(key, path, current_text, hash_fn, cur_h)
             except Exception:
                 # 改名已经成功，后续读取/创建失败时必须先恢复主路径；备份仍保留供人工恢复。
                 _restore_upgrade_backup_if_missing(path, backup)
@@ -1606,11 +1732,154 @@ def _ensure_template(path, current_text, factory_hashes, mask=None, seed=False, 
         if seed:
             return "kept"                                      # 用户数据种子：写过了就是他的东西，安静走开
 
-        # 用户改过主文件 → 保留主文件，新版出厂模板另存为旁本。
-        # 旁本也是用户可能直接编辑的文件；无论它像不像历史出厂版，都不再原地更新。
-        return _fork_current_template(path, current_text, hash_fn, cur_h)
+        # 用户改过主文件 → 保留主文件，新版出厂模板集中放进待合并区。
+        # 待合并文件也可能被用户直接编辑；无论它像不像历史出厂版，都不再原地更新。
+        return _fork_current_template(key, path, current_text, hash_fn, cur_h)
     except Exception:
         return "error"                                         # 落模板绝不阻断主流程
+
+
+def _migrate_legacy_update_state():
+    """把资料库根的内部 JSON 移到 data/state；已有新状态时合并且保留旧件。"""
+    legacy = rely_dir() / _LEGACY_UPDATE_STATE
+    if not legacy.is_file():
+        return "absent"
+    target = _state_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if not target.exists():
+        try:
+            legacy.rename(target)
+            return "moved"
+        except OSError:
+            # 旧外置工作区可能与 data/state 分处两个盘符，跨盘 rename 不可用。
+            try:
+                text = legacy.read_text(encoding="utf-8")
+                if not _write_text_exclusively(target, text):
+                    return "error"
+                _capture_workflow_for_migration(legacy, "旧版整理")
+                return "copied"
+            except Exception:
+                return "error"
+    try:
+        old = json.loads(legacy.read_text(encoding="utf-8"))
+        current = json.loads(target.read_text(encoding="utf-8"))
+        merged = old if isinstance(old, dict) else {}
+        if isinstance(current, dict):
+            merged.update(current)
+        _save_update_state(merged)
+        archive = _history_event_dir("旧版整理") / _LEGACY_UPDATE_STATE
+        legacy.rename(archive)
+        return "merged"
+    except Exception:
+        return "error"
+
+
+def _migrate_legacy_sidecars():
+    """把散落在主文件旁的 .new 旁本安全移入集中待合并区。"""
+    moved = 0
+    for key, path, _text, _mask, seed in _template_specs():
+        if seed:
+            continue
+        for legacy in _legacy_sidecar_paths(path):
+            if not legacy.is_file():
+                continue
+            captured = None
+            try:
+                captured = _capture_workflow_for_migration(legacy, "旧版整理")
+                kept = _preserve_migration_capture(
+                    legacy, captured,
+                    lambda i, candidates=_pending_candidates(key, path): candidates[i - 1],
+                )
+                if kept is not None:
+                    moved += 1
+            except Exception:
+                if captured is not None:
+                    _restore_migration_capture_if_missing(legacy, captured)
+    return moved
+
+
+def _clean_legacy_backup_name(path):
+    suffix = path.suffix
+    stem = path.name[:-len(suffix)] if suffix else path.name
+    clean = stem.split(".user-backup-", 1)[0]
+    return clean + suffix
+
+
+def _migrate_legacy_backup_files():
+    """把旧版散落的 user-backup 文件原子移入按原因分类的历史备份。"""
+    found = []
+    for _key, path, _text, _mask, _seed in _template_specs():
+        try:
+            found.extend(
+                p for p in path.parent.glob(f"{path.stem}.user-backup-*{path.suffix}")
+                if p.is_file())
+        except Exception:
+            continue
+    moved = 0
+    for source in dict.fromkeys(found):
+        category = "自动升级" if ".user-backup-auto-upgrade-" in source.name else "人工采用新版"
+        try:
+            target = _history_event_dir(category).joinpath(
+                *_workspace_parts_for_path(source, _clean_legacy_backup_name(source)))
+            target.parent.mkdir(parents=True, exist_ok=True)
+            source.rename(target)
+            moved += 1
+        except Exception:
+            continue
+    return moved
+
+
+def _migrate_legacy_recovery_dirs():
+    """把技能目录里的隐藏迁移恢复目录整体移入集中历史区。"""
+    moved = 0
+    try:
+        sources = list(skills_dir().glob(".agent-ws-migration-backup-*"))
+    except Exception:
+        sources = []
+    for source in sources:
+        if not source.is_dir():
+            continue
+        try:
+            target = _history_event_dir("工作流迁移") / "旧版恢复目录"
+            source.rename(target)
+            moved += 1
+        except Exception:
+            continue
+    return moved
+
+
+def _migrate_legacy_preserved_workflows():
+    """旧版已生成的“请并入”文件属于待办，不再伪装成当前工作流。"""
+    patterns = (
+        "工作流(*请并入对应新文件)*.md",
+        "写论文与综述(*请并入综述或通用初稿)*.md",
+    )
+    moved = 0
+    for pattern in patterns:
+        for source in list(skills_dir().glob(pattern)):
+            captured = None
+            try:
+                captured = _capture_workflow_for_migration(source, "旧版整理")
+                base = pending_dir() / "技能" / source.name
+                kept = _preserve_migration_capture(
+                    source, captured, lambda i, base=base: _numbered_path(base, i))
+                if kept is not None:
+                    moved += 1
+            except Exception:
+                if captured is not None:
+                    _restore_migration_capture_if_missing(source, captured)
+    return moved
+
+
+def _migrate_legacy_maintenance_layout():
+    """一次性清理旧版技术文件；逐项失败不阻断主流程，也绝不删除唯一副本。"""
+    return {
+        "state": _migrate_legacy_update_state(),
+        "sidecars": _migrate_legacy_sidecars(),
+        "backups": _migrate_legacy_backup_files(),
+        "recovery_dirs": _migrate_legacy_recovery_dirs(),
+        "preserved_workflows": _migrate_legacy_preserved_workflows(),
+    }
 
 
 # 更早的 技能/工作流.md 只有 normalized 指纹，没有可复算的精确历史正文。
@@ -1637,13 +1906,12 @@ def _migrate_legacy_workflow():
         keep = _preserve_migration_capture(
             old,
             captured,
-            lambda i: skills_dir() / (
-                f"工作流({label}·请并入对应新文件).md" if i == 1
-                else f"工作流({label}·请并入对应新文件).{i}.md"),
+            lambda i: _numbered_path(
+                pending_dir() / "技能" / f"工作流（{label}，待并入对应新文件）.md", i),
         )
         if keep is None:
             return "error"
-        print(f"[agent_ws] 旧 技能/工作流.md 已原样保留为 {keep.name}，"
+        print(f"[agent_ws] 旧 技能/工作流.md 已原样放入待合并区「{keep}」，"
               f"迁移恢复件在「{captured}」；请按需并入对应新工作流",
               file=sys.stderr, flush=True)
         return "preserved"
@@ -1684,13 +1952,12 @@ def _migrate_combined_paper_workflow():
         keep = _preserve_migration_capture(
             original,
             captured,
-            lambda i: skills_dir() / (
-                "写论文与综述(你改过的·请并入综述或通用初稿).md" if i == 1
-                else f"写论文与综述(你改过的·请并入综述或通用初稿).{i}.md"),
+            lambda i: _numbered_path(
+                pending_dir() / "技能" / "写论文与综述（你的旧版，待并入综述或通用初稿）.md", i),
         )
         if keep is None:
             return "error"
-        print(f"[agent_ws] 你改过的「写论文与综述.md」已原样保留为「{keep.name}」；"
+        print(f"[agent_ws] 你改过的「写论文与综述.md」已原样放入待合并区「{keep}」；"
               f"迁移恢复件在「{captured}」",
               file=sys.stderr, flush=True)
         return "custom_preserved"
@@ -1764,12 +2031,14 @@ def ensure_scaffold():
     acts = {}
     try:
         for d in (output_dir(), output_dir() / "定时任务", rely_dir(),
-                  memory_dir(), skills_dir(), handbooks_dir(), formats_dir(), templates_dir(), tasks_dir()):
+                  memory_dir(), skills_dir(), handbooks_dir(), formats_dir(), templates_dir(), tasks_dir(),
+                  maintenance_dir(), pending_dir(), history_dir()):
             try:
                 d.mkdir(parents=True, exist_ok=True)
             except Exception:
                 pass
-        # 顺序要紧：先迁移旧文件，再铺新模板；反过来会先生成目标文件，让迁移提示和保护判断失真。
+        # 顺序要紧：先把旧版散落的状态、旁本和恢复件集中收纳，再迁移旧工作流，最后铺新模板。
+        acts["migration/升级与备份布局"] = _migrate_legacy_maintenance_layout()
         _migrate_legacy_workflow()
         acts["migration/写论文与综述.md"] = _migrate_combined_paper_workflow()
         _remove_obsolete_catalog_check_task()
@@ -1792,6 +2061,9 @@ def paths_info():
         "formats_dir": str(formats_dir()),
         "templates_dir": str(templates_dir()),
         "tasks_dir": str(tasks_dir()),
+        "maintenance_dir": str(maintenance_dir()),
+        "pending_dir": str(pending_dir()),
+        "history_dir": str(history_dir()),
         "agents_file": str(base_dir() / "AGENTS.md"),
         "claude_file": str(base_dir() / "CLAUDE.md"),
     }
