@@ -22,26 +22,102 @@ class _Response:
         return self._data
 
 
-def _run_rpc(requests, tool_result=None):
-    stdin = io.StringIO("\n".join(json.dumps(x, ensure_ascii=False) for x in requests) + "\n")
+def _run_rpc(requests, tool_result=None, read_memory=True):
+    wire_requests = []
+    for request in requests:
+        wire_requests.append(request)
+        if read_memory and request.get("method") == "initialize":
+            wire_requests.append({
+                "jsonrpc": "2.0", "id": "__memory_gate__", "method": "tools/call",
+                "params": {"name": "read_project_memory", "arguments": {}},
+            })
+    stdin = io.StringIO("\n".join(json.dumps(x, ensure_ascii=False) for x in wire_requests) + "\n")
     stdout = io.StringIO()
+    original_do_tool = MCP.do_tool
+
+    def dispatch(name, args):
+        if name == "read_project_memory" and read_memory:
+            return "项目记忆已完整读取"
+        if tool_result is not None:
+            return tool_result
+        return original_do_tool(name, args)
+
     patches = [
         mock.patch.object(sys, "stdin", stdin),
         mock.patch.object(sys, "stdout", stdout),
         mock.patch.object(MCP.threading, "Thread"),
+        mock.patch.object(MCP, "do_tool", side_effect=dispatch),
     ]
-    if tool_result is not None:
-        patches.append(mock.patch.object(MCP, "do_tool", return_value=tool_result))
-    with patches[0], patches[1], patches[2]:
-        if len(patches) == 4:
-            with patches[3]:
-                MCP.main()
-        else:
-            MCP.main()
-    return [json.loads(line) for line in stdout.getvalue().splitlines() if line.strip()]
+    with patches[0], patches[1], patches[2], patches[3]:
+        MCP.main()
+    return [item for item in
+            (json.loads(line) for line in stdout.getvalue().splitlines() if line.strip())
+            if item.get("id") != "__memory_gate__"]
 
 
 class McpContractTests(unittest.TestCase):
+    def test_memory_gate_blocks_other_tools_until_full_project_memory_read(self):
+        output = _run_rpc([
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+             "params": {"protocolVersion": MCP.PROTO}},
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+             "params": {"name": "search_localkb", "arguments": {"query": "测试"}}},
+        ], tool_result="不应执行", read_memory=False)
+        blocked = output[1]["result"]
+        self.assertTrue(blocked["isError"])
+        self.assertIn("必须先调用 read_project_memory", blocked["content"][0]["text"])
+
+    def test_read_project_memory_unlocks_following_tools(self):
+        output = _run_rpc([
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+             "params": {"protocolVersion": MCP.PROTO}},
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+             "params": {"name": "read_project_memory", "arguments": {}}},
+            {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+             "params": {"name": "search_localkb", "arguments": {"query": "测试"}}},
+        ], tool_result="已执行", read_memory=False)
+        self.assertNotIn("isError", output[1]["result"])
+        self.assertEqual("已执行", output[2]["result"]["content"][0]["text"])
+
+    def test_failed_project_memory_read_keeps_gate_locked(self):
+        calls = []
+
+        def result(name, _args):
+            calls.append(name)
+            return "读项目记忆失败：模拟错误" if name == "read_project_memory" else "不应执行"
+
+        with mock.patch.object(MCP, "do_tool", side_effect=result):
+            output = _run_rpc([
+                {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                 "params": {"protocolVersion": MCP.PROTO}},
+                {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                 "params": {"name": "read_project_memory", "arguments": {}}},
+                {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                 "params": {"name": "search_localkb", "arguments": {"query": "测试"}}},
+            ], read_memory=False)
+        self.assertEqual(["read_project_memory"], calls)
+        self.assertTrue(output[2]["result"]["isError"])
+
+    def test_memory_resource_read_also_unlocks_tools(self):
+        with mock.patch.object(MCP, "read_resource", return_value=("完整项目记忆", "text/markdown")):
+            output = _run_rpc([
+                {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                 "params": {"protocolVersion": MCP.PROTO}},
+                {"jsonrpc": "2.0", "id": 2, "method": "resources/read",
+                 "params": {"uri": "localkb://memory"}},
+                {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                 "params": {"name": "search_localkb", "arguments": {"query": "测试"}}},
+            ], tool_result="已执行", read_memory=False)
+        self.assertEqual("完整项目记忆", output[1]["result"]["contents"][0]["text"])
+        self.assertEqual("已执行", output[2]["result"]["content"][0]["text"])
+
+    def test_initialize_declares_shared_memory_mirroring_contract(self):
+        body = MCP.instructions()
+        self.assertIn("开始任何任务前，必须先调用 read_project_memory", body)
+        self.assertIn("服务器会拒绝其他工具调用", body)
+        self.assertIn("auto memory", body)
+        self.assertIn("同一实质内容同步到项目记忆", body)
+
     def test_list_workflows_keeps_builtin_order_and_separates_custom_files(self):
         with tempfile.TemporaryDirectory() as td, mock.patch.object(AW, "base_dir", return_value=Path(td)):
             AW.ensure_scaffold()
