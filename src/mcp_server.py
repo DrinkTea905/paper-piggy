@@ -75,9 +75,15 @@ def _wiki_todo_note(prefix="\n\n"):
 #   MCP 的 initialize 支持 instructions 字段——把规约直接下发，是整个接入里投入产出比最高的一改。
 _INSTRUCTIONS_HEAD = """你连接的是用户的**本地文献知识库**（PaperPiggy · 论文小猪）。
 
+项目记忆闸门（最高优先级）：
+- 开始任何任务前，必须先调用 read_project_memory，完整读取 PaperPiggy 的项目记忆；未读时服务器会拒绝其他工具调用。
+- 项目记忆是不同 Agent 之间唯一共享的长期记忆。你可以另用自己的 auto memory，但它不能替代项目记忆。
+- 任务产生新的长期偏好、已定决策、关键进度或事实时，结束前必须调用 append_project_memory。凡写进其他私有记忆的本项目长期信息，也必须把同一实质内容同步到项目记忆。
+- 没有新的长期信息时不要追加空话；历史流水账写同目录「变更日志.md」。
+
 工作流闸门（最高优先级）：
 - 用户请求命中已有工作流时，必须先调 list_workflows / read_workflow，明确声明采用哪一份；未读取不得开始执行或宣布完成。
-- 研究任务先按任务类型（论文初稿 / 综述）、再按领域（少年司法 / 其他）路由到四条研究工作流。少年司法论文初稿默认先给教义学、理论—制度建构两张路线方案卡；明确推荐一条并说明理由，用户选择前不得起草全文。只有用户已明确路线且明确不要比较时才可跳过双卡。
+- 研究任务先按任务类型（论文初稿 / 综述）、再按领域（少年司法 / 其他）路由到四条研究工作流。少年司法论文初稿按选型决策树从七类结构原型中选出两类，默认先给两张骨架卡；明确推荐一条并说明理由，用户选择前不得起草全文。只有用户已明确结构且明确不要比较时才可跳过双卡。
 - 用户只要提到“维护”，一律先读《维护综述库》并调 maintenance_audit 做全量审查。简单事项直接处理；只把付费、删除/重建、外部修复或真实内容取舍交给用户决定。
 - 看到待办却只解释原因不算完成。结束前必须重新审查，并给出全面的前后对照总结。
 
@@ -155,7 +161,8 @@ def _workspace_text():
     mem_file = p.get("memory_file", "")
     has_mem, mem_body = _memory_inline(mem_file)
     if has_mem:
-        mem_block = ("· 项目记忆（下面直接内联当前内容，换任何 AI 助手都从这里接上；也可直接读/写该文件或用 "
+        mem_block = ("· 项目记忆（下面内联的是启动快照；开始任务仍须先调用 read_project_memory 读取完整最新内容。"
+                     "换任何 AI 助手都从这里接上；也可直接读/写该文件或用 "
                      "append_project_memory 工具更新）：\n"
                      f"  文件：{mem_file}\n"
                      "  ┌─ 当前项目记忆 ─────────────\n"
@@ -210,6 +217,14 @@ def instructions():
     except Exception:
         pass
     return body + _workspace_text()
+
+
+def _project_memory_read_succeeded(text):
+    """只有确实拿到项目记忆内容（空模板也算）才打开会话闸门。"""
+    body = str(text or "").lstrip()
+    return bool(body) and not body.startswith((
+        "读项目记忆失败：", "项目记忆文件尚未创建。", "（项目记忆尚未创建）", "（读项目记忆失败：",
+    ))
 
 
 def send(msg):
@@ -723,13 +738,15 @@ TOOLS = [
     {
         "name": "read_project_memory",
         "description": "读用户的**项目记忆**（当前真相：用户是谁/偏好/已定决策/当前在做）。这是换任何 AI 助手都共享的本地文件——"
-                       "开工前先读它接上之前的工作。initialize 已内联一份，但内容可能已被更新，动手前可再读一次拿最新。",
+                       "每次任务开工前必须先调用本工具完整读取；在此之前，服务器会拒绝其他 PaperPiggy 工具调用。"
+                       "initialize 只内联启动快照，不能替代本次读取。",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
         "name": "append_project_memory",
         "description": "把一条**已定决策/偏好/进度**追加进项目记忆（保持它是「当前真相」，供之后任何 AI 助手接上）。"
-                       "只写实质结论、保持简短；历史流水账不要写这里。默认追加到文件末尾；不覆盖已有内容。",
+                       "只写实质结论、保持简短；历史流水账不要写这里。任务产生新的长期信息时结束前必须调用；"
+                       "若也写入了 Agent 自己的 auto memory，必须把同一实质内容同步到这里。默认追加到文件末尾；不覆盖已有内容。",
         "inputSchema": {"type": "object", "properties": {
             "text": {"type": "string", "description": "要记住的一条内容（决策/偏好/进度/关键事实）"}},
             "required": ["text"]},
@@ -1972,6 +1989,7 @@ def main():
     log("MCP server 就绪（stdio）")
     threading.Thread(target=_watch_parent, daemon=True).start()
     negotiated_protocol = PROTO
+    project_memory_read = False
     for line in sys.stdin:
         line = line.strip()
         if not line:
@@ -1994,6 +2012,9 @@ def main():
             params = req.get("params") if isinstance(req.get("params"), dict) else {}
             requested = str(params.get("protocolVersion") or "")
             negotiated_protocol = requested if requested in SUPPORTED_PROTOCOLS else PROTO
+            # initialize 里的内联内容只是启动快照，可能截断或在握手后变旧。
+            # 每次会话都必须显式完整读取一次项目记忆，才开放其余 PaperPiggy 工具。
+            project_memory_read = False
             send({"jsonrpc": "2.0", "id": rid, "result": {
                 "protocolVersion": negotiated_protocol,
                 "capabilities": {"tools": {}, "resources": {}, "prompts": {}},
@@ -2016,8 +2037,18 @@ def main():
                 if not isinstance(args, dict):
                     raise ValueError("arguments 必须是对象")
                 _validate_json_value(args, tool_def.get("inputSchema") or {}, "arguments")
+                if name != "read_project_memory" and not project_memory_read:
+                    send({"jsonrpc": "2.0", "id": rid, "result": {
+                        "content": [{"type": "text", "text":
+                                     "项目记忆尚未读取。开始任何任务前必须先调用 read_project_memory，"
+                                     "完整读取成功后再重试本工具。Agent 自己的 auto memory 不能替代这一步。"}],
+                        "isError": True,
+                    }})
+                    continue
                 out = do_tool(name, args)
                 text, sc = out if isinstance(out, tuple) else (out, None)
+                if name == "read_project_memory" and _project_memory_read_succeeded(text):
+                    project_memory_read = True
                 result = {"content": [{"type": "text", "text": text}]}
                 if negotiated_protocol in STRUCTURED_PROTOCOLS and "outputSchema" in tool_def:
                     structured = sc if isinstance(sc, dict) else _structured_fallback(name, args, text)
@@ -2039,6 +2070,8 @@ def main():
             try:
                 uri = req["params"]["uri"]
                 text, mime = read_resource(uri)
+                if uri == "localkb://memory" and _project_memory_read_succeeded(text):
+                    project_memory_read = True
                 send({"jsonrpc": "2.0", "id": rid,
                       "result": {"contents": [{"uri": uri, "mimeType": mime, "text": text}]}})
             except Exception as e:

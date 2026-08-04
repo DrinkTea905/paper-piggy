@@ -151,6 +151,27 @@ def check_workflows():
     for phrase in ("全量审查", "简单事项直接处理", "maintenance_audit", "复核", "全面总结"):
         if phrase not in maintenance:
             errs.append(f"维护工作流缺关键闭环语义「{phrase}」")
+    memory_contract = ("项目记忆闸门（最高优先级）", "开始任何任务前，必须先完整读取",
+                       "凡写进其他私有记忆", "append_project_memory")
+    for entry_name, body in (("_ROOT_AGENTS", agent_ws._ROOT_AGENTS),
+                             ("_ROOT_CLAUDE", agent_ws._ROOT_CLAUDE)):
+        for phrase in memory_contract:
+            if phrase not in body:
+                errs.append(f"{entry_name} 缺项目记忆强制语义「{phrase}」")
+    try:
+        import mcp_server
+        # check_guides 承诺纯只读；instructions() 会 ensure_scaffold()，因此只核对静态强制头。
+        mcp_instructions = mcp_server._INSTRUCTIONS_HEAD
+        for phrase in ("开始任何任务前，必须先调用 read_project_memory",
+                       "服务器会拒绝其他工具调用", "同一实质内容同步到项目记忆"):
+            if phrase not in mcp_instructions:
+                errs.append(f"MCP 初始化指令缺项目记忆强制语义「{phrase}」")
+    except Exception as e:
+        errs.append(f"无法核对 MCP 项目记忆闸门：{e}")
+    for phrase in ("每次任务开始，PaperPiggy 都会要求 Agent 先完整读取项目记忆",
+                   "未读时 PaperPiggy 会拒绝其他知识库工具"):
+        if phrase not in html:
+            errs.append(f"应用内指引缺项目记忆语义「{phrase}」")
     companion = agent_ws.workflow_companion_specs("论文初稿（少年司法版）.md")
     if len(companion) != 1:
         errs.append(f"少年司法初稿应登记 1 份自动附带手册，实际 {len(companion)} 份")

@@ -313,7 +313,7 @@ light 模式走 `search_light`（`retriever.py:547`）：只有 bm25_meta + `_ap
 合并写回前也会留 `user-backup`，不会无提示覆盖用户定制：
 
 ```
-AGENTS.md / CLAUDE.md          # Agent 根入口：强制先读匹配工作流
+AGENTS.md / CLAUDE.md          # Agent 根入口：强制先读项目记忆，再读匹配工作流
 0_Agent交付物/          # AGENT_OUTPUT_NAME，config.py:83
   README.md
   定时任务/
@@ -337,8 +337,8 @@ AGENTS.md / CLAUDE.md          # Agent 根入口：强制先读匹配工作流
 `_WF_GENERAL_DRAFT`（论文初稿·通用暂用）、`_WF_REVIEW`（通用综述）、`_WF_WIKI`（维护知识库与综述库）、
 `_WF_DIVERGENCE`（跨学科发散与补文献）。
 一个工作流一个 `.md`，agent 中立（Claude Code / Codex 都是读文件夹）。
-六份工作流都有“触发条件 / 开工前检查 / 用户决策点 / 完成标准 / 最终报告”强制契约；根入口与 MCP 初始化指令要求 Agent
-先按任务类型、再按研究领域路由，命中后先读后做。少年司法论文初稿先走选型决策树，默认先提交两张骨架卡，
+六份工作流都有“触发条件 / 开工前检查 / 用户决策点 / 完成标准 / 最终报告”强制契约；根入口与 MCP 初始化指令先要求 Agent
+完整读取 `项目记忆.md`，再按任务类型、研究领域路由，命中后先读工作流再做。少年司法论文初稿先走选型决策树，默认先提交两张骨架卡，
 用户选定前不得起草全文；选路后还要经过带章节功能表的第二提纲闸门，最终论文成稿必须交付经检查的 DOCX，Markdown 只作中间稿或核验记录。详细结构原型、篇幅参考、论证动作和法学表达存于
 `技能/参考手册/论文初稿（少年司法版）—成文技艺手册.md`，由 `read_workflow` 自动附带实际磁盘版本。手册位于子目录、
 常量不以 `_WF_` 命名，因此不进入六条顶层工作流列表；主工作流的路线、人工闸门和可靠性要求优先。通用初稿会明确提示
@@ -374,7 +374,7 @@ server 侧 `GET /agent/tasks` 解析 `任务.md` 的 frontmatter，`GET /agent/o
   记忆类 `read_project_memory / append_project_memory`。
 - **5 个资源入口**：4 个固定 `RESOURCES`——`localkb://schema`（WIKI.md 全文）、`localkb://index`、`localkb://lint`、`localkb://memory`；另有 1 个 `RESOURCE_TEMPLATE`——`localkb://page/{id}`。
 - **3 个 PROMPTS**（`mcp_server.PROMPTS`）= gist 三环的斜杠命令：`ingest-source` / `lint-wiki` / `query-and-file`。
-- `initialize` 时下发 `instructions()` = 固定头 + **WIKI.md 全文** + 工作区说明（`_workspace_text`，含项目记忆内联）。
+- `initialize` 时下发 `instructions()` = 固定头 + **WIKI.md 全文** + 工作区说明（`_workspace_text`，含项目记忆启动快照）。每次初始化会重置会话级记忆闸门；在 Agent 调用 `read_project_memory` 或读取 `localkb://memory` 的完整内容前，其他工具调用返回 `isError` 并要求先读。私有 auto memory 允许并存，但新增的本项目长期信息必须同步写回共享项目记忆。
 - server 版本号取 `config.APP_VERSION`（**全项目唯一版本字面量**）。MCP 按客户端初始化请求协商
   `2024-11-05`、`2025-03-26`、`2025-06-18` 或 `2025-11-25`：前两版返回兼容工具定义与标准文本，后两版增加标题、
   `annotations`、`outputSchema` 与 `structuredContent`；`read_source` 的长正文始终走标准文本通道。

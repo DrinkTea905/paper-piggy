@@ -120,6 +120,10 @@ class AgentOutputTests(unittest.TestCase):
 
     def test_root_entry_routes_by_task_then_domain(self):
         body = AW._ROOT_AGENTS
+        self.assertIn("项目记忆闸门（最高优先级）", body)
+        self.assertIn("开始任何任务前，必须先完整读取", body)
+        self.assertIn("凡写进其他私有记忆", body)
+        self.assertIn("append_project_memory", body)
         self.assertIn("任务类型", body)
         self.assertIn("领域", body)
         for name in (
@@ -186,8 +190,15 @@ class AgentOutputTests(unittest.TestCase):
             AW.ensure_scaffold()
             agents = Path(td) / "AGENTS.md"; claude = Path(td) / "CLAUDE.md"
             self.assertTrue(agents.exists()); self.assertTrue(claude.exists())
+            self.assertIn("项目记忆闸门", agents.read_text(encoding="utf-8"))
+            self.assertIn("auto memory", claude.read_text(encoding="utf-8"))
             self.assertIn("工作流闸门", agents.read_text(encoding="utf-8"))
             self.assertIn("用户只要提到“维护”", claude.read_text(encoding="utf-8"))
+
+    def test_project_memory_seed_is_cross_agent_canonical_memory(self):
+        self.assertIn("唯一共享的项目记忆", AW._PROJECT_MEMORY)
+        self.assertIn("开始任务前必须先完整读取", AW._PROJECT_MEMORY)
+        self.assertIn("私有记忆不能替代本文件", AW._PROJECT_MEMORY)
 
     def test_scaffold_removes_only_obsolete_catalog_check_task(self):
         with tempfile.TemporaryDirectory() as td, mock.patch.object(AW, "base_dir", return_value=Path(td)):
