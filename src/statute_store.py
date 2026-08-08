@@ -158,6 +158,17 @@ def validate_draft(payload):
     if any(marker.casefold() in body.casefold() for marker in bad_markers):
         raise StatuteValidationError("正文含访问失败/验证码提示，不得入库")
 
+    summary = str(payload.get("summary") or "").strip()
+    if summary:
+        import sac as SAC
+        summary_ok, summary_reason = SAC.validate_summary(summary)
+        if not summary_ok:
+            raise StatuteValidationError(f"检索摘要质量检查未通过：{summary_reason}")
+        summary_quality = {"provided": True, "ok": True, "reason": "质量检查通过"}
+    else:
+        summary_quality = {"provided": False, "ok": True,
+                           "reason": "未提供；入库后可调用 submit_agent_summaries 补写"}
+
     passed_date = _validate_date("通过日期", payload.get("passed_date"))
     effective_date = _validate_date("施行日期", payload.get("effective_date"))
     revisions = _normalize_revisions(payload.get("revision_dates"))
@@ -197,6 +208,9 @@ def validate_draft(payload):
         "validity_status": status,
         "is_current": status == "现行有效",
         "source_origin": "statute_store",
+        "summary": summary,
+        "summary_chars": len(summary),
+        "summary_quality": summary_quality,
         "body_markdown": body,
         "snapshot_text": snapshot,
     }
@@ -291,23 +305,51 @@ def add_confirmed(payload, confirmation_token):
         if target.exists():
             existing = _read_meta(target / "metadata.json") or {}
             if existing.get("body_sha256") == draft["body_sha256"]:
-                return {"status": "duplicate", "record": existing, "status_changes": []}
+                import sac as SAC
+                existing_summary = SAC.get(draft["key"])
+                return {"status": "duplicate", "record": existing, "status_changes": [],
+                        "summary_written": False,
+                        "summary_preserved": bool(existing_summary),
+                        "summary_chars": len(existing_summary)}
             raise StatuteValidationError("同一法规版本 key 已存在但正文哈希不同；为防静默覆盖，已拒绝写入")
         C.STATUTES_DIR.mkdir(parents=True, exist_ok=True)
         temp = C.STATUTES_DIR / (".tmp-" + draft["key"] + "-" + uuid.uuid4().hex)
         temp.mkdir(parents=False, exist_ok=False)
+        summary = draft.pop("summary", "")
+        draft.pop("summary_chars", None)
+        draft.pop("summary_quality", None)
+        summary_snapshot = None
+        summary_result = {"written": 0, "accepted_keys": [], "preserved_keys": [], "errors": []}
         try:
             (temp / "snapshot.md").write_bytes(draft.pop("snapshot_text").encode("utf-8"))
             (temp / "body.md").write_bytes(draft.pop("body_markdown").encode("utf-8"))
             draft.pop("confirmation_token", None)
             _atomic_json(temp / "metadata.json", draft)
+            if summary:
+                # 与 submit_agent_summaries 共用同一质量闸门和 summaries.json；先写摘要、
+                # 再提交法规目录。若后续原子改名失败，恢复摘要写前状态，不留孤儿摘要。
+                import sac as SAC
+                summary_snapshot = SAC.snapshot([draft["key"]])
+                summary_result = SAC.write_summaries(
+                    [{"key": draft["key"], "summary": summary}], overwrite=False)
+                if summary_result["errors"]:
+                    reason = summary_result["errors"][0].get("reason") or "未知错误"
+                    raise StatuteValidationError(f"检索摘要质量检查未通过：{reason}")
             os.replace(temp, target)
         except Exception:
+            if summary_snapshot is not None and summary_result.get("written"):
+                try:
+                    SAC.restore(summary_snapshot)
+                except Exception:
+                    pass
             shutil.rmtree(temp, ignore_errors=True)
             raise
         changes = _recompute_group(draft["canonical_title"])
         saved = _read_meta(target / "metadata.json") or draft
-        return {"status": "added", "record": saved, "status_changes": changes}
+        return {"status": "added", "record": saved, "status_changes": changes,
+                "summary_written": bool(summary_result.get("written")),
+                "summary_preserved": bool(summary_result.get("preserved_keys")),
+                "summary_chars": len(summary)}
 
 
 def record_failure(payload, error):

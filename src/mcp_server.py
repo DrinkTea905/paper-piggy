@@ -736,7 +736,8 @@ TOOLS = [
                        "必须先 confirm=false 预览校验；向用户展示版本、域名、条文范围与哈希并获确认后，"
                        "再携 confirmation_token 调 confirm=true。非 gov.cn/court.gov.cn/spp.gov.cn 官方域名"
                        "还必须显式 confirm_unofficial=true。正文必须是保留第X条结构的完整 Markdown，不得提交网页 HTML。"
-                       "确认写入后会自动对该法规切条并建索引，且不会生成检索摘要。",
+                       "可同时提交约150字中文 summary；它会在预检阶段经过与 submit_agent_summaries 相同的质量检查，"
+                       "并在确认入库后随条文一并嵌入。未提交时不会自动生成，入库结果会提示后续补写。",
         "inputSchema": {"type": "object", "properties": {
             "title": {"type": "string", "description": "法规全称"},
             "short_title": {"type": "string", "description": "简称（可选）"},
@@ -753,6 +754,7 @@ TOOLS = [
             "validity_status": {"type": "string", "enum": ["尚未施行", "现行有效", "已修订", "已废止"],
                                 "default": "现行有效"},
             "body_markdown": {"type": "string", "description": "已核对的完整法规正文 Markdown"},
+            "summary": {"type": "string", "description": "可选：约150字中文检索摘要；随法规预检、确认并嵌入"},
             "confirm": {"type": "boolean", "default": False,
                         "description": "false=只预览不落盘；用户确认后才可 true"},
             "confirmation_token": {"type": "string", "description": "预览返回的确认令牌"},
@@ -1300,6 +1302,10 @@ def do_tool(name, args):
                f"{state}。",
                f"检索摘要：有效 {s.get('sac_done', 0)}、异常 {s.get('sac_invalid', 0)}、缺失 {s.get('sac_missing', 0)}。",
                f"预计剩余：{eta_s}。"]
+        if s.get("sac_missing_statutes", 0):
+            out.append(f"摘要缺失中有法规 {s.get('sac_missing_statutes')} 篇。法规与普通文献采用同一统计口径，"
+                       "因为摘要同样参与语义检索；可在 add_statute 时传 summary，或入库后调用 "
+                       "submit_agent_summaries 补写。")
         blocked = [("PDF缺失", s.get("missing_pdf", 0)), ("PDF损坏", s.get("invalid_pdf", 0)),
                    ("附件缺失", s.get("missing_file", 0)), ("附件无法读取", s.get("invalid_file", 0)),
                    ("OCR失败", s.get("ocr_failed", 0)), ("等待OCR", s.get("ocr_pending", 0))]
@@ -1945,7 +1951,7 @@ def do_tool(name, args):
         payload = {k: args.get(k) for k in (
             "title", "short_title", "issuing_authority", "passed_date", "revision_dates",
             "effective_date", "legal_level", "document_number", "source_url", "fetched_at",
-            "version_label", "validity_status", "body_markdown", "confirm",
+            "version_label", "validity_status", "body_markdown", "summary", "confirm",
             "confirmation_token", "confirm_unofficial") if args.get(k) is not None}
         resp = requests.post(URL + "/statutes/add", json=payload, timeout=300)
         if resp.status_code != 200:
@@ -1954,16 +1960,22 @@ def do_tool(name, args):
         if r.get("requires_confirmation"):
             p = r.get("preview") or {}
             official = "官方白名单" if p.get("official_source") else "非白名单来源"
+            summary_quality = p.get("summary_quality") or {}
+            summary_line = (f"- 检索摘要：{p.get('summary_chars')} 字，质量检查通过\n"
+                            if summary_quality.get("provided") else
+                            "- 检索摘要：未提供；确认入库后会计入摘要缺失，可再调用 submit_agent_summaries 补写\n")
             return (f"法规已通过预检，但**尚未落盘**：\n"
                     f"- {p.get('title')}（{p.get('statute_version_label') or '版本未标注'}，{p.get('validity_status')}）\n"
                     f"- 制定机关：{p.get('issuing_authority')}；来源：{p.get('source_host')}（{official}）\n"
                     f"- 条文：{p.get('article_count')} 条，{p.get('first_article')} 至 {p.get('last_article')}\n"
                     f"- 正文 SHA-256：{p.get('body_sha256')}\n"
+                    f"{summary_line}"
                     f"请把以上预览交给用户确认。确认后用完全相同的正文和元数据，传 "
                     f"confirm=true、confirmation_token={r.get('confirmation_token')} 再调用；"
                     f"任何字段变化都会令令牌失效。")
         if r.get("status") == "duplicate":
-            return f"该法规版本已存在（key={r.get('key')}），正文哈希一致，未重复写入。"
+            return (f"该法规版本已存在（key={r.get('key')}），正文哈希一致，未重复写入。\n"
+                    f"{r.get('summary_hint') or ''}").strip()
         out = [f"法规已写入独立本地法规库（key={r.get('key')}，状态={r.get('validity_status')}）。"]
         for change in r.get("status_changes") or []:
             cited = change.get("cited_by_wiki") or []
@@ -1973,6 +1985,8 @@ def do_tool(name, args):
             out.append("已开始增量建索引；完成后可按 statute 范围检索并按条读取。")
         else:
             out.append("当前未启动建索引；请在现有维护任务结束后调用 localkb_build 更新。")
+        if r.get("summary_hint"):
+            out.append(str(r["summary_hint"]))
         return "\n".join(out)
 
     return f"未知工具：{name}"

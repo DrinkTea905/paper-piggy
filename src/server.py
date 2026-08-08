@@ -1723,11 +1723,10 @@ def index_status():
     deep_set = set(ek.read_text(encoding="utf-8").split()) if ek.exists() else set()
     deep = len(deep_set)
     # 深索摘要（SAC）覆盖：已深索里多少篇有检索摘要（同 safe_name(stem) 口径）
-    summary_keys = _summary_keys()
-    summary_issues = _summary_issues()
-    sac_done = len(deep_set & summary_keys)
-    sac_invalid = len(deep_set & set(summary_issues))
-    sac_missing = max(0, deep - sac_done - sac_invalid)
+    summary_coverage = _summary_coverage(deep_set)
+    sac_done = summary_coverage["done"]
+    sac_invalid = summary_coverage["invalid"]
+    sac_missing = summary_coverage["missing"]
     # 去重计数（与 deep/_deep_keys() 同口径）：标记文件出现重复行时 len(split()) 会虚高，
     # 前端据 meta_done<papers 判断语义层是否待完成，虚高到 ≥papers 会误隐藏「正在提升检索质量」提示。
     meta_done = len(set(C.META_EMBEDDED.read_text(encoding="utf-8").split())) if C.META_EMBEDDED.exists() else 0
@@ -1757,6 +1756,7 @@ def index_status():
         # 深索摘要（SAC）：sac_done=已深索且有摘要的篇数；sac_generator=生成方(off/agent/server)；
         # sac_backfill=补生成摘要后台任务的实时进度（前端据此显示进度/禁用重复触发）。
         "sac_done": sac_done, "sac_invalid": sac_invalid, "sac_missing": sac_missing,
+        "sac_missing_statutes": summary_coverage["missing_statutes"],
         "sac_generator": _sac_generator(), "sac_backfill": dict(BACKFILL),
         "building": BUILD["running"], "stage": BUILD["stage"], "log": BUILD["log"][-40:],
         "queue_pending": q_pending, "queue_in_flight": q_inflight,
@@ -1939,6 +1939,25 @@ def _summary_issues():
         return _SAC.summary_issues()
     except Exception:
         return {}
+
+def _summary_coverage(deep_set, papers=None):
+    """统一摘要统计口径；法规与普通文献都计入，因为摘要同样参与语义检索。"""
+    deep_set = set(deep_set or set())
+    summary_keys = _summary_keys()
+    invalid_set = set(_summary_issues())
+    missing_set = deep_set - summary_keys - invalid_set
+    papers = _load_papers() if papers is None else papers
+    statute_stems = {
+        T.safe_name((p or {}).get("stem") or key)
+        for key, p in (papers or {}).items()
+        if (p or {}).get("itemtype") == "statute"
+    }
+    return {
+        "done": len(deep_set & summary_keys),
+        "invalid": len(deep_set & invalid_set),
+        "missing": len(missing_set),
+        "missing_statutes": len(missing_set & statute_stems),
+    }
 
 def _sac_generator():
     """当前深索摘要生成方（off / agent / server），供前端措辞与补生成入口判断。"""
@@ -2248,11 +2267,10 @@ def deep_queue_status():
     papers = _load_papers()
     deep_set = _deep_keys()
     deep_done = len(deep_set)
-    summary_keys = _summary_keys()
-    summary_issues = _summary_issues()
-    sac_done = len(deep_set & summary_keys)   # 已深索里有有效检索摘要的篇数
-    sac_invalid = len(deep_set & set(summary_issues))
-    sac_missing = max(0, deep_done - sac_done - sac_invalid)
+    summary_coverage = _summary_coverage(deep_set, papers)
+    sac_done = summary_coverage["done"]
+    sac_invalid = summary_coverage["invalid"]
+    sac_missing = summary_coverage["missing"]
     manifest = json.loads(C.INDEX_MANIFEST.read_text(encoding="utf-8")) if C.INDEX_MANIFEST.exists() else {}
     with _Q_LOCK:
         pending = len(QUEUE["pending"]); in_flight = len(QUEUE["in_flight"])
@@ -2268,6 +2286,7 @@ def deep_queue_status():
             "with_fulltext": manifest.get("with_fulltext", manifest.get("with_pdf", 0)),
             "with_pdf": manifest.get("with_pdf", 0),
             "sac_done": sac_done, "sac_invalid": sac_invalid, "sac_missing": sac_missing,
+            "sac_missing_statutes": summary_coverage["missing_statutes"],
             "sac_backfill": dict(BACKFILL),   # 深索摘要覆盖 + 补生成进度
             "deep_no_text": len(_deep_no_text_keys()),   # 旧前端兼容：当前不可继续的提取终态数
             "extract_status_counts": extract_counts,
@@ -3249,6 +3268,7 @@ class StatuteAddQ(BaseModel):
     version_label: str = ""
     validity_status: str = "现行有效"
     body_markdown: str
+    summary: str = ""
     confirm: bool = False
     confirmation_token: str = ""
     confirm_unofficial: bool = False
@@ -3270,7 +3290,7 @@ def add_statute(q: StatuteAddQ):
                     "revision_dates", "effective_date", "legal_level", "document_number",
                     "source_url", "source_host", "official_source", "statute_version_label",
                     "validity_status", "body_sha256", "body_chars", "article_count",
-                    "first_article", "last_article")},
+                    "first_article", "last_article", "summary_chars", "summary_quality")},
                 "detail": "校验通过但尚未落盘；请向用户展示预览，确认后携令牌重调 confirm=true。",
             }
         result = SS.add_confirmed(payload, q.confirmation_token)
@@ -3313,13 +3333,25 @@ def add_statute(q: StatuteAddQ):
                 log_error("statute deep index", "法规题录已入库，但条文索引未能立即启动")
 
         building = bool(_run_build("all", on_done=_index_statute_body))
+    if result.get("summary_written"):
+        summary_hint = "检索摘要已通过质量检查并一并写入，将在本次条文建索引时作为语义检索前缀生效。"
+    elif result.get("summary_preserved"):
+        summary_hint = "检测到该 key 已有检索摘要，已原样保留，未覆盖。"
+    else:
+        summary_hint = ("本篇尚无检索摘要，请调用 submit_agent_summaries 补写，"
+                        "否则会被统计为缺失。")
     return {
         "ok": True, "status": result.get("status"), "key": record.get("key"),
         "title": record.get("title", ""), "validity_status": record.get("validity_status", ""),
         "body_sha256": record.get("body_sha256", ""), "building": building,
+        "summary_written": bool(result.get("summary_written")),
+        "summary_preserved": bool(result.get("summary_preserved")),
+        "summary_chars": int(result.get("summary_chars") or 0),
+        "summary_missing": not bool(result.get("summary_written") or result.get("summary_preserved")),
+        "summary_hint": summary_hint,
         "status_changes": changes,
         "detail": ("法规版本已原子落盘并开始增量建索引（题录完成后自动切分并嵌入条文）。" if building else
-                   "法规版本已落盘；若当前有维护任务，完成后请手动更新知识库。"),
+                   "法规版本已落盘；若当前有维护任务，完成后请手动更新知识库。") + summary_hint,
     }
 
 class LocalPathQ(BaseModel):

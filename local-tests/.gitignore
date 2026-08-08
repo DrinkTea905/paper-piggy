@@ -17,3 +17,5 @@
 # 项目记忆闸门回归测试的隔离数据与自动生成 Agent 脚手架。
 /memory-gate/
 /statute-a-isolated/
+/statute-summary-isolated-*/
+/release-*/

@@ -78,6 +78,8 @@ _AUDITED_IMPLEMENTATIONS = {
             "保留 Zotero creator 顺序、角色与机构身份，并按条目类型生成题录和引注；只需刷新轻量题录",
         "522a2e0cd08dd0f3f3989b1431770fd7825fded9c9bce4ec05005c4cd91b8bec":
             "新增独立法规源并入统一题录；既有 Zotero/文件夹题录字段与轻量索引配方不变，新增法规时由入库流程触发增量刷新",
+        "bded5ca0b15a0b8af162893fab54143fc5380470e54f0b5aae3fb2d24de14830":
+            "法规入库可选摘要仅写入既有 summaries.json 并作为深索嵌入前缀；法规题录投影、轻量字段与索引配方不变",
         },
     },
     "deep": {CURRENT_INDEX_CONTRACTS["deep"]: {

@@ -135,9 +135,10 @@ def enabled():
     return bool(c.get("generator") == "server" and c.get("key"))
 
 
-def write_summaries(items):
+def write_summaries(items, *, overwrite=True):
     """#7：把 Agent 写好的检索摘要合并进 summaries.json（键用 safe_name(stem)，与 embed_index 一致）。
        items：可迭代 {"key":..,"summary":..} 或 (key, summary)。幂等 merge、原子写。
+       overwrite=False 时保留任何既有摘要，供法规入库等“只补缺、不覆盖”流程使用。
        整批先校验：只要有一篇异常就一篇不写，避免后续把坏摘要标成“深索完成”。"""
     import textutil as T
     prepared, errors = [], []
@@ -156,13 +157,19 @@ def write_summaries(items):
         else:
             prepared.append((safe_key, summ))
     if errors:
-        return {"written": 0, "accepted_keys": [], "errors": errors}
+        return {"written": 0, "accepted_keys": [], "preserved_keys": [], "errors": errors}
     sums = _load()
+    accepted, preserved = [], []
     for key, summ in prepared:
+        if not overwrite and key in sums:
+            preserved.append(key)
+            continue
         sums[key] = summ
-    if prepared:
+        accepted.append(key)
+    if accepted:
         _save(sums)
-    return {"written": len(prepared), "accepted_keys": [k for k, _ in prepared], "errors": []}
+    return {"written": len(accepted), "accepted_keys": accepted,
+            "preserved_keys": preserved, "errors": []}
 
 
 def snapshot(keys):

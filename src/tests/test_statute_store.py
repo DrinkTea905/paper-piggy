@@ -13,10 +13,15 @@ if str(SRC) not in sys.path:
 import cite_format as CF
 import folder_source
 import index_light as IL
+import sac as SAC
 import server
 import settings
 import statute_store as SS
 import wiki_store as W
+
+
+STATUTE_SUMMARY = ("本文概括测试法关于法规原文安全入库、版本核验和统一检索的规则，重点说明正文哈希、"
+                   "按条读取与不得修改 Zotero 的边界，并用于检验检索摘要随法规一次写入和语义召回。")
 
 
 def statute_payload(year="2025", effective="2026-01-01", status="现行有效"):
@@ -46,8 +51,12 @@ class StatuteStoreTests(unittest.TestCase):
         self.root = Path(self.temp.name) / "statutes"
         self.patch = mock.patch.object(SS.C, "STATUTES_DIR", self.root)
         self.patch.start()
+        self.summary_file = Path(self.temp.name) / "summaries" / "summaries.json"
+        self.summary_patch = mock.patch.object(SAC, "SUM_FILE", self.summary_file)
+        self.summary_patch.start()
 
     def tearDown(self):
+        self.summary_patch.stop()
         self.patch.stop()
         self.temp.cleanup()
 
@@ -69,6 +78,27 @@ class StatuteStoreTests(unittest.TestCase):
         timed["fetched_at"] = "2026-08-08 10:01:00"
         with self.assertRaisesRegex(SS.StatuteValidationError, "令牌不匹配"):
             SS.add_confirmed(timed, timed_draft["confirmation_token"])
+
+    def test_summary_is_quality_checked_in_preview_and_bound_to_token(self):
+        payload = dict(statute_payload(), summary=STATUTE_SUMMARY)
+        draft = SS.validate_draft(payload)
+        self.assertEqual(len(STATUTE_SUMMARY), draft["summary_chars"])
+        self.assertEqual({"provided": True, "ok": True, "reason": "质量检查通过"},
+                         draft["summary_quality"])
+        changed = dict(payload, summary=STATUTE_SUMMARY + "补充不同检索词。")
+        with self.assertRaisesRegex(SS.StatuteValidationError, "令牌不匹配"):
+            SS.add_confirmed(changed, draft["confirmation_token"])
+        self.assertFalse(self.root.exists())
+        self.assertFalse(self.summary_file.exists())
+
+    def test_invalid_summary_is_rejected_during_preview_without_partial_record(self):
+        for bad in ("太短", "?" * 180):
+            with self.subTest(bad=bad[:10]):
+                payload = dict(statute_payload(), summary=bad)
+                with self.assertRaisesRegex(SS.StatuteValidationError, "检索摘要质量检查未通过"):
+                    SS.validate_draft(payload)
+        self.assertFalse(self.root.exists())
+        self.assertFalse(self.summary_file.exists())
 
     def test_unofficial_url_needs_explicit_second_confirmation(self):
         payload = statute_payload()
@@ -94,6 +124,20 @@ class StatuteStoreTests(unittest.TestCase):
         self.assertTrue(papers[0]["has_fulltext"])
         duplicate = self._add(statute_payload())
         self.assertEqual("duplicate", duplicate["status"])
+
+    def test_confirmed_summary_uses_sac_store_and_existing_summary_is_never_overwritten(self):
+        payload = dict(statute_payload(), summary=STATUTE_SUMMARY)
+        result = self._add(payload)
+        key = result["record"]["key"]
+        self.assertTrue(result["summary_written"])
+        self.assertEqual(STATUTE_SUMMARY, SAC.get(key))
+        self.assertNotIn("summary", result["record"])
+
+        replacement = STATUTE_SUMMARY.replace("测试法", "另一摘要")
+        duplicate = self._add(dict(payload, summary=replacement))
+        self.assertEqual("duplicate", duplicate["status"])
+        self.assertTrue(duplicate["summary_preserved"])
+        self.assertEqual(STATUTE_SUMMARY, SAC.get(key))
 
     def test_adding_old_version_after_current_keeps_newest_current(self):
         current = statute_payload("2025", "2026-01-01")
@@ -137,9 +181,43 @@ class StatuteStoreTests(unittest.TestCase):
         self.assertEqual("statute", build_calls[1][0])
         self.assertIn("keys:" + added["key"], build_calls[1][1])
         self.assertIn("--skip-sac", build_calls[1][1])
+        self.assertTrue(added["summary_missing"])
+        self.assertIn("submit_agent_summaries", added["summary_hint"])
+
+    def test_server_writes_valid_summary_before_incremental_embedding(self):
+        payload = dict(statute_payload(), summary=STATUTE_SUMMARY)
+        preview = server.add_statute(server.StatuteAddQ(**payload))
+        self.assertEqual(len(STATUTE_SUMMARY), preview["preview"]["summary_chars"])
+        self.assertTrue(preview["preview"]["summary_quality"]["ok"])
+        payload.update(confirm=True, confirmation_token=preview["confirmation_token"])
+        calls = []
+
+        def run_build(stage, extra=None, on_done=None, **kwargs):
+            calls.append((stage, extra, SAC.get(preview["preview"]["key"])))
+            if stage == "all" and on_done:
+                on_done(0)
+            return True
+
+        with mock.patch.object(server, "_run_build", side_effect=run_build), \
+                mock.patch.object(server.W, "backlinks", return_value={"cited_by": []}):
+            added = server.add_statute(server.StatuteAddQ(**payload))
+        self.assertTrue(added["summary_written"])
+        self.assertFalse(added["summary_missing"])
+        self.assertEqual(STATUTE_SUMMARY, calls[0][2])
+        self.assertEqual(STATUTE_SUMMARY, calls[1][2])
 
 
 class StatuteIntegrationTests(unittest.TestCase):
+    def test_summary_coverage_keeps_statutes_in_missing_count_and_explains_them(self):
+        papers = {
+            "LAW": {"key": "LAW", "stem": "LAW", "itemtype": "statute"},
+            "PAPER": {"key": "PAPER", "stem": "PAPER", "itemtype": "journalArticle"},
+        }
+        with mock.patch.object(server, "_summary_keys", return_value={"PAPER"}), \
+                mock.patch.object(server, "_summary_issues", return_value={}):
+            result = server._summary_coverage({"LAW", "PAPER"}, papers)
+        self.assertEqual({"done": 1, "invalid": 0, "missing": 1, "missing_statutes": 1}, result)
+
     def test_light_index_merges_primary_source_and_statutes(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
