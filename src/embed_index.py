@@ -64,6 +64,8 @@ def main():
     ap.add_argument("--skip-bm25", action="store_true")
     ap.add_argument("--only-stem", action="append", default=[],
                     help="只嵌入指定 stem；可重复传入，用于摘要维护的精确重嵌入")
+    ap.add_argument("--skip-sac", action="store_true",
+                    help="跳过自动检索摘要；用于法规等不应触发生成式摘要的来源")
     args = ap.parse_args()
 
     db = lancedb.connect(str(C.LANCEDB_DIR))
@@ -155,7 +157,7 @@ def main():
     # 自动 SAC（M2）：若在设置里开启，先给待办篇里"缺摘要"的用 LLM(SiliconFlow免费) 生成，再嵌入时自动拼前缀。
     try:
         import sac as _sac
-        if todo and _sac.enabled():
+        if todo and _sac.enabled() and not args.skip_sac:
             print("[sac] 自动摘要已开启，检查待办篇 …", flush=True)
             def _sac_items():
                 for f in todo:

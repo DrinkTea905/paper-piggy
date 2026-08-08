@@ -26,7 +26,7 @@ INDEX_CONTRACT_DETAILS = {
 }
 
 _IMPLEMENTATION_GROUPS = {
-    "light": ("index_light.py", "zotero_source.py", "folder_source.py", "folder_meta.py",
+    "light": ("index_light.py", "statute_store.py", "zotero_source.py", "folder_source.py", "folder_meta.py",
               "source_rules.py", "journal_tiers.py", "journal_tiers.json", "legal_lexicon.py"),
     "deep": ("extract.py", "chunk.py", "page_map.py", "deep_extract_status.py"),
     "semantic": ("embed_index.py", "index_semantic.py", "embedder.py", "siliconflow_embedder.py"),
@@ -76,6 +76,8 @@ _AUDITED_IMPLEMENTATIONS = {
         CURRENT_INDEX_CONTRACTS["light"]: {
         "b0bdb6feecdb83f50eb4cfc84e02bb390831870c45e82c2c1113a3cdfd386d11":
             "保留 Zotero creator 顺序、角色与机构身份，并按条目类型生成题录和引注；只需刷新轻量题录",
+        "522a2e0cd08dd0f3f3989b1431770fd7825fded9c9bce4ec05005c4cd91b8bec":
+            "新增独立法规源并入统一题录；既有 Zotero/文件夹题录字段与轻量索引配方不变，新增法规时由入库流程触发增量刷新",
         },
     },
     "deep": {CURRENT_INDEX_CONTRACTS["deep"]: {
@@ -85,6 +87,8 @@ _AUDITED_IMPLEMENTATIONS = {
     "semantic": {CURRENT_INDEX_CONTRACTS["semantic"]: {
         "689ad2d1e5277af32eeb24682427ed8103f60d3cc74e41b557b66ff7828278b7":
             "增加向量契约防混用与原子落盘，且不替切块阶段登记 deep 契约；向量输入规则不变",
+        "a41655dc9eb0c9a0e500605c2ff414f043c73e5797a74efb9b79a30dfa819a0f":
+            "新增仅供独立法规入库使用的 skip-sac 开关，避免生成式摘要与额外费用；既有文献默认向量输入配方不变",
     }},
 }
 

@@ -52,19 +52,27 @@ def _atomic_write_lines(path, lines):
     _replace_retry(tmp, path)
 
 def get_papers():
-    """数据源分派：zotero（读 zotero.sqlite）| folder（受管文件夹，读 meta_cache）。返回 (papers, source_name)。"""
+    """主文献源（Zotero/文件夹）与独立本地法规层合并，返回 (papers, source_name)。"""
     import settings as S
     if S.source() == "folder":
         import folder_source as F
         d = S.folder_dir()
         if not d or not Path(d).exists():
             raise RuntimeError("文件夹模式未配置受管库文件夹（请在向导/设置里指定）")
-        return F.load_papers(d), f"folder:{d}"
-    import zotero_source as Z
-    if not Z.available():
-        raise RuntimeError("未探测到 zotero.sqlite（请确认已安装 Zotero 且库中有文献，"
-                           "或在向导里手动指定 Zotero 数据目录）")
-    return Z.load_papers(), "zotero.sqlite"
+        papers, source_name = F.load_papers(d), f"folder:{d}"
+    else:
+        import zotero_source as Z
+        if not Z.available():
+            raise RuntimeError("未探测到 zotero.sqlite（请确认已安装 Zotero 且库中有文献，"
+                               "或在向导里手动指定 Zotero 数据目录）")
+        papers, source_name = Z.load_papers(), "zotero.sqlite"
+    import statute_store as SS
+    statutes = SS.load_papers()
+    primary_keys = {p.get("key") for p in papers}
+    collision = sorted(p.get("key") for p in statutes if p.get("key") in primary_keys)
+    if collision:
+        raise RuntimeError("本地法规 key 与主文献源冲突：" + "、".join(collision))
+    return papers + statutes, f"{source_name}+statutes:{len(statutes)}"
 
 # EN-L4①：词典来源条目的 itemtype 白名单——只有学术/法源类条目的 keywords 才可信；
 # webpage/blogPost 等网摘的标签常是「EXCEL技巧」「《三体》」这类与法学无关的噪声，
@@ -122,7 +130,7 @@ def enrich(m, now, old_ingested=None):
     # EN-L5：法条时效标识，写进 papers.jsonl（检索输出侧按它现算徽标/降权，不改 LanceDB 表 schema）。
     # 判据来自 title/extra——Zotero 里法规版本状态通常直接写在标题（如"（2012修正）〔已被修订〕"）
     # 或 extra 备注里。已废止/已失效 → "已废止"（检索降权）；YYYY年修正/修订 或 已修订 → "已修订"（只标识）。
-    if (m.get("itemtype") or "") == "statute":
+    if (m.get("itemtype") or "") == "statute" and not m.get("statute_status"):
         blob = f"{m.get('title', '') or ''} {m.get('extra', '') or ''}"
         if re.search(r"已废止|已失效", blob):
             m["statute_status"] = "已废止"

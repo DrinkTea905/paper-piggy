@@ -18,12 +18,14 @@ PY = sys.executable
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--stage", default="all",
-                    choices=["light", "semantic", "deep", "all", "folder",
+                    choices=["light", "semantic", "deep", "statute", "all", "folder",
                              "deep_prepare", "deep_embed"])
     ap.add_argument("--scope", default="all")
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--only-stem", action="append", default=[])
+    ap.add_argument("--skip-sac", action="store_true",
+                    help="本次全文嵌入不自动生成检索摘要（法规等已有结构化摘要的来源使用）")
     ap.add_argument("--log", default="")
     args = ap.parse_args()
     lim = ["--limit", str(args.limit)] if args.limit else []
@@ -36,7 +38,8 @@ def main():
     FOLDER_PREP = ("题录抽取", [PY, str(C.APP / "folder_ingest.py"), "--workers", str(args.workers)])  # folder 模式先补 meta_cache
     EXTRACT = ("提取全文附件", [PY, str(C.APP / "extract.py"), "--scope", args.scope, "--workers", str(args.workers)] + lim)
     CHUNK   = ("结构切块", [PY, str(C.APP / "chunk.py")] + lim)
-    EMBED   = ("嵌入+索引", [PY, str(C.APP / "embed_index.py"), "--batch", "32"] + only + lim)
+    skip_sac = ["--skip-sac"] if args.skip_sac else []
+    EMBED   = ("嵌入+索引", [PY, str(C.APP / "embed_index.py"), "--batch", "32"] + only + skip_sac + lim)
     PAGEMAP = ("印刷页码映射", [PY, str(C.APP / "page_map.py"), "--all"])   # 研究助手地基：PDF页→期刊印刷页
     DEEP = [EXTRACT, CHUNK, EMBED, PAGEMAP]
     # #7 Agent 驱动深索：拆两段，让「写摘要」插在 chunk 之后、embed 之前，一趟完成。
@@ -48,6 +51,7 @@ def main():
     # folder 阶段：先 FOLDER_PREP 补 meta_cache（含 N 次 LLM，分钟级），再 LIGHT（读 cache 建词法），再 SEM。
     # folder 不放 CAT（build_categories 只读 zotero.sqlite，folder 下会早退）。
     steps = {"light": [LIGHT, CAT], "semantic": [SEM, TOPICS], "deep": DEEP,
+             "statute": [EXTRACT, CHUNK, EMBED],
              "all": [LIGHT, CAT, SEM, TOPICS],
              "folder": [FOLDER_PREP, LIGHT, SEM, TOPICS],
              "deep_prepare": DEEP_PREPARE, "deep_embed": DEEP_EMBED}[args.stage]

@@ -95,7 +95,7 @@ _INSTRUCTIONS_HEAD = """你连接的是用户的**本地文献知识库**（Pape
 2. 每个论断后带 [n] 引用，n 对应 sources 里的论文 key。不臆造、不给无出处的断言。
 3. 下判断前先 read_source 读原文（逐页正文 + 印刷页码）。不要只凭 220 字检索片段就写综述。
 4. 不得直接修改原始文献或 Zotero。只有用户明确要求、并通过工具自身的安全闸时，
-   才能 add_source、建库或深索，从而更新 PaperPiggy 索引。wiki 写回仅限综合层
+   才能 add_source / add_statute、建库或深索，从而更新 PaperPiggy 索引。add_statute 必须先预览、再携令牌确认，且永不修改 Zotero。wiki 写回仅限综合层
     （save_synthesis / update_wiki_page / build_digest / research_outline / mark_stale）；你能写、不能删——删除只由用户在应用里操作。
     人工核验页的正文/来源更新会自动进入“待审修改”，不会覆盖核验版或进入检索；只有用户在应用里审阅后才能发布。
 5. 你新写回的页会标记为「🤖 未核验」，进入检索但会被降权。请对得起这个信任。
@@ -299,6 +299,8 @@ TOOLS = [
                           "description": "排序：blend=相关+权威(默认) / relevance=纯相关 / tier=先期刊层级", "default": "blend"},
                 "category": {"type": "string",
                     "description": "限定检索范围到某个知识库分类（可选）。取值来自 list_kb_categories 的 id（kbc_…）、或 topic:<n>、或 zotero:<收藏夹路径>。留空=全库。"},
+                "source_scope": {"type": "string", "enum": ["all", "literature", "statute"],
+                    "default": "all", "description": "all=全部；literature=只检索学术/文献来源；statute=只检索法规原文。"},
             },
             "required": ["query"],
         },
@@ -501,6 +503,8 @@ TOOLS = [
                 "max_chars": {"type": "integer",
                               "description": "最多返回多少字（默认 20000）。超出会截断并告诉你 next_page，从那页续读。",
                               "default": 20000},
+                "article": {"type": "string",
+                            "description": "法规可按条读取，如“第二十条”或“20”；给出后忽略 from_page/to_page。"},
             },
             "required": ["key"],
         },
@@ -656,6 +660,7 @@ TOOLS = [
             "pdf_page": {"type": "integer", "description": "PDF 顺序页号（可选；给了才带页码引注）"},
             "position": {"type": "integer", "description": "非 PDF 原文位置序号（可选）"},
             "locator": {"type": "string", "description": "非 PDF 人类可读定位，如章节、标题段或行号范围（可选）"},
+            "article": {"type": "string", "description": "法规条文号，如“第二十条”；法规引注按条而非页码。"},
             "style": {"type": "string", "enum": ["footnote", "compact"], "default": "footnote",
                       "description": "footnote=法学脚注全格式（默认）/ compact=紧凑格式"}},
             "required": ["key"]},
@@ -726,6 +731,36 @@ TOOLS = [
             "required": ["path"]},
     },
     {
+        "name": "add_statute",
+        "description": "把 Agent 从官方网页取得并核对的法律法规/司法解释原文写入独立本地法规库，不修改 Zotero。"
+                       "必须先 confirm=false 预览校验；向用户展示版本、域名、条文范围与哈希并获确认后，"
+                       "再携 confirmation_token 调 confirm=true。非 gov.cn/court.gov.cn/spp.gov.cn 官方域名"
+                       "还必须显式 confirm_unofficial=true。正文必须是保留第X条结构的完整 Markdown，不得提交网页 HTML。"
+                       "确认写入后会自动对该法规切条并建索引，且不会生成检索摘要。",
+        "inputSchema": {"type": "object", "properties": {
+            "title": {"type": "string", "description": "法规全称"},
+            "short_title": {"type": "string", "description": "简称（可选）"},
+            "issuing_authority": {"type": "string", "description": "制定机关"},
+            "passed_date": {"type": "string", "description": "通过日期 YYYY-MM-DD"},
+            "revision_dates": {"type": "array", "description": "历次修订，可传 YYYY-MM-DD 或 {date,label}",
+                               "items": {"type": ["string", "object"]}},
+            "effective_date": {"type": "string", "description": "施行日期 YYYY-MM-DD"},
+            "legal_level": {"type": "string", "description": "效力位阶"},
+            "document_number": {"type": "string", "description": "文号"},
+            "source_url": {"type": "string", "description": "官方原文 HTTPS URL"},
+            "fetched_at": {"type": "string", "description": "抓取时间（可选）"},
+            "version_label": {"type": "string", "description": "引注版本，如“2025年修订”"},
+            "validity_status": {"type": "string", "enum": ["尚未施行", "现行有效", "已修订", "已废止"],
+                                "default": "现行有效"},
+            "body_markdown": {"type": "string", "description": "已核对的完整法规正文 Markdown"},
+            "confirm": {"type": "boolean", "default": False,
+                        "description": "false=只预览不落盘；用户确认后才可 true"},
+            "confirmation_token": {"type": "string", "description": "预览返回的确认令牌"},
+            "confirm_unofficial": {"type": "boolean", "default": False,
+                                   "description": "非官方白名单 URL 的二次确认"}},
+            "required": ["title", "issuing_authority", "source_url", "body_markdown"]},
+    },
+    {
         "name": "pending_wiki_updates",
         "description": "拉取服务器已算好的「待处理综合页更新」清单——最近深索/新增的文献可能影响哪些既有 wiki 页。"
                        "深索一批文献后、或想主动维护 wiki 时**先调它**，直接拿到受影响页清单（无需自己对每篇跑 "
@@ -793,6 +828,7 @@ _TOOL_TITLES = {
     "locate_quote": "定位原文引句",
     "verify_claim": "核验论断证据",
     "add_source": "添加全文来源",
+    "add_statute": "添加法规原文",
     "pending_wiki_updates": "列出待处理 Wiki 更新",
     "read_project_memory": "读取项目记忆",
     "append_project_memory": "追加项目记忆",
@@ -802,7 +838,7 @@ _WRITE_TOOLS = {
     "build_digest", "research_outline", "merge_template_upgrade",
     "submit_agent_summaries", "resolve_wiki_suggestion", "deep_index", "localkb_build",
     "save_synthesis", "mark_stale", "update_wiki_page", "set_wiki_theme",
-    "set_wiki_links", "add_source", "append_project_memory",
+    "set_wiki_links", "add_source", "add_statute", "append_project_memory",
 }
 _IDEMPOTENT_WRITE_TOOLS = {"mark_stale", "set_wiki_theme"}
 
@@ -1013,7 +1049,8 @@ def do_tool(name, args):
             return "错误：知识库服务启动失败（请确认 PaperPiggy 已安装、Python 环境正常，或查看 logs/server.log）。"
         resp = requests.post(URL + "/search", json={"query": args["query"],
                              "topk": args.get("topk", 8), "sort": args.get("sort", "blend"),
-                             "category": args.get("category")}, timeout=120)
+                             "category": args.get("category"),
+                             "source_scope": args.get("source_scope", "all")}, timeout=120)
         if resp.status_code != 200:
             return f"检索失败：{_err_of(resp)}"
         r = resp.json()
@@ -1392,7 +1429,8 @@ def do_tool(name, args):
         resp = requests.get(URL + "/source/" + key,
                             params={"from_page": args.get("from_page", 1),
                                     "to_page": args.get("to_page", 0),
-                                    "max_chars": args.get("max_chars", 20000)}, timeout=90)
+                                    "max_chars": args.get("max_chars", 20000),
+                                    "article": args.get("article", "")}, timeout=90)
         if resp.status_code == 404:
             return f"知识库里没有 key={key} 的文献。先用 list_sources 或 search_localkb 确认 key。"
         if resp.status_code != 200:
@@ -1706,6 +1744,8 @@ def do_tool(name, args):
             params["position"] = args["position"]
         if args.get("locator"):
             params["locator"] = args["locator"]
+        if args.get("article"):
+            params["heading"] = args["article"]
         resp = requests.get(URL + "/cite/" + key, params=params, timeout=30)
         if resp.status_code == 404:
             return f"知识库里没有 key={key} 的文献。先用 list_sources 或 search_localkb 确认 key。"
@@ -1897,6 +1937,42 @@ def do_tool(name, args):
             out.append("建库在后台进行中，稍后可用 localkb_status / deep_status 查进度。")
         if r.get("hint"):
             out.append(str(r["hint"]))
+        return "\n".join(out)
+
+    if name == "add_statute":
+        if not ensure_up():
+            return "错误：知识库服务启动失败。"
+        payload = {k: args.get(k) for k in (
+            "title", "short_title", "issuing_authority", "passed_date", "revision_dates",
+            "effective_date", "legal_level", "document_number", "source_url", "fetched_at",
+            "version_label", "validity_status", "body_markdown", "confirm",
+            "confirmation_token", "confirm_unofficial") if args.get(k) is not None}
+        resp = requests.post(URL + "/statutes/add", json=payload, timeout=300)
+        if resp.status_code != 200:
+            return f"法规入库失败：{_err_of(resp)}"
+        r = resp.json()
+        if r.get("requires_confirmation"):
+            p = r.get("preview") or {}
+            official = "官方白名单" if p.get("official_source") else "非白名单来源"
+            return (f"法规已通过预检，但**尚未落盘**：\n"
+                    f"- {p.get('title')}（{p.get('statute_version_label') or '版本未标注'}，{p.get('validity_status')}）\n"
+                    f"- 制定机关：{p.get('issuing_authority')}；来源：{p.get('source_host')}（{official}）\n"
+                    f"- 条文：{p.get('article_count')} 条，{p.get('first_article')} 至 {p.get('last_article')}\n"
+                    f"- 正文 SHA-256：{p.get('body_sha256')}\n"
+                    f"请把以上预览交给用户确认。确认后用完全相同的正文和元数据，传 "
+                    f"confirm=true、confirmation_token={r.get('confirmation_token')} 再调用；"
+                    f"任何字段变化都会令令牌失效。")
+        if r.get("status") == "duplicate":
+            return f"该法规版本已存在（key={r.get('key')}），正文哈希一致，未重复写入。"
+        out = [f"法规已写入独立本地法规库（key={r.get('key')}，状态={r.get('validity_status')}）。"]
+        for change in r.get("status_changes") or []:
+            cited = change.get("cited_by_wiki") or []
+            out.append(f"- 版本状态变化：{change.get('key')} {change.get('old_status') or '未标注'} → "
+                       f"{change.get('new_status')}；引用它的 Wiki 页 {len(cited)} 个。")
+        if r.get("building"):
+            out.append("已开始增量建索引；完成后可按 statute 范围检索并按条读取。")
+        else:
+            out.append("当前未启动建索引；请在现有维护任务结束后调用 localkb_build 更新。")
         return "\n".join(out)
 
     return f"未知工具：{name}"

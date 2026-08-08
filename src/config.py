@@ -21,7 +21,7 @@ SUBPROC_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0   # CREATE_NO_W
 # 全项目**只有这一处**版本字面量：发版改版本号只改这里，其余地方一律 `C.APP_VERSION` 引用
 # （踩过的坑：版本号散落在 mcp_server 的 serverInfo、打包脚本、页脚里，改一处漏三处，
 #  用户报 bug 时报的版本对不上代码）。1.0.0 = 首个公开发布版（Apache-2.0 开源）。
-APP_VERSION = "1.0.51"
+APP_VERSION = "1.0.52"
 
 APP = Path(__file__).parent                 # 源码目录；分发版 = bundle/app
 RAG = APP                                    # 兼容：引擎脚本都在项目根
@@ -133,6 +133,7 @@ FOLDER_META_CACHE = FOLDER_DIR_STATE / "meta_cache.json"  # {key:{meta,file,sha1
 META_DIR       = DATA / "meta"              # L档：papers.jsonl（每行一篇全字段，含无全文的纯题录篇）
 BM25_META_DIR  = DATA / "bm25_meta"         # L档：meta 文本的独立 bm25（0嵌入即时可搜）
 CATEGORIES_DIR = DATA / "categories"        # 收藏夹/AI主题 sidecar
+STATUTES_DIR    = DATA / "statutes"          # Agent 核验后写入的本地法规版本库（与 Zotero 并行）
 STATS_CACHE    = DATA / "stats_cache.json"  # 仪表盘 /stats 预聚合缓存
 INDEX_MANIFEST = DATA / "index_manifest.json"  # 整库状态清单（各档进度/数据源）
 PAPERS_JSONL   = META_DIR / "papers.jsonl"
@@ -186,7 +187,7 @@ MODELS = _resolve_models()
 # 只创建“本项目自有”的目录；绝不 mkdir MODELS（那是知识库的，只读）
 for _d in (EXTRACTED, CHUNKS, LANCEDB_DIR, BM25_DIR, STATE, LOGS,
            DATA / "summaries", META_DIR, BM25_META_DIR, CATEGORIES_DIR,
-           FOLDER_DIR_STATE, PAGEMAP_DIR,
+           FOLDER_DIR_STATE, PAGEMAP_DIR, STATUTES_DIR,
            WIKI_DIR, WIKI_ANSWERS_DIR, WIKI_CONCEPTS_DIR, WIKI_TOPICS_DIR,
            WIKI_DIGEST_DIR, WIKI_OUTLINE_DIR, WIKI_ENTITY_DIR, WIKI_OVERVIEW_DIR):
     _d.mkdir(parents=True, exist_ok=True)

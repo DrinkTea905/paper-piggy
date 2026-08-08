@@ -50,15 +50,17 @@ def creator_names(hit, role):
 
 
 def _join_names(names):
-    return "、".join(x for x in names if x)
+    """两人全部列出，三人以上按中文法学体例缩写为首位姓名加“等”。"""
+    cleaned = [x for x in names if x]
+    if len(cleaned) >= 3:
+        return cleaned[0] + "等"
+    return "、".join(cleaned)
 
 
 def _first_author(hit):
-    """期刊旧格式保持“首位作者+等”；其它类型使用完整、有角色的 creator 列表。"""
+    """期刊作者同样遵守“两人全列、三人以上用等”。"""
     authors = creator_names(hit, "author")
-    if not authors:
-        return ""
-    return authors[0] + ("等" if len(authors) > 1 else "")
+    return _join_names(authors)
 
 
 def _printed_display(key, pdf_page):
@@ -119,11 +121,42 @@ def _publication(hit):
     return "，".join(parts)
 
 
+def _book_publication(hit):
+    """书籍/书章出版项：出版社＋年份/版次；缺项直接省略，由 missing_fields 提示。"""
+    publisher = str(hit.get("publisher") or "").strip()
+    year = str(hit.get("year") or "").strip()
+    edition = str(hit.get("edition") or "").strip()
+    text = publisher
+    if year:
+        text += f"{year}年"
+    if edition:
+        if re.fullmatch(r"\d+", edition):
+            edition = f"第{edition}版"
+        elif not edition.endswith("版"):
+            edition += "版"
+        text += edition
+    elif year:
+        text += "版"
+    return text
+
+
+def _translated_author(name):
+    """把 Zotero 中常见的 [美]/【美】国别前缀规范为中文引注用的〔美〕。"""
+    raw = str(name or "").strip()
+    match = re.match(r"^[\[【]([^\]】]+)[\]】]\s*(.+)$", raw)
+    if not match:
+        return raw
+    return f"〔{match.group(1).strip()}〕{match.group(2).strip()}"
+
+
 def _statute_cite(hit, heading=""):
     name = _clean_title(hit.get("title"))
     text = f"《{name}》" if name else ""
+    version_label = str(hit.get("statute_version_label") or "").strip()
     year = str(hit.get("year") or "").strip()
-    if year and year not in (hit.get("title") or ""):
+    if version_label:
+        text += f"（{version_label}）"
+    elif year and year not in (hit.get("title") or ""):
         text += f"（{year}年）"
     match = _RE_ARTICLE.search(heading or hit.get("heading") or "")
     if match:
@@ -133,12 +166,15 @@ def _statute_cite(hit, heading=""):
 
 def _journal_cite(hit, year="", issue="", compact_style=False):
     author = _first_author(hit)
+    translators = creator_names(hit, "translator")
     title = _clean_title(hit.get("title"))
     journal = str(hit.get("journal") or "").strip()
     yr = str(year or hit.get("year") or "").strip()
     locator = _locator(hit)
     if compact_style:
         text = (author if author else "") + (f"《{title}》" if title else "")
+        if translators:
+            text += f"，{_join_names(translators)}译"
         if journal:
             text += f"，{journal}"
         if locator:
@@ -146,6 +182,8 @@ def _journal_cite(hit, year="", issue="", compact_style=False):
         return text
     text = f"{author}：" if author else ""
     text += f"《{title}》" if title else ""
+    if translators:
+        text += f"，{_join_names(translators)}译"
     if journal:
         text += f"，载《{journal}》"
     if yr:
@@ -153,8 +191,6 @@ def _journal_cite(hit, year="", issue="", compact_style=False):
     period = issue_of(hit, issue)
     if period:
         text += f"第{period}期"
-    elif journal:
-        text += "第__期（待补期号）"
     if locator:
         text += f"，{locator}"
     return text
@@ -163,15 +199,19 @@ def _journal_cite(hit, year="", issue="", compact_style=False):
 def _book_cite(hit):
     authors = creator_names(hit, "author")
     editors = creator_names(hit, "editor")
+    translators = creator_names(hit, "translator")
     title = _clean_title(hit.get("title"))
     if authors:
-        text = f"{_join_names(authors)}："
+        display_authors = [_translated_author(x) for x in authors] if translators else authors
+        text = f"{_join_names(display_authors)}："
     elif editors:
-        text = f"{_join_names(editors)}（编）："
+        text = f"{_join_names(editors)}主编："
     else:
         text = ""
     text += f"《{title}》" if title else ""
-    publication = _publication(hit)
+    if translators:
+        text += f"，{_join_names(translators)}译"
+    publication = _book_publication(hit)
     if publication:
         text += f"，{publication}"
     locator = _locator(hit)
@@ -183,16 +223,19 @@ def _book_cite(hit):
 def _book_section_cite(hit):
     authors = creator_names(hit, "author")
     editors = creator_names(hit, "editor")
+    translators = creator_names(hit, "translator")
     chapter = _clean_title(hit.get("title"))
     book = _clean_title(hit.get("book_title") or hit.get("journal"))
     text = f"{_join_names(authors)}：" if authors else ""
     text += f"《{chapter}》" if chapter else ""
     if book:
         if editors:
-            text += f"，载{_join_names(editors)}（编）：《{book}》"
+            text += f"，载{_join_names(editors)}主编：《{book}》"
         else:
             text += f"，载《{book}》"
-    publication = _publication(hit)
+    if translators:
+        text += f"，{_join_names(translators)}译"
+    publication = _book_publication(hit)
     if publication:
         text += f"，{publication}"
     locator = _locator(hit)
@@ -283,13 +326,14 @@ def missing_fields(hit):
     if itemtype == "statute":
         if not str(hit.get("title") or "").strip():
             missing.append("title")
-        if (not str(hit.get("year") or "").strip()
+        if (not str(hit.get("statute_version_label") or "").strip()
+                and not str(hit.get("year") or "").strip()
                 and not re.search(r"\d{4}", str(hit.get("title") or ""))):
             missing.append("year")
     elif itemtype == "book":
         if not (authors or editors):
             missing.append("author/editor")
-        for field in ("title", "place", "publisher", "year"):
+        for field in ("title", "publisher", "year"):
             if not str(hit.get(field) or "").strip():
                 missing.append(field)
     elif itemtype == "bookSection":
@@ -301,7 +345,7 @@ def missing_fields(hit):
             missing.append("editor")
         if not str(hit.get("book_title") or hit.get("journal") or "").strip():
             missing.append("book_title")
-        for field in ("place", "publisher", "year"):
+        for field in ("publisher", "year"):
             if not str(hit.get(field) or "").strip():
                 missing.append(field)
         if not locator:

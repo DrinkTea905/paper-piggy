@@ -16,7 +16,7 @@ import wiki_store as W
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, List
 import uvicorn
 
@@ -346,16 +346,25 @@ def _source_signature():
     """返回当前数据源的"内容指纹"，变化即代表有新增/改动。"""
     try:
         import settings as S
+        statute_sig = "statutes:0:0"
+        try:
+            import statute_store as SS
+            statutes = SS.load_metadata()
+            mt = max(((C.STATUTES_DIR / x["key"] / "metadata.json").stat().st_mtime
+                      for x in statutes), default=0)
+            statute_sig = f"statutes:{len(statutes)}:{int(mt)}"
+        except Exception:
+            pass
         if S.source() == "folder":
             import folder_source as FS
             files = FS.scan(S.folder_dir())
             mt = max((Path(p).stat().st_mtime for p in files), default=0)
-            return f"folder:{len(files)}:{int(mt)}"
+            return f"folder:{len(files)}:{int(mt)}:{statute_sig}"
         import zotero_source as Z
         dd = Z.detect_data_dir()
         sq = (Path(dd) / "zotero.sqlite") if dd else None
         if not (sq and sq.exists()):
-            return "zotero:none"
+            return f"zotero:none:{statute_sig}"
         # R7：WAL 模式下新增条目常只落 -wal、主库 mtime 暂不动 → 自动更新检测不到。
         # 把 zotero.sqlite-wal 的 mtime/size 一并纳入指纹，新增即可被捕获。
         sig = f"zotero:{int(sq.stat().st_mtime)}"
@@ -366,7 +375,7 @@ def _source_signature():
                 sig += f":wal{int(ws.st_mtime)}:{ws.st_size}"
             except Exception:
                 pass
-        return sig
+        return f"{sig}:{statute_sig}"
     except Exception:
         return None
 
@@ -3123,6 +3132,9 @@ def paper_detail(key: str):
         "retrieval_summary_error": summary_info.get("reason", ""),
         "ingested_at": p.get("ingested_at", ""),
         "statute_status": p.get("statute_status", "") or "",
+        "source_origin": p.get("source_origin", ""),
+        "statute_version_label": p.get("statute_version_label", ""),
+        "statute_meta": p.get("statute_meta", {}) if p.get("itemtype") == "statute" else {},
         "cited_by_wiki": cited_by_wiki,
     }
     if g:
@@ -3221,6 +3233,94 @@ def research_verify_claim(q: VerifyClaimQ):
     except Exception as e:
         log_error("research/verify_claim", repr(e), traceback.format_exc())
         return JSONResponse({"detail": str(e)}, status_code=400)
+
+
+class StatuteAddQ(BaseModel):
+    title: str
+    short_title: str = ""
+    issuing_authority: str
+    passed_date: str = ""
+    revision_dates: List = Field(default_factory=list)
+    effective_date: str = ""
+    legal_level: str = ""
+    document_number: str = ""
+    source_url: str
+    fetched_at: str = ""
+    version_label: str = ""
+    validity_status: str = "现行有效"
+    body_markdown: str
+    confirm: bool = False
+    confirmation_token: str = ""
+    confirm_unofficial: bool = False
+
+
+@app.post("/statutes/add")
+def add_statute(q: StatuteAddQ):
+    """预览校验与确认写入共用一个端点；confirm=false 时保证零持久写入。"""
+    import statute_store as SS
+    payload = q.model_dump() if hasattr(q, "model_dump") else q.dict()
+    try:
+        draft = SS.validate_draft(payload)
+        if not q.confirm:
+            return {
+                "ok": True, "requires_confirmation": True,
+                "confirmation_token": draft["confirmation_token"],
+                "preview": {k: draft.get(k) for k in (
+                    "key", "title", "short_title", "issuing_authority", "passed_date",
+                    "revision_dates", "effective_date", "legal_level", "document_number",
+                    "source_url", "source_host", "official_source", "statute_version_label",
+                    "validity_status", "body_sha256", "body_chars", "article_count",
+                    "first_article", "last_article")},
+                "detail": "校验通过但尚未落盘；请向用户展示预览，确认后携令牌重调 confirm=true。",
+            }
+        result = SS.add_confirmed(payload, q.confirmation_token)
+    except SS.StatuteValidationError as e:
+        if q.confirm:
+            try:
+                SS.record_failure(payload, e)
+            except Exception as log_error_exc:
+                log_error("statute failure record", repr(log_error_exc))
+        return JSONResponse({"detail": str(e)}, status_code=400)
+    except Exception as e:
+        log_error("statute add", repr(e), traceback.format_exc())
+        return JSONResponse({"detail": f"法规入库失败：{e}"}, status_code=500)
+
+    record = result.get("record") or {}
+    changes = result.get("status_changes") or []
+    for change in changes:
+        try:
+            change["cited_by_wiki"] = [
+                {"id": x.get("id"), "title": x.get("title", "")}
+                for x in W.backlinks(key=change["key"]).get("cited_by", [])
+            ]
+        except Exception as e:
+            log_error("statute backlinks", repr(e))
+            change["cited_by_wiki"] = []
+    building = False
+    if result.get("status") == "added" and not BUILD["running"]:
+        key = str(record.get("key") or "")
+
+        def _index_statute_body(rc):
+            if rc != 0 or not key:
+                return
+            # all 先把法规写入统一题录，再只对这一部法规走 Markdown 提取/切条/嵌入。
+            # 明确跳过 SAC，避免一次法规入库暗中触发生成式摘要或额外 LLM 费用。
+            started = _run_build(
+                "statute",
+                ["--scope", "keys:" + key, "--only-stem", T.safe_name(key), "--skip-sac"],
+            )
+            if not started:
+                log_error("statute deep index", "法规题录已入库，但条文索引未能立即启动")
+
+        building = bool(_run_build("all", on_done=_index_statute_body))
+    return {
+        "ok": True, "status": result.get("status"), "key": record.get("key"),
+        "title": record.get("title", ""), "validity_status": record.get("validity_status", ""),
+        "body_sha256": record.get("body_sha256", ""), "building": building,
+        "status_changes": changes,
+        "detail": ("法规版本已原子落盘并开始增量建索引（题录完成后自动切分并嵌入条文）。" if building else
+                   "法规版本已落盘；若当前有维护任务，完成后请手动更新知识库。"),
+    }
 
 class LocalPathQ(BaseModel):
     path: str
@@ -3551,8 +3651,35 @@ def open_pdf(q: OpenPdfQ):
 #  却只有 _extracted_excerpt 内部自用、没有任何出口。gist 的 ingest 主干
 #  "the LLM reads it, extracts the key information" 因此走不通。
 # ══════════════════════════════════════════════════════════════════
+def _article_label(value):
+    raw = re.sub(r"\s+", "", str(value or ""))
+    if raw.isdigit():
+        return f"第{raw}条"
+    number = r"[一二三四五六七八九十百千零〇\d]+"
+    if re.fullmatch(number, raw):
+        return f"第{raw}条"
+    match = re.fullmatch(rf"第({number})条(?:之({number}))?", raw)
+    return match.group(0) if match else ""
+
+
+def _join_chunk_texts(chunks):
+    text = ""
+    for chunk in chunks:
+        part = str(chunk.get("text") or "").strip()
+        if not part:
+            continue
+        overlap = 0
+        for n in range(min(160, len(text), len(part)), 0, -1):
+            if text[-n:] == part[:n]:
+                overlap = n
+                break
+        text += ("\n" if text and not overlap else "") + part[overlap:]
+    return text
+
+
 @app.get("/source/{key}")
-def read_source(key: str, from_page: int = 1, to_page: int = 0, max_chars: int = 20000):
+def read_source(key: str, from_page: int = 1, to_page: int = 0, max_chars: int = 20000,
+                article: str = ""):
     """按位置序号返回正文；PDF 带页码，其他格式带章节/段落/行号定位。
 
     诚实降级：读不到时明确区分「无此篇 / 只有题录无全文附件 / 尚未深索 / 扫描件无文字」，
@@ -3596,6 +3723,41 @@ def read_source(key: str, from_page: int = 1, to_page: int = 0, max_chars: int =
         }
         return {"ok": False, "reason": status or "no_extracted_text", "key": key,
                 "title": title, "detail": details.get(status, "该篇暂时没有可读正文。")}
+
+    requested_article = _article_label(article)
+    if requested_article:
+        chunk_file = C.CHUNKS / f"{stem}.json"
+        try:
+            chunks = json.loads(chunk_file.read_text(encoding="utf-8"))
+        except Exception:
+            chunks = []
+        matching = [c for c in chunks
+                    if _article_label(c.get("heading")) == requested_article]
+        if not matching:
+            available = []
+            for c in chunks:
+                heading = _article_label(c.get("heading"))
+                if heading and heading not in available:
+                    available.append(heading)
+            return {"ok": False, "reason": "article_not_found", "key": key, "title": title,
+                    "detail": f"未找到{requested_article}；已识别条文范围："
+                              + (f"{available[0]} 至 {available[-1]}" if available else "无")}
+        matching.sort(key=lambda c: (int(c.get("page") or 0), str(c.get("chunk_id") or "")))
+        body = _join_chunk_texts(matching)
+        budget = max(500, int(max_chars or 20000))
+        truncated = len(body) > budget
+        body = body[:budget]
+        first_pos = int(matching[0].get("page") or 0)
+        fmt = p.get("fulltext_format") or ""
+        return {
+            "ok": True, "key": key, "title": title, "author": p.get("author", ""),
+            "year": p.get("year", ""), "journal": p.get("journal", ""),
+            "fulltext_format": fmt, "n_pages_total": len({c.get("heading") for c in chunks if c.get("heading")}),
+            "returned_pages": 1, "chars": len(body), "truncated": truncated, "next_page": None,
+            "article": requested_article,
+            "pages": [{"position": first_pos, "pdf_page": first_pos if fmt == "pdf" else None,
+                       "printed_page": "", "locator": requested_article, "text": body}],
+        }
 
     lo = max(1, int(from_page or 1))
     # pages 只保存有文字的页；混合 PDF 若有一页 OCR 仍失败，页码会有空洞。
@@ -4360,6 +4522,7 @@ class SearchQ(BaseModel):
     sort: Optional[str] = None
     min_weight: float = 0.0                       # 引用权重下限过滤（0=不过滤）
     category: Optional[str] = None                # F11：限定检索范围到某个分类（kbc_/topic:/zotero:）
+    source_scope: Optional[str] = None             # all/literature/statute；避免法规正文淹没学术来源
 
 @app.post("/search")
 def search(q: SearchQ):
@@ -4372,6 +4535,18 @@ def search(q: SearchQ):
         return JSONResponse({"error": msg, "ready": False}, status_code=503)
     t0 = time.time()
     keys = _resolve_category_keys(q.category)
+    scope = (q.source_scope or "all").strip()
+    if scope not in ("all", "literature", "statute"):
+        return JSONResponse({"detail": "source_scope 仅支持 all | literature | statute"}, status_code=400)
+    if scope != "all":
+        papers = _load_papers()
+        scope_keys = {k for k, p in papers.items()
+                      if ((p.get("itemtype") == "statute") == (scope == "statute"))}
+        keys = scope_keys if keys is None else (set(keys) & scope_keys)
+        if not keys:
+            return {"query": q.query, "mode": R.STATE.get("mode"), "category": q.category,
+                    "source_scope": scope, "took_ms": round((time.time() - t0) * 1000),
+                    "results": []}
     try:
         res = R.search(q.query, q.topk, q.sort, q.min_weight, keys=keys)
     except Exception as e:
@@ -4396,6 +4571,7 @@ def search(q: SearchQ):
     except Exception as e:
         log_error("search no_text tag", repr(e))
     return {"query": q.query, "mode": R.STATE.get("mode"), "category": q.category,
+            "source_scope": scope,
             "took_ms": round((time.time() - t0) * 1000), "results": res}
 
 # ── RAG 对话 ──────────────────────────────────────────────

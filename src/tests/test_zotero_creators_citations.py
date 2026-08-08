@@ -69,7 +69,8 @@ class ZoteroCreatorFixture:
         )
         self.con.executemany(
             "INSERT INTO creatorTypes VALUES (?, ?)",
-            [(1, "author"), (2, "editor"), (3, "translator")],
+            [(1, "author"), (2, "editor"), (3, "translator"),
+             (4, "bookAuthor"), (5, "seriesEditor"), (6, "contributor")],
         )
         self.con.executemany(
             "INSERT INTO items VALUES (?, ?, ?, ?, 1)",
@@ -87,6 +88,9 @@ class ZoteroCreatorFixture:
                 (3, "Catriona", "Mackenzie", 0),
                 (4, "Natalie", "Stoljar", 0),
                 (5, "", "Committee on the Rights of the Child", 1),
+                (6, "Book", "Author", 0),
+                (7, "Series", "Editor", 0),
+                (8, "Volume", "Contributor", 0),
             ],
         )
         self.con.executemany(
@@ -94,6 +98,9 @@ class ZoteroCreatorFixture:
             [
                 (1, 1, 1, 0),
                 (1, 2, 2, 1),
+                (1, 6, 4, 2),
+                (1, 7, 5, 3),
+                (1, 8, 6, 4),
                 (2, 3, 2, 0),
                 (2, 4, 2, 1),
                 (3, 5, 1, 0),
@@ -161,10 +168,12 @@ class ZoteroCreatorRoleTests(unittest.TestCase):
         self.assertEqual("Kathryn Hollingsworth", paper["authors"])
         self.assertEqual("James G. Dwyer", paper["editors"])
         self.assertEqual(
-            ["author", "editor"], [creator["role"] for creator in paper["creators"]]
+            ["author", "editor", "bookAuthor", "seriesEditor", "contributor"],
+            [creator["role"] for creator in paper["creators"]]
         )
         self.assertEqual(
-            ["Kathryn Hollingsworth", "James G. Dwyer"],
+            ["Kathryn Hollingsworth", "James G. Dwyer", "Book Author",
+             "Series Editor", "Volume Contributor"],
             [creator["name"] for creator in paper["creators"]],
         )
         self.assertEqual("775–802", paper["official_pages"])
@@ -251,11 +260,10 @@ class CitationTypeTests(unittest.TestCase):
         text = CF.footnote(self.book_section)
         for expected in (
             "Kathryn Hollingsworth",
-            "James G. Dwyer（编）",
+            "James G. Dwyer主编",
             "Children and Juvenile Justice Law",
             "The Oxford Handbook of Children and the Law",
-            "Oxford University Press",
-            "2020年",
+            "Oxford University Press2020年版",
             "第775–802页",
         ):
             self.assertIn(expected, text)
@@ -269,8 +277,8 @@ class CitationTypeTests(unittest.TestCase):
 
     def test_edited_collection_uses_editor_and_no_journal_requirements(self):
         text = CF.footnote(self.edited_book)
-        self.assertIn("Catriona Mackenzie、Natalie Stoljar（编）", text)
-        self.assertIn("New York：Oxford University Press，2000年", text)
+        self.assertIn("Catriona Mackenzie、Natalie Stoljar主编", text)
+        self.assertIn("Oxford University Press2000年版", text)
         self.assertNotIn("载《", text)
         self.assertNotIn("待补期号", text)
         missing = CF.missing_fields(self.edited_book)
@@ -314,10 +322,49 @@ class CitationTypeTests(unittest.TestCase):
             "fulltext_format": "pdf",
         }
         self.assertEqual(
-            "张三等：《普通期刊文章》，载《法学研究》2024年第2期，第10-20页。",
+            "张三、李四：《普通期刊文章》，载《法学研究》2024年第2期，第10-20页。",
             CF.footnote(article),
         )
         self.assertEqual([], CF.missing_fields(article))
+
+    def test_translated_book_and_three_person_roles(self):
+        translated = {
+            "itemtype": "book", "title": "少年司法制度",
+            "creators": [
+                {"role": "author", "name": "[美]巴里·C. 菲尔德"},
+                {"role": "editor", "name": "甲"},
+                {"role": "editor", "name": "乙"},
+                {"role": "editor", "name": "丙"},
+                {"role": "translator", "name": "高维俭"},
+                {"role": "translator", "name": "蔡伟文"},
+                {"role": "translator", "name": "任延峰"},
+            ],
+            "publisher": "中国人民公安大学出版社", "year": "2011", "edition": "2",
+        }
+        self.assertEqual(
+            "〔美〕巴里·C. 菲尔德：《少年司法制度》，高维俭等译，"
+            "中国人民公安大学出版社2011年第2版。",
+            CF.footnote(translated),
+        )
+
+    def test_translated_journal_article_keeps_translators(self):
+        article = {
+            "itemtype": "journalArticle", "title": "译文", "author": "原作者",
+            "translators": "译者甲; 译者乙", "journal": "法学译丛",
+            "year": "2025", "issue": "3",
+        }
+        self.assertEqual(
+            "原作者：《译文》，译者甲、译者乙译，载《法学译丛》2025年第3期。",
+            CF.footnote(article),
+        )
+
+    def test_missing_issue_is_omitted_and_reported_without_placeholder(self):
+        article = {"itemtype": "journalArticle", "title": "文章", "author": "张三",
+                   "journal": "法学", "year": "2024"}
+        text = CF.footnote(article)
+        self.assertNotIn("__", text)
+        self.assertNotIn("待补", text)
+        self.assertIn("issue", CF.missing_fields(article))
 
 
 if __name__ == "__main__":

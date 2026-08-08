@@ -54,6 +54,7 @@ CORE_IN_DATA = [
     "meta",                  # papers.jsonl：全库文献元数据
     "pagemap",               # PDF 顺序页 → 印刷页码映射（重建要重解析 PDF）
     "folder",                # 文件夹模式 sidecar
+    "statutes",              # ★ 本地法规原文、官方 URL、版本元数据与内容哈希（用户核验后入库）
     "summaries",             # ★ SAC 检索摘要（每篇 ~150 字，LLM 生成）—— **花过 API 钱**
     "grading_memo.json",     # ★ 689 条期刊分级的 LLM 结果 —— **花过真钱**，重跑要再花一次
     "tier_overrides.json",   # ★ 用户一条条**手动改**的期刊档位（source_rules.set_override）—— 纯人工
