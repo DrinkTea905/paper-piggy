@@ -592,6 +592,31 @@ def _ov_mtime():
         return 0.0
 
 
+def _dist_fresh(d, mt, ov):
+    """分布缓存是否仍然可信。
+
+    2026-08-11 修（用户实机暴露）：本函数原来只看 `v / mtime / ov_mtime`——即
+    DIST_VER、papers.jsonl 的 mtime、手动改档与映射文件的 mtime。**定档规则本身
+    （grading_config.json 的 priorityOrder / archetype map / catalogs 注册、任何一份
+    catalogs/*.json、以及代码侧的 MEMO_VER 口径）变了，它一概不失效。**
+    后果：v1.1.0 升级后逐刊 memo 按指纹整份重算了、文献卡上的档位是新的，而库总览
+    读的仍是升级前那份分布缓存——实测用户界面显示 482/540/191/217，同一份数据用
+    同一份代码现算却是 548/526/161/195，差了 66 篇，且怎么重启都不会自愈
+    （papers.jsonl 没变 → 缓存永远命中）。
+    现在与逐刊 memo 共用同一把钥匙：MEMO_VER + _grading_signature()。
+    """
+    if not d or d.get("v") != DIST_VER:
+        return False
+    try:
+        if abs(float(d.get("mtime", -1)) - mt) >= 1e-6:
+            return False
+        if abs(float(d.get("ov_mtime", 0.0)) - ov) >= 1e-6:
+            return False
+    except Exception:
+        return False
+    return d.get("memo_ver") == MEMO_VER and d.get("grading_sig") == _grading_signature()
+
+
 def weight_dist(papers):
     """返回当前学科的 (by_tier, by_journal) 分布；仅命中缓存时返回，否则 None（并异步预热）。
        papers: {key: paper_dict}。缓存键 = (学科, papers.jsonl mtime, 改档文件 mtime)。"""
@@ -599,10 +624,8 @@ def weight_dist(papers):
     mt = _papers_mtime(); ov = _ov_mtime()
     with _LOCK:
         _load_dist()
-        d = _DIST.get(disc)
-        if d and d.get("v") == DIST_VER \
-             and abs(float(d.get("mtime", -1)) - mt) < 1e-6 \
-             and abs(float(d.get("ov_mtime", 0.0)) - ov) < 1e-6:
+        if _dist_fresh(_DIST.get(disc), mt, ov):
+            d = _DIST[disc]
             return d.get("by_tier", []), d.get("by_journal", [])
     warm_async(papers)          # 未命中 → 后台预热，本次先返回 None（调用方兜旧分布）
     return None
@@ -700,6 +723,7 @@ def warm(papers):
     with _LOCK:
         _load_dist()
         _DIST[disc] = {"v": DIST_VER, "mtime": mt, "ov_mtime": ov,
+                       "memo_ver": MEMO_VER, "grading_sig": _grading_signature(),
                        "by_tier": by_tier, "by_journal": by_journal}
         _atomic_write(DIST_FILE, _DIST)
     flush()
@@ -714,10 +738,7 @@ def warm_async(papers):
     tag = (disc, round(mt, 3), round(ov, 3))
     with _LOCK:
         _load_dist()
-        d = _DIST.get(disc)
-        if d and d.get("v") == DIST_VER \
-             and abs(float(d.get("mtime", -1)) - mt) < 1e-6 \
-             and abs(float(d.get("ov_mtime", 0.0)) - ov) < 1e-6:
+        if _dist_fresh(_DIST.get(disc), mt, ov):
             return                      # 已缓存
         if tag in _WARMING:
             return                      # 已在预热

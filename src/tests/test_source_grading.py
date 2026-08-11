@@ -330,6 +330,30 @@ class SourceGradingTests(unittest.TestCase):
              "issn": "1006-1509"}
         self.assertEqual(self.ev(p)["band"], self.ev(p, discipline="law_personal_fun")["band"])
 
+    def test_dist_cache_expires_when_grading_rules_change(self):
+        """分布缓存必须跟着定档规则失效，否则库总览永远显示旧图。
+
+        v1.1.0 实机暴露：逐刊 memo 有指纹会重算、文献卡档位是新的，而库总览的分布缓存
+        只认 papers.jsonl 与改档文件的 mtime——题录没变就永远命中，怎么重启都不自愈。
+        用户界面显示 482/540/191/217，同一份数据同一份代码现算是 548/526/161/195。
+        """
+        mt, ov = 123.0, 4.0
+        fresh = {"v": self.GS.DIST_VER, "mtime": mt, "ov_mtime": ov,
+                 "memo_ver": self.GS.MEMO_VER, "grading_sig": self.GS._grading_signature(),
+                 "by_tier": [], "by_journal": []}
+        self.assertTrue(self.GS._dist_fresh(fresh, mt, ov))
+        # ① 老格式（升级前写的，没有这两个键）必须判为过期
+        legacy = {k: v for k, v in fresh.items() if k not in ("memo_ver", "grading_sig")}
+        self.assertFalse(self.GS._dist_fresh(legacy, mt, ov), "升级前的分布缓存必须失效")
+        # ② 目录数据/配置变了（指纹变）必须判为过期
+        self.assertFalse(self.GS._dist_fresh({**fresh, "grading_sig": "STALE"}, mt, ov))
+        # ③ 代码侧口径 bump 必须判为过期
+        self.assertFalse(self.GS._dist_fresh({**fresh, "memo_ver": self.GS.MEMO_VER - 1}, mt, ov))
+        # ④ 原有的三把钥匙不能失灵
+        self.assertFalse(self.GS._dist_fresh({**fresh, "v": self.GS.DIST_VER + 1}, mt, ov))
+        self.assertFalse(self.GS._dist_fresh(fresh, mt + 1, ov))
+        self.assertFalse(self.GS._dist_fresh(fresh, mt, ov + 1))
+
     def test_authority_dataset_has_an_independent_mapping(self):
         authority = {"itemtype": "dataset", "title": "人口数据", "institution": "国家统计局"}
         ordinary = {"itemtype": "dataset", "title": "研究数据"}
