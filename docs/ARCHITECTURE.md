@@ -28,8 +28,15 @@ Python + FastAPI 后端 + pywebview 原生窗口 + 原生 JS 前端（无构建�
 
 ### 端口
 
-`config.py:160-164`：`DAEMON_HOST=127.0.0.1`、`DAEMON_PORT=8770`、`DAEMON_URL` 由二者拼出。
-8770 是刻意避开另一套知识库 daemon 的 8765（`config.py:9`）。
+`config.py` 的 daemon 段：`DAEMON_HOST=127.0.0.1`、`DAEMON_PORT=8770`、`DAEMON_URL` 由二者拼出。
+8770 是刻意避开另一套知识库 daemon 的 8765。
+
+**全项目只有这一处定义端口**——launcher / server / mcp_server / localkb.py 一律引用 `C.DAEMON_*`。
+因此 `LOCALKB_PORT` / `LOCALKB_HOST` 两个环境变量能让整条链路一起换（`_resolve_port()` 校验范围，
+非法值告警并回退 8770）。**用途是开发态与用户正式版并存**：正式版常驻占着 8770，不换端口硬起第二个
+实例，launcher 会绑不上、等不到 `/health`，弹「后台服务未能启动」——看起来像应用崩了，其实只是撞港。
+数据本来就分开（开发 `src\data` / 正式安装目录内），换掉端口即可并行。分发版不设这两个变量。
+前端不再硬编码 8770：状态栏用 `location.host`、接口说明书用相对路径 `/docs`。
 
 ### 谁拉起谁
 

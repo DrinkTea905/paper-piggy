@@ -85,8 +85,27 @@ build\py312\python.exe -c "import onnxruntime, lancedb, pypdfium2, rapidocr, cv2
 **代码与指引**
 - [ ] `python gen_mcp_doc.py --check` 退出码 0（工具表未漂移）
 - [ ] `python check_guides.py` 全绿（指引与代码一致）
+- [ ] `python -m unittest discover -s src\tests -t src\tests -p "test_*.py"` 全绿
 - [ ] `CHANGELOG.md` 已更新
 - [ ] 版本号只改了 `config.APP_VERSION` 一处
+
+**★ 实机启动验收（动了缓存格式 / 启动流程 / 预热逻辑时，这一条不许跳）**
+- [ ] 换端口跑一次**完整启动链路**（launcher 拉起后端 + 轮询就绪 + 出窗口），不是只跑 `server.py`：
+      ```powershell
+      $env:LOCALKB_PORT = '8771'
+      & .\build\py312\python.exe .\src\launcher.py
+      ```
+      用 8771 就不会跟用户常驻的正式版抢 8770（见 CLAUDE.md §3b）。
+- [ ] 确认没有弹「后台服务未能启动，已停止等待」，且窗口正常出现
+- [ ] **首次启动**（缓存被判失效、要冷算的那次）也要过一遍——这正是最容易炸的一次
+- [ ] 冷算期间主线程不能被饿死：`/health` 要能在 launcher 的 2 秒超时内答上
+
+> **为什么单列一条**：2026-08-11 一天内连发 1.1.0 / 1.1.1 / 1.1.2，后两个都在修前一个引入的问题，
+> 而**两个 bug 都只有真跑一次完整启动才会暴露**——单元测试、开发环境复现、拿真实题录逐篇比对，
+> 当时全都是绿的，因为它们都不走「launcher 用 pythonw 拉起后端再轮询 `/health`」这条路。
+> 具体踩的是：① 缓存指纹用 mtime，覆盖安装后必失效 → 每次升级全库重算；
+> ② 重算是纯 CPU 紧循环，独占 GIL 42.8 秒，uvicorn 答不上 `/health`，launcher 报「未能启动」。
+> 用户连吃两次假报错。**跑测试 ≠ 跑起来。**
 
 **构建产物**
 - [ ] `bundle/python/` 下有 `msvcp140.dll` + `msvcp140_1.dll`（≥14.40）

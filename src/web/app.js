@@ -3283,8 +3283,9 @@
       AG.cfg = d;
       $("#ag-run").classList.toggle("ok", !!d.server_running);
       // agent-status-dot-always-green：绿点只代表本地库服务在线，不代表 MCP 已接好
+      // 端口可由 LOCALKB_PORT 覆盖（开发态换端口用），所以显示实际地址而不是写死 8770
       $("#ag-run-txt").textContent = d.server_running
-        ? "本地库服务在线（不代表 MCP 已接好）· 127.0.0.1:8770" : "本地库服务未就绪";
+        ? `本地库服务在线（不代表 MCP 已接好）· ${location.host}` : "本地库服务未就绪";
       renderAgentCmds();
       $("#ag-schema").textContent = d.wiki_schema_md || "";
       // Agent 专属文件夹路径（📦 交付物 / 📚 资料库）——后端算好本机绝对路径直接展示

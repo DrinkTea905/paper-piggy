@@ -80,6 +80,18 @@ README / CHANGELOG / release notes 会被全世界看到。改文案时别留「
 “本次新增 / 修复了什么”只写 `CHANGELOG.md`。不得再把临时公告式横幅插到
 「新手指引」或「Agent 指引」标题下面。
 
+**⑤ 动了缓存格式 / 启动流程 / 预热逻辑的版本，发布前必须实机跑一次完整启动。跑测试 ≠ 跑起来。**
+用 `$env:LOCALKB_PORT='8771'` 起 **launcher**（不是只起 `server.py`），确认不弹
+「后台服务未能启动」且窗口正常出现；**首次启动（缓存失效、要冷算的那次）也要过一遍**——
+那正是最容易炸的一次。换端口就不会跟用户常驻的正式版抢 8770。
+逐条清单在 `docs/RELEASE.md` §0.9「实机启动验收」。
+
+> 血账：2026-08-11 一天连发 1.1.0 / 1.1.1 / 1.1.2，后两个都在修前一个引入的问题，
+> 而**两个 bug 都只有真跑一次完整启动才会暴露**——单测、开发环境复现、真实题录逐篇比对
+> 当时全绿，因为它们都不走「launcher 用 pythonw 拉起后端再轮询 `/health`」这条路。
+> 踩的是：① 缓存指纹用 mtime，覆盖安装后必失效 → 每次升级全库重算；② 重算独占 GIL
+> 42.8 秒，uvicorn 答不上 `/health`。用户连吃两次假报错。
+
 ---
 
 ## 1. 这是什么
@@ -186,6 +198,20 @@ $env:LOCALKB_MODELS = 'D:\00Zotero知识库\rag\data\models'
 ```
 
 也可以用 `.Codex\launch.json` 里配好的 `localkb-server` / `localkb-app`。
+
+**★ 用户的正式版开着时，换端口再起开发实例**（2026-08-11 加）：正式版常驻占着 8770，
+直接起第二个实例会抢端口 —— launcher 绑不上、等不到 `/health`，弹「后台服务未能启动，
+已停止等待」，看起来像应用坏了（实测踩过）。
+
+```powershell
+$env:LOCALKB_PORT = '8771'      # 只需这一个变量，整条链路一起换
+& .\build\py312\python.exe .\src\server.py
+```
+
+全项目只有 `config.DAEMON_PORT` 一处定义端口，launcher / server / mcp_server / localkb.py
+都引用 `C.DAEMON_*`，所以设一个环境变量就整体生效。数据本来就分开（开发 `src\data` /
+正式 `D:\PaperPiggy\data`），换端口后两个实例可并存。主机名同理可用 `LOCALKB_HOST` 覆盖；
+非法端口值会告警并回退 8770，分发版不设这两个变量、行为与以前一致。
 
 > ⚠️ **`LOCALKB_MODELS` 必须显式设**。`config.py` 的 `_resolve_models()` 已经不再兜底任何开发机的绝对路径了，不设就会指向一个不存在的 `src\models`，本地嵌入/重排静默失效。
 

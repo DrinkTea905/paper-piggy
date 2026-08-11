@@ -21,7 +21,7 @@ SUBPROC_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0   # CREATE_NO_W
 # 全项目**只有这一处**版本字面量：发版改版本号只改这里，其余地方一律 `C.APP_VERSION` 引用
 # （踩过的坑：版本号散落在 mcp_server 的 serverInfo、打包脚本、页脚里，改一处漏三处，
 #  用户报 bug 时报的版本对不上代码）。1.0.0 = 首个公开发布版（Apache-2.0 开源）。
-APP_VERSION = "1.1.2"
+APP_VERSION = "1.1.3"
 
 APP = Path(__file__).parent                 # 源码目录；分发版 = bundle/app
 RAG = APP                                    # 兼容：引擎脚本都在项目根
@@ -220,9 +220,32 @@ RERANK_TOPK = 8
 TABLE_NAME  = "chunks"
 MAX_PER_KEY = 2     # 每篇文献最多几块进入最终 topk（按 key 去重保证来源多样；设 999=不去重）
 
-# ---- daemon（端口 8770，避开知识库的 8765）----
-DAEMON_HOST  = "127.0.0.1"
-DAEMON_PORT  = 8770
+# ---- daemon（默认 127.0.0.1:8770，避开知识库 daemon 的 8765）----
+# 端口/主机可用 LOCALKB_PORT / LOCALKB_HOST 覆盖。**这是给开发态用的**：
+# 正式版常驻占着 8770，开发时想同时起一个实例调试，不换端口就会互相抢——
+# 表现是 launcher 拉起的后端绑不上端口、等不到 /health，弹「后台服务未能启动」
+# （2026-08-11 实测踩过：AI 为验证启动了一个实例没关，用户再点启动就吃了这个报错）。
+# 全项目只有这一处定义，launcher / server / mcp_server / localkb.py 都引用 C.DAEMON_*，
+# 所以设一个环境变量就能让整条链路整体换端口，不必逐个改。
+# 分发版不设这两个变量，行为与以前完全一致。
+DAEMON_HOST = (os.environ.get("LOCALKB_HOST") or "").strip() or "127.0.0.1"
+
+
+def _resolve_port(default=8770):
+    raw = (os.environ.get("LOCALKB_PORT") or "").strip()
+    if not raw:
+        return default
+    try:
+        p = int(raw)
+    except ValueError:
+        p = -1
+    if not (1 <= p <= 65535):
+        print(f"[config] LOCALKB_PORT={raw!r} 不是合法端口，回退 {default}", flush=True)
+        return default
+    return p
+
+
+DAEMON_PORT  = _resolve_port()
 DAEMON_URL   = f"http://{DAEMON_HOST}:{DAEMON_PORT}"
 
 # ---- 期刊分级 ----

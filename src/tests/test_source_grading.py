@@ -386,6 +386,35 @@ class SourceGradingTests(unittest.TestCase):
         self.assertEqual("SENTINEL", self.GS._grading_signature())
         self.GS._SIG_CACHE = None
 
+    def test_daemon_port_is_overridable_for_dev(self):
+        """端口必须能用 LOCALKB_PORT 换掉，且非法值要安全回退。
+
+        2026-08-11 实机教训：正式版常驻占着 8770，开发态再起一个实例就抢端口——
+        launcher 绑不上、等不到 /health，弹「后台服务未能启动」，看起来像应用坏了。
+        全项目只有 config 一处定义端口，换这一个环境变量就能让整条链路一起换。
+        """
+        import importlib
+        C = importlib.import_module("config")
+        # 直接测解析函数：**不要 reload config**——它会重算 DATA 等全局路径，
+        # 把同批次里依赖这些路径的用例（test_upgrade_health）连带跑挂。
+        old = os.environ.get("LOCALKB_PORT")
+        try:
+            for raw, expect in (("8771", 8771), ("", 8770), ("0", 8770),
+                                ("99999", 8770), ("abc", 8770), ("  8899 ", 8899)):
+                if raw:
+                    os.environ["LOCALKB_PORT"] = raw
+                else:
+                    os.environ.pop("LOCALKB_PORT", None)
+                self.assertEqual(expect, C._resolve_port(), f"LOCALKB_PORT={raw!r}")
+        finally:
+            if old is None:
+                os.environ.pop("LOCALKB_PORT", None)
+            else:
+                os.environ["LOCALKB_PORT"] = old
+        # URL 必须由 HOST/PORT 拼出，否则换端口时各处引用会分裂
+        self.assertTrue(C.DAEMON_URL.endswith(f":{C.DAEMON_PORT}"))
+        self.assertIn(C.DAEMON_HOST, C.DAEMON_URL)
+
     def test_authority_dataset_has_an_independent_mapping(self):
         authority = {"itemtype": "dataset", "title": "人口数据", "institution": "国家统计局"}
         ordinary = {"itemtype": "dataset", "title": "研究数据"}

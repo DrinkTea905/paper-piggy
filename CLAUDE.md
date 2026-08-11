@@ -57,7 +57,7 @@
 跑失败了就说失败并贴输出；跳过了某步就说跳过；只有真正做完并验证过，才说做完了。
 不要用「应该可以」「理论上」粉饰未经验证的改动。
 
-### 0.5 两条硬约束（用户 2026-07-15 明确要求，写进指引长期生效）
+### 0.5 三条硬约束（①② 用户 2026-07-15 要求，③ 2026-08-11 追加，均长期生效）
 
 **① 每次 push / 发 GitHub Release 前，通读面向用户的文案，清掉过期表述和修订残留。**
 README / CHANGELOG / release notes 会被全世界看到。改文案时别留「修一半」的痕迹——
@@ -68,6 +68,18 @@ README / CHANGELOG / release notes 会被全世界看到。改文案时别留「
 所有 `subprocess.Popen/run` 在 Windows 上必须 `pythonw.exe` + `creationflags=0x08000000`
 （CREATE_NO_WINDOW）。以后加任何拉起进程的新功能（更新、导出、外部工具…），
 默认就得无窗。踩过：updater 的 `_importable` 少了这个 flag，升级时闪黑窗。
+
+**③ 动了缓存格式 / 启动流程 / 预热逻辑的版本，发布前必须实机跑一次完整启动。跑测试 ≠ 跑起来。**
+用 `$env:LOCALKB_PORT='8771'` 起 **launcher**（不是只起 `server.py`），确认不弹
+「后台服务未能启动」且窗口正常出现；**首次启动（缓存失效、要冷算的那次）也要过一遍**——
+那正是最容易炸的一次。换端口就不会跟用户常驻的正式版抢 8770（见 §3b）。
+逐条清单在 [docs/RELEASE.md](docs/RELEASE.md) §0.9「实机启动验收」。
+
+> 血账：2026-08-11 一天连发 1.1.0 / 1.1.1 / 1.1.2，后两个都在修前一个引入的问题，
+> 而**两个 bug 都只有真跑一次完整启动才会暴露**——单测、开发环境复现、真实题录逐篇比对
+> 当时全绿，因为它们都不走「launcher 用 pythonw 拉起后端再轮询 `/health`」这条路。
+> 踩的是：① 缓存指纹用 mtime，覆盖安装后必失效 → 每次升级全库重算；② 重算独占 GIL
+> 42.8 秒，uvicorn 答不上 `/health`。用户连吃两次假报错，白排查半天。
 
 ---
 
@@ -177,6 +189,27 @@ $env:LOCALKB_MODELS = 'D:\00Zotero知识库\rag\data\models'
 也可以用 `.claude\launch.json` 里配好的 `localkb-server` / `localkb-app`。
 
 > ⚠️ **`LOCALKB_MODELS` 必须显式设**。`config.py` 的 `_resolve_models()` 已经不再兜底任何开发机的绝对路径了，不设就会指向一个不存在的 `src\models`，本地嵌入/重排静默失效。
+
+**③b ★ 用户的正式版开着时，换端口再起开发实例**（2026-08-11 加）
+
+正式版常驻占着 8770。此时直接起第二个实例会抢端口 —— launcher 绑不上、等不到 `/health`，
+弹「**后台服务未能启动，已停止等待**」，看起来像应用坏了（实测踩过：AI 为验证启动了一个实例
+没关，用户再点启动就吃了这个报错，白排查半天）。
+
+```powershell
+$env:LOCALKB_PORT = '8771'      # 只需这一个变量，整条链路一起换
+& .\build\py312\python.exe .\src\server.py
+```
+
+`launch.json` 里配好的 `localkb-server-alt` / `localkb-app-alt` 就是这个（已设 8771）。
+`DAEMON_HOST` 同理可用 `LOCALKB_PORT` 的兄弟变量 `LOCALKB_HOST` 覆盖。
+
+原理：全项目**只有 `config.DAEMON_PORT` 一处定义**端口，launcher / server / mcp_server /
+localkb.py 都引用 `C.DAEMON_*`，所以设一个环境变量就整体生效，不必逐个改。
+数据本来就分开（开发 `src\data` / 正式 `D:\PaperPiggy\data`），换掉端口后两个实例可以并存。
+非法值（0、99999、`abc`）会打印告警并回退 8770，分发版不设这两个变量、行为与以前完全一致。
+
+实测（2026-08-11，两个实例同时在跑）：8770=正式版 ready/1430 篇，8771=开发态独立进程，互不干扰。
 
 **④ 护栏与单元测试**（在仓库根执行；打包时 `build_bundle.py` 会自己跑 `check_guides`，不过不给打）
 
