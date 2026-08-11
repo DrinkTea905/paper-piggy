@@ -354,6 +354,38 @@ class SourceGradingTests(unittest.TestCase):
         self.assertFalse(self.GS._dist_fresh(fresh, mt + 1, ov))
         self.assertFalse(self.GS._dist_fresh(fresh, mt, ov + 1))
 
+    def test_grading_signature_tracks_content_not_mtime(self):
+        """指纹必须按目录**内容**算，不能按 mtime。
+
+        2026-08-11 实机教训：初版用 (大小, mtime)，而安装器覆盖 app/ 时所有 catalogs
+        文件都会重写、mtime 必变 —— 于是**每次升级都全库重算**，哪怕内容一字未改。
+        用户从 1.1.0 升 1.1.1 时因此触发 42.8 秒重算，把 uvicorn 饿死、launcher 等不到
+        /health，弹出「后台服务未能启动」。
+        """
+        import journal_grading.loader as L
+        target = L.catalog_path("field_focus")
+        self.assertTrue(target.exists(), "field_focus 目录应随包存在")
+
+        self.GS._SIG_CACHE = None
+        base = self.GS._grading_signature()
+        self.assertTrue(base, "指纹不应为空")
+
+        # 只动 mtime、不动内容 → 指纹必须不变（否则每次覆盖安装都会全库重算）
+        st = target.stat()
+        os.utime(target, (st.st_atime + 86400, st.st_mtime + 86400))
+        try:
+            self.GS._SIG_CACHE = None
+            self.assertEqual(base, self.GS._grading_signature(),
+                             "只改 mtime 不改内容时，指纹不得变化")
+        finally:
+            os.utime(target, (st.st_atime, st.st_mtime))
+            self.GS._SIG_CACHE = None
+
+        # 进程内要缓存：/stats 每次都会问它，不缓存就得反复读 ~2.7MB
+        self.GS._SIG_CACHE = "SENTINEL"
+        self.assertEqual("SENTINEL", self.GS._grading_signature())
+        self.GS._SIG_CACHE = None
+
     def test_authority_dataset_has_an_independent_mapping(self):
         authority = {"itemtype": "dataset", "title": "人口数据", "institution": "国家统计局"}
         ordinary = {"itemtype": "dataset", "title": "研究数据"}

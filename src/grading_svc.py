@@ -166,26 +166,41 @@ def _requested_disc():
         return "law"
 
 
+_SIG_CACHE = None
+
+
 def _grading_signature():
-    """定档规则的指纹：配置 + 全部目录数据的 (文件名, 大小, mtime)。
+    """定档规则的指纹：配置 + 全部目录数据的**内容** hash。
 
     只要 grading_config.json（priorityOrder / archetype map / catalogs 注册）或任何一份
-    catalogs/*.json 变了，指纹就变。用户自己在 <数据目录>/journals/ 放的覆盖版同样计入
-    （`loader.catalog_path` 会优先读那份）。
+    catalogs/*.json 的内容变了，指纹就变。用户自己在 <数据目录>/journals/ 放的覆盖版同样
+    计入（`loader.catalog_path` 会优先读那份）。
+
+    ⚠️ 必须按**内容**而不是 mtime（2026-08-11 实机教训）：初版用 (大小, mtime)，而安装器
+    覆盖 `app/` 时这些文件全部重写、mtime 必变——于是**每次升级都会全库重算**，哪怕目录
+    内容一个字节都没改。用户从 1.1.0 升 1.1.1 时因此触发一次 42.8 秒的重算，把 uvicorn
+    饿死、launcher 等不到 /health，弹出「后台服务未能启动」。
+
+    结果按进程缓存：目录数据在 loader 里也是启动时一次性读入，进程生命周期内不会变；
+    而本函数会被 `_dist_fresh` 在每次 /stats 上调用，不缓存的话每次都要读 ~2.7MB。
     """
+    global _SIG_CACHE
+    if _SIG_CACHE is not None:
+        return _SIG_CACHE
     try:
         import journal_grading.loader as _L
-        parts = []
+        h = hashlib.sha1()
         for p in [_L.config_path()] + sorted(
                 set(_L.PKG.glob("catalogs/*.json")) | set((_L._data_root() / "journals").glob("*.json"))):
             try:
-                st = p.stat()
-                parts.append(f"{p.name}:{st.st_size}:{int(st.st_mtime)}")
+                h.update(p.name.encode("utf-8"))
+                h.update(p.read_bytes())
             except Exception:
-                parts.append(f"{p.name}:?")
-        return hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()[:16]
+                h.update(b"?" + p.name.encode("utf-8"))
+        _SIG_CACHE = h.hexdigest()[:16]
     except Exception:
-        return ""
+        _SIG_CACHE = ""
+    return _SIG_CACHE
 
 
 def _load_memo():
@@ -692,9 +707,22 @@ def _papers_mtime():
 
 
 def _compute_dist(papers, disc):
+    """全库四档分布 + 期刊 top15。**跑在后台预热线程里，必须定期让出 GIL。**
+
+    2026-08-11 实机教训：本函数是纯 CPU 的紧循环（1430 篇 × evaluate_paper，冷算时还要
+    带上几百个刊名的 resolve）。冷算实测 42.8 秒，期间 GIL 被这个线程独占，uvicorn 主线程
+    连 `/health` 都答不上，launcher 等不到就绪就弹「后台服务未能启动」——用户看到的是应用
+    起不来，其实后台算得好好的，算完还正常落了盘。
+    这是 1.0.15 那个坑的翻版（当时是 load_all 饿死 uvicorn，修法是延迟发首屏），
+    CLAUDE.md §6 白纸黑字记着，加新重活时必须一起想到。
+    每 64 篇让步 1ms：1430 篇合计约 22 次 ≈ 22ms，相对 42 秒可忽略，
+    但足够让 uvicorn 在每个间隙答上探测。
+    """
     from collections import Counter
     tier_n = Counter(); jn = Counter(); jtier = {}
-    for p in papers.values():
+    for _i, p in enumerate(papers.values()):
+        if (_i & 63) == 0:
+            time.sleep(0.001)          # 让出 GIL，别把 uvicorn 饿死
         j = p.get("journal", "")
         g = grade_paper(p, compute=True)
         cn = g["standard_band_name"]
