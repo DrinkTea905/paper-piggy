@@ -220,22 +220,28 @@ light 模式走 `search_light`（`retriever.py:547`）：只有 bm25_meta + `_ap
 `max_per_key` 是显式的定向取证逃生口：普通 `search_localkb` / 分类检索保持每篇最多 2 段，
 `verify_claim(keys=[...])` 已明确选定来源时可在该篇内取更多证据。这样 Agent 工作流是“先跨文献发现，再定向深读/核验”。
 
-### 4.3 权重加成怎么算（`_weight_res`，`retriever.py:227`）
+### 4.3 权重加成怎么算（`_weight_res`，`retriever.py:475`）
 
 优先级：**手动改档 > 法源/报告规则 > 期刊分级引擎**。
 
-1. `source_rules.resolve(key, itemtype, title)`（`source_rules.py:149`）——命中即返回；
-2. `journal_grading.resolve_journal_weight({journal, issn}, discipline)`（`journal_grading/resolver.py:80`），带进程级 memo（`retriever.py:239-252`）；
-3. 都算不出 → `None` → `_apply_sort` 回退旧的离散 `TIER_BONUS`（`config.py:169-177`）。
+1. `source_rules.resolve(key, itemtype, title)`（`source_rules.py:244`）——命中即返回；
+2. `journal_grading.resolve_journal_weight({journal, issn}, discipline)`（`journal_grading/resolver.py:80`），带进程级 memo；
+3. 都算不出 → `None` → `_blend_bonus` 回退旧的离散 `TIER_BONUS`（`config.py:231`）。
 
-排序（`_apply_sort`，`retriever.py:651`）三种：`relevance` / `tier` / `blend`（默认 blend，`config.py:168`）。
-`blend` 的加成 = `journal_weight × WEIGHT_BONUS_SCALE(0.5)`（`retriever.py:640-649`，`config.py:182`）。
+排序（`_apply_sort`，`retriever.py:1045`）三种：`relevance` / `tier` / `blend`（默认 blend，`config.py:230`）。
+`blend` 的加成 = `journal_weight × bonus_scale × (light 档再 ×3)`（`_blend_bonus`，`retriever.py:1026-1043`）。
+**`bonus_scale` 分后端取值**（`config.py:246-249`）：API `0.30`、本地 ONNX `0.50`。
+API 的 0.30 是 v1.0.29 用 38 条金标集校准所得（从 0.50 调小）；**本地的 0.50 与 light 档的 `×3` 都未经校准**。
+两者不可直接比较——API 的 reranker 输出 0~1，本地是无界 logit，同一个数字在两边的实际权重差一个量级。详见 CLAUDE.md §7。
 
-排序分还会被两个**降权**改写（`_effective`，`retriever.py:636`）：
-- `_wiki_effective`（`:584`）——综合页降权，见 §5.3；
-- `_statute_eff`（`:621`）——已废止法条 ×0.5（`config.py:192`）。
+排序分还会被两个**降权**改写（`_effective`，`retriever.py:1022`）：
+- `_wiki_effective`（`:974`）——综合页降权，见 §5.3（`WIKI_UNVERIFIED_FACTOR`，`config.py:277`）；
+- `_statute_eff`（`:1009`）——已废止法条 ×0.5（`config.py:259`）。
 
-两者都遵守同一条血泪教训：**reranker 分可为负，负分乘 factor 反而是提权**，所以正分乘、负分除（`retriever.py:601-605`、`:632-633`）。
+两者都遵守同一条血泪教训：**reranker 分可为负，负分乘 factor 反而是提权**，所以正分乘、负分除（见 `_wiki_effective` 与 `_statute_eff` 里的安全式）。
+
+> ⚠️ 本节行号在 2026-08-10 全量核对过一次。**行号会随重构腐烂**，改动这一带代码时请顺手复核，
+> 或直接把锚点降级成函数名——半更新（部分准、部分早已错位）比完全不更新更容易骗到人。
 
 ---
 
@@ -338,8 +344,10 @@ AGENTS.md / CLAUDE.md          # Agent 根入口：强制先读项目记忆，�
 `_WF_DIVERGENCE`（跨学科发散与补文献）。
 一个工作流一个 `.md`，agent 中立（Claude Code / Codex 都是读文件夹）。
 六份工作流都有“触发条件 / 开工前检查 / 用户决策点 / 完成标准 / 最终报告”强制契约；根入口与 MCP 初始化指令先要求 Agent
-完整读取 `项目记忆.md`，再按任务类型、研究领域路由，命中后先读工作流再做。少年司法论文初稿先走选型决策树，默认先提交两张骨架卡，
-用户选定前不得起草全文；选路后还要经过带章节功能表的第二提纲闸门，最终论文成稿必须交付经检查的 DOCX，Markdown 只作中间稿或核验记录。详细结构原型、篇幅参考、论证动作和法学表达存于
+完整读取 `项目记忆.md`，再按任务类型、研究领域路由，命中后先读工作流再做。四条研究工作流都在开工前问一次是否派子代理（用户决定，回答前不派）。
+少年司法论文初稿先做「选型前侦查」（候选池 20—40 条题录，从中挑 6—10 篇核心：完整精读 2—3 篇、其余局部读；只回答选型七问，局部阅读不得落成引注），再走选型决策树并对候选类型做准入自检，
+默认把侦查表与两张骨架卡一起提交，卡上含逐字标题树与每章每节的内容简述，卡可来自七类原型或自建骨架（手册卡⑧，两者平权，套不进就不套），
+用户选定前不得起草全文；选定后还要经过骨架落位表闸门，最终论文成稿必须交付经检查的 DOCX，Markdown 只作中间稿或核验记录。详细结构原型、篇幅参考、论证动作和法学表达存于
 `技能/参考手册/论文初稿（少年司法版）—成文技艺手册.md`，由 `read_workflow` 自动附带实际磁盘版本。手册位于子目录、
 常量不以 `_WF_` 命名，因此不进入六条顶层工作流列表；主工作流的路线、人工闸门和可靠性要求优先。通用初稿会明确提示
 “尚未经过其他部门法训练验证”。“维护”仍进入统一全量审查，不能把只列待办当作完成。

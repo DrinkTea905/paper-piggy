@@ -58,22 +58,62 @@ def _item_name(item):
 
 
 def identify(item, data) -> IdentifyResult:
-    """item: dict（至少含 journal 刊名，可含 issn/eissn）。data: loader.GradingData。"""
-    # 1) ISSN 优先
+    """item: dict（至少含 journal 刊名，可含 issn/eissn）。data: loader.GradingData。
+
+    ISSN 命中后**仍要并入归一名精确命中的目录信号**（2026-08-10 修）。
+    历史 bug：本函数原本 ISSN 命中即 return，而 clsci / law_review_top /
+    ssci_law_authority / tw_law 四个私有目录的条目 ISSN 字段是空的，只登记在
+    by_name 桶里（`loader._register` 要求 ISSN 长度=9 才登记 by_issn）。于是
+    **题录里带了 ISSN 的文献整条错过这些目录**——同一本刊会按题录有没有 ISSN
+    分裂成两档（实测：《中国社会科学》30 篇里 28 篇只命中 CSSCI 被判顶级、
+    2 篇走刊名命中 CLSCI 权威）。
+    合并只取**精确**归一名，不取模糊命中；同名目录以 ISSN 侧为准，刊名侧只补空缺。
+    """
+    raw_name = _item_name(item)
+    nn = normalize_name(raw_name)
+    name_bucket = data.by_name.get(nn) if nn else None
+
+    # 1) ISSN 优先（但目录信号与**同一本刊**的刊名桶取并集）
     for ni in _item_issns(item):
         b = data.by_issn.get(ni)
         if b:
-            return IdentifyResult("issn", ni, b.get("name", ""), b["catalogs"], b.get("versions", {}), if_val=b.get("if"))
+            cats, vers = dict(b["catalogs"]), dict(b.get("versions", {}))
+            # 合并前先确认两侧确实是同一本刊，否则（题录 ISSN 与刊名对不上、录错、子刊挂了母刊
+            # ISSN…）会把别的刊的目录信号、影响因子和目录版本号安到本刊头上。
+            #
+            # 判据用**相似度**而不是严格相等：同一本刊在不同目录里拼写不一致是常态——
+            # ssci/sjr 收 "YALE LAW JOURNAL"，而私有目录 law_review_top 收 "The Yale Law Journal"。
+            # 严格相等会把这类条目判成两本刊、拒绝合并，本轮要修的"同刊分裂两档"就原样保留
+            # （实测：Yale 带 ISSN 走 ssci.Q1→T2、不带 ISSN 走 law_review_top→T1）。
+            # 实测阈值可分：真同刊 0.903—0.958（The X vs X），不同刊 0.000—0.600
+            # （青少年犯罪问题 vs 中国社会科学 0.0、法学研究 vs 法学评论 0.5、中国法学 vs 中国社会科学 0.6），
+            # 与第 3 步模糊匹配共用 FUZZY_THRESHOLD=0.9 正好分开。
+            same_journal = False
+            if name_bucket is not None:
+                if name_bucket is b:
+                    same_journal = True
+                else:
+                    bn = normalize_name(b.get("name", ""))
+                    same_journal = bool(bn) and (
+                        bn == nn or SequenceMatcher(None, bn, nn).ratio() >= FUZZY_THRESHOLD)
+            if same_journal and name_bucket is not b:
+                for cat, level in name_bucket["catalogs"].items():
+                    cats.setdefault(cat, level)
+                for cat, ver in (name_bucket.get("versions") or {}).items():
+                    vers.setdefault(cat, ver)
+            if_val = b.get("if")
+            if if_val is None and same_journal:
+                if_val = name_bucket.get("if")
+            return IdentifyResult("issn", ni, b.get("name", "") or (name_bucket or {}).get("name", ""),
+                                  cats, vers, if_val=if_val)
 
-    raw_name = _item_name(item)
-    nn = normalize_name(raw_name)
     if not nn:
         # 无刊名无 ISSN：无法识别
         return IdentifyResult("unresolved", "", raw_name)
 
     # 2) 归一名精确
-    b = data.by_name.get(nn)
-    if b:
+    if name_bucket is not None:
+        b = name_bucket
         return IdentifyResult("name", nn, b.get("name", ""), b["catalogs"], b.get("versions", {}), if_val=b.get("if"))
 
     # 3) 模糊 ≥0.9（在归一名索引里找最相似者）

@@ -52,14 +52,78 @@ class AgentOutputTests(unittest.TestCase):
         # 旧的固定二分法已废除
         for stale in ("名称固定为“教义学路线”", "只有两条主路线"):
             self.assertNotIn(stale, body)
+        # 2026-08-10：旧的「两张卡必须来自两个不同叶子」硬约束已放宽，不得回潮
+        self.assertNotIn("两个不同叶子", body)
         for field in (
             "决策树", "骨架卡", "逐字一级标题树", "各章字数占比",
             "多动词路线图", "每章章首第一句", "不可调换处",
+            "每章、每节准备写什么",   # 2026-08-10：卡上除提纲外还要交代"准备怎么写"
         ):
             self.assertIn(field, body)
         self.assertIn("用户选定前不得写摘要、引言或任何章节正文", body)
-        self.assertIn("两个不同叶子", body)
         self.assertIn("少年司法 12 条", body)
+
+    def test_juvenile_draft_allows_self_built_skeleton_on_equal_footing(self):
+        """2026-08-10：套不进七类原型时必须能自建骨架，且自建不等于降标准。
+
+        根因：旧决策树 Q5a 的「不能 → 回类⑤」把最后一个出口封死，任何题目都会
+        被塞进某一型，工作流里写着的「不好归类就自建」永远触发不了 —— 表现为硬套。
+        """
+        body = AW._WF_JJ_DRAFT
+        self.assertIn("准入自检", body)
+        self.assertIn("原型＋原型、原型＋自建、自建＋自建", body)
+        self.assertIn("硬套才是错的", body)
+
+        manual = AW._JJ_DRAFT_CRAFT_HANDBOOK
+        self.assertIn("卡⑧ 自建骨架", manual)
+        self.assertIn("类⑧ 自建骨架", manual)          # 决策树里要有真出口
+        self.assertNotIn("不能 → 回 **类⑤**", manual)  # 旧的死循环出口
+        self.assertIn("自建不豁免任何东西", manual)
+
+    def test_juvenile_draft_reads_sources_before_choosing_structure(self):
+        """2026-08-10：选型不得发生在读文献之前，但侦查要有上限、且不产出引注。
+
+        旧流程把完整精读放在第一闸门之后，等于凭题目猜结构。
+        """
+        body = AW._WF_JJ_DRAFT
+        self.assertIn("## 选型前侦查", body)
+        self.assertLess(body.index("## 选型前侦查"), body.index("## 第一闸门"),
+                        "侦查节必须排在第一闸门之前")
+        # 有硬上限，不许无限读下去
+        self.assertIn("6—10 篇", body)
+        self.assertIn("完整逐页读 2—3 篇", body)
+        # 侦查读到的东西不得直接当引注——防止用局部阅读伪造页码
+        self.assertIn("不产生可引用论断", body)
+        self.assertIn("## 证据底座（选型后的完整精读）", body)
+        # 通用暂用版同样先摸底再定路线
+        self.assertIn("先做小规模摸底再谈路线", AW._WF_GENERAL_DRAFT)
+        self.assertIn("不得直接落成引注", AW._WF_GENERAL_DRAFT)
+
+    def test_research_workflows_ask_user_before_spawning_subagents(self):
+        """四条研究工作流都必须先问用户是否派子代理，由用户决定。"""
+        for body in (AW._WF_JJ_DRAFT, AW._WF_JJ_REVIEW, AW._WF_GENERAL_DRAFT, AW._WF_REVIEW):
+            self.assertIn("## 分工：是否派子代理（开工前问一次，由用户决定）", body)
+            self.assertIn("用户回答前不要派", body)
+            self.assertIn("子代理交回的是材料，不是成稿", body)
+        # 正文起草默认不派：章际回指等跨章约束会被并行起草打破
+        self.assertIn("默认不派", AW._WF_JJ_DRAFT)
+        self.assertIn("跨章约束", AW._WF_JJ_DRAFT)
+        self.assertIn("是否派子代理", AW._ROOT_AGENTS)
+
+    def test_research_workflows_require_retrieval_discovery_log(self):
+        """2026-08-10：应用不落盘任何检索历史，工作流的发现日志是唯一真实记录。
+
+        没有它，「查询 → 该返回什么」的判断永久丢失，检索质量就没法校准。
+        """
+        # 表头必须**逐字一致**：列名或顺序一变，历史日志就聚合不起来了。
+        # 逐个断言子串是测不出重排或删列的，所以这里断言整条表头。
+        HEADER = "| 轮次 | 查询词（逐字） | 名次 | key | 题名 | 处置 | 理由 |"
+        for body in (AW._WF_JJ_DRAFT, AW._WF_JJ_REVIEW, AW._WF_GENERAL_DRAFT, AW._WF_REVIEW):
+            self.assertIn("检索发现日志.md", body)
+            self.assertIn(HEADER, body, "表头列名与顺序不得改动（改了历史日志就聚合不起来）")
+            self.assertIn("弃用", body)
+            self.assertIn("漏召回", body)
+            self.assertIn("不得事后凭记忆补写", body)
 
     def test_juvenile_draft_v3_has_measurable_gates_and_companion_handbook(self):
         """v3：判据必须可数、可 grep，不能只是自我声明。"""

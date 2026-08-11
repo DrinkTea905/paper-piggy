@@ -56,7 +56,11 @@ CORE_IN_DATA = [
     "folder",                # 文件夹模式 sidecar
     "statutes",              # ★ 本地法规原文、官方 URL、版本元数据与内容哈希（用户核验后入库）
     "summaries",             # ★ SAC 检索摘要（每篇 ~150 字，LLM 生成）—— **花过 API 钱**
-    "grading_memo.json",     # ★ 689 条期刊分级的 LLM 结果 —— **花过真钱**，重跑要再花一次
+    "journals",              # ★ 用户自己放的期刊目录覆盖版（field_focus 等）—— **纯人工裁定，不可再生**
+    "grading_memo.json",     # 逐刊定档缓存。2026-08-10 复核：当前代码里它是**纯离线派生**的（grading_svc
+                             # 全文无任何 API 调用），规则一变会自动整份重算，丢了不花钱。
+                             # 仍然备份：重算全库要几十秒，且历史上它一度是 LLM 产物（那份存档在
+                             # _archive/数据快照/，与本文件不是同一份，别混淆）
     "tier_overrides.json",   # ★ 用户一条条**手动改**的期刊档位（source_rules.set_override）—— 纯人工
     "grading_dist.json",     # 分级分布（小，顺手带上）
     "grading_mappings.json", # ★ 用户按学科调整的目录/文献性质四档映射

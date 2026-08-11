@@ -1,0 +1,16 @@
+{
+  "_meta": {
+    "catalog": "field_focus",
+    "version": "2026-08-10",
+    "source": "用户裁定（按自己的研究领域）",
+    "origin": "cn",
+    "note": "私有目录（law_personal 专用）：用户对具体期刊的**最终裁定**，能升也能降。它不冒充任何官方名录——CLSCI、CSSCI、北大核心、SSCI 分区各自独立存在；本目录只表达『在我的研究方向上，这本刊就该是这一档』。ISSN 取自用户题录中的真实值，未知留空（留空时按刊名匹配）。",
+    "level_取值": "两套档名都认，界面上看到哪套就照哪套写：权威(=夯)→T1｜顶级→T1b｜核心(=人上人)→T2｜普通(=NPC)→T5。娱乐显示名见 grading_svc.FUN_BAND_CN，学科『法学（开发者增强：夯到拉）』用的就是那套。",
+    "priority": "在 resolution.priorityOrder 中排**第一位**——用户明示裁定优先于一切名录信号，包括 CLSCI。写进来就意味着『不管名录怎么说，这本刊在我这里就是这一档』。",
+    "how_to_edit": "要增删条目而不改动程序包：把本文件复制到 <数据目录>/journals/field_focus.json 再改（loader.catalog_path 优先读那份）。改完须重启应用，并先把 data/grading_memo.json 改名备份——它按(刊名,ISSN)缓存判定结果，不会因目录变更自动失效。"
+  },
+  "journals": [
+    { "name": "青少年犯罪问题", "issn": "1006-1509", "level": "顶级" },
+    { "name": "预防青少年犯罪研究", "issn": "2095-3356", "level": "核心" }
+  ]
+}

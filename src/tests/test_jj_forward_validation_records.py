@@ -39,11 +39,13 @@ class JuvenileForwardValidationRecordsTests(unittest.TestCase):
             "64006a99fb61e8e068e3f1bb372307edee5cb1989c2c5b06f20e4b3215297328",
             frozen,
         )
-        # v3（2026-08-03）整体替换 v2 的运行时文本；旧散列作为历史保留在冻结清单第一、四节。
-        # 本断言跟随当前出厂常量，冻结清单第五节必须同步记录同一组散列。
+        # v3（2026-08-03）整体替换 v2 的运行时文本；旧散列作为历史保留在冻结清单第一、四、五节。
+        # 本断言跟随当前出厂常量，冻结清单**最后一节**必须同步记录同一组散列。
+        # 当前值 = 2026-08-10 修订（选型准入自检＋自建骨架卡⑧＋子代理分工＋选型前侦查＋骨架卡③内容简述），
+        # 见冻结清单第六节。
         expected_current = {
-            "workflow": "8d8e7061d598c95c5dae5827284b6d45e00d570502137572eb746ab6f7fc521e",
-            "handbook": "428a1f83ce309548c0305abb888364c895afe5def7b10b0212048d015062ef37",
+            "workflow": "7bf354c39b692f58d8c933f22a5e20e8c16abcf386febb17455703edbe04b199",
+            "handbook": "28f1bb30f95ac4af7d11bf0958ae9021de58e3e3782a64e3aa33be0e6814e903",
             "rules": "288f0760342cb00ef7450b8d95d8a1ab091f8f3e09891b3f587f112fa975e612",
             "tasks": "3d6f033ba98fd1d9375dceca800fe60349b100be2e7f697647fb6ce0255f8e58",
         }
@@ -159,7 +161,9 @@ class JuvenileForwardValidationRecordsTests(unittest.TestCase):
             for score in scores:
                 self.assertIn(f"{score}/100", body, run_id)
             self.assertIn("硬失败", body, run_id)
-            self.assertIn("未", body, run_id)
+            # 原为 assertIn("未", …)：单个"未"字在任何中文评分记录里都必然出现，是永真断言。
+            # 真正要固定的是"硬失败一项都没触发"这个结论。
+            self.assertIn("未触发", body, run_id)
 
         first = read(f"{PREFIX}V2-T03-研究可靠性评分.md")
         regression = read(f"{PREFIX}V2-T03-研究可靠性回归复评.md")

@@ -106,26 +106,33 @@ class SourceGradingTests(unittest.TestCase):
         self.assertGreater(cssci_ext["weight"], pku["weight"])
 
     def test_tssci_and_taiwan_priority(self):
+        # 2026-08-10：TSSCI 由 authority 改为 top，与引擎原型 tssci_law.收录 = T1b 对齐。
         ordinary = self.ev({"itemtype": "journalArticle", "title": "文", "journal": "东吴法律学报"})
-        self.assertEqual(("TSSCI", "authority"), (ordinary["objective_label"], ordinary["band"]))
+        self.assertEqual(("TSSCI", "top"), (ordinary["objective_label"], ordinary["band"]))
 
         highlighted = self.ev({"itemtype": "journalArticle", "title": "文", "journal": "台湾大学法学论丛"})
         self.assertEqual("TSSCI", highlighted["objective_label"])
-        self.assertEqual("authority", highlighted["band"])
+        self.assertEqual("top", highlighted["band"])
 
         personal_only = self.ev({"itemtype": "journalArticle", "title": "文", "journal": "全国律师"})
         self.assertEqual(("台湾法学", "top"),
                          (personal_only["objective_label"], personal_only["band"]))
 
     def test_personal_factory_mapping_matches_user_preset(self):
+        """出厂映射必须与引擎原型 A_法学个人 对得上（用户 2026-08-10 拍板改为跟随引擎）。
+
+        旧预设（2026-06-28）与引擎逐条差 1—3 档，导致同一本刊"引擎说核心、界面显示权威"，
+        且把 74.5% 的库挤进最高两档、四档加成只差 0.024，期刊权重事实上失效。
+        改任何一条前先对照 grading_config.json 的 `A_法学个人`.map。
+        """
         expected = {
-            "label:SSCI Q1": "authority", "label:SSCI Q2": "authority",
-            "label:SSCI Q3": "top", "label:SSCI Q4": "top",
-            "label:CSSCI": "top", "nature:report": "top",
-            "label:SJR Q1": "core", "label:SJR Q2": "core",
-            "label:SJR Q3": "core", "label:SJR Q4": "core",
-            "label:SSCI": "core", "label:TSSCI": "authority",
-            "label:精选外文权威": "authority", "label:台湾法学": "top",
+            "label:SSCI Q1": "core", "label:SSCI Q2": "core",
+            "label:SSCI Q3": "normal", "label:SSCI Q4": "normal",
+            "label:CSSCI": "core", "nature:report": "top",
+            "label:SJR Q1": "normal", "label:SJR Q2": "normal",
+            "label:SJR Q3": "normal", "label:SJR Q4": "normal",
+            "label:SSCI": "normal", "label:TSSCI": "top",
+            "label:精选外文权威": "top", "label:台湾法学": "top",
         }
         original = self.GS._requested_disc
         try:
@@ -205,7 +212,7 @@ class SourceGradingTests(unittest.TestCase):
         self.GS.set_mapping_override("label:三大刊", "authority", "law_personal")
         self.assertNotIn("law_personal", self.GS._load_mapping_overrides())
 
-        self.GS.set_mapping_override("label:SSCI Q4", "core", "law_personal")
+        self.GS.set_mapping_override("label:SSCI Q4", "core", "law_personal")  # 出厂为 normal，故算自定义
         self.GS.set_mapping_override("nature:book", "normal", "law")
         result = self.GS.clear_mapping_overrides("law_personal_fun")
         saved = self.GS._load_mapping_overrides()
@@ -215,9 +222,113 @@ class SourceGradingTests(unittest.TestCase):
         self.assertEqual("normal", saved["law"]["nature:book"])
         restored = self.GS._apply_mapping_override({
             "objective_label": "SSCI Q4", "source_type": "journal_article",
-            "band": "normal", "band_name": "普通", "standard_band_name": "普通", "weight": 0.25,
+            "band": "core", "band_name": "核心", "standard_band_name": "核心", "weight": 0.85,
         }, "law_personal")
-        self.assertEqual("top", restored["band"])
+        self.assertEqual("normal", restored["band"])   # 恢复出厂 = 跟随引擎的 T5
+
+    # ── 2026-08-10 新增：identify 的 ISSN/刊名并集，与 field_focus 用户裁定目录 ──
+
+    def test_issn_hit_still_picks_up_name_only_catalogs(self):
+        """ISSN 命中后必须并入同刊的刊名桶信号（修复"同一本刊分裂成两档"）。
+
+        历史 bug：clsci / law_review_top / ssci_law_authority / tw_law 四个私有目录的条目
+        ISSN 字段是空的、只登记在 by_name 桶里，而 identify 原本 ISSN 一命中就 return，
+        于是**题录里带 ISSN 的文献整条错过这些目录**。实测《中国社会科学》30 篇里
+        28 篇（带 ISSN）被判顶级、2 篇（无 ISSN）判权威，同一本刊两个档。
+        """
+        ident = importlib.import_module("journal_grading.identify")
+        data = self.JG.load_data()
+        with_issn = ident.identify({"journal": "中国社会科学", "issn": "1002-4921"}, data)
+        without = ident.identify({"journal": "中国社会科学"}, data)
+        self.assertEqual("issn", with_issn.status)
+        self.assertIn("clsci", with_issn.catalogs,
+                      "带 ISSN 的题录必须仍能拿到只登记在刊名桶里的 clsci 信号")
+        # 两条路径拿到的目录信号必须一致，否则同一本刊仍会按题录有无 ISSN 分裂
+        self.assertEqual(without.catalogs.get("clsci"), with_issn.catalogs.get("clsci"))
+        # 同一篇文献的最终档位也必须一致
+        a = self.ev({"itemtype": "journalArticle", "title": "文", "journal": "中国社会科学",
+                     "issn": "1002-4921"})
+        b = self.ev({"itemtype": "journalArticle", "title": "文", "journal": "中国社会科学"})
+        self.assertEqual(b["band"], a["band"])
+
+    def test_issn_name_mismatch_does_not_merge_other_journals_signals(self):
+        """题录的刊名与 ISSN 对不上时**不得**合并——否则把别的刊的目录信号安到本刊头上。"""
+        ident = importlib.import_module("journal_grading.identify")
+        data = self.JG.load_data()
+        # 用《中国社会科学》的 ISSN 配一个完全不同的刊名（录错/子刊挂母刊 ISSN 的典型情形）
+        mixed = ident.identify({"journal": "青少年犯罪问题", "issn": "1002-4921"}, data)
+        self.assertEqual("issn", mixed.status)
+        self.assertNotIn("field_focus", mixed.catalogs,
+                         "刊名与 ISSN 不是同一本刊时，不得并入刊名侧的目录信号")
+
+    def test_field_focus_is_user_verdict_and_outranks_official_catalogs(self):
+        """field_focus 是用户对具体期刊的最终裁定：排 priorityOrder 第一位，能升也能降。"""
+        data = self.JG.load_data()
+        self.assertEqual("field_focus", data.resolution()["priorityOrder"][0])
+        self.assertIn("field_focus", data.disciplines()["law_personal"]["catalogs"])
+        # 出厂预置的两本本领域刊：此前无任何名录命中、兜底为"普通"
+        top = self.ev({"itemtype": "journalArticle", "title": "文", "journal": "青少年犯罪问题",
+                       "issn": "1006-1509"})
+        core = self.ev({"itemtype": "journalArticle", "title": "文", "journal": "预防青少年犯罪研究",
+                        "issn": "2095-3356"})
+        self.assertEqual("top", top["band"])
+        self.assertEqual("core", core["band"])
+        # map 里每个 level 都要有对应 token，否则写了不生效且静默
+        arch_map = data.archetype("A_法学个人")["map"]
+        tokens = {t for toks in arch_map.values() for t in toks}
+        for level in data.config["catalogs"]["field_focus"]["levels"]:
+            self.assertIn(f"field_focus.{level}", tokens,
+                          f"levels 里声明了「{level}」但 map 里没有对应 token，写了不会生效")
+
+    def test_field_focus_really_outranks_cssci_and_clsci_both_directions(self):
+        """真正的竞争用例：裁定必须压过官方名录，升降双向都生效。
+
+        为什么必须这么测：出厂预置的两本刊在 cssci/clsci/pku/ssci/sjr 里一条都没有，
+        objective_label 落「期刊论文」、天然绕开 `_apply_mapping_override`，所以只用它们
+        测「outranks」是测不到东西的——本轮真有一个缺陷就是这样被放行的：
+        `_objective_label` 原本不认识 field_focus，CSSCI 刊的标签仍是 "CSSCI"，
+        于是 PERSONAL_MAPPING_DEFAULTS 无条件把 band 顶回 core，引擎判的 T1 被整个丢掉，
+        用户的裁定在界面、排序、加成上一点变化都没有，且无任何提示。
+        """
+        import json as _json
+        jdir = Path(os.environ["LOCALKB_DATA"]) / "journals"
+        jdir.mkdir(parents=True, exist_ok=True)
+        target = jdir / "field_focus.json"
+        target.write_text(_json.dumps({
+            "_meta": {"catalog": "field_focus"},
+            "journals": [
+                {"name": "法律适用", "issn": "", "level": "权威"},   # CSSCI 来源刊 → 抬到权威
+                {"name": "中国法学", "issn": "", "level": "普通"},   # CLSCI 权威刊 → 压到普通
+            ]}, ensure_ascii=False), encoding="utf-8")
+        self.JG.reload()
+        try:
+            up = self.ev({"itemtype": "journalArticle", "title": "文", "journal": "法律适用"})
+            self.assertEqual("authority", up["band"], "裁定必须压过 CSSCI（升档）")
+            down = self.ev({"itemtype": "journalArticle", "title": "文", "journal": "中国法学"})
+            self.assertEqual("normal", down["band"], "裁定必须压过 CLSCI 权威（降档）")
+            # 标签必须独立，否则又会落回 PERSONAL_MAPPING_DEFAULTS 被无条件覆盖
+            for r in (up, down):
+                self.assertTrue(str(r["objective_label"]).startswith("领域裁定"),
+                                f"field_focus 命中时标签应独立，实际 {r['objective_label']!r}")
+                self.assertNotIn(r["objective_label"], self.GS.PERSONAL_MAPPING_DEFAULTS)
+        finally:
+            target.unlink(missing_ok=True)
+            self.JG.reload()
+
+    def test_field_focus_accepts_both_formal_and_fun_band_names(self):
+        """两套档名都认：正式(权威/顶级/核心/普通) 与娱乐(夯/顶级/人上人/NPC)。"""
+        data = self.JG.load_data()
+        arch_map = data.archetype("A_法学个人")["map"]
+        pairs = [("权威", "夯", "T1"), ("核心", "人上人", "T2"), ("普通", "NPC", "T5")]
+        for formal, fun, tier in pairs:
+            self.assertIn(f"field_focus.{formal}", arch_map[tier])
+            self.assertIn(f"field_focus.{fun}", arch_map[tier],
+                          f"娱乐档名「{fun}」必须与正式名「{formal}」落到同一档")
+        self.assertIn("field_focus.顶级", arch_map["T1b"])   # 两套同名
+        # 娱乐学科只换显示名，档位与 law_personal 完全相同
+        p = {"itemtype": "journalArticle", "title": "文", "journal": "青少年犯罪问题",
+             "issn": "1006-1509"}
+        self.assertEqual(self.ev(p)["band"], self.ev(p, discipline="law_personal_fun")["band"])
 
     def test_authority_dataset_has_an_independent_mapping(self):
         authority = {"itemtype": "dataset", "title": "人口数据", "institution": "国家统计局"}

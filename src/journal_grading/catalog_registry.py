@@ -42,6 +42,8 @@ UPSTREAM = {
     "ssci_law_authority": ("https://github.com/DrinkTea905/paper-piggy", "project preference 2026-06-28"),
     "tw_law": ("https://github.com/DrinkTea905/paper-piggy", "personal preference 2026-06-28"),
     "newspaper": ("https://github.com/DrinkTea905/paper-piggy", "project preference 2026-06-28"),
+    # 用户对具体期刊的最终裁定，不来自任何上游名录；随用户的研究方向变化，无"上游版本"可对。
+    "field_focus": ("", "user verdict 2026-08-10"),
 }
 
 
@@ -63,7 +65,8 @@ def records():
                 "last_checked": meta.get("last_checked") or meta.get("checked_at") or CHECKED_AT,
                 "next_check": meta.get("next_check") or meta.get("next_check_at") or NEXT_CHECK_AT,
                 "count": len(raw.get("journals") or []),
-                "private": catalog in {"law_review_top", "ssci_law_authority", "tw_law", "newspaper"},
+                "private": catalog in {"law_review_top", "ssci_law_authority", "tw_law",
+                                       "newspaper", "field_focus"},
                 "official": catalog == "tssci_law",
                 "note": meta.get("note", ""),
             })

@@ -162,11 +162,24 @@ def load(force=False) -> GradingData:
             warnings.append(f"坏目录数据：{cat}（{p}）解析失败：{e} —— 已跳过该目录。")
             continue
         ver = (raw.get("_meta") or {}).get("version", "")
+        # level 必须取 catalogs[cat].levels 里的枚举值，否则 archetype map 里没有对应 token，
+        # 该条会**静默**落到兜底档——用户自己编辑目录时最容易踩（写「重点」而枚举是「顶级」）。
+        # 这里不拒绝加载，只把它变成可见告警（库总览会显示 load_warnings）。
+        declared = set((config.get("catalogs", {}).get(cat) or {}).get("levels") or [])
+        bad_levels = {}
         for j in raw.get("journals", []):
             if not isinstance(j, dict):
                 continue
+            lvl = j.get("level", "")
+            if declared and lvl not in declared:
+                bad_levels.setdefault(lvl, []).append(j.get("name", ""))
             _register(by_issn, by_name, cat,
-                      j.get("level", ""), j.get("name", ""), j.get("issn", ""), ver)
+                      lvl, j.get("name", ""), j.get("issn", ""), ver)
+        for lvl, names in bad_levels.items():
+            warnings.append(
+                f"目录 {cat} 有 {len(names)} 条的 level=「{lvl}」不在声明的 {sorted(declared)} 里"
+                f"（如：{'、'.join(n for n in names[:3] if n)}）—— 这些条目不会被档位映射接住，"
+                f"会静默落到兜底档。请改成枚举内的值。")
 
     # 认可顶刊清单 → 便于 O(1) 判 @recognizedTop
     recognized_issn, recognized_name = {}, {}

@@ -9,7 +9,7 @@
 再加后台预热（startup / 切学科后异步 warm），用户几乎不会同步撞上冷算。
 引擎缺失/出错 → grade 返回 None，调用方回退旧 journal_tier，绝不 500。
 """
-import sys, json, os, threading, time
+import sys, json, os, threading, time, hashlib
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import config as C
@@ -47,6 +47,12 @@ MEMO_FILE = C.DATA / "grading_memo.json"
 DIST_FILE = C.DATA / "grading_dist.json"
 MAPPING_FILE = C.DATA / "grading_mappings.json"
 DIST_VER = 3   # v3=全类型统一评价 + 四档分布。旧缓存自动失效重算。
+# 逐刊 memo 的失效钥匙：MEMO_VER 管代码侧口径变化（识别逻辑、标签规则…），
+# _grading_signature() 管数据侧变化（grading_config.json 与全部 catalogs/*.json）。
+# 任一不符 → 整份丢弃重算。改期刊识别或标签口径时**手动 bump MEMO_VER**。
+MEMO_VER = 2   # v2=2026-08-10 identify ISSN/刊名并集 + field_focus 独立标签
+_MEMO_VER_KEY = "__memo_ver__"
+_MEMO_SIG_KEY = "__grading_sig__"
 
 # 库总览可调整的目录/性质映射。默认值只是说明；实际自动评价仍由目录引擎决定，
 # 只有用户显式写入 MAPPING_FILE 的项才覆盖当前学科，客观标签永远不变。
@@ -73,20 +79,50 @@ MAPPING_SPECS = [
 
 # 用户本人定制的「法学（开发者增强）」出厂预设。娱乐命名学科 canonical 到
 # law_personal，因此天然共用这份配置，绝不维护第二份。
+# 本表经 `_apply_mapping_override` **无条件覆盖**引擎结果：只要 objective_label 命中这里的
+# key，引擎算出的 band/weight/tier 全被 result.update 改写（src 标成 "mapping"）。
+# 所以它的值必须和引擎原型 `A_法学个人`（grading_config.json 的 archetypes）对得上，
+# 否则同一本刊会出现"引擎说核心、界面显示权威"的两套答案。
+#
+# 2026-08-10 用户拍板改为**跟随引擎原型**。改动前的旧值（2026-06-28 个人预设）是：
+#     SSCI Q1 权威 / Q2 权威 / Q3 顶级 / Q4 顶级 / CSSCI 顶级 /
+#     SJR Q1—Q4 核心 / SSCI(无分区) 核心 / TSSCI 权威 / 精选外文权威 权威 / 台湾法学 顶级
+# 与引擎逐条差 1—3 档（SSCI Q4 是最低分区却给第二高档）。后果实测（2026-08-10，用户 1430 篇
+# 真实题录，identify 修复与 field_focus 目录均已就位）：
+#     旧值 → 最高两档 74.5%
+#     本表 → 权威155/顶级443/核心556/普通276，最高两档 41.8%
+#     完全移除本表 → 约 39%
+# 四档在 API 后端换算成排序加成是 0.300/0.276/0.255/0.075，旧值下 74.5% 的库挤在 0.024 宽的
+# 一条带里，最高两档之间事实上不做区分——这是"期刊加成没用"的根因之一。
+# （百分比会随题录增删漂移，用它判断量级即可，别当契约；要复核就重跑一遍真实题录。）
+#
+# ⚠️ 本表**不等于**完全移除映射层：映射层覆盖后 weight 取四档代表值
+# （BAND_TO_TIER → TIER_W），比引擎的 T1/T1b/T2/T3/T4/T5 细分粒度粗一档。保留本表是为了
+# 让「库总览 → 评价规则」里每一项都显示实际生效值、且用户能逐项调整（overrides 优先）。
+# 改这里的任何一条之前，先对照 grading_config.json 的 `A_法学个人`.map。
 PERSONAL_MAPPING_DEFAULTS = {
-    "label:SSCI Q1": "authority",
-    "label:SSCI Q2": "authority",
-    "label:SSCI Q3": "top",
-    "label:SSCI Q4": "top",
-    "label:CSSCI": "top",
+    "label:SSCI Q1": "core",         # 引擎 T2
+    "label:SSCI Q2": "core",         # 引擎 T3
+    "label:SSCI Q3": "normal",       # 引擎 T4
+    "label:SSCI Q4": "normal",       # 引擎 T5
+    "label:CSSCI": "core",           # 引擎 T2（cssci.来源）
+    # 唯一一条**不跟随引擎**的：它是非期刊来源（report），引擎的期刊目录本来就不管，
+    # 没有可对齐的引擎判定，所以沿用 2026-06-28 的个人预设「官方报告算顶级」。
     "nature:report": "top",
-    "label:SJR Q1": "core",
-    "label:SJR Q2": "core",
-    "label:SJR Q3": "core",
-    "label:SJR Q4": "core",
-    "label:SSCI": "core",
-    "label:TSSCI": "authority",
-    "label:精选外文权威": "authority",
+    "label:SJR Q1": "normal",        # 引擎 T4
+    "label:SJR Q2": "normal",        # 引擎 T5
+    "label:SJR Q3": "normal",        # 引擎 T5
+    "label:SJR Q4": "normal",        # 引擎 T5
+    "label:SSCI": "normal",          # 无分区，落"其他核心"→T4
+    "label:TSSCI": "top",            # 引擎 T1b（tssci_law.收录）
+    "label:精选外文权威": "top",      # 引擎 T1b（ssci_law_authority.收录）
+    # tw_law 核心→T1、一般→T2，而标签只有一个「台湾法学」，粒度不足以区分，取中。
+    # ⚠️ 实测后果（别被"取中"三个字糊弄过去）：台大法学论丛／台北大法学论丛／东吴法律学报这
+    # **三本核心刊同时命中 tssci_law**，`_objective_label` 让 TSSCI 抢先，所以它们走的是
+    # `label:TSSCI` 而不是这一条——引擎判 T1（权威），最终落 T1b（顶级），**降了一档**。
+    # 也就是说本条实际只作用于 tw_law.一般 那 10 本刊；用户在「库总览→评价规则」里调
+    # 「台湾法学」，对那三本核心刊纹丝不动。要让 UI 开关名副其实，得把标签拆成
+    # 「台湾法学(核心)」「台湾法学(一般)」两条并各给一行映射。
     "label:台湾法学": "top",
 }
 
@@ -130,13 +166,55 @@ def _requested_disc():
         return "law"
 
 
+def _grading_signature():
+    """定档规则的指纹：配置 + 全部目录数据的 (文件名, 大小, mtime)。
+
+    只要 grading_config.json（priorityOrder / archetype map / catalogs 注册）或任何一份
+    catalogs/*.json 变了，指纹就变。用户自己在 <数据目录>/journals/ 放的覆盖版同样计入
+    （`loader.catalog_path` 会优先读那份）。
+    """
+    try:
+        import journal_grading.loader as _L
+        parts = []
+        for p in [_L.config_path()] + sorted(
+                set(_L.PKG.glob("catalogs/*.json")) | set((_L._data_root() / "journals").glob("*.json"))):
+            try:
+                st = p.stat()
+                parts.append(f"{p.name}:{st.st_size}:{int(st.st_mtime)}")
+            except Exception:
+                parts.append(f"{p.name}:?")
+        return hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()[:16]
+    except Exception:
+        return ""
+
+
 def _load_memo():
+    """加载逐刊 memo；**定档规则一变就整份作废**。
+
+    历史坑（2026-08-10 修）：memo 原本没有任何版本或指纹，命中判据只是"有 source_type 和
+    objective_label"。于是改了目录数据、priorityOrder、archetype map 或期刊识别逻辑之后，
+    老用户的 memo 照旧命中，**引擎层改动对他一律不生效**——实测用户正式安装里 1309 条
+    law_personal 缓存中 727 条永久命中，《中国社会科学》带 ISSN 那条仍停在旧的 'CSSCI'，
+    新加的 field_focus 目录对他完全无效。而 `retriever._weight_res` 走的正是这条缓存，
+    所以连检索排序读的都是旧档位。
+    重算是纯离线的（无 API、无网络，见 `_journal_result`），代价只是一次预热。
+    """
     global _MEMO, _MEMO_LOADED
     if _MEMO_LOADED:
         return
     try:
         if MEMO_FILE.exists():
-            _MEMO = json.loads(MEMO_FILE.read_text(encoding="utf-8"))
+            raw = json.loads(MEMO_FILE.read_text(encoding="utf-8"))
+            sig = _grading_signature()
+            if not isinstance(raw, dict):
+                _MEMO = {}
+            elif raw.get(_MEMO_SIG_KEY) == sig and raw.get(_MEMO_VER_KEY) == MEMO_VER:
+                _MEMO = {k: v for k, v in raw.items()
+                         if k not in (_MEMO_SIG_KEY, _MEMO_VER_KEY)}
+            else:
+                # 指纹不符（首次升级、目录被改过、或老格式无指纹）→ 整份丢弃重算
+                _MEMO = {}
+                print("[grading] 期刊定档规则已变，逐刊缓存整份重算（离线，不花钱）")
     except Exception:
         _MEMO = {}
     _MEMO_LOADED = True
@@ -178,11 +256,14 @@ def _atomic_write(path, obj):
 
 
 def flush():
-    """把脏 memo 落盘（预热末尾/进程退出前调）。"""
+    """把脏 memo 落盘（预热末尾/进程退出前调）。落盘时一并写入版本与规则指纹。"""
     global _MEMO_DIRTY
     with _LOCK:
         if _MEMO_DIRTY:
-            _atomic_write(MEMO_FILE, _MEMO)
+            payload = dict(_MEMO)
+            payload[_MEMO_VER_KEY] = MEMO_VER
+            payload[_MEMO_SIG_KEY] = _grading_signature()
+            _atomic_write(MEMO_FILE, payload)
             _MEMO_DIRTY = False
 
 
@@ -205,8 +286,19 @@ def _hit_map(hit_catalogs):
 
 
 def _objective_label(hit_catalogs):
-    """期刊唯一客观标签。先比较映射后的四档，再按同档目录优先级决胜。"""
+    """期刊唯一客观标签。先比较映射后的四档，再按同档目录优先级决胜。
+
+    field_focus（用户对具体期刊的最终裁定）**必须最先返回**，原因不只是显示：
+    标签决定了 `_apply_mapping_override` 用哪个 `label:` 去查 PERSONAL_MAPPING_DEFAULTS，
+    而那张表会**无条件覆盖**引擎结果。若这里让 CSSCI/SSCI 等抢到标签，用户的裁定就会在
+    服务层被悄悄顶回去——实测把 CSSCI 来源刊《法律适用》裁定为 field_focus.权威，
+    引擎已给 T1，服务层仍输出 core/T2/0.85，界面、排序、加成全无变化且无任何提示。
+    返回一个不在 PERSONAL_MAPPING_DEFAULTS 里的独立标签，`_mapping_default` 便返回 None，
+    `_apply_mapping_override` 原样放行，裁定才真正生效（升档降档同理）。
+    """
     hits = _hit_map(hit_catalogs)
+    if "field_focus" in hits:
+        return "领域裁定·" + (hits["field_focus"] or "")
     has_tssci = "tssci_law" in hits
     candidates = []
 
