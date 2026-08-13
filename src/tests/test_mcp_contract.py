@@ -206,7 +206,7 @@ class McpContractTests(unittest.TestCase):
 
     def test_every_tool_has_new_contract_and_dispatch(self):
         names = [tool["name"] for tool in MCP.TOOLS]
-        self.assertEqual(41, len(names))
+        self.assertEqual(42, len(names))
         self.assertEqual(len(names), len(set(names)))
         dispatch = inspect.getsource(MCP.do_tool)
         for tool in MCP.TOOLS:

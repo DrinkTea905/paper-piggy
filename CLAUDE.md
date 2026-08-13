@@ -279,6 +279,7 @@ localkb.py 都引用 `C.DAEMON_*`，所以设一个环境变量就整体生效�
 | 应用图标 | `web/PaperPiggy.png`（唯一真源；多尺寸 `.ico` 由构建器/launcher 自动生成） |
 | **数据落点** | `config._bootstrap_bundle_env()`。`run_localkb.py` 只是 `import config` 借道 —— 它曾经自己复刻过一份 HOME 解析，两处各算各的，是「启动器和 MCP 认两个数据目录」的漂移源。**别再复制出去。** |
 | Agent 工作区落点 | `agent_ws.base_dir()`（= `C.DATA.parent`，与 folder/zotero 模式无关） |
+| **记忆的分区落点与硬约束** | `agent_ws` 的 `memory_file()` / `tools_file()` / `topics_dir()` / `changelog_file()` + `MEMORY_CORE_MAX_LINES`、`MEMORY_CORE_MAX_ENTRY`、`MEMORY_TOPIC_DUP_RATIO`、`TOPIC_STATUSES` + `append_memory()` / `set_topic_status()`。**`mcp_server` 只组装视图、分段与措辞，不许另拼路径或另设阈值**（同 §5「数据落点」那条的教训）。闸门判定在 `mcp_server._memory_scope_opens_gate()`：只有 core / all 放行，单读一份主题档案不算 |
 | **哪些数据要备份** | `backup.py` 的 `CORE_IN_DATA` / `INDEX_IN_DATA` / `NEVER_IN_DATA` / `SPECIAL_IN_DATA`。**新增任何 `C.DATA / "xxx"` 都必须在这四个清单里落座**，否则 `check_guides ⑥` 直接中止打包 |
 
 ---

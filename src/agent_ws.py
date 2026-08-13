@@ -67,6 +67,390 @@ def resolve(which):
     return {"output": output_dir, "rely": rely_dir, "skills": skills_dir}.get(which, rely_dir)()
 
 
+# ══ 记忆分区：落点 + 硬约束 ══════════════════════════════════════════
+# 这里是记忆四类落点的**唯一事实源**（CLAUDE.md §5）。mcp_server 只负责措辞与分段，
+# 绝不另拼一份路径——「两处各算各的」正是历史上启动器与 MCP 认两个数据目录的漂移源。
+#
+# 为什么要分区（2026-08-13 实测的两笔账，别把它改回单文件）：
+#   ① 单文件涨到 669 行 / 77938 字符，超过 MCP 客户端单次返回上限被转存成临时文件，
+#      agent 要分四次才读得完；而闸门规定开工必读，这笔开销每次开工都要付。
+#   ② 更要命的不是 token：用户要求「推倒重写、旧结论作废、以我的新文件为准」时，
+#      旧主题结论仍被闸门强行塞进上下文，agent 无法不看见，实测把既往结论当成了本轮
+#      判断依据。靠提示词说「看见了不要用」不可靠——必须物理上读不到。
+#
+# 所以下面这些上限是**写入时拒绝**，不是劝告。散文里写「保持简短」四个字，
+# 换来的就是 669 行；机器拒绝才拦得住。
+MEMORY_CORE_NAME = "项目记忆.md"
+MEMORY_TOOLS_NAME = "工具经验.md"
+MEMORY_LOG_NAME = "变更日志.md"
+MEMORY_TOPICS_NAME = "主题档案"
+
+MEMORY_CORE_MAX_LINES = 200      # 项目记忆.md 的行数硬顶：它是「当前真相」，不是台账
+MEMORY_CORE_WARN_LINES = 160     # 到这就在返回体里催精简（仍写入）
+MEMORY_CORE_MAX_ENTRY = 600      # core 单条上限：一条「已定决策」写不了这么长；长的属于主题档案
+MEMORY_TOOLS_MAX_ENTRY = 2000    # 工具经验可以带命令与参数，放宽些，但也不是论文
+MEMORY_TOPIC_DUP_RATIO = 0.82    # 新建主题档案的查重阈值：一个研究主题只能有一个档案
+TOPIC_STATUSES = ("进行中", "已完成", "已作废")
+
+MEMORY_TARGETS = ("core", "tools", "log")   # 另有 topic:<名>
+
+
+def memory_file():    return memory_dir() / MEMORY_CORE_NAME
+def tools_file():     return memory_dir() / MEMORY_TOOLS_NAME
+def changelog_file(): return memory_dir() / MEMORY_LOG_NAME
+def topics_dir():     return memory_dir() / MEMORY_TOPICS_NAME
+
+
+# 本地文件名净化：刻意**不**复用 textutil.safe_name —— 那个模块 import jieba，
+# 会把词典加载拖进 mcp_server 启动和 --print-hashes 这两条本该很轻的路径。
+_FS_ILLEGAL = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+_WIN_RESERVED = {"CON", "PRN", "AUX", "NUL",
+                 *(f"COM{i}" for i in range(1, 10)),
+                 *(f"LPT{i}" for i in range(1, 10))}
+
+
+def topic_filename(name):
+    """主题名 → 安全文件名主干（不含 .md）。
+    safe_name 不管、而 Windows 上真会咬人的三件事在这里补齐：
+      · 结尾的点与空格被 Windows 静默剥掉 → 写进去的名字和 iterdir 读回的名字对不上，
+        表现成「刚建的主题立刻找不到」，所以先自己剥；
+      · 保留设备名（CON/PRN/AUX/NUL/COM1-9/LPT1-9）创建会失败或行为诡异 → 加下划线避开；
+      · 空串 / `.` / `..` → 落成畸形文件名。
+    注意本函数是**有损**的（`A/B` 与 `A_B` 会撞同一个文件），所以档案首行会写原始主题名，
+    读取时以真实目录做匹配，不靠「净化后再拼路径」。"""
+    stem = _FS_ILLEGAL.sub("_", str(name or "").strip())
+    stem = stem.strip().rstrip(" .")
+    if len(stem) > 120:
+        stem = stem[:112] + "_" + hashlib.md5(str(name).encode("utf-8")).hexdigest()[:8]
+    if not stem:
+        return "未命名主题"
+    if stem.upper() in _WIN_RESERVED or stem.upper().split(".")[0] in _WIN_RESERVED:
+        stem = "_" + stem
+    return stem
+
+
+_STATUS_RE = re.compile(r"^\s*状态\s*[:：]\s*(.+?)\s*$")
+
+
+def _norm_topic(name):
+    """主题查重用的归一化：去空白、去常见标点、小写。「少年司法 分流」与「少年司法分流」视为同一主题。"""
+    return re.sub(r"[\s\-—_·、,，.。:：;；'\"“”（）()《》〈〉【】\[\]]+", "", str(name or "")).casefold()
+
+
+def parse_topic_status(text, scan_lines=12):
+    """从主题档案首部读状态行。
+    缺失记「未标注」而**不是**默认「进行中」——照 定时任务/任务.md 的既有经验（server.py
+    C1：没写「启用」字段的是草稿，不得默认成启用）：默认成一个积极状态会让没写全的档案
+    伪装成正在推进。"""
+    for ln in str(text or "").splitlines()[:scan_lines]:
+        m = _STATUS_RE.match(ln)
+        if m:
+            v = m.group(1).strip()
+            return v if v else "未标注"
+    return "未标注"
+
+
+def _topic_display_name(text, fallback):
+    """档案首个 `# 标题` 即原始主题名（净化是有损的，所以原名必须落盘）。没有就退回文件名主干。"""
+    for ln in str(text or "").splitlines()[:6]:
+        if ln.lstrip().startswith("# "):
+            v = ln.lstrip()[2:].strip()
+            if v:
+                return v
+    return fallback
+
+
+def topic_seed(name, status="进行中"):
+    """新建主题档案的固定首部。标题行 + 状态行由**产品**写，agent 无从跳过——
+    这样「每份主题档案首部都有状态行」是结构保证，不是靠模板提醒。"""
+    return (f"# {name}\n\n"
+            f"状态: {status}\n\n"
+            f"> 本主题的结论、材料判断与待核项。默认**不进**上下文；需要时用\n"
+            f"> read_project_memory(scope=\"topic:{name}\") 单独取用。\n"
+            f"> 一个研究主题只有这一份档案——别为同一主题另开新档。\n")
+
+
+def _read(path):
+    try:
+        return path.read_text(encoding="utf-8") if path.exists() else ""
+    except Exception:
+        return ""
+
+
+def _append_text(path, text):
+    """纯追加写入。
+    刻意不用 read→拼接→write：那是 read-modify-write，而每个 agent 会话各起一个
+    mcp_server 进程，进程级锁救不了，并发直接丢更新（与 wiki_store 记过的 index.json
+    丢更新同形）。open("a") 让 OS 层保证追加语义。
+    newline="\\n" 是必须的：不指定时 Windows 写 CRLF，会把既有 LF 文件搅成混合行尾。
+    退避重试照抄 wiki_store._atomic_write 的理由——OneDrive/杀软会短暂独占文件（WinError 5）。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    last = None
+    for i in range(6):
+        try:
+            with open(path, "a", encoding="utf-8", newline="\n") as f:
+                f.write(text)
+            return
+        except PermissionError as e:
+            last = e
+            time.sleep(0.04 * (2 ** i))
+    raise last
+
+
+def list_memory_topics():
+    """主题档案清单（不含正文）：[{name, status, chars, lines, modified, file}]，按主题名排序。
+    目录不存在返回 []——旧布局（只有单文件）下这就是空清单，调用方据此走兼容分支。"""
+    out = []
+    d = topics_dir()
+    try:
+        if not d.exists():
+            return out
+        for p in sorted(d.glob("*.md")):
+            body = _read(p)
+            out.append({
+                "name": _topic_display_name(body, p.stem),
+                "file": p.name,
+                "status": parse_topic_status(body),
+                "chars": len(body),
+                "lines": len(body.splitlines()),
+                "modified": time.strftime("%Y-%m-%d", time.localtime(p.stat().st_mtime)),
+            })
+    except Exception:
+        pass
+    return sorted(out, key=lambda x: x["name"])
+
+
+def find_memory_topic(name):
+    """按主题名找档案，返回 Path 或 None。
+    以**真实目录**做匹配（精确名 → 净化名 → 归一化名），而不是「净化后拼路径」：
+    净化有损，两个不同主题名可能指向同一文件，反过来 agent 手里的原名也可能与文件名不同。"""
+    d = topics_dir()
+    if not d.exists():
+        return None
+    want_raw = str(name or "").strip()
+    want_stem = topic_filename(want_raw)
+    want_norm = _norm_topic(want_raw)
+    if not want_norm:
+        return None
+    cands = list(d.glob("*.md"))
+    for p in cands:                                   # ① 文件名主干精确命中
+        if p.stem == want_raw or p.stem == want_stem:
+            return p
+    for p in cands:                                   # ② 归一化命中（文件名或档案里的原始标题）
+        if _norm_topic(p.stem) == want_norm or _norm_topic(_topic_display_name(_read(p), p.stem)) == want_norm:
+            return p
+    return None
+
+
+def similar_memory_topics(name, ratio=None):
+    """与 name 高度相似的既有主题档案（用于新建前查重）。返回 [显示名]。"""
+    want = _norm_topic(name)
+    thr = MEMORY_TOPIC_DUP_RATIO if ratio is None else ratio
+    hits = []
+    if not want:
+        return hits
+    for it in list_memory_topics():
+        other = _norm_topic(it["name"])
+        if not other:
+            continue
+        if other == want or want in other or other in want:
+            hits.append(it["name"])
+            continue
+        if difflib.SequenceMatcher(None, want, other).ratio() >= thr:
+            hits.append(it["name"])
+    return hits
+
+
+def read_memory_section(kind):
+    """kind=core|tools|log → (存在?, 正文)。"""
+    p = {"core": memory_file, "tools": tools_file, "log": changelog_file}.get(kind)
+    if p is None:
+        return False, ""
+    f = p()
+    return (f.exists(), _read(f))
+
+
+def read_memory_topic(name):
+    """→ (找到?, 显示名, 正文)。"""
+    p = find_memory_topic(name)
+    if p is None:
+        return False, str(name or "").strip(), ""
+    body = _read(p)
+    return True, _topic_display_name(body, p.stem), body
+
+
+def parse_memory_target(target):
+    """把 target 串解析成 (kind, 主题名)。kind ∈ core|tools|log|topic；非法返回 (None, 原串)。"""
+    t = str(target or "core").strip()
+    if not t:
+        return "core", ""
+    if t in MEMORY_TARGETS:
+        return t, ""
+    low = t.casefold()
+    for pre in ("topic:", "主题:", "主题："):
+        if low.startswith(pre.casefold()):
+            return "topic", t[len(pre):].strip()
+    return None, t
+
+
+def check_core_budget():
+    """项目记忆.md 的行数预算 → (行数, 是否已满, 是否该催)。"""
+    n = len(_read(memory_file()).splitlines())
+    return n, n >= MEMORY_CORE_MAX_LINES, n >= MEMORY_CORE_WARN_LINES
+
+
+def set_topic_status(name, status, reason=""):
+    """只改主题档案首部那一行状态，不追加正文。→ (ok, 人话消息)。
+    档案不存在时**不**顺手新建：改状态是维护动作，凭空造档案会绕过下面的查重闸。"""
+    status = str(status or "").strip()
+    if status not in TOPIC_STATUSES:
+        return False, f"状态只能是 {' / '.join(TOPIC_STATUSES)}，收到「{status}」。"
+    p = find_memory_topic(name)
+    if p is None:
+        names = [x["name"] for x in list_memory_topics()]
+        tip = ("；现有主题：" + "、".join(names)) if names else "；当前还没有任何主题档案"
+        return False, f"没有名为「{name}」的主题档案{tip}。"
+    body = _read(p)
+    stamp = time.strftime("%Y-%m-%d")
+    line = f"状态: {status}（{stamp}" + (f"，原因：{reason.strip()}" if str(reason or "").strip() else "") + "）"
+    lines = body.splitlines()
+    hit = next((i for i, ln in enumerate(lines[:12]) if _STATUS_RE.match(ln)), None)
+    if hit is None:
+        head = 1 if (lines and lines[0].lstrip().startswith("# ")) else 0
+        lines[head:head] = ["", line]
+    else:
+        lines[hit] = line
+    try:
+        _atomic_write_text(p, "\n".join(lines).rstrip() + "\n")
+    except Exception as e:
+        return False, f"写主题档案失败：{e}"
+    return True, f"「{_topic_display_name(body, p.stem)}」状态已改为 {status}。"
+
+
+def _atomic_write_text(path, text):
+    """整文件改写走 tmp + os.replace + 退避（改状态行是 read-modify-write，无法用 open('a')）。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    last = None
+    for i in range(6):
+        try:
+            tmp.write_text(text, encoding="utf-8", newline="\n")
+            os.replace(tmp, path)
+            return
+        except PermissionError as e:
+            last = e
+            time.sleep(0.04 * (2 ** i))
+    try:
+        tmp.unlink()
+    except Exception:
+        pass
+    raise last
+
+
+def append_memory(target="core", text="", status=None, allow_new_topic=True):
+    """记忆写入的唯一入口。→ (ok, 人话消息)。
+    这里的每一条拒绝都是**硬约束**，因为散文劝告已经被证伪过一次（单文件涨到 669 行）。"""
+    kind, topic = parse_memory_target(target)
+    if kind is None:
+        return False, (f"target 只能是 core / tools / log / topic:<主题名>，收到「{topic}」。"
+                       "core=长期偏好与已定决策；tools=与题目无关的作业经验；"
+                       "topic:<名>=某个研究主题的结论；log=历史流水账。")
+    body = str(text or "").strip()
+    if kind == "topic":
+        return _append_topic(topic, body, status, allow_new_topic)
+    if status is not None:
+        return False, "status 只在 target=\"topic:<主题名>\" 时有意义。"
+    if not body:
+        return False, "需要 text（要记住的一条内容）。"
+    if kind == "core":
+        if len(body) > MEMORY_CORE_MAX_ENTRY:
+            return False, (f"这条 {len(body)} 字，超过项目记忆单条上限 {MEMORY_CORE_MAX_ENTRY} 字。"
+                           "项目记忆只放「当前真相」（长期偏好 / 固定规则 / 已定决策 / 各主题一行状态）。"
+                           "研究主题的结论请写 target=\"topic:<主题名>\"；作业经验写 target=\"tools\"；"
+                           "过程流水写 target=\"log\"。")
+        n, full, warn = check_core_budget()
+        if full:
+            return False, (f"项目记忆已 {n} 行，达到上限 {MEMORY_CORE_MAX_LINES} 行。"
+                           "它是「当前真相」不是台账——请先精简（把主题结论移进 主题档案/、"
+                           "把历史移进 变更日志.md），或改用 target=\"topic:<名>\" / \"tools\" / \"log\"。")
+    if kind == "tools" and len(body) > MEMORY_TOOLS_MAX_ENTRY:
+        return False, (f"这条 {len(body)} 字，超过工具经验单条上限 {MEMORY_TOOLS_MAX_ENTRY} 字。"
+                       "工具经验记「怎么操作」；某个研究主题的实质结论请写 target=\"topic:<主题名>\"。")
+    path = {"core": memory_file, "tools": tools_file, "log": changelog_file}[kind]()
+    try:
+        _ensure_seeded(path, kind)
+        _append_text(path, f"\n\n<!-- {time.strftime('%Y-%m-%d')} 由 AI 助手追加 -->\n{body}\n")
+    except Exception as e:
+        return False, f"写记忆失败：{e}"
+    label = {"core": "项目记忆.md", "tools": "工具经验.md", "log": "变更日志.md"}[kind]
+    msg = f"已追加进 {label}（{path}）。"
+    if kind == "core":
+        n, _full, warn = check_core_budget()
+        if warn:
+            msg += (f"⚠ 项目记忆已 {n} 行（上限 {MEMORY_CORE_MAX_LINES}）——"
+                    "请顺手精简，把主题结论移进 主题档案/。")
+    return True, msg
+
+
+def _ensure_seeded(path, kind):
+    """文件不存在时补出厂头（旧布局升级上来、或用户删过文件时都会走到）。"""
+    if path.exists():
+        return
+    seed = {"core": _PROJECT_MEMORY, "tools": _TOOLS_NOTE, "log": _CHANGELOG}.get(kind)
+    if seed:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _write_text_exclusively(path, seed)
+
+
+def _append_topic(name, body, status, allow_new_topic):
+    name = str(name or "").strip()
+    if not name:
+        return False, "target=\"topic:<主题名>\" 需要主题名，例如 topic:少年司法分流转处。"
+    if status is not None and str(status).strip() not in TOPIC_STATUSES:
+        return False, f"状态只能是 {' / '.join(TOPIC_STATUSES)}，收到「{status}」。"
+    p = find_memory_topic(name)
+    if p is None:
+        # ★ 一个研究主题一个档案：新建前查重，撞了就指回既有那份，不许另起炉灶。
+        dup = similar_memory_topics(name)
+        if dup:
+            return False, (f"已有高度相似的主题档案：{'、'.join('「%s」' % d for d in dup)}。"
+                           "一个研究主题只能有一个档案——请写进既有那份"
+                           f"（target=\"topic:{dup[0]}\"）；确实是另一个主题就换一个区分度更高的名字。")
+        if not allow_new_topic:
+            return False, f"没有名为「{name}」的主题档案，且本次不允许新建。"
+        p = topics_dir() / (topic_filename(name) + ".md")
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            _write_text_exclusively(p, topic_seed(name, str(status or "进行中").strip()))
+        except FileExistsError:
+            pass
+        except Exception as e:
+            return False, f"新建主题档案失败：{e}"
+        created = True
+    else:
+        created = False
+    restatused = False
+    if not created and status is not None:
+        ok, msg = set_topic_status(name, str(status).strip())
+        if not ok:
+            return False, msg
+        restatused = True
+    if body:
+        try:
+            _append_text(p, f"\n\n<!-- {time.strftime('%Y-%m-%d')} 由 AI 助手追加 -->\n{body}\n")
+        except Exception as e:
+            return False, f"写主题档案失败：{e}"
+    elif not created and not restatused:
+        return False, "需要 text（要写进该主题档案的内容），或用 status 只改状态行。"
+    if created:
+        head = "已新建主题档案"
+    elif body:
+        head = "已追加进主题档案" + ("（并改了状态行）" if restatused else "")
+    else:
+        head = "已只改状态行，未追加正文；主题档案"
+    return True, f"{head}「{name}」（{p}）。它默认不进上下文，需要时用 scope=\"topic:{name}\" 取用。"
+
+
 _README_RELY = """# 0_Agent资料库 —— 你的 AI 助手的专属资料库
 
 > 这里放的是「AI 助手干活要用的东西」，不是你的文献本身。它**留在你本机**、**人类可读**；
@@ -75,9 +459,14 @@ _README_RELY = """# 0_Agent资料库 —— 你的 AI 助手的专属资料库
 
 ## 里面有什么
 
-- **记忆/** —— 项目记忆。`项目记忆.md` 记「当前定了什么」（决策 / 偏好 / 进度，保持简短），
-  `变更日志.md` 记历史流水账（只增不改）。任何助手开工前都必须先完整读取项目记忆；助手若在自己的
-  auto memory 等私有位置记下长期信息，也必须把同一实质内容同步进项目记忆。二者刻意分开，别让记忆膨胀成流水账。
+- **记忆/** —— 项目记忆，按四类分开存放（刻意分开，别让记忆膨胀成一锅流水账）：
+  - `项目记忆.md` —— 「当前定了什么」：长期偏好、固定规则、已定决策、各研究主题一行状态。**上限 200 行**，超了写不进去。
+  - `工具经验.md` —— 与研究题目无关的作业经验（DOCX 生成、检索方法、某工具的坑）。换个题目还用得上的才写这。
+  - `主题档案/` —— **一个研究主题一个 .md**，装该主题的结论、材料判断、待核项，首部带「状态: 进行中／已完成／已作废」。
+  - `变更日志.md` —— 历史流水账（只增不改）。
+  任何助手开工前都必须先完整读取前两份（= core 视图）；**主题档案默认不读**，需要时才按主题单独取——
+  这样你说「这个题从头再来、旧结论作废」时，旧结论不会硬挤进助手的上下文。
+  助手若在自己的 auto memory 等私有位置记下长期信息，也必须把同一实质内容同步进项目记忆。
 - **技能/** —— AI 助手的工作流，**一个工作流一个文件**（详见里面的 `说明.md`）。研究任务按“初稿 / 综述”与“少年司法 / 其他领域”路由，
   另有维护、跨学科发散两条支持工作流；`参考手册/` 放由主工作流自动附带、但不单独列出的详细材料。
   **任何 AI 助手**（Claude Code / Codex / …）读这个文件夹即可照着干。要加新工作流就**新建一个 .md**，别往已有文件里塞。
@@ -138,17 +527,32 @@ _README_OUTPUT = """# 0_Agent交付物 —— AI 助手的成品都在这
 
 _PROJECT_MEMORY = """# 项目记忆 —— 当前真相
 
-> 这里只记「现在定了什么」：决策、偏好、进度、关键事实。**保持简短。**
-> 历史变更请写到同目录 `变更日志.md`，别让这个文件膨胀成流水账。
-> 这是不同 AI 助手之间唯一共享的项目记忆。任何助手开始任务前必须先完整读取这份文件。
+> 这里只记「现在定了什么」：长期偏好、固定规则、当前在做什么、各研究主题一行状态。**保持简短**（上限 200 行，超了写不进去）。
+> 这是不同 AI 助手之间唯一共享的项目记忆。任何助手开始任务前必须先完整读取本文件（= `read_project_memory` 的 core 视图）。
 > 助手可以另用自己的 auto memory，但凡在那里保存本项目的长期信息，也必须把同一实质内容同步到这里；私有记忆不能替代本文件。
 > 任务产生新的长期偏好、已定决策、关键进度或事实时，助手必须在结束前更新这里（你也可以随手改）。
+
+## 记忆目录怎么分（写错地方会被拒绝，不是建议）
+
+| 放什么 | 落点 | 工具参数 |
+|---|---|---|
+| 长期偏好、固定规则、已定决策、各主题一行状态 | 本文件 `项目记忆.md` | `append_project_memory(target="core")` |
+| 与研究题目无关的作业经验（DOCX 生成、检索方法、工具缺陷…） | `工具经验.md` | `target="tools"` |
+| **某一个研究主题**的结论、材料判断、待核项 | `主题档案/<主题名>.md` | `target="topic:<主题名>"` |
+| 历史流水账（只增不改） | `变更日志.md` | `target="log"` |
+
+**一个研究主题只有一个档案**——新建时会查重，撞了会被退回既有那份。
+主题档案**默认不进上下文**，要用时才 `read_project_memory(scope="topic:<主题名>")` 单独取。
+这是刻意的：旧主题结论不该在你重开一个题目时挤进来。
 
 ## 关于我 / 我的偏好
 <!-- 例：我是法学研究者，主攻少年司法；引注偏好脚注、CLSCI 优先…… -->
 
 ## 当前在做
 <!-- 例：正在写「涉罪未成年人分流转处」，产出放 0_Agent交付物/分流转处/ -->
+
+## 各主题状态（一主题一行，详情在 主题档案/）
+<!-- 例：- 分流转处：进行中，已定五章结构，详见 主题档案/分流转处.md -->
 
 ## 已定决策
 <!-- 把定下来、不想反复讨论的事记在这，AI 助手就不会每次重新问 -->
@@ -157,9 +561,26 @@ _PROJECT_MEMORY = """# 项目记忆 —— 当前真相
 <!-- 篇幅 / 引注风格 / 要不要 docx …… -->
 """
 
+_TOOLS_NOTE = """# 工具经验 —— 与研究题目无关的作业经验
+
+> 这里记「怎么把活干成」，不记「研究结论」：DOCX 生成链与 LibreOffice 调用、某个工具的已知缺陷
+> 与绕法、Zotero 题录修正的做法、检索词该怎么配……换任何 AI 助手都能直接照做，不必重新踩坑。
+> 由 `append_project_memory(target="tools")` 追加；它和 `项目记忆.md` 一起构成开工必读的 core 视图。
+
+> **不要**把某个研究主题的实质结论写这里——那属于 `主题档案/<主题名>.md`。
+> 判据很简单：换一个研究题目还用得上的，才是工具经验。
+
+<!-- 示例：
+## DOCX 交付
+- 改格式走样式层手术，保护 Zotero 引注域，不重建文档。
+- LibreOffice 转 PDF：soffice --headless --convert-to pdf，首次调用会慢，属正常。
+-->
+"""
+
 _CHANGELOG = """# 变更日志 —— 历史流水账（只增不改，最新在最上）
 
-> AI 助手把每次重要动作 / 结论追加到这里，供回溯。当前真相请看同目录 `项目记忆.md`。
+> AI 助手把每次重要动作 / 结论追加到这里，供回溯。由 `append_project_memory(target="log")` 追加。
+> 当前真相看同目录 `项目记忆.md`，作业经验看 `工具经验.md`，某个研究主题的长线笔记看 `主题档案/<主题名>.md`。
 
 <!-- 示例：
 ## 2026-07-14
@@ -253,10 +674,13 @@ _ROOT_AGENTS = """# PaperPiggy Agent 工作入口
 
 ## 项目记忆闸门（最高优先级）
 
-- 开始任何任务前，必须先完整读取 `0_Agent资料库/记忆/项目记忆.md`；接入 `localkb` 时先调用 `read_project_memory`。未读不得检索、写作、维护或调用其他 PaperPiggy 工具。
-- 这份文件是不同 Agent 之间唯一共享的项目记忆。Claude Code / Codex 等自己的 auto memory 可以作为附加记忆，但不能替代它。
-- 任务产生新的长期偏好、已定决策、关键进度或事实时，结束前必须调用 `append_project_memory`（或直接更新同一文件）。凡写进其他私有记忆的本项目长期信息，也必须把同一实质内容同步到这里。
-- 没有产生新的长期信息时不要追加空话；历史流水账写入同目录 `变更日志.md`。
+- 开始任何任务前，必须先完整读取项目记忆的 **core 视图**：接入 `localkb` 时调用 `read_project_memory`（默认 `scope="core"`），否则直接读 `0_Agent资料库/记忆/` 下的 `项目记忆.md` 与 `工具经验.md`。未读不得检索、写作、维护或调用其他 PaperPiggy 工具。
+- 这套记忆是不同 Agent 之间唯一共享的项目记忆。Claude Code / Codex 等自己的 auto memory 可以作为附加记忆，但不能替代它。
+- 记忆目录**分区存放，写错地方会被拒绝**：`项目记忆.md`＝长期偏好/固定规则/已定决策/各主题一行状态；`工具经验.md`＝与研究题目无关的作业经验；`主题档案/<主题名>.md`＝某一个研究主题的结论与待核项；`变更日志.md`＝历史流水账。
+- **主题档案默认不读**：core 视图只给主题清单与状态，正文要用 `read_project_memory(scope="topic:<主题名>")` 单独取。用户说「旧结论作废、重新来」时，不取就是不取——别让旧结论渗进本轮判断。
+- **一个研究主题只有一个档案**。新建时会查重，撞了会被退回既有那份；确实是新主题就换一个区分度更高的名字。
+- 任务产生新的长期偏好、已定决策、关键进度或事实时，结束前必须调用 `append_project_memory`（`target` 选 `core` / `tools` / `topic:<主题名>` / `log`），或直接改对应文件。凡写进其他私有记忆的本项目长期信息，也必须把同一实质内容同步到这里。
+- 没有产生新的长期信息时不要追加空话；历史流水账写 `target="log"`（即同目录 `变更日志.md`），别塞进项目记忆。
 
 ## 工作流闸门（最高优先级）
 
@@ -285,7 +709,8 @@ _WF_JJ_DRAFT = r"""# 工作流：论文初稿（少年司法版）
 - 文献综述、研究现状、理论谱系、争议地图 → 改用《综述（少年司法版）》。
 
 ## 开工前检查
-1. 声明采用本工作流并确认手册已附带；读项目记忆、既有交付物与相关 wiki 页。
+1. 声明采用本工作流并确认手册已附带；读项目记忆 core（`read_project_memory`），再按本题主题名取该主题档案（`scope="topic:<主题名>"`）；然后看既有交付物与相关 wiki 页。
+   本题若是**推倒重来**（用户说旧结论作废、以新材料为准），就**别取**旧主题档案，只读 core——取了就无法不看见。收尾时把本轮结论写回 `target="topic:<主题名>"`，一个研究主题只有一个档案。
 2. 固定对象、年龄段、程序阶段、法域、法制时点、受众与正文目标字数。**目标字数低于 18000 时，一级单元数必须压到 5 个以内**（36 篇篇均 26208 字、每 1695 字才出现一个标题；字数不够而章数不减，必然把节切碎）。
 3. 核心来源必须能 `read_source` 逐页读到终页；题录、摘要、检索片段只用于发现文献。现行法另核时效并记录法制时点。
 4. 不直接修改原始文献或 Zotero；只有用户明确要求并通过工具安全闸时才更新 PaperPiggy。wiki 写回仅限综合层，人工核验页只提交待审稿。
@@ -302,7 +727,7 @@ _WF_JJ_DRAFT = r"""# 工作流：论文初稿（少年司法版）
 | 起草正文各章 | **默认不派** | 章际回指、章首装置零重复、段末回收句配额、编号词四套不混用全是**跨章约束**，并行起草必然打破。用户坚持要派时：先定死第二闸门的落位表，各章只许在本行范围内写，收稿后由你统一改写全部章首段与章际过渡 |
 | 定稿前独立校核 | **建议派**（与起草者隔离） | 自己校自己查不出口语词与术语泄漏：首稿按词表清零后，独立校核仍查出词表之外 21 处同类口语（见"起草"第 9 条）。校核子代理只拿成稿与"完成标准"清单，不看起草过程 |
 
-- 派出去的每个子代理都必须被告知：先读项目记忆、只用 `localkb` 取证、逐页读到终页、论断带印刷页、交回的材料不得出现裸 key。
+- 派出去的每个子代理都必须被告知：先读项目记忆 core、只用 `localkb` 取证、逐页读到终页、论断带印刷页、交回的材料不得出现裸 key。
 - **子代理交回的是材料，不是成稿。** 合并、判断、两个闸门与全部硬失败自检由你本人负责，不得转包；子代理没有读过的页不得写进正文。
 
 ## 选型前侦查（先读一点再说话；读够就停，别把综述提前做完）
@@ -890,7 +1315,7 @@ _WF_JJ_REVIEW = """# 工作流：综述（少年司法版）
 - 用户要求论文初稿、章节正文或论文型提纲时，改用 `论文初稿（少年司法版）.md`。
 
 ## 开工前检查
-1. 先读项目记忆、既有 wiki 和相关交付物；明确声明采用《综述（少年司法版）》。
+1. 先读项目记忆 core、再按本题取该主题档案（`scope="topic:<主题名>"`；推倒重来的题目就不取），然后看既有 wiki 和相关交付物；明确声明采用《综述（少年司法版）》。收尾结论写回 `target="topic:<主题名>"`，一个研究主题只有一个档案。
 2. 固定对象年龄、制度阶段、法域、法制时点、材料类型、研究问题和交付形态；宽题必须主动收窄。
 3. 确认 localkb 已连接、候选原文可逐页读取；题录、摘要、SAC 和检索片段只用于发现。
 4. 不改原始文献或 Zotero；只有用户明确要求并通过工具安全闸时才更新索引或来源。wiki 只写综合层，人工核验页只形成待审稿。
@@ -945,7 +1370,7 @@ _WF_GENERAL_DRAFT = """# 工作流：论文初稿（通用暂用版）
 - 少年司法任务必须改用 `论文初稿（少年司法版）.md`；文献综述任务用相应综述工作流。
 
 ## 开工前检查
-1. 先读项目记忆、相关交付物和 wiki；明确声明采用《论文初稿（通用暂用版）》并提示“尚未经过其他部门法训练验证”。
+1. 先读项目记忆 core、再按本题取该主题档案（`scope="topic:<主题名>"`；推倒重来的题目就不取），然后看相关交付物和 wiki；明确声明采用《论文初稿（通用暂用版）》并提示“尚未经过其他部门法训练验证”。收尾结论写回 `target="topic:<主题名>"`，一个研究主题只有一个档案。
 2. 确认 localkb 已连接、核心来源可完整读取；固定问题、法域、法制时点、篇幅、受众和引注。
 3. 先识别该领域是否有本版未覆盖的专门原则、程序或证据规则；发现时列为待核限制，不凭类比补齐。
 4. 不修改原始文献或 Zotero；索引写入须用户明确要求并通过工具闸门。
@@ -996,7 +1421,7 @@ _WF_REVIEW = """# 工作流：综述
 - 用户要求少年司法以外领域的文献综述、研究现状、理论谱系、争议整理、证据地图或系统性资料汇编时使用。
 
 ## 开工前检查
-1. 先读项目记忆、既有 wiki 和交付物；明确声明采用《综述》。
+1. 先读项目记忆 core、再按本题取该主题档案（`scope="topic:<主题名>"`；推倒重来的题目就不取），然后看既有 wiki 和交付物；明确声明采用《综述》。收尾结论写回 `target="topic:<主题名>"`，一个研究主题只有一个档案。
 2. 固定研究问题、对象、法域、时点、材料类型、篇幅和引注要求；宽题主动收窄。
 3. 确认 localkb 已连接、核心全文可 `read_source`；题录摘要、SAC 和检索片段只用于发现。
 4. 不修改原始文献或 Zotero；索引或来源写入须用户明确要求并通过工具闸门。
@@ -1057,7 +1482,7 @@ _WF_WIKI = """# 工作流：维护知识库与综述库（wiki）
 4. **wiki 更新建议**：用 `pending_wiki_updates` 分页拉完全部清单。逐条读来源：优先更新或并入已有主题页；只有形成可复用的新概念/实体时才新建，或用 `resolve_wiki_suggestion` 记录“无需写入”及理由。数量多、主题杂不是停止理由，也不得据此散建逐篇镜像页。
 5. **综述主题归类**：先用 `list_wiki` 盘点现有主题体系与每页归属。对本轮新增/更新页逐一选择最贴合的既有主题并调用 `set_wiki_theme`；同一研究主线的页面沿用既定分类名称，不另造近义主题。只有现有体系确实无法容纳、且新方向足以成为长期导航入口时才新增主题。维护不能在“内容已写但主题未归类”的状态下结束。
 6. **wiki 体检**：`lint_wiki` 查孤儿、过时、断链、无来源、降级页与缺概念页。无来源只代表待补来源/待核验，**不等于过时**；只有新证据明确推翻页内结论时才能 `mark_stale`。
-7. **接图与记忆**：新页用 `set_wiki_links` 接入真实相关页面；更新项目记忆与变更日志。每个论断带 [n]，sources 填实际读过的论文 key。key 可保留在 wiki 的正文引用与 `sources` 中，但写给用户的维护报告只能使用文献题名/作者等人类可读标识。
+7. **接图与记忆**：新页用 `set_wiki_links` 接入真实相关页面；按落点分别写回记忆——已定的维护规则进 `target="core"`，工具用法与踩坑进 `target="tools"`，某个研究主题的实质结论进 `target="topic:<主题名>"`，本次动作的流水进 `target="log"`。写错落点会被拒绝。每个论断带 [n]，sources 填实际读过的论文 key。key 可保留在 wiki 的正文引用与 `sources` 中，但写给用户的维护报告只能使用文献题名/作者等人类可读标识。
 8. **复核**：再次调 `maintenance_audit`，并复查主题归类是否完整一致。可自动处理项或应归类页面未清零就继续循环，不得提前收工。
 
 ## 用户决策点
@@ -1088,7 +1513,7 @@ _WF_DIVERGENCE = """# 工作流：跨学科发散与补文献（写作前，打�
 - 用户要求拓宽理论视野、跨学科发散、补外文/邻接学科文献，或写作选题陷入原学科循环时使用。
 
 ## 开工前检查
-- 先读项目记忆和当前写作主题，明确本土问题；开工时声明采用《跨学科发散与补文献》工作流。
+- 先读项目记忆 core 和当前写作主题（需要既往结论时才 `scope="topic:<主题名>"` 单独取），明确本土问题；开工时声明采用《跨学科发散与补文献》工作流。
 
 ## 什么时候用
 - 选题初期、或写不动想拓宽视野时；精准索引让你只在原学科打转、agent 也只盯着那个精准的点时。
@@ -1262,12 +1687,14 @@ _FACTORY_HASHES = {
                                             "f1441b3010fd1f86b0062e76760233d8a71bb50b",
                                             "db394a944698d6d3dcef8cc0699a7463c1c68de4",
                                             "c6fbc5f1bca2f5ba6ea1ac11e80389e70980c834",   # 2026-08-10 自建骨架＋子代理分工
+                                            "35ff785250b8963550ca03dad5580e2c80146abb",   # 2026-08-13 记忆分区闸门
     },
     "home/CLAUDE.md":                     {"4e7fc7f0d4ba2a199e11897b8c7fdc5c286cab04",
                                              "d7d13de421a115ad0eab0b3ae72b1097155dd053",
                                             "779426078d1d3180f5e4bc981366ecba00c9c38b",
                                             "854430041085e33f28ae80db7b175d202586ff61",
                                             "1a48521824986471499c18f320515ddc76129974",   # 2026-08-10 自建骨架＋子代理分工
+                                            "a7f290f76c89d465b434152322491cb66394acdf",   # 2026-08-13 记忆分区闸门
     },
     "output/README.md":                 {"0e59bde65651fba0a5bd3a54f45484ea1864ed5e",
                                              "58902f982ad4222627b011e0ee0dc3bc9c82537d"},   # v2 成品禁止裸 key
@@ -1277,11 +1704,15 @@ _FACTORY_HASHES = {
                                               "994f3370bdee7a172fe538f09f49f60e08039457",
                                               "459f767e0b9861a5413d12a516017fb8474d6860",
                                               "a554e6c0d7244c2701ce0c83076029541fdf7152",
-                                              "2201243125fbc85c144b42e3d7886b742dc9f1ce"},   # v7 项目记忆强制闸门
+                                              "2201243125fbc85c144b42e3d7886b742dc9f1ce",   # v7 项目记忆强制闸门
+                                              "a9a0fbf625e8e8d92b390d2f9944cd2dee9d8fb2"},   # v8 记忆四分区
     "rely/升级与备份/说明.md":          {"a2c6dd7d34fe37f6d12bb769501417fd8dd77591"},
     "rely/记忆/项目记忆.md":            {"3c8387860ad95913a602b87b9447bc80bf5a7403",
-                                             "1777cb6d1c2e0d764d138cf8dc51ea02a4ad75d8"},   # v2 项目记忆强制闸门
-    "rely/记忆/变更日志.md":            {"4d9a267ca46f94ff7d257c8c7b9ac486ec15f1fc"},   # v1 2026-07-14
+                                             "1777cb6d1c2e0d764d138cf8dc51ea02a4ad75d8",   # v2 项目记忆强制闸门
+                                             "c42a75c9539a179b0fb92e2461368b8254f01c08"},   # v3 记忆四分区
+    "rely/记忆/工具经验.md":            {"d326325e7c7df3d92f03d82fe6e99e9f3aa95c86"},   # v1 2026-08-13 新增分区
+    "rely/记忆/变更日志.md":            {"4d9a267ca46f94ff7d257c8c7b9ac486ec15f1fc",   # v1 2026-07-14
+                                             "286d0967f7c9adb33e298a4cef3c6eaef427fa4d"},   # v2 指向四分区
     "rely/交付模板/交付说明书模板.md":  {"ad22abdf9bfa208e19f761c42e4ddcceb93031a2"},   # v1 2026-07-14
     "rely/参考格式/说明.md":            {"6613758c89cf04441a5dd11b75f23912e5092fd0"},   # v1 2026-07-14
     "rely/定时任务/说明.md":            {"3a3e8897533e902d48eaa21c20bd1d9143dcd2e8",
@@ -1315,6 +1746,7 @@ _FACTORY_HASHES = {
                                             "85e8f24e9163f24d053b2140ba8c7c8fff596726",   # 2026-08-10 选型前侦查＋骨架卡③内容简述
                                             "26afecd7add403be0ad2137c5ad0999cb12d8331",   # 2026-08-10 检索发现日志
                                             "9b120594096acab1e1599f0d1339be8d3e884c76",   # 2026-08-10 自审：五处分工＋未答复也不派
+                                            "bd12c62cfa1d31796f00a093a4b2a4b935b80489",   # 2026-08-13 记忆分区：按主题取档案
     },
     _JJ_DRAFT_HANDBOOK_KEY:                 {"a978fe29eaf7e474ff61df2650731d09085bcdc8",
                                              "d41c973f8d0bb02718ff39c1d873507ced250bd3",
@@ -1328,28 +1760,33 @@ _FACTORY_HASHES = {
                                              "909eb2daed265f857763f0370c59fa2021ad9217",
                                              "179bba9478bdef5b3cf49d2230058430b173784a",
                                              "1238ce0b8978fb058ea2febc08a2165707e84435",
-                                             "b6bc79bd22213d6a13e7a1c5bbf8ad61bb9228ff"},   # v7 未答复也不派
+                                             "b6bc79bd22213d6a13e7a1c5bbf8ad61bb9228ff",   # v7 未答复也不派
+                                             "50addedae1216391f9af1e12b1008f4170ed0bf2"},   # v8 记忆分区：按主题取档案
     "rely/技能/论文初稿（通用暂用版）.md": {"acce553594c4fe91963856b5a838b3cfbb5e1289",
                                              "0530522f7424fd5319f31ae47f6e796eb2b81b4c",
                                              "394e745f16d50345d99951325ad246a68305fdac",
                                              "e7966c9df8eba5b1a081ee5abba7eaaa4f993785",
                                              "7e41f47414f6ee73c121be9c1f3debdff5a78430",
                                              "e97b549bde099424db3955fd0ad1b01b0f5e4c10",
+        "1058f411420ad8342f13f02e3b48aaefcadd458e",   # 2026-08-13 记忆分区：按主题取档案
                                              "b3b1c19f33e612ae905b6f6b0af65229a92a09de"},   # v7 未答复也不派
     "rely/技能/综述.md":                   {"5b9a828cdf7ed37087d236615d6f486194610ed1",
                                              "5df136580f83f5840a7c5d24cb9e45793963d70d",
                                              "a1c20dd73d0f71a65167f0544937050d1d9d746a",
+        "fa5902cc2adc0a7e4f142353cf13f928b6646690",   # 2026-08-13 记忆分区：按主题取档案
                                              "99eb1068c9b65cc9bd6937fbad7dbbec808105e6",
                                              "2673d0aac1437069bc6e195cbd48a77283824339"},   # v5 未答复也不派
     "rely/技能/维护综述库.md":          {"ada886d3bf34277de35f6530a02874efcffaac92",
                                              "25646a2433e3a913d32803e3bf895f062424bba2",
                                              "8fd036b38a135c0a7e4e930e3a6b3a3cc74c22b8",
                                              "e32747b30fa5bb155b1756f6280407cc503a1a43",
+        "9c114123b56aab2270c0acb17124ec41b383eac0",   # 2026-08-13 记忆分区：写回按落点分流
                                              "5b888af8252c80be37bf708001f6043edc284bc7",
                                              "0f634960b09378940467eb5cbc2a551f3b3c985b"},   # v5 维护主题归类与成品引注
     "rely/技能/跨学科发散与补文献.md":  {"5dc99c7cd7cac23354e6915eee406e6b47e42a8e",
                                              "5aa2171c342492cae321f3ae68764baa3402c867",
                                              "f0cc893989e6a04f3983c12a35a55974a9883b42",
+        "83ab560d8422e868a4391fa6dc24d2855c4cbd37",   # 2026-08-13 记忆分区：按主题取档案
                                              "9d11e6c36bbf7fb7d87a780648024f77834eda2e",
                                              "65eebc4e0bac45cb51c968d6e00540281fdc23e5",
                                              "d10b7e4a057592aede311a20f69e58bf462b8a28",
@@ -1373,6 +1810,7 @@ _WORKFLOW_FACTORY_EXACT_HASHES = {
                                             "250fe8eba750efeec3272de4e04d47ef695ce433",
                                             "23fc14043766fee49bbcdf8cfc681ef6f4340512",
                                             "4778bf897e9259f7a5a0b20da04b8bb5214dd4b9",
+                                            "abd881eec875fda78df33f6b88341f33d1c0c9a8",   # 2026-08-13 记忆分区：按主题取档案
     },
     _JJ_DRAFT_HANDBOOK_KEY: {
         "bf6404cc7ea7a99907c46dc8fd20e1999755ed2c",
@@ -1387,6 +1825,7 @@ _WORKFLOW_FACTORY_EXACT_HASHES = {
         "114ece83ed7a094b7065ddcce4219e22583333f3",
         "cff7d7df9bf8dcbc78174b24345d859aff545be0",
         "34e7b89d9a45088712c1cab150d86053b008a43e",
+        "086b6dc05039c88f757ae51d21362751e1230aa4",   # 2026-08-13 记忆分区：按主题取档案
     },
     "rely/技能/论文初稿（通用暂用版）.md": {
         "05c18647c0a711310ef8f62078c5a36f7c2fab34",
@@ -1395,12 +1834,14 @@ _WORKFLOW_FACTORY_EXACT_HASHES = {
         "bee4f14ddcb7447565a5b8a404dbe73bfeea0415",
         "285c2fb598822f72364f9728a0c8805102eb8a9f",
         "d7550fa18a8a1307e25395cc611a99dc9e129686",
+        "6bd8305c4b8a145a36070cfb62025034bebfaf80",   # 2026-08-13 记忆分区：按主题取档案
     },
     "rely/技能/综述.md": {
         "19d8d07b6822e5920ecd73a9c34e4c8913947700",
         "a20d9a6d3c08ca3285fa1356ebda27e6d69bfd6a",
         "7effe1a12b0304a3272a99c0bdaedf04ce69a91b",
         "49b8f588f081da0e88cadff88999f21072e89066",
+        "539ecd43c52ee54a8b0ca36325ff82c8d0e9d0b7",   # 2026-08-13 记忆分区：按主题取档案
     },
     "rely/技能/维护综述库.md": {
         "06f8d02417c02b5ce885c0e76fc645a5b78fb8f4",
@@ -1408,6 +1849,7 @@ _WORKFLOW_FACTORY_EXACT_HASHES = {
         "61f0c5dad98a19187f76d0acec14ab75d6ef33de",
         "42269c82a699624e52560c3085dadde6f75bbd1b",
         "94bdefa8c0bb07b729c751eb4c4dcf3881410480",
+        "6ba9a21b2bbd223c83e6a8bfec8aeae318b5b3af",   # 2026-08-13 记忆分区：写回按落点分流
     },
     "rely/技能/跨学科发散与补文献.md": {
         "849a752f1553be909a124066c67e6c378e82e91b",
@@ -1418,6 +1860,7 @@ _WORKFLOW_FACTORY_EXACT_HASHES = {
         "99df608855b75ee4ee740b7304cf665663ca6f3c",
         "a59f9be921895e7554d93dfc067870865e21a7ff",
         "644e2508b6ddc70c07a34bc75e731b06d5094f5b",
+        "21783d86c1cedb83de9e66c3422d28c0e93cad19",   # 2026-08-13 记忆分区：按主题取档案
     },
 }
 
@@ -1444,8 +1887,9 @@ def _template_specs():
         ("output/README.md",                output_dir() / "README.md",              _README_OUTPUT,        None, False),
         ("rely/README.md",                  rely_dir() / "README.md",                _README_RELY,          None, False),
         ("rely/升级与备份/说明.md",         maintenance_dir() / "说明.md",           _MAINTENANCE_README,   None, False),
-        ("rely/记忆/项目记忆.md",           memory_dir() / "项目记忆.md",            _PROJECT_MEMORY,       None, True),
-        ("rely/记忆/变更日志.md",           memory_dir() / "变更日志.md",            _CHANGELOG,            None, True),
+        ("rely/记忆/项目记忆.md",           memory_file(),                           _PROJECT_MEMORY,       None, True),
+        ("rely/记忆/工具经验.md",           tools_file(),                            _TOOLS_NOTE,           None, True),
+        ("rely/记忆/变更日志.md",           changelog_file(),                        _CHANGELOG,            None, True),
         ("rely/交付模板/交付说明书模板.md", templates_dir() / "交付说明书模板.md",   _DELIVERY_TEMPLATE,    None, False),
         ("rely/参考格式/说明.md",           formats_dir() / "说明.md",               _FORMATS_README,       None, False),
         ("rely/定时任务/说明.md",           tasks_dir() / "说明.md",                 _TASKS_README,         None, False),
@@ -2239,7 +2683,8 @@ def ensure_scaffold():
     acts = {}
     try:
         for d in (output_dir(), output_dir() / "定时任务", rely_dir(),
-                  memory_dir(), skills_dir(), handbooks_dir(), formats_dir(), templates_dir(), tasks_dir(),
+                  memory_dir(), topics_dir(),
+                  skills_dir(), handbooks_dir(), formats_dir(), templates_dir(), tasks_dir(),
                   maintenance_dir(), pending_dir(), history_dir()):
             try:
                 d.mkdir(parents=True, exist_ok=True)
@@ -2263,7 +2708,13 @@ def paths_info():
     return {
         "output_dir": str(output_dir()),
         "rely_dir": str(rely_dir()),
-        "memory_file": str(memory_dir() / "项目记忆.md"),
+        # memory_file 这个键名保持不变：server.py 的 /agent/mcp-config 与前端 agent_memory_file 依赖它。
+        # 记忆拆成四类后，另外四个键才是完整落点——别再从 memory_file 拼路径推别的文件。
+        "memory_file": str(memory_file()),
+        "memory_dir": str(memory_dir()),
+        "memory_tools_file": str(tools_file()),
+        "memory_topics_dir": str(topics_dir()),
+        "memory_changelog_file": str(changelog_file()),
         "skills_dir": str(skills_dir()),
         "handbooks_dir": str(handbooks_dir()),
         "formats_dir": str(formats_dir()),
