@@ -561,7 +561,7 @@ def _page_cite(r):
     if pg: s += f"，第{pg}页"
     return s.strip()
 
-def search_full(query, topk, sort, keys=None, max_per_key=None):
+def search_full(query, topk, sort, keys=None, max_per_key=None, include_wiki=True):
     # BF6：白名单场景源头召回放大到 150（见 config.FILTER_SRC_TOPK）——限定分类后
     # 50 条粗召回被过滤剩不下几条，池子先天不足；常规检索维持 50 不拖慢。
     src_k = C.FILTER_SRC_TOPK if keys is not None else 0
@@ -576,9 +576,14 @@ def search_full(query, topk, sort, keys=None, max_per_key=None):
     # 对 RRF 全量融合结果先过滤再截池，keys=None 时行为与旧版一致。
     fused = rrf(di, bi)
     records = fetch_records(fused)
+    # include_wiki=False 必须在这里过滤，理由与上面的 keys 同源：① 截池之后再滤，结果会凭空少于
+    # topk（被丢掉的 wiki 行已经占掉名额）；② rerank 是最贵的一步，不该花在注定要丢的行上。
+    # 判据用 _is_wiki（row_type / ::wiki 后缀）而非 key 白名单——source_scope 排除 wiki 靠的是
+    # 「页 id 恰好不在 papers.jsonl 里」这个巧合，keys=None 时那条路根本不跑。
     cand = [cid for cid in fused
             if cid in records
-            and (keys is None or records[cid].get("key") in keys)][:pool]
+            and (keys is None or records[cid].get("key") in keys)
+            and (include_wiki or not _is_wiki(records[cid]))][:pool]
     if not cand:
         return []
     scores = M["rerank"].scores(query, [records[cid].get("text") or "" for cid in cand])
@@ -1064,7 +1069,8 @@ def _apply_sort(items, sort, lex=False):
         items.sort(key=lambda x: -(_effective(x[1], x[0]) + _blend_bonus(x, lex)))
 
 # ═══ 统一入口 ════════════════════════════════════════════════════
-def _search_loaded(query, topk, sort=None, min_weight=0.0, keys=None, max_per_key=None):
+def _search_loaded(query, topk, sort=None, min_weight=0.0, keys=None, max_per_key=None,
+                   include_wiki=True):
     sort = sort if sort in ("relevance", "tier", "blend") else C.DEFAULT_SORT
     topk = max(1, int(topk))
     try:
@@ -1080,24 +1086,34 @@ def _search_loaded(query, topk, sort=None, min_weight=0.0, keys=None, max_per_ke
     if keys is not None:
         fetch = max(fetch, min(topk * 10, 300))
     if STATE.get("mode") == "light":
+        # light 模式只遍历 papers.jsonl 派生的 meta_ids，天然不含 wiki 行——include_wiki 在这里
+        # 是死参数，不传。⚠ 反过来说：在 light 模式下测 include_wiki=false「有效」是假验证。
         out = search_light(query, fetch, sort, keys=keys)
     else:
-        out = search_full(query, fetch, sort, keys=keys, max_per_key=max_per_key)
+        out = search_full(query, fetch, sort, keys=keys, max_per_key=max_per_key,
+                          include_wiki=include_wiki)
     if min_weight > 0:
         out = [d for d in out
                if d.get("journal_weight") is None or d.get("journal_weight", 0) >= min_weight]
     return out[:topk]
 
 
-def search(query, topk, sort=None, min_weight=0.0, keys=None, max_per_key=None):
+def search(query, topk, sort=None, min_weight=0.0, keys=None, max_per_key=None,
+           include_wiki=True):
     """统一公开入口。
 
     默认每篇最多返回 C.MAX_PER_KEY 段，保证发现型检索的文献覆盖面；定向核验可显式提高
     ``max_per_key``，在已经选中的文献内寻找更多相互印证的段落。
+
+    ``include_wiki=False`` 把综合层(wiki)页挡在结果之外，供「只从原始文献出发」的起草类
+    检索使用。⚠ 新参数一律**追加在参数表末尾且只用关键字传**：本函数有 6 个调用方
+    （server 的 /search 与 /chat、verify_claim、wiki_store ×2、research_assistant），
+    位置参数与关键字混用，插在中间会静默错位。
     """
     _begin_retrieval(load_if_cold=True)
     try:
-        return _search_loaded(query, topk, sort, min_weight, keys, max_per_key)
+        return _search_loaded(query, topk, sort, min_weight, keys, max_per_key,
+                              include_wiki=include_wiki)
     finally:
         _end_retrieval()
 

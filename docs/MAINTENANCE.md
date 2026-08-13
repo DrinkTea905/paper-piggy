@@ -35,7 +35,8 @@
 | `mcp_server.TOOLS`（:224）增删工具或改 description | 跑 `python gen_mcp_doc.py` 重新生成 `MCP接入说明.md` 的工具表 | ✅ `gen_mcp_doc.py --check`（过期时退出码 1） |
 | `mcp_server.RESOURCES`（:610） | **手改** `MCP接入说明.md` 的 Resources 表 —— ⚠️ `gen_mcp_doc.py` **不管这张表**，`localkb://memory` 就是这么漏掉的 | ✅ check_guides ② |
 | `mcp_server.PROMPTS`（:635） | 同上，手改 Prompts 表 | ✅ check_guides ② |
-| `mcp_server._INSTRUCTIONS_HEAD` / `_workspace_text()` | `index.html` `#ag-guide` 的「成果去哪」「权限与安全」两章；`agent_ws._README_RELY`、`_ROOT_AGENTS`、`_ROOT_CLAUDE` 与 `_rules_summary_text()` | ❌ 人肉 |
+| `mcp_server._INSTRUCTIONS_HEAD` / `_workspace_text()` | `index.html` `#ag-guide` 的「成果去哪」「权限与安全」两章；`agent_ws._README_RELY`、`_ROOT_AGENTS`、`_ROOT_CLAUDE` 与 `_rules_summary_text()` | ❌ 人肉（闸门三句有 check_guides ③ 逐字断言） |
+| **记忆的文件布局 / `read_project_memory` 的 scope / `append_project_memory` 的 target / 硬约束阈值** | 唯一事实源是 `agent_ws`：`memory_file/tools_file/topics_dir/changelog_file` + `MEMORY_CORE_MAX_*`、`MEMORY_TOPIC_DUP_RATIO`、`TOPIC_STATUSES` + `append_memory()`。**mcp_server 只组装视图与分段，绝不另拼路径**。要同步的 8 处：① `_INSTRUCTIONS_HEAD` 项目记忆闸门段 ② `_workspace_text()` 的 `mem_layout` ③ `_ROOT_AGENTS`（`_ROOT_CLAUDE` 自动派生）④ `_README_RELY` 的「记忆/」条目 ⑤ `_PROJECT_MEMORY` / `_TOOLS_NOTE` / `_CHANGELOG` 三份种子 ⑥ `MCP接入说明.md` 的手写闸门段（**不在 TOOLS:BEGIN/END 内，gen_mcp_doc 不管**）⑦ `index.html` `#home-guide` 第 1/3/6 章与 `#ag-guide` 第 4 章 ⑧ `app.js` 的 `agentGuideCard()` 与 `AG_TOOLS`；另加 `README.md` 目录树与 `docs/ARCHITECTURE.md` | ✅ check_guides ③（闸门四/三/两句逐字）+ ④b（种子 hash）+ `test_memory_partition.py` |
 
 ### 1.2 Agent 工作区（`agent_ws.py`）
 
@@ -114,7 +115,8 @@
   `0_Agent资料库/升级与备份/历史备份/自动升级/`，再独占创建新版）
 - 谁都不像 → 用户改过 → `forked`：**保留用户的文件**，把新版集中写入
   `0_Agent资料库/升级与备份/待合并/`，并按原位置镜像层级
-- 「项目记忆.md / 变更日志.md」这类**用户数据种子**被写过 → `kept`（不产生待合并文件）
+- 「项目记忆.md / 工具经验.md / 变更日志.md」这类**用户数据种子**被写过 → `kept`（不产生待合并文件）。
+  `主题档案/` 是**目录**、按需创建、不进 `_template_specs()`，因此既不登记 hash 也不产生待合并文件
 
 旧 `写论文与综述.md` 拆分时还多一道迁移保护：命中从真实 git 历史正文复算的 exact hash 才能自动迁入新的 `综述.md` 并升级；
 迁移前先将旧入口原子移入 `升级与备份/历史备份/工作流迁移/` 私有恢复目录，恢复件永久保留且不进入顶层工作流列表；
@@ -177,8 +179,9 @@ const n = (AG.cfg && AG.cfg.tool_count) || AG_TOOLS.length;   // 后端真值优
 9. ⑧ `#home-guide` / `#ag-guide` 的标题下方、第一章之前不得出现独立 `ag-note`；功能说明必须归入对应章节
 10. ⑨ `upgrade_health._IMPLEMENTATION_GROUPS` 的当前实现指纹必须登记在当前稳定产物契约下；未审计变化直接中止打包
 
-**仍未机器化（靠人）**：`ensure_scaffold()` 写的其余文件名（项目记忆.md / 变更日志.md / 交付说明书模板.md……）
-是否都在 `_README_RELY` / `_README_OUTPUT` 里被提到——那两份是散文体，正则误报率高，硬凑不如不做。
+**仍未机器化（靠人）**：`ensure_scaffold()` 写的其余文件名（项目记忆.md / 工具经验.md / 变更日志.md /
+主题档案/ / 交付说明书模板.md……）是否都在 `_README_RELY` / `_README_OUTPUT` 里被提到——那两份是散文体，
+正则误报率高，硬凑不如不做。
 要补的话，先把 README 里的文件名用反引号写死，再机器比对。
 
 理由很硬：`index.html:86` 和 `:349` 各有一条注释写着「⚠ 维护铁律：功能更新时这份指引也要同步更新」——

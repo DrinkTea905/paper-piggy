@@ -4555,6 +4555,10 @@ class SearchQ(BaseModel):
     min_weight: float = 0.0                       # 引用权重下限过滤（0=不过滤）
     category: Optional[str] = None                # F11：限定检索范围到某个分类（kbc_/topic:/zotero:）
     source_scope: Optional[str] = None             # all/literature/statute；避免法规正文淹没学术来源
+    # 综合层(wiki)页与文献同表同通道，默认参与检索。起草类任务要「只从原始文献出发」时传 false。
+    # ⚠ 别以为 source_scope!=all 就等于排除了 wiki——那只是「页 id 不在 papers.jsonl 里」的副作用，
+    #   scope=all 时 keys 为 None、那条路根本不跑。真正的开关是这一个（retriever 按 _is_wiki 判定）。
+    include_wiki: bool = True
 
 @app.post("/search")
 def search(q: SearchQ):
@@ -4577,10 +4581,12 @@ def search(q: SearchQ):
         keys = scope_keys if keys is None else (set(keys) & scope_keys)
         if not keys:
             return {"query": q.query, "mode": R.STATE.get("mode"), "category": q.category,
-                    "source_scope": scope, "took_ms": round((time.time() - t0) * 1000),
+                    "source_scope": scope, "include_wiki": bool(q.include_wiki),
+                    "took_ms": round((time.time() - t0) * 1000),
                     "results": []}
     try:
-        res = R.search(q.query, q.topk, q.sort, q.min_weight, keys=keys)
+        res = R.search(q.query, q.topk, q.sort, q.min_weight, keys=keys,
+                       include_wiki=bool(q.include_wiki))
     except Exception as e:
         # BF36：API 模式下嵌入/重排后端挂了（余额0/断网）此前抛成裸 500「服务器内部错误」，
         # 用户不知道该去哪修——detail 给人话，前端 jpost 已会读 detail 展示。
@@ -4603,7 +4609,7 @@ def search(q: SearchQ):
     except Exception as e:
         log_error("search no_text tag", repr(e))
     return {"query": q.query, "mode": R.STATE.get("mode"), "category": q.category,
-            "source_scope": scope,
+            "source_scope": scope, "include_wiki": bool(q.include_wiki),
             "took_ms": round((time.time() - t0) * 1000), "results": res}
 
 # ── RAG 对话 ──────────────────────────────────────────────

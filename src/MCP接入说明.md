@@ -5,18 +5,31 @@
 
 让 Claude Code / Codex 等 agent **原生调用**本地知识库——不用记命令，直接说「查库里关于 XX 的文献」，agent 自动调用检索工具。
 
-每次新会话开始，Agent 必须先完整读取 `0_Agent资料库/记忆/项目记忆.md`；在此之前，MCP 会拒绝其他 PaperPiggy 工具调用。任务产生新的长期偏好、已定决策、关键进度或事实时，Agent 必须在结束前写回。Agent 自己的 auto memory 可以继续使用，但不能替代这份跨 Agent 共享记忆；写进私有记忆的本项目长期信息也必须同步一份。
+每次新会话开始，Agent 必须先调用一次 `read_project_memory`（默认 `scope="core"`）读取项目记忆的 **core 视图**；在此之前，MCP 会拒绝其他 PaperPiggy 工具调用。调用一次 core 即放行。任务产生新的长期偏好、已定决策、关键进度或事实时，Agent 必须在结束前写回。Agent 自己的 auto memory 可以继续使用，但不能替代这份跨 Agent 共享记忆；写进私有记忆的本项目长期信息也必须同步一份。
+
+记忆在 `0_Agent资料库/记忆/` 下**分四区存放，写错地方会被拒绝**：
+
+| 放什么 | 文件 | 写入参数 |
+|---|---|---|
+| 长期偏好、固定规则、已定决策、各主题一行状态 | `项目记忆.md`（单条 ≤600 字、全文 ≤200 行） | `append_project_memory(target="core")` |
+| 与研究题目无关的作业经验 | `工具经验.md` | `target="tools"` |
+| **某一个研究主题**的结论与待核项 | `主题档案/<主题名>.md` | `target="topic:<主题名>"` |
+| 历史流水账 | `变更日志.md` | `target="log"` |
+
+`core` 视图 = 前两份全文 + 主题档案的**清单与状态**（不含正文）。要读某个主题的正文才调 `read_project_memory(scope="topic:<主题名>")`。
+这是刻意的物理隔离：用户要求「旧结论作废、这个题从头再来」时，不取旧档案，它就进不了 Agent 的上下文——靠提示词说「看见了别用」拦不住。
+**一个研究主题只有一个档案**：新建时会查重，撞了退回既有那份。改状态行用 `set_memory_topic_status`。
 
 零依赖（纯 stdlib + requests），不需要装 `mcp` 包。
 
 ## 提供的工具
 
 <!-- TOOLS:BEGIN 由 gen_mcp_doc.py 生成，勿手改 -->
-共 **41 个工具**（26 读 / 15 写）。工具清单与读写分类由 `gen_mcp_doc.py` 从代码生成。
+共 **42 个工具**（26 读 / 16 写）。工具清单与读写分类由 `gen_mcp_doc.py` 从代码生成。
 
 | 工具 | 类型 | 作用 |
 |---|---|---|
-| `search_localkb(query, topk=8, sort=blend, category?, source_scope=all)` | 读 | 检索本地文献知识库（用户自己的 Zotero 库或导入的全文文件夹，支持 PDF、EPUB、DOCX、Markdown、TXT）。返回带期刊等级、原文定位、可回溯引用的结果，用于查找某主题的相关文献、论点或原文段落。发现型检索默认同一篇最多返回2段，不用重复弱段凑满条数，适合先广泛找文献；定向深读请再用 read_source / verify_claim。可先用 localkb_status 了解库内篇数与学科。 |
+| `search_localkb(query, topk=8, sort=blend, category?, source_scope=all, include_wiki=True)` | 读 | 检索本地文献知识库（用户自己的 Zotero 库或导入的全文文件夹，支持 PDF、EPUB、DOCX、Markdown、TXT）。返回带期刊等级、原文定位、可回溯引用的结果，用于查找某主题的相关文献、论点或原文段落。发现型检索默认同一篇最多返回2段，不用重复弱段凑满条数，适合先广泛找文献；定向深读请再用 read_source / verify_claim。可先用 localkb_status 了解库内篇数与学科。 |
 | `list_kb_categories()` | 读 | 列出本地知识库的自建「知识库分类」及 AI 主题，返回可用于 search_localkb 的 category id。先列分类、再带 category 检索，可把检索聚焦到某一组文献。 |
 | `resolve_page(key, pdf_page)` | 读 | 把某篇文献的『PDF 顺序页号』解析成『期刊印刷页码』（读者翻期刊看到的那一页）。写带页级引注时用它把检索命中的 page 换成正确印刷页；标『页码推算』者为连续性推算、请核对。 |
 | `build_digest(query, topk=14)` | 写 | 半自动研究助手·能力二：给一个子题，返回并写回一节『带期刊印刷页引注的资料汇编综述』（含覆盖评级 ◎○△▲▽ 与诚实的资料缺口提示）。新页标 🤖 未核验并可被检索；若同页已有人工核验版，则只提交不参与检索的待审修改。 |
@@ -55,8 +68,9 @@
 | `add_source(path, note?)` | 写 | 把本机一个全文文件收进知识库（支持 PDF、EPUB、DOCX、Markdown、TXT；只加不删，不支持 HTML）。用户在对话里给了本地文件路径、想让它进库时用。题录由 AI 自动抽取、**待人工核对**（应用里会标「题录待核对」）。收录后建库在后台跑，稍后可用 localkb_status / deep_status 查进度。仅 folder（文件夹）模式可用：Zotero 模式会拒绝并提示把全文文件附到 Zotero 条目上。 |
 | `add_statute(title, short_title?, issuing_authority, passed_date?, revision_dates?, effective_date?, legal_level?, document_number?, source_url, fetched_at?, version_label?, validity_status=现行有效, body_markdown, summary?, confirm=False, confirmation_token?, confirm_unofficial=False)` | 写 | 把 Agent 从官方网页取得并核对的法律法规/司法解释原文写入独立本地法规库，不修改 Zotero。必须先 confirm=false 预览校验；向用户展示版本、域名、条文范围与哈希并获确认后，再携 confirmation_token 调 confirm=true。非 gov.cn/court.gov.cn/spp.gov.cn 官方域名还必须显式 confirm_unofficial=true。正文必须是保留第X条结构的完整 Markdown，不得提交网页 HTML。可同时提交约150字中文 summary；它会在预检阶段经过与 submit_agent_summaries 相同的质量检查，并在确认入库后随条文一并嵌入。未提交时不会自动生成，入库结果会提示后续补写。 |
 | `pending_wiki_updates(offset=0, limit=30)` | 读 | 拉取服务器已算好的「待处理综合页更新」清单——最近深索/新增的文献可能影响哪些既有 wiki 页。深索一批文献后、或想主动维护 wiki 时**先调它**，直接拿到受影响页清单（无需自己对每篇跑 propose_wiki_updates），再逐页处理；有 next_offset 时必须继续翻页，直到全部清零。 |
-| `read_project_memory()` | 读 | 读用户的**项目记忆**（当前真相：用户是谁/偏好/已定决策/当前在做）。这是换任何 AI 助手都共享的本地文件——每次任务开工前必须先调用本工具完整读取；在此之前，服务器会拒绝其他 PaperPiggy 工具调用。initialize 只内联启动快照，不能替代本次读取。 |
-| `append_project_memory(text)` | 写 | 把一条**已定决策/偏好/进度**追加进项目记忆（保持它是「当前真相」，供之后任何 AI 助手接上）。只写实质结论、保持简短；历史流水账不要写这里。任务产生新的长期信息时结束前必须调用；若也写入了 Agent 自己的 auto memory，必须把同一实质内容同步到这里。默认追加到文件末尾；不覆盖已有内容。 |
+| `read_project_memory(scope=core, part=1)` | 读 | 读用户的**项目记忆**。它是换任何 AI 助手都共享的本地文件，按四类分区存放：项目记忆.md（长期偏好/固定规则/当前在做/各主题一行状态）、工具经验.md（与研究题目无关的作业经验）、主题档案/<主题名>.md（某一个研究主题的结论与待核项）、变更日志.md（流水账）。**每次任务开工前必须先调用一次本工具**（默认 scope="core"）；在此之前，服务器会拒绝其他 PaperPiggy 工具调用。调用一次 scope="core" 即视为已读、立即放行——**主题档案不读也能开工**，这是刻意的：用户要求「旧结论作废、从头重来」时，不取旧主题档案，它就物理上进不了你的上下文。initialize 只内联启动快照，不能替代本次读取。 |
+| `append_project_memory(text?, target=core, status?)` | 写 | 把一条长期信息追加进项目记忆。**先想清楚写哪一区**——写错地方会被拒绝，不是提醒： · target="core"（默认）：长期偏好、固定规则、已定决策、各主题一行状态。单条 ≤600 字、全文 ≤200 行，超了写不进去。 · target="tools"：与研究题目无关的作业经验（DOCX 生成链、检索方法、某工具的坑）。判据=换个题目还用得上。 · target="topic:<主题名>"：**某一个研究主题**的结论、材料判断、待核项。一个研究主题只有一个档案——新建时会查重，撞了会被退回既有那份。档案不存在则自动新建并写入状态行。 · target="log"：历史流水账（变更日志.md）。 任务产生新的长期信息时结束前必须调用；若也写入了 Agent 自己的 auto memory，必须把同一实质内容同步到这里。纯追加、不覆盖已有内容。 |
+| `set_memory_topic_status(topic, status, reason?)` | 写 | 只改某份**主题档案**首部的状态行，不追加正文（改一行不必重发全文）。状态只能是 进行中 / 已完成 / 已作废；建议一并写 reason，日后回看才知道为什么作废。档案不存在时不会顺手新建——建档案请走 append_project_memory(target="topic:<主题名>")，那条路上有查重闸。 |
 <!-- TOOLS:END -->
 
 > **信任模型（读—综合—写回闭环）**：agent 能**写**（建页、改页、建互链、标过时），**不能删**。
@@ -79,7 +93,7 @@
 | `localkb://schema` | `WIKI.md` 全文——综合层的结构约定与写回纪律 |
 | `localkb://index` | 所有 wiki 页的清单 |
 | `localkb://lint` | 当前的体检报告（孤儿页/过时页/断链/缺失概念页） |
-| `localkb://memory` | 项目记忆（当前真相：用户是谁 / 偏好 / 已定决策 / 当前在做）——换任何 AI 助手都先读这份接上之前的工作 |
+| `localkb://memory` | 项目记忆的 **core 视图**：项目记忆.md（用户是谁 / 偏好 / 已定决策 / 当前在做）+ 工具经验.md 全文 + 主题档案清单（不含主题正文）——换任何 AI 助手都先读这份接上之前的工作 |
 | `localkb://page/<id>` | 某一页的 markdown 正文 |
 
 ## Prompts（斜杠命令，把 gist 三大操作变成一句话）

@@ -41,10 +41,11 @@ class JuvenileForwardValidationRecordsTests(unittest.TestCase):
         )
         # v3（2026-08-03）整体替换 v2 的运行时文本；旧散列作为历史保留在冻结清单第一、四、五节。
         # 本断言跟随当前出厂常量，冻结清单**最后一节**必须同步记录同一组散列。
-        # 当前值 = 2026-08-10 修订（选型准入自检＋自建骨架卡⑧＋子代理分工＋选型前侦查＋骨架卡③内容简述），
-        # 见冻结清单第六节。
+        # 当前值 = 2026-08-13 修订（第 1 步改为读记忆 core + 按主题取主题档案；推倒重来的题目不取旧档案），
+        # 见冻结清单第七节。上一版（2026-08-10）散列
+        # 7bf354c39b692f58d8c933f22a5e20e8c16abcf386febb17455703edbe04b199 转为历史，留在第六节。
         expected_current = {
-            "workflow": "7bf354c39b692f58d8c933f22a5e20e8c16abcf386febb17455703edbe04b199",
+            "workflow": "03cbe7a672d4dfa28a91a38bfd0ac2d07489bf2f9668728d5f8c134da90fb1f1",
             "handbook": "28f1bb30f95ac4af7d11bf0958ae9021de58e3e3782a64e3aa33be0e6814e903",
             "rules": "288f0760342cb00ef7450b8d95d8a1ab091f8f3e09891b3f587f112fa975e612",
             "tasks": "3d6f033ba98fd1d9375dceca800fe60349b100be2e7f697647fb6ce0255f8e58",
