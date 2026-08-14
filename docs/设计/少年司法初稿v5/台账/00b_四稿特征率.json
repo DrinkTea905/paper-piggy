@@ -1,0 +1,362 @@
+[
+ {
+  "cat": "meta",
+  "name": "行文至此",
+  "pat": "行文至此",
+  "L1_median": 0.0,
+  "L1_p95": 0.0,
+  "L1_max": 0.4699689820471849,
+  "L1_docs_hit": 2,
+  "L1_docs_total": 106,
+  "L2_median": 0.0,
+  "L2_max": 0.0,
+  "targets": {
+   "bing_zheng_wen.txt": 0.7236151814465067,
+   "jia_A_wushouce.txt": 0.0,
+   "yi_B_yongshouce.txt": 0.0,
+   "pingxing.txt": 0.0
+  }
+ },
+ {
+  "cat": "meta",
+  "name": "回到…原点",
+  "pat": "回到.{0,3}原点",
+  "L1_median": 0.0,
+  "L1_p95": 0.0,
+  "L1_max": 0.4669406051550243,
+  "L1_docs_hit": 1,
+  "L1_docs_total": 106,
+  "L2_median": 0.0,
+  "L2_max": 0.0,
+  "targets": {
+   "bing_zheng_wen.txt": 0.0,
+   "jia_A_wushouce.txt": 0.0,
+   "yi_B_yongshouce.txt": 0.0,
+   "pingxing.txt": 0.0
+  }
+ },
+ {
+  "cat": "meta",
+  "name": "悬而未决",
+  "pat": "悬而未决",
+  "L1_median": 0.0,
+  "L1_p95": 0.0,
+  "L1_max": 0.6053268765133172,
+  "L1_docs_hit": 3,
+  "L1_docs_total": 106,
+  "L2_median": 0.0,
+  "L2_max": 0.6961364427427776,
+  "targets": {
+   "bing_zheng_wen.txt": 0.7236151814465067,
+   "jia_A_wushouce.txt": 0.0,
+   "yi_B_yongshouce.txt": 0.7829014327096219,
+   "pingxing.txt": 0.3424188467333242
+  }
+ },
+ {
+  "cat": "meta",
+  "name": "应当/须/需要说明的是",
+  "pat": "应当说明的是|须说明的是|需要说明的是|有必要说明的是",
+  "L1_median": 0.0,
+  "L1_p95": 0.7314218841427735,
+  "L1_max": 1.6696349065004452,
+  "L1_docs_hit": 19,
+  "L1_docs_total": 106,
+  "L2_median": 0.0,
+  "L2_max": 2.592016588906169,
+  "targets": {
+   "bing_zheng_wen.txt": 0.36180759072325336,
+   "jia_A_wushouce.txt": 1.8669255470091852,
+   "yi_B_yongshouce.txt": 0.7829014327096219,
+   "pingxing.txt": 2.7393507738665934
+  }
+ },
+ {
+  "cat": "meta",
+  "name": "须作N点限缩",
+  "pat": "须作[一二三两]点|作[两三]点限|须作如下限",
+  "L1_median": 0.0,
+  "L1_p95": 0.0,
+  "L1_max": 0.0,
+  "L1_docs_hit": 0,
+  "L1_docs_total": 106,
+  "L2_median": 0.0,
+  "L2_max": 0.0,
+  "targets": {
+   "bing_zheng_wen.txt": 0.36180759072325336,
+   "jia_A_wushouce.txt": 0.0,
+   "yi_B_yongshouce.txt": 0.0,
+   "pingxing.txt": 0.3424188467333242
+  }
+ },
+ {
+  "cat": "meta",
+  "name": "本文并不主张",
+  "pat": "本文并不主张|并不需要主张|本文无意主张",
+  "L1_median": 0.0,
+  "L1_p95": 0.0,
+  "L1_max": 0.0,
+  "L1_docs_hit": 0,
+  "L1_docs_total": 106,
+  "L2_median": 0.0,
+  "L2_max": 0.0,
+  "targets": {
+   "bing_zheng_wen.txt": 0.7236151814465067,
+   "jia_A_wushouce.txt": 0.37338510940183706,
+   "yi_B_yongshouce.txt": 0.0,
+   "pingxing.txt": 0.6848376934666484
+  }
+ },
+ {
+  "cat": "meta",
+  "name": "以下的讨论/本文以下",
+  "pat": "以下的讨论|以下讨论|本文以下",
+  "L1_median": 0.0,
+  "L1_p95": 0.49414438899046303,
+  "L1_max": 0.9944806324896822,
+  "L1_docs_hit": 7,
+  "L1_docs_total": 106,
+  "L2_median": 0.0,
+  "L2_max": 1.3407821229050279,
+  "targets": {
+   "bing_zheng_wen.txt": 0.36180759072325336,
+   "jia_A_wushouce.txt": 0.7467702188036741,
+   "yi_B_yongshouce.txt": 0.0,
+   "pingxing.txt": 0.3424188467333242
+  }
+ },
+ {
+  "cat": "meta",
+  "name": "综上",
+  "pat": "综上",
+  "L1_median": 0.0,
+  "L1_p95": 1.2154360376785172,
+  "L1_max": 3.321376378371197,
+  "L1_docs_hit": 42,
+  "L1_docs_total": 106,
+  "L2_median": 0.0,
+  "L2_max": 5.345551737304315,
+  "targets": {
+   "bing_zheng_wen.txt": 0.7236151814465067,
+   "jia_A_wushouce.txt": 0.0,
+   "yi_B_yongshouce.txt": 0.0,
+   "pingxing.txt": 0.6848376934666484
+  }
+ },
+ {
+  "cat": "anon",
+  "name": "有意见/有论述/另有意见",
+  "pat": "有意见指出|另有意见|有论述|有一种意见认为|一类主张",
+  "L1_median": 0.0,
+  "L1_p95": 0.0,
+  "L1_max": 1.6696349065004452,
+  "L1_docs_hit": 1,
+  "L1_docs_total": 106,
+  "L2_median": 0.0,
+  "L2_max": 0.6639665360865812,
+  "targets": {
+   "bing_zheng_wen.txt": 3.6180759072325337,
+   "jia_A_wushouce.txt": 13.81524904786797,
+   "yi_B_yongshouce.txt": 12.134972206999139,
+   "pingxing.txt": 13.696753869332968
+  }
+ },
+ {
+  "cat": "anon",
+  "name": "笔者",
+  "pat": "笔者",
+  "L1_median": 1.4286394590218583,
+  "L1_p95": 8.220304151253597,
+  "L1_max": 15.583259127337488,
+  "L1_docs_hit": 72,
+  "L1_docs_total": 106,
+  "L2_median": 0.0,
+  "L2_max": 15.196926843682721,
+  "targets": {
+   "bing_zheng_wen.txt": 3.2562683165092805,
+   "jia_A_wushouce.txt": 0.0,
+   "yi_B_yongshouce.txt": 0.0,
+   "pingxing.txt": 0.0
+  }
+ },
+ {
+  "cat": "anon",
+  "name": "本文",
+  "pat": "本文",
+  "L1_median": 1.8497109826589595,
+  "L1_p95": 8.060047352778197,
+  "L1_max": 22.03262703918995,
+  "L1_docs_hit": 103,
+  "L1_docs_total": 106,
+  "L2_median": 1.125619090499775,
+  "L2_max": 15.810276679841897,
+  "targets": {
+   "bing_zheng_wen.txt": 6.874344223741814,
+   "jia_A_wushouce.txt": 16.42894481368083,
+   "yi_B_yongshouce.txt": 16.83238080325687,
+   "pingxing.txt": 13.354335022599644
+  }
+ },
+ {
+  "cat": "move",
+  "name": "恰恰",
+  "pat": "恰恰",
+  "L1_median": 0.0,
+  "L1_p95": 2.1015025743406537,
+  "L1_max": 3.805335926599298,
+  "L1_docs_hit": 51,
+  "L1_docs_total": 106,
+  "L2_median": 0.0,
+  "L2_max": 2.222839677688247,
+  "targets": {
+   "bing_zheng_wen.txt": 5.788921451572054,
+   "jia_A_wushouce.txt": 2.9870808752146965,
+   "yi_B_yongshouce.txt": 5.088859312612542,
+   "pingxing.txt": 4.451445007533215
+  }
+ },
+ {
+  "cat": "move",
+  "name": "值得注意/值得一提",
+  "pat": "值得注意|值得一提|尤其值得",
+  "L1_median": 0.0,
+  "L1_p95": 1.0280133641737343,
+  "L1_max": 1.3835085777531821,
+  "L1_docs_hit": 36,
+  "L1_docs_total": 106,
+  "L2_median": 0.0,
+  "L2_max": 2.8546959748786755,
+  "targets": {
+   "bing_zheng_wen.txt": 2.17084554433952,
+   "jia_A_wushouce.txt": 2.2403106564110224,
+   "yi_B_yongshouce.txt": 1.9572535817740546,
+   "pingxing.txt": 2.3969319271332696
+  }
+ },
+ {
+  "cat": "move",
+  "name": "换言之/也就是说",
+  "pat": "换言之|也就是说|易言之",
+  "L1_median": 0.9162963302331975,
+  "L1_p95": 3.8289725590299937,
+  "L1_max": 6.309716964124752,
+  "L1_docs_hit": 77,
+  "L1_docs_total": 106,
+  "L2_median": 0.0,
+  "L2_max": 4.64350542445861,
+  "targets": {
+   "bing_zheng_wen.txt": 2.894460725786027,
+   "jia_A_wushouce.txt": 1.8669255470091852,
+   "yi_B_yongshouce.txt": 1.5658028654192437,
+   "pingxing.txt": 2.3969319271332696
+  }
+ },
+ {
+  "cat": "move",
+  "name": "所设的",
+  "pat": "所设的",
+  "L1_median": 0.0,
+  "L1_p95": 0.0,
+  "L1_max": 0.0,
+  "L1_docs_hit": 0,
+  "L1_docs_total": 106,
+  "L2_median": 0.0,
+  "L2_max": 0.0,
+  "targets": {
+   "bing_zheng_wen.txt": 6.150729042295307,
+   "jia_A_wushouce.txt": 5.974161750429393,
+   "yi_B_yongshouce.txt": 2.3487042981288657,
+   "pingxing.txt": 6.163539241199835
+  }
+ },
+ {
+  "cat": "move",
+  "name": "所做的，是",
+  "pat": "所做的[，,]是",
+  "L1_median": 0.0,
+  "L1_p95": 0.0,
+  "L1_max": 0.0,
+  "L1_docs_hit": 0,
+  "L1_docs_total": 106,
+  "L2_median": 0.0,
+  "L2_max": 0.0,
+  "targets": {
+   "bing_zheng_wen.txt": 1.08542277216976,
+   "jia_A_wushouce.txt": 0.0,
+   "yi_B_yongshouce.txt": 0.39145071635481093,
+   "pingxing.txt": 0.3424188467333242
+  }
+ },
+ {
+  "cat": "move",
+  "name": "不是A而是B",
+  "pat": "不是[^。，、]{2,12}，而是|并非[^。，、]{2,12}，而是",
+  "L1_median": 0.48074611797509736,
+  "L1_p95": 3.4760154930976266,
+  "L1_max": 6.304507723021961,
+  "L1_docs_hit": 60,
+  "L1_docs_total": 106,
+  "L2_median": 0.0,
+  "L2_max": 3.233525189161224,
+  "targets": {
+   "bing_zheng_wen.txt": 2.5326531350627737,
+   "jia_A_wushouce.txt": 3.3604659846165337,
+   "yi_B_yongshouce.txt": 4.697408596257731,
+   "pingxing.txt": 3.0817696205999177
+  }
+ },
+ {
+  "cat": "move",
+  "name": "问题在于/关键在于",
+  "pat": "问题在于|关键在于",
+  "L1_median": 0.0,
+  "L1_p95": 1.2154360376785172,
+  "L1_max": 2.5425883549453343,
+  "L1_docs_hit": 33,
+  "L1_docs_total": 106,
+  "L2_median": 0.0,
+  "L2_max": 1.9671486180780957,
+  "targets": {
+   "bing_zheng_wen.txt": 1.08542277216976,
+   "jia_A_wushouce.txt": 0.37338510940183706,
+   "yi_B_yongshouce.txt": 1.5658028654192437,
+   "pingxing.txt": 1.3696753869332967
+  }
+ },
+ {
+  "cat": "move",
+  "name": "例如/比如/又如",
+  "pat": "例如|比如|又如|再如",
+  "L1_median": 5.152224824355972,
+  "L1_p95": 14.25371614742415,
+  "L1_max": 19.964274456236208,
+  "L1_docs_hit": 105,
+  "L1_docs_total": 106,
+  "L2_median": 3.880230226993468,
+  "L2_max": 17.7292390610595,
+  "targets": {
+   "bing_zheng_wen.txt": 1.08542277216976,
+   "jia_A_wushouce.txt": 0.37338510940183706,
+   "yi_B_yongshouce.txt": 0.0,
+   "pingxing.txt": 0.3424188467333242
+  }
+ },
+ {
+  "cat": "move",
+  "name": "但是/然而/虽然/尽管/而且",
+  "pat": "但是|然而|虽然|尽管|而且",
+  "L1_median": 14.342629482071713,
+  "L1_p95": 33.459349063572766,
+  "L1_max": 46.87218316206959,
+  "L1_docs_hit": 106,
+  "L1_docs_total": 106,
+  "L2_median": 10.368066355624675,
+  "L2_max": 33.76857271499325,
+  "targets": {
+   "bing_zheng_wen.txt": 6.874344223741814,
+   "jia_A_wushouce.txt": 1.4935404376073482,
+   "yi_B_yongshouce.txt": 3.1316057308384875,
+   "pingxing.txt": 0.6848376934666484
+  }
+ }
+]
