@@ -22,6 +22,11 @@ def scan(folder):
     """递归找 PDF/EPUB/DOCX/Markdown/TXT，返回绝对路径列表（排序稳定）。
        排除 0_Agent* 目录与符号链接/目录联接，并要求解析后的真实路径仍在受管目录内。
        这样文件夹模式不会沿重解析点读到用户未选择的外部文件并把内容送去索引/API。"""
+    # ⚠️ 空路径必须先挡掉：Path("") 等价于 Path(".")，resolve() 会解析成**当前工作目录**，
+    #    is_dir() 为真 —— 于是「受管文件夹没设」会静默变成「把 cwd 整个扫进来」。
+    #    实测过一次：folder_dir 为空时扫出 430 个文件，把程序自己的 .md/.txt 都算成了文献。
+    if not str(folder or "").strip():
+        return []
     try:
         base = Path(folder).resolve(strict=True)
         if not base.is_dir():

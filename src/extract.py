@@ -452,6 +452,17 @@ def _extract_txt(txt_path, max_units=None):
     return pages
 
 
+def _deep_ocr_mode():
+    """深索对「原生文字为空的页」是否做本地 OCR。默认 empty_pages（做）。
+
+    环境变量 LOCALKB_DEEP_OCR=off 可整体关闭。用途：批量预建索引时，个别几十 MB 的
+    扫描版专著单篇 OCR 可能耗时十几分钟到几十分钟，把整个构建拖住；关掉后这些篇仍然
+    入库、题录与检索照常，只是全文搜不到内容。**默认值不变，不影响任何现有用户。**
+    """
+    v = str(os.environ.get("LOCALKB_DEEP_OCR", "") or "").strip().lower()
+    return "off" if v in ("off", "0", "false", "no") else "empty_pages"
+
+
 def _extract_source_document(source_path, source_format="", max_units=None,
                              ocr_mode="off", ocr_engine=None, on_ocr_pending=None):
     """统一提取入口；返回结构继续使用 pages 兼容旧切块/Agent API。"""
@@ -543,7 +554,7 @@ def extract_one(p):
                            ocr_confidence=None)
 
         result = _extract_source_document(source_path, source_format=source_format,
-                                          ocr_mode="empty_pages", on_ocr_pending=_pending)
+                                          ocr_mode=_deep_ocr_mode(), on_ocr_pending=_pending)
         rec["pages"] = result["pages"]
         for fld in ("total_pages", "native_pages", "ocr_pages", "empty_pages",
                     "ocr_confidence"):

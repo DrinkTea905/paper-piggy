@@ -80,17 +80,31 @@ _AUDITED_IMPLEMENTATIONS = {
             "新增独立法规源并入统一题录；既有 Zotero/文件夹题录字段与轻量索引配方不变，新增法规时由入库流程触发增量刷新",
         "bded5ca0b15a0b8af162893fab54143fc5380470e54f0b5aae3fb2d24de14830":
             "法规入库可选摘要仅写入既有 summaries.json 并作为深索嵌入前缀；法规题录投影、轻量字段与索引配方不变",
+        "565ee8eeeb80abe333fa2133b1cb3b10ace2231e366c43335f93ef5e81b8dd2e":
+            "folder_source.scan() 增加空路径保护，settings.folder_dir() 增加「配置路径失效时回落到"
+            "数据家旁边的『论文库』」。**对合法输入产物逐字不变**：受管文件夹已正确配置时，"
+            "扫描结果、稳定 key（相对路径 sha1）与题录投影全部与此前一致。改掉的只是两个缺陷输入下的"
+            "错误行为——① 空 folder_dir 会被 Path('') 解析成当前工作目录、把 cwd 整个扫进库（实测扫出"
+            "430 个无关文件）；② 整个数据文件夹被搬到别的盘后库变空，与 portable 版「一个文件夹搬走」的"
+            "承诺相悖。回落只读不写回配置，外置盘接回来仍走原路径",
         },
     },
     "deep": {CURRENT_INDEX_CONTRACTS["deep"]: {
         "b4bb9b7cca3f8e396010c3ec067d3b15d9f612c100c61f40f58bd826d46c73d0":
             "仅增加切块契约防混用与原子落盘；提取、定位和切块算法不变",
+        "1bdc40f32c71dadd21eee1048ea800b04d68a9134b5c04c5db363ec6997e5f2b":
+            "新增 LOCALKB_DEEP_OCR 开关，供批量预建索引时跳过扫描件的本地 OCR（个别几十 MB 的"
+            "扫描版专著单篇可耗时几十分钟，把整批构建拖住）；**默认值 empty_pages 与原行为逐字一致**，"
+            "提取、定位与切块算法均未改动，同一输入在默认配置下产出同一份 extracted/chunks",
     }},
     "semantic": {CURRENT_INDEX_CONTRACTS["semantic"]: {
         "689ad2d1e5277af32eeb24682427ed8103f60d3cc74e41b557b66ff7828278b7":
             "增加向量契约防混用与原子落盘，且不替切块阶段登记 deep 契约；向量输入规则不变",
         "a41655dc9eb0c9a0e500605c2ff414f043c73e5797a74efb9b79a30dfa819a0f":
             "新增仅供独立法规入库使用的 skip-sac 开关，避免生成式摘要与额外费用；既有文献默认向量输入配方不变",
+        "d3b352af669eb9a4f06c2c3caa2bcc01ff7203cdeb924500c8780982134d6acd":
+            "嵌入与重排的热路径各加一次 task_log.bump() 运行日志计数（try/except 包裹、失败静默）；"
+            "**只计数、不参与任何计算**，分词、池化、归一化与向量输入规则全部未变，输出逐位一致",
     }},
 }
 

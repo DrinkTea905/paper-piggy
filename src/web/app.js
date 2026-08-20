@@ -2685,7 +2685,7 @@
     });
     // EN-F7：核验一句话——把综述里的论断丢给核验器（/research/verify_claim），三态徽章 + 证据列表。
     // 这是核验器的「人用入口」：不接 Agent 也能随手查一句话有没有库内依据
-    const WV_VERDICT = { supported: ["ok", "✅ 库内证据支持"], mismatch: ["warn", "⚠ 与库内证据不符"], not_in_lib: ["miss", "❓ 库里没找到依据"] };
+    // 三态徽章与证据列表的渲染已提到外层 verifyClaimHTML()（单一事实源）——顶栏「🔎 核验工具」共用同一份
     async function runVerifyClaim() {
       const inp = $("#wv-claim"), btn = $("#wv-go"), out = $("#wv-result");
       if (!inp || !btn || !out) return;
@@ -2696,16 +2696,7 @@
       out.hidden = false; out.innerHTML = `<span class="hint">正在库里找证据…（可能要几秒）</span>`;
       try {
         const r = await jpost("/research/verify_claim", { claim, keys: null, topk: 8 });
-        const v = WV_VERDICT[r.verdict] || ["miss", esc(r.verdict || "结果未知")];
-        const conf = (r.confidence != null) ? `（把握 ${Math.round(Number(r.confidence) * 100)}%）` : "";
-        const evs = (r.evidence || []).map((ev) => {
-          const pg = (ev.printed_page != null && ev.printed_page !== "") ? `第 ${esc(String(ev.printed_page))} 页`
-                   : (ev.locator ? esc(String(ev.locator)) : ((ev.pdf_page != null && ev.pdf_page !== "") ? `PDF 第 ${esc(String(ev.pdf_page))} 页` : ""));
-          return `<div class="wv-ev"><div class="wv-ev-t">${esc(ev.title || ev.citation || ev.key || "")}${pg ? ` · <span class="pg">${pg}</span>` : ""}</div>` +
-            (ev.quote ? `<div class="wv-ev-q">「${esc(ev.quote)}」</div>` : "") + `</div>`;
-        }).join("");
-        out.innerHTML = `<div class="wv-verdict ${v[0]}">${v[1]}${esc(conf)}</div>` +
-          (r.note ? `<div class="hint">${esc(r.note)}</div>` : "") + evs;
+        out.innerHTML = verifyClaimHTML(r);
       } catch (e) {
         // jpost 已读出后端 detail/error/msg 的人话原因，原样亮出来
         out.innerHTML = `<div class="wv-verdict warn">核验失败：${esc(e.message || e)}</div>`;
@@ -4306,7 +4297,7 @@
   // W2：设置 / wiki 详情 / 入库进度三个弹窗补 Esc 与点遮罩关闭（参照 uiConfirm 的 onBackdrop/onKey 写法）。
   // 只是收起视图，后台任务（入库/构建）不中断；确认框开着时让 uiConfirm 自己吃掉 Esc，不连带关底下的弹窗。
   // EN-F3：时间线弹层 #wk-tl-modal 一并纳入（它可能叠在 wiki 详情之上，Esc 列表里放最前、先关最上层）
-  ["#settings-modal", "#wiki-modal", "#ingest-modal", "#wk-tl-modal"].forEach((sel) => {
+  ["#settings-modal", "#wiki-modal", "#ingest-modal", "#wk-tl-modal", "#verify-modal"].forEach((sel) => {
     const m = $(sel);
     if (m) m.addEventListener("mousedown", (e) => { if (e.target === m) m.hidden = true; });
   });
@@ -4316,11 +4307,205 @@
     // 必须靠 defaultPrevented 识别「这次 Esc 已被确认框消费」，否则会连带关掉底下的弹窗
     if (e.defaultPrevented) return;
     const cm = $("#confirm-modal"); if (cm && !cm.hidden) return;
-    for (const sel of ["#wk-tl-modal", "#ingest-modal", "#wiki-modal", "#settings-modal"]) {   // EN-F3：时间线在最上层，先关它
+    for (const sel of ["#verify-modal", "#wk-tl-modal", "#ingest-modal", "#wiki-modal", "#settings-modal"]) {   // EN-F3：时间线在最上层先关；核验工具从顶栏开、可能叠在最上，放最前
       const m = $(sel);
       if (m && !m.hidden) { m.hidden = true; return; }   // 一次只关最上层一个
     }
   });
+
+  // ══════════════════════════════════════════
+  // 🔎 核验工具（顶栏独立入口，竞赛版）
+  //   标签页 A 论断核验 → POST /research/verify_claim
+  //        {claim, keys, topk} → {verdict: supported|mismatch|not_in_lib, confidence, note, evidence:[…]}
+  //   标签页 B 引文核对 → POST /research/locate_quote
+  //        {quote, key?, fuzzy} → {matches:[{key, position, pdf_page, printed_page, fulltext_format,
+  //                                          locator, exact, context}], n, truncated?, note?}
+  //        引文太短等参数性拒绝走 400 + detail，由 jpost 读成人话抛出。
+  // A 的渲染与综述页 .wiki-vtool 共用 verifyClaimHTML()——项目有单一事实源纪律，别复制第二份。
+  // ══════════════════════════════════════════
+  // 措辞刻意写成「找到支持性原文」而不是「论断成立」：supported 的判据是「检索显著 + 与原文
+  // 高重叠」，它证明的是**库里有这么一段原文**，不是**这句话是对的**。说过头了，一句把数字
+  // 写错的论断也会被读成"系统认可"。真伪仍由使用者比对下方原文自行判断。
+  const WV_VERDICT = { supported: ["ok", "✅ 库内找到支持性原文"], mismatch: ["warn", "⚠ 与库内证据不符"], not_in_lib: ["miss", "❓ 库里没找到依据"] };
+
+  // 论断核验结果 → HTML。两个调用点：综述页 .wiki-vtool 的 runVerifyClaim、核验工具弹层的标签页 A。
+  function verifyClaimHTML(r) {
+    const d = r.discrepancy;
+    // 关键处不一致时，绝不能再显示成绿色的「找到支持性原文」——那正是假阳性最会骗到人的地方。
+    // 实测过：「附条件不起诉的考验期为三年以上五年以下」（错的）与法条原文「六个月以上一年
+    // 以下」除数字外几乎逐字相同，重叠度极高而被判 supported。此时降级为警示样式并点出差异。
+    const v = (d && r.verdict === "supported")
+      ? ["warn", "⚠ 库内原文与论断在关键处不一致"]
+      : (WV_VERDICT[r.verdict] || ["miss", esc(r.verdict || "结果未知")]);
+    const conf = (r.confidence != null) ? `（把握 ${Math.round(Number(r.confidence) * 100)}%）` : "";
+    const discHTML = d ? `<div class="wv-disc"><b>${d.kind === "numeric" ? "数值不一致" : "肯否可能相反"}</b>：`
+      + esc(d.detail) + (d.source_title ? ` <span class="hint">（见《${esc(d.source_title)}》）</span>` : "")
+      + `</div>` : "";
+    const evs = (r.evidence || []).map((ev) => {
+      const pg = (ev.printed_page != null && ev.printed_page !== "") ? `第 ${esc(String(ev.printed_page))} 页`
+               : (ev.locator ? esc(String(ev.locator)) : ((ev.pdf_page != null && ev.pdf_page !== "") ? `PDF 第 ${esc(String(ev.pdf_page))} 页` : ""));
+      return `<div class="wv-ev"><div class="wv-ev-t">${esc(ev.title || ev.citation || ev.key || "")}${pg ? ` · <span class="pg">${pg}</span>` : ""}</div>` +
+        (ev.quote ? `<div class="wv-ev-q">「${esc(ev.quote)}」</div>` : "") + `</div>`;
+    }).join("");
+    return `<div class="wv-verdict ${v[0]}">${v[1]}${esc(conf)}</div>` + discHTML +
+      (r.note ? `<div class="hint">${esc(r.note)}</div>` : "") +
+      (evs || `<div class="hint">没有可展示的证据条目——库里没有能支撑或反驳这句话的段落。</div>`);
+  }
+
+  (() => {
+    const modal = $("#verify-modal");
+    if (!modal) return;
+    const focusOf = (tab) => $(tab === "quote" ? "#vf-quote" : "#vf-claim");
+
+    // ── 开关（Esc / 点遮罩关闭由上面那两张弹层清单统一接管，这里不重复挂）──
+    const btnOpen = $("#btn-verify");
+    if (btnOpen) btnOpen.addEventListener("click", () => {
+      modal.hidden = false;
+      const cur = modal.querySelector(".vf-tabs button.active");
+      const f = focusOf(cur ? cur.dataset.vfTab : "claim"); if (f) f.focus();
+    });
+    const btnClose = $("#vf-close");
+    if (btnClose) btnClose.addEventListener("click", () => { modal.hidden = true; });
+
+    // ── 标签页切换 ──
+    const PANES = { claim: "#vf-pane-claim", quote: "#vf-pane-quote" };
+    const tabBtns = modal.querySelectorAll(".vf-tabs button[data-vf-tab]");
+    tabBtns.forEach((b) => b.addEventListener("click", () => {
+      const want = b.dataset.vfTab;
+      tabBtns.forEach((x) => {
+        const on = x.dataset.vfTab === want;
+        x.classList.toggle("active", on);
+        x.setAttribute("aria-selected", on ? "true" : "false");
+      });
+      Object.keys(PANES).forEach((k) => { const p = $(PANES[k]); if (p) p.hidden = (k !== want); });
+      const f = focusOf(want); if (f) f.focus();
+    }));
+
+    // ── A · 论断核验 ──
+    async function runClaim() {
+      const inp = $("#vf-claim"), go = $("#vf-claim-go"), out = $("#vf-claim-result");
+      if (!inp || !go || !out) return;
+      const claim = (inp.value || "").trim();
+      out.hidden = false;
+      if (!claim) { out.innerHTML = `<span class="hint">先粘一句要核验的论断，再点「核验论断」。</span>`; inp.focus(); return; }
+      if (go.disabled) return;                       // 核验中不重复提交
+      go.disabled = true; const old = go.textContent; go.textContent = "核验中…";
+      out.innerHTML = `<span class="hint">正在库里找证据…（首次要加载本地模型，可能要几十秒）</span>`;
+      try {
+        const r = await jpost("/research/verify_claim", { claim, keys: null, topk: 8 });
+        out.innerHTML = verifyClaimHTML(r);
+      } catch (e) {
+        // jpost 已读出后端 detail/error/msg 的人话原因，原样亮出来，别静默
+        out.innerHTML = `<div class="wv-verdict warn">核验失败：${esc(e.message || e)}</div>` +
+          `<div class="hint">常见原因：知识库还没建索引、后台正在建库占满资源、或检索后端不可用。可到「设置」看状态后重试。</div>`;
+      } finally { go.disabled = false; go.textContent = old; }
+    }
+
+    // ── B · 引文核对 ──
+    const _titleCache = new Map();     // key → 题名（同一篇不反复问后端）
+    const _pickMap = new Map();        // 下拉里显示的那行文字 → key
+
+    async function titleOf(k) {
+      if (_titleCache.has(k)) return _titleCache.get(k);
+      let t = "";
+      try { const p = await jget("/paper/" + encodeURIComponent(k)); t = (p && p.title) || ""; } catch (e) { t = ""; }
+      _titleCache.set(k, t);
+      return t;
+    }
+
+    // 「限定某篇文献」：输入题名/作者关键词 → /papers?query= 拉候选进 datalist
+    let _pickTimer = null;
+    const pickIn = $("#vf-quote-key"), pickList = $("#vf-quote-keys");
+    if (pickIn && pickList) pickIn.addEventListener("input", () => {
+      clearTimeout(_pickTimer);
+      const kw = (pickIn.value || "").trim();
+      if (kw.length < 2) { pickList.innerHTML = ""; return; }
+      _pickTimer = setTimeout(async () => {
+        try {
+          const r = await jget(`/papers?query=${encodeURIComponent(kw)}&sort=match&limit=8`);
+          pickList.innerHTML = (r.papers || []).map((p) => {
+            const label = [p.title || p.key, p.author || "", p.year || ""].filter(Boolean).join(" · ");
+            _pickMap.set(label, p.key);
+            if (p.title) _titleCache.set(p.key, p.title);
+            return `<option value="${esc(label)}"></option>`;
+          }).join("");
+        } catch (e) { pickList.innerHTML = ""; }   // 候选拉不到不拦核对，留空即当全库
+      }, 260);
+    });
+
+    // 把限定框里的文字解析成 key。解析不出来就抛人话错误——绝不悄悄退回全库，
+    // 否则用户会以为限定生效了，读到的却是另一篇的命中。
+    async function resolveScopeKey() {
+      const raw = (pickIn ? (pickIn.value || "") : "").trim();
+      if (!raw) return null;
+      if (_pickMap.has(raw)) return _pickMap.get(raw);
+      let ps = [];
+      try { ps = (await jget(`/papers?query=${encodeURIComponent(raw)}&sort=match&limit=5`)).papers || []; } catch (e) { ps = []; }
+      if (ps.length === 1) { if (ps[0].title) _titleCache.set(ps[0].key, ps[0].title); return ps[0].key; }
+      if (ps.length > 1) throw new Error(`「${raw}」匹配到 ${ps.length} 篇文献，请在输入框的下拉里选定一篇，或清空这一栏在全库里找。`);
+      try { const p = await jget("/paper/" + encodeURIComponent(raw)); if (p && p.key) { _titleCache.set(p.key, p.title || ""); return p.key; } } catch (e) {}
+      throw new Error(`库里没有匹配「${raw}」的文献。请改用题名或作者关键词并从下拉里选，或清空这一栏在全库里找。`);
+    }
+
+    async function locateQuoteHTML(r, scopeKey) {
+      const ms = (r && r.matches) || [];
+      const scope = scopeKey ? `《${esc((await titleOf(scopeKey)) || scopeKey)}》这一篇` : "全库已深索的文献";
+      if (!ms.length) {
+        return `<div class="wv-verdict miss">❌ 未在原文中找到这句话</div>` +
+          `<div class="hint">在${scope}里逐页比对，一处也没匹配上。可能是：引文与原文有出入（改写、漏字、错字），` +
+          `这句话不出自这里，或该文献<b>尚未深索</b>——没抽出全文就无从比对（可到「浏览」页对它深索）。` +
+          (r && r.note ? ` ${esc(r.note)}` : "") + `</div>`;
+      }
+      const keys = [...new Set(ms.map((m) => m.key))];
+      await Promise.all(keys.map((k) => titleOf(k)));   // 题名一次性解析好再渲染（命中上限 20 条）
+      const nExact = ms.filter((m) => m.exact).length;
+      const head = `<div class="wv-verdict ok">✅ 在原文中找到 ${ms.length} 处` +
+        (nExact ? `（其中一字不差 ${nExact} 处）` : "（均为模糊匹配）") + `</div>`;
+      const tail = (r && r.truncated) ? `<div class="hint">${esc(r.note || "结果已截断，建议限定文献后重查")}</div>` : "";
+      const body = ms.map((m) => {
+        const where = (m.printed_page != null && m.printed_page !== "") ? `印刷页 ${esc(String(m.printed_page))}`   // 后端给的是展示串，可能形如「15（页码推算）」
+                    : (m.locator ? esc(String(m.locator)) : (m.position ? `第 ${esc(String(m.position))} 处` : ""));
+        const t = _titleCache.get(m.key) || "";
+        return `<div class="lq-hit"><div class="lq-hit-t">${esc(t || m.key)}` +
+          (t ? ` <span class="lq-key">${esc(m.key)}</span>` : "") +
+          (where ? ` · <span class="pg">${where}</span>` : "") +
+          `<span class="lq-tag ${m.exact ? "exact" : "fuzzy"}">${m.exact ? "一字不差" : "模糊匹配"}</span></div>` +
+          (m.context ? `<div class="lq-ctx">…${esc(m.context)}…</div>` : "") + `</div>`;
+      }).join("");
+      return head + tail + body;
+    }
+
+    async function runQuote() {
+      const inp = $("#vf-quote"), go = $("#vf-quote-go"), out = $("#vf-quote-result");
+      if (!inp || !go || !out) return;
+      const quote = (inp.value || "").trim();
+      out.hidden = false;
+      if (!quote) { out.innerHTML = `<span class="hint">先粘一句要核对的引文，再点「核对引文」。</span>`; inp.focus(); return; }
+      if (go.disabled) return;
+      go.disabled = true; const old = go.textContent; go.textContent = "核对中…";
+      out.innerHTML = `<span class="hint">正在逐页比对原文…（没限定文献时要扫全库，可能要几十秒）</span>`;
+      try {
+        const key = await resolveScopeKey();
+        const fz = $("#vf-quote-fuzzy");
+        const fuzzy = fz ? !!fz.checked : true;
+        const r = await jpost("/research/locate_quote", { quote, key, fuzzy });
+        out.innerHTML = await locateQuoteHTML(r, key);
+      } catch (e) {
+        out.innerHTML = `<div class="wv-verdict warn">核对失败：${esc(e.message || e)}</div>`;
+      } finally { go.disabled = false; go.textContent = old; }
+    }
+
+    // ── 触发：按钮点击 + 文本框 Ctrl/⌘+Enter + 限定框 Enter ──
+    const goClaim = $("#vf-claim-go"); if (goClaim) goClaim.addEventListener("click", runClaim);
+    const goQuote = $("#vf-quote-go"); if (goQuote) goQuote.addEventListener("click", runQuote);
+    [["#vf-claim", runClaim], ["#vf-quote", runQuote]].forEach(([sel, fn]) => {
+      const el = $(sel);
+      if (el) el.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); fn(); }
+      });
+    });
+    if (pickIn) pickIn.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); runQuote(); } });
+  })();
 
   // ── F8：外观（主题 / 字号）——存 localStorage，冷启动即应用。跟随系统时解析成具体 light/dark 写到 data-theme（CSS 只需处理 data-theme）──
   function applyAppearance() {

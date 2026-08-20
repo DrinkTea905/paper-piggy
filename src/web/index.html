@@ -81,6 +81,7 @@
     </nav>
     <div class="actions">
       <button id="up-badge" class="up-badge" hidden title="有新版本可用，点击查看并升级"></button>
+      <button id="btn-verify" class="ghost" aria-label="核验工具" title="不用打开任何页面，直接核验两件事：① 一句论断在你的文献库里有没有证据；② 一句引文在不在原文、在第几页。"><span aria-hidden="true">🔎</span><span class="top-action-label">核验工具</span></button>
       <button id="btn-build" class="ghost" aria-label="手动更新知识库" title="点一次即在后台增量更新：补新增题录与检索质量（已入库的跳过；深索仍手动）。想定时自动更新？到设置 → 建库 → 自动更新知识库里开。"><span aria-hidden="true">⟳</span><span class="top-action-label">手动更新知识库</span></button>
       <button id="btn-release-memory" class="ghost" aria-label="释放检索内存" title="安全释放检索模型和倒排索引占用的内存；有界面、对话或 Agent 检索时会拒绝，不会中断查询。"><span aria-hidden="true">🧠</span><span class="top-action-label">释放检索内存</span></button>
       <button id="btn-settings" class="ghost" aria-label="设置"><span aria-hidden="true">⚙</span><span class="top-action-label">设置</span></button>
@@ -1135,6 +1136,49 @@
 
   <!-- 隐藏的文件选择器（拖拽不生效时的可靠兜底） -->
   <input id="ingest-file-input" type="file" accept=".pdf,.epub,.docx,.md,.markdown,.txt,application/pdf,application/epub+zip,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/markdown" multiple hidden />
+
+  <!-- 竞赛版：核验工具独立入口。把两个本来只有 MCP 能调的后端能力
+       （/research/verify_claim、/research/locate_quote）提到顶栏一键可达——
+       不装任何外部客户端也能亲手试：输入材料、处理状态、结果来源、查不到时的风险提示都在这一层。
+       综述页里的 .wiki-vtool 保留不动（那是就地核验综述论断的场景）；三态徽章与证据列表
+       两处共用 app.js 的 verifyClaimHTML()，别再各写一份渲染。 -->
+  <div id="verify-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="verify-title" hidden>
+    <div class="modal-box verify-box">
+      <h3 id="verify-title">🔎 核验工具</h3>
+      <p class="hint vf-intro">两件事都只在<b>你本机的文献库</b>里查，不联网、不猜：查得到就给出处（文献 / 页码 / 原文引语），查不到就直说查不到。</p>
+      <div class="vf-tabs" role="tablist" aria-label="核验工具">
+        <button id="vf-tab-claim" type="button" class="active" role="tab" aria-selected="true" aria-controls="vf-pane-claim" data-vf-tab="claim">🧪 论断核验</button>
+        <button id="vf-tab-quote" type="button" role="tab" aria-selected="false" aria-controls="vf-pane-quote" data-vf-tab="quote">📎 引文核对</button>
+      </div>
+
+      <section id="vf-pane-claim" class="vf-pane" role="tabpanel" aria-labelledby="vf-tab-claim">
+        <p class="vf-desc">粘一句<b>论断</b>，看库里有没有证据支持它。结果三选一：库内证据支持 / 与库内证据不符 / 库里没找到依据，并列出支撑它的原文段落。</p>
+        <label class="vf-lbl" for="vf-claim">要核验的论断</label>
+        <textarea id="vf-claim" class="vf-ta" rows="3" placeholder="例：附条件不起诉在未成年人案件中的适用率总体偏低。（Ctrl+Enter 直接核验）"></textarea>
+        <div class="vf-actions">
+          <span class="hint">只查你自己的库；首次核验要加载本地模型，可能要等几秒到几十秒。</span>
+          <button id="vf-claim-go" type="button" class="ghost2b">核验论断</button>
+        </div>
+        <div id="vf-claim-result" class="wv-result" hidden></div>
+      </section>
+
+      <section id="vf-pane-quote" class="vf-pane" role="tabpanel" aria-labelledby="vf-tab-quote" hidden>
+        <p class="vf-desc">粘一句<b>引文</b>，看它在不在原文、在第几页 / 第几章 / 第几段，命中就显示原文上下文。用来抓「引文与原文对不上」。只能在<b>已深索（抽过全文）</b>的文献里比对。</p>
+        <label class="vf-lbl" for="vf-quote">要核对的引文（归一化后至少 6 个字，太短的串无法可靠定位）</label>
+        <textarea id="vf-quote" class="vf-ta" rows="3" placeholder="例：对未成年人刑事案件，实行教育、感化、挽救的方针。（Ctrl+Enter 直接核对）"></textarea>
+        <label class="vf-lbl" for="vf-quote-key">限定某篇文献（可选，留空 = 在全库里找）</label>
+        <input id="vf-quote-key" type="text" list="vf-quote-keys" autocomplete="off" placeholder="输入题名或作者关键词，从下拉里选一篇；也可以直接粘文献 key" />
+        <datalist id="vf-quote-keys"></datalist>
+        <div class="vf-actions">
+          <label class="vf-chk"><input id="vf-quote-fuzzy" type="checkbox" checked /> 模糊匹配（忽略标点、空格、全半角差异）</label>
+          <button id="vf-quote-go" type="button" class="ghost2b">核对引文</button>
+        </div>
+        <div id="vf-quote-result" class="wv-result" hidden></div>
+      </section>
+
+      <div class="modal-actions"><span></span><button id="vf-close" type="button" class="ghost">关闭</button></div>
+    </div>
+  </div>
 
   <!-- 首启向导（Onboarding） -->
   <div id="wizard" class="wizard" role="dialog" aria-modal="true" aria-labelledby="wizard-title" hidden>

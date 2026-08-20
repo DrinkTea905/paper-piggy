@@ -10,6 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import config as C
 import document_formats as DF
+import task_log as TL          # 结构化运行日志：检索/核验的耗时与模型调用统计
 import retriever as R
 import llm as L
 import wiki_store as W
@@ -21,6 +22,22 @@ from typing import Optional, List
 import uvicorn
 
 app = FastAPI(title="本地知识库")
+
+
+# ── 结构化运行日志（HTTP 侧）─────────────────────────────────────────────
+# 为什么必须记在这一侧：嵌入与重排**在本进程执行**，而 MCP 进程只是通过 HTTP 转发。
+# task_log 的模型调用计数器是进程内全局变量，只在 MCP 侧记的话，model_calls 恒为 0
+# （实测踩过）。这里对检索与核验端点统一包一层，耗时、成败与模型调用数一并落盘。
+# 只覆盖这两类读路径：写操作与静态资源不记，避免日志被噪声淹没。
+@app.middleware("http")
+async def _task_log_mw(request: Request, call_next):
+    path = request.url.path
+    if not (path.startswith("/search") or path.startswith("/research/")):
+        return await call_next(request)
+    with TL.step("http", path) as _s:
+        resp = await call_next(request)
+        _s.note(status=resp.status_code)
+    return resp
 #  proc/cancelled：整库深索(scope=all)跑在 subprocess 里，此前不留句柄 → 一旦开始无法停，
 #  可能空跑数小时并烧掉 API 额度。存下 Popen 供 POST /build/cancel 终止。
 BUILD = {"running": False, "stage": None, "log": [], "started": None, "rc": None,

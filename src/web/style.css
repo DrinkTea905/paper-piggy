@@ -1754,3 +1754,40 @@ input:focus, select:focus, textarea:focus, #q:focus, #chat-q:focus,
   .bl-one-row .bl-filter-row, .bl-one-row .bl-batch-actions { flex-wrap: wrap; }
   .wk-page-head .wk-action-group { flex-wrap: wrap; }
 }
+
+/* ── 竞赛版：顶栏「🔎 核验工具」弹层（论断核验 / 引文核对两个标签页）──
+   三态徽章与证据条目直接复用既有 .wv-* 样式，这里只补容器、标签页与引文命中条。 */
+.modal-box.verify-box { width: min(720px, 94vw); }
+.verify-box .vf-intro { margin: -6px 0 12px; line-height: 1.7; }
+.vf-tabs { display: inline-flex; gap: 3px; padding: 3px; border-radius: 9px; background: rgba(148,163,184,.12); margin-bottom: 12px; }
+.vf-tabs button { border: 0; background: transparent; color: var(--muted); border-radius: 7px; padding: 6px 14px; cursor: pointer; font: inherit; font-size: 13px; }
+.vf-tabs button.active { background: var(--card); color: var(--fg); box-shadow: 0 1px 4px rgba(15,23,42,.10); font-weight: 650; }
+.vf-pane[hidden] { display: none !important; }
+.vf-desc { margin: 0 0 10px; font-size: 12.5px; color: var(--muted); line-height: 1.75; }
+.modal-box .vf-lbl { display: block; margin: 10px 0 4px; font-size: 12.5px; color: var(--muted); }
+.vf-ta { box-sizing: border-box; width: 100%; resize: vertical; padding: 9px 11px; border: 1px solid var(--line);
+  border-radius: 8px; font-size: 13.5px; line-height: 1.75; color: var(--fg); background: var(--card); }
+.vf-actions { display: flex; gap: 10px; align-items: center; justify-content: space-between; margin-top: 10px; flex-wrap: wrap; }
+.vf-actions .hint { margin: 0; font-size: 12px; flex: 1 1 240px; }
+.modal-box .vf-chk { display: inline-flex; align-items: center; gap: 6px; margin: 0; font-size: 12.5px; color: var(--muted); cursor: pointer; }
+.modal-box .vf-chk input { width: auto; margin: 0; }
+/* 引文核对：一条命中 = 出处 + 一字不差/模糊 + 原文上下文 */
+.lq-hit { padding: 8px 0; border-top: 1px dashed var(--line); }
+.lq-hit-t { font-weight: 600; line-height: 1.7; }
+.lq-hit-t .pg { color: var(--accent); font-weight: 600; }
+.lq-key { color: var(--muted); font-weight: 400; font-size: 11.5px; }
+.lq-tag { display: inline-block; margin-left: 6px; padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+.lq-tag.exact { background: var(--ok-bg); color: var(--ok-fg); }
+.lq-tag.fuzzy { background: #fef3c7; color: #b45309; }
+.lq-ctx { color: var(--muted); margin-top: 3px; line-height: 1.75; }
+:root[data-theme="dark"] .lq-tag.fuzzy { filter: brightness(.9); }
+
+/* 论断核验：关键处不一致的警示块（见 app.js 的 verifyClaimHTML）。
+   supported 只说明库内有高重叠原文，数值或肯否对不上时必须显著提示，
+   不能让结果读起来像"系统认可这句话"。 */
+.wv-disc { margin: 6px 0 8px; padding: 8px 11px; border-radius: 8px;
+  background: #fef3c7; color: #7c4a03; border: 1px solid #fcd34d;
+  font-size: 12.5px; line-height: 1.65; }
+.wv-disc b { color: #b45309; }
+:root[data-theme="dark"] .wv-disc { background: rgba(252,211,77,.10); color: #fbbf24; border-color: rgba(252,211,77,.35); }
+:root[data-theme="dark"] .wv-disc b { color: #fcd34d; }

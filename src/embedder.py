@@ -30,6 +30,10 @@ class Embedder:
 
     def encode(self, texts, batch_size=None, max_length=None):
         """返回 (n,1024) 的 L2 归一化 dense 向量（np.float32）。"""
+        try:                                   # 运行日志的模型调用计数；失败静默，绝不拖累热路径
+            import task_log as _TL; _TL.bump("embed")
+        except Exception:
+            pass
         bs = batch_size or self.batch_size
         ml = max_length or self.max_length
         out = []

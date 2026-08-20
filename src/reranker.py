@@ -37,6 +37,10 @@ class Reranker:
 
     def scores(self, query, texts):
         """返回每个 text 对 query 的相关性分数（越高越相关）。"""
+        try:                                   # 运行日志的模型调用计数；失败静默
+            import task_log as _TL; _TL.bump("rerank")
+        except Exception:
+            pass
         out = []
         for i in range(0, len(texts), self.bs):
             batch = [[query, t] for t in texts[i:i + self.bs]]

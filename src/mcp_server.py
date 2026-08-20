@@ -11,6 +11,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import config as C
 import document_formats as DF
+import task_log as TL          # 结构化运行日志：工具级耗时/成败/模型调用数，供离线复核
 import requests
 
 # stdio 必须 UTF-8（中文工具描述/结果）；日志一律走 stderr，绝不污染 stdout 的 JSON-RPC 通道
@@ -2318,7 +2319,11 @@ def main():
                         "isError": True,
                     }})
                     continue
-                out = do_tool(name, args)
+                # 结构化运行日志：这里是 42 个工具的唯一执行入口，包一层即全覆盖。
+                # step() 只观测不改控制流，异常照常向下抛给既有的两个 except 分支。
+                with TL.step("mcp", name, args) as _s:
+                    out = do_tool(name, args)
+                    _s.note(chars=len(out[0] if isinstance(out, tuple) else out or ""))
                 text, sc = out if isinstance(out, tuple) else (out, None)
                 if (name == "read_project_memory" and _memory_scope_opens_gate(args)
                         and _project_memory_read_succeeded(text)):

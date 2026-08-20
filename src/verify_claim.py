@@ -37,6 +37,80 @@ _LOCAL_THR, _API_THR = 2.0, 0.6
 _OVERLAP_THR = 0.30
 
 
+# ── 关键处一致性检查（supported 的补正）──────────────────────────────────
+# 为什么需要：supported 的判据是「重排分显著 + 与 claim 的字符 2-gram 重叠度够高」，
+# 它判的是**主题相关**，判不了**事实一致**。实测过一个典型假阳性：
+#   claim「附条件不起诉的考验期为三年以上五年以下」（错的）
+#   原文「附条件不起诉的考验期为六个月以上一年以下」（对的）
+# 两句除数字外几乎逐字相同，重叠度极高 → 被判 supported。
+# 注意此时**证据本身是对的**（系统引的正是推翻该 claim 的法条原文），错的只是判定标签。
+# 所以这里不推翻证据，只在「关键处不一致」时把它显式指出来，交由使用者判断。
+# ⚠️ 刻意不改 verdict 的三态取值（MCP outputSchema、前端与文档都依赖它），
+#    只增加 discrepancy 字段；呈现层据此改用警示样式。
+
+_CN_NUM = {"零": 0, "〇": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5,
+           "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
+_UNITS = "年|个月|月|日|天|周岁|岁|周|次|倍|条|款|项|人|%|％"
+_RE_NUM = re.compile(rf"([0-9]+(?:\.[0-9]+)?|[零〇一二两三四五六七八九十百]+)\s*({_UNITS})")
+
+# 否定标记。只收**语义强否定**，不收「不同」「不再」这类容易误伤的词。
+_RE_NEG = re.compile(r"不得|不能|不应|不予|不负|不须|不需|无需|无须|禁止|不构成|不适用|"
+                     r"不成立|并非|并未|均不|一律不|不视为|不属于|非经|未经")
+
+
+def _cn2int(s):
+    """中文数字转整数。只处理法条里常见的百以内写法（十、十五、二十、二十三、一百）。"""
+    if s.isdigit():
+        return int(s)
+    if not s or any(c not in _CN_NUM and c != "百" for c in s):
+        return None
+    if "百" in s:
+        head, _, tail = s.partition("百")
+        n = (_CN_NUM.get(head, 1) if head else 1) * 100
+        return n + (_cn2int(tail) or 0) if tail else n
+    if "十" not in s:
+        v = 0
+        for c in s:                       # 「二三」这类连写按位拼（法条里少见，兜底）
+            v = v * 10 + _CN_NUM[c]
+        return v
+    head, _, tail = s.partition("十")
+    return (_CN_NUM.get(head, 1) if head else 1) * 10 + (_CN_NUM.get(tail, 0) if tail else 0)
+
+
+def _quantities(text):
+    """抽出 (数值, 单位) 集合。单位统一：个月→月，天→日，岁→周岁，％→%。"""
+    out = set()
+    for raw, unit in _RE_NUM.findall(str(text or "")):
+        v = _cn2int(raw) if not raw[0].isdigit() else float(raw)
+        if v is None:
+            continue
+        unit = {"个月": "月", "天": "日", "岁": "周岁", "％": "%"}.get(unit, unit)
+        out.add((float(v), unit))
+    return out
+
+
+def _discrepancy(claim, quote):
+    """比对 claim 与支撑句的关键处。返回 dict 或 None。**只报差异，不下真伪结论。**"""
+    cq, qq = _quantities(claim), _quantities(quote)
+    if cq and qq:
+        shared = {u for _, u in cq} & {u for _, u in qq}      # 只比同单位的量，避免年月混判
+        if shared:
+            cs = {(v, u) for v, u in cq if u in shared}
+            qs = {(v, u) for v, u in qq if u in shared}
+            if cs and qs and not (cs & qs):
+                fmt = lambda s: "、".join(f"{int(v) if v == int(v) else v}{u}"
+                                         for v, u in sorted(s, key=lambda x: (x[1], x[0])))
+                return {"kind": "numeric",
+                        "claim_values": fmt(cs), "source_values": fmt(qs),
+                        "detail": f"论断称「{fmt(cs)}」，而原文为「{fmt(qs)}」，数值不一致，请以原文为准。"}
+    cn, qn = len(_RE_NEG.findall(claim or "")), len(_RE_NEG.findall(quote or ""))
+    if (cn > 0) != (qn > 0):
+        who = "论断含否定表述而原文未见" if cn else "原文含否定表述而论断未见"
+        return {"kind": "polarity",
+                "detail": f"{who}，两者的肯否可能相反，请逐字比对原文后再行采信。"}
+    return None
+
+
 def _bigrams(s):
     return {s[i:i + 2] for i in range(len(s) - 1)}
 
@@ -204,10 +278,26 @@ def verify(claim, keys=None, topk=8):
         top_score = float(top["score"] or 0.0)
     except Exception:
         top_score = 0.0
+    disc = None
     if mode == "full" and top["quote"] and top_score > thr:
         verdict = "supported"
-        note = "检索命中显著且找到高重叠支撑句；请按 evidence 页位回原文复核表述与观点归属。"
         conf = _norm_conf(top_score, api)
+        # supported 只意味着「库内有高重叠的原文」，不意味着论断为真。若关键处（数值 / 肯否）
+        # 与原文不一致，必须显式指出——否则一句把数字写错的论断也会拿到"支持"。
+        # ⚠️ 必须遍历**全部** evidence，不能只看 top：实测中 top 的支撑句常常是概括性的一句
+        #    （「包括进行附条件不起诉」），带关键数值的法条原文反而排在第三条。只比对 top
+        #    会漏掉数值冲突——这正是本检查要拦的那类假阳性。
+        for _e in evidence:
+            disc = _discrepancy(claim, _e.get("quote") or "")
+            if disc:
+                disc["source_key"] = _e.get("key")
+                disc["source_title"] = _e.get("title")
+                break
+        if disc:
+            note = ("库内找到高度相关的原文，但**关键处与论断不一致**：" + disc["detail"]
+                    + "请按 evidence 页位回原文核对。")
+        else:
+            note = "检索命中显著且找到高重叠支撑句；请按 evidence 页位回原文复核表述与观点归属。"
     else:
         verdict = "not_in_lib"             # 软冲突/不显著/轻量模式：一律"未覆盖"，绝不判"为假"
         if mode != "full":
@@ -216,5 +306,8 @@ def verify(claim, keys=None, topk=8):
         else:
             note = "找到候选支撑句但检索相关度未达显著阈值，保守判为未覆盖。"
             conf = _norm_conf(top_score, api)
-    return {"verdict": verdict, "confidence": round(conf, 3), "evidence": evidence,
-            "note": note + FIXED_NOTE}
+    out = {"verdict": verdict, "confidence": round(conf, 3), "evidence": evidence,
+           "note": note + FIXED_NOTE}
+    if disc:
+        out["discrepancy"] = disc
+    return out

@@ -209,8 +209,40 @@ def source():
     return load().get("source", "zotero")
 
 
+# 受管文件夹随包分发时的约定目录名（数据家旁边）。见下方 folder_dir() 的自愈说明。
+BUNDLED_LIB_DIRNAME = "论文库"
+
+
 def folder_dir():
-    return load().get("folder_dir", "")
+    """受管文件夹绝对路径。**读到的路径不存在时，回落到数据家旁边的「论文库」。**
+
+    为什么要自愈：settings.json 里存的是绝对路径，而 portable 版的产品承诺是
+    「索引/模型/数据与程序同在一个文件夹，整个文件夹搬走就能用」。folder 模式下
+    这个承诺此前并不成立——把安装目录从 D:\\PaperPiggy 挪到 E:\\，或换一台机器解压，
+    folder_dir 就指向一个不存在的旧路径，扫描返回空、库看起来是空的。
+    （zotero 模式不受影响，它本来就靠探测 zotero.sqlite。）
+
+    只在**两个条件同时成立**时才回落，避免误伤：
+      ① 配置里的路径当前不存在**或为空**（U 盘/网络盘临时掉线也会命中，但见 ②）；
+      ② 数据家旁边确实有一个「论文库」目录。
+    受管文件夹放在别处的用户，包内不会有这个目录，②不成立 → 原样返回旧路径（或空串），
+    行为与以前完全一致（掉线时仍是空库 + 原路径，不会被改指到别的地方）。
+
+    「为空也回落」是给**随包分发预置文献**用的：那种包里 folder_dir 刻意留空，
+    既不泄露构建机的目录结构，又让受管文件夹的位置完全由解压位置决定。
+
+    ⚠️ 只在读取时转换，**不写回 settings.json**：用户原本配置的路径必须保留，
+    否则外置盘接回来之后就找不回去了。
+    """
+    d = load().get("folder_dir", "")
+    try:
+        if not d or not Path(d).is_dir():
+            cand = C.DATA.parent / BUNDLED_LIB_DIRNAME
+            if cand.is_dir():
+                return str(cand)
+    except Exception:
+        pass
+    return d
 
 
 def folder_meta_conf():
