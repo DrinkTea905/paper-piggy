@@ -1,7 +1,7 @@
 {
   "_说明": [
     "解释器 = build/py312/python.exe（嵌入式运行时，同时是打包素材；不在 git 里，重建法见 docs/RELEASE.md）",
-    "模型 = D:\\00Zotero知识库\\rag\\data\\models（唯一母本，勿删）。config.py 已不再兜底任何开发机路径，",
+    "模型 = D:\\Onedrive\\AI\\知识库应用\\build\\models（唯一母本，勿删）。config.py 已不再兜底任何开发机路径，",
     "       所以必须显式给 LOCALKB_MODELS，否则本地嵌入/重排会找不到模型。",
     "数据 = src\\data（源码态自动落这里，含现成的开发索引）",
     "端口 = 默认 8770。正式版常驻时会占着它，此时用 -alt 那两条配置（LOCALKB_PORT=8771），",
@@ -15,7 +15,7 @@
       "runtimeExecutable": "D:\\Onedrive\\AI\\知识库应用\\build\\py312\\python.exe",
       "runtimeArgs": [
         "-X", "utf8", "-c",
-        "import os,sys,runpy; os.environ['LOCALKB_MODELS']=r'D:\\00Zotero知识库\\rag\\data\\models'; sys.path.insert(0,r'D:\\Onedrive\\AI\\知识库应用\\src'); runpy.run_path(r'D:\\Onedrive\\AI\\知识库应用\\src\\launcher.py', run_name='__main__')"
+        "import os,sys,runpy; os.environ['LOCALKB_MODELS']=r'D:\\Onedrive\\AI\\知识库应用\\build\\models'; sys.path.insert(0,r'D:\\Onedrive\\AI\\知识库应用\\src'); runpy.run_path(r'D:\\Onedrive\\AI\\知识库应用\\src\\launcher.py', run_name='__main__')"
       ],
       "port": 8770
     },
@@ -24,7 +24,7 @@
       "runtimeExecutable": "D:\\Onedrive\\AI\\知识库应用\\build\\py312\\python.exe",
       "runtimeArgs": [
         "-X", "utf8", "-c",
-        "import os,sys,runpy; os.environ['LOCALKB_MODELS']=r'D:\\00Zotero知识库\\rag\\data\\models'; sys.path.insert(0,r'D:\\Onedrive\\AI\\知识库应用\\src'); runpy.run_path(r'D:\\Onedrive\\AI\\知识库应用\\src\\server.py', run_name='__main__')"
+        "import os,sys,runpy; os.environ['LOCALKB_MODELS']=r'D:\\Onedrive\\AI\\知识库应用\\build\\models'; sys.path.insert(0,r'D:\\Onedrive\\AI\\知识库应用\\src'); runpy.run_path(r'D:\\Onedrive\\AI\\知识库应用\\src\\server.py', run_name='__main__')"
       ],
       "port": 8770
     },
@@ -33,7 +33,7 @@
       "runtimeExecutable": "D:\\Onedrive\\AI\\知识库应用\\build\\py312\\python.exe",
       "runtimeArgs": [
         "-X", "utf8", "-c",
-        "import os,sys,runpy; os.environ['LOCALKB_MODELS']=r'D:\\00Zotero知识库\\rag\\data\\models'; os.environ['LOCALKB_PORT']='8771'; sys.path.insert(0,r'D:\\Onedrive\\AI\\知识库应用\\src'); runpy.run_path(r'D:\\Onedrive\\AI\\知识库应用\\src\\launcher.py', run_name='__main__')"
+        "import os,sys,runpy; os.environ['LOCALKB_MODELS']=r'D:\\Onedrive\\AI\\知识库应用\\build\\models'; os.environ['LOCALKB_PORT']='8771'; sys.path.insert(0,r'D:\\Onedrive\\AI\\知识库应用\\src'); runpy.run_path(r'D:\\Onedrive\\AI\\知识库应用\\src\\launcher.py', run_name='__main__')"
       ],
       "port": 8771
     },
@@ -42,7 +42,7 @@
       "runtimeExecutable": "D:\\Onedrive\\AI\\知识库应用\\build\\py312\\python.exe",
       "runtimeArgs": [
         "-X", "utf8", "-c",
-        "import os,sys,runpy; os.environ['LOCALKB_MODELS']=r'D:\\00Zotero知识库\\rag\\data\\models'; os.environ['LOCALKB_PORT']='8771'; sys.path.insert(0,r'D:\\Onedrive\\AI\\知识库应用\\src'); runpy.run_path(r'D:\\Onedrive\\AI\\知识库应用\\src\\server.py', run_name='__main__')"
+        "import os,sys,runpy; os.environ['LOCALKB_MODELS']=r'D:\\Onedrive\\AI\\知识库应用\\build\\models'; os.environ['LOCALKB_PORT']='8771'; sys.path.insert(0,r'D:\\Onedrive\\AI\\知识库应用\\src'); runpy.run_path(r'D:\\Onedrive\\AI\\知识库应用\\src\\server.py', run_name='__main__')"
       ],
       "port": 8771
     },

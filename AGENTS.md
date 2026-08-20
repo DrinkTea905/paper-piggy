@@ -162,7 +162,7 @@ README / CHANGELOG / release notes 会被全世界看到。改文案时别留「
 
 | 东西 | 位置 | 说明 |
 |---|---|---|
-| **模型母版** | `D:\00Zotero知识库\rag\data\models\` | ★**唯一母本，勿删**（14G，含 fp32 完整版）。`bge-m3-onnx` + `bge-reranker-v2-m3-onnx`。重新量化要几小时。 |
+| **本地模型** | `build\models\`（仓库内，不进 git） | 运行必需的**量化版**（1.13G）：`bge-m3-onnx` + `bge-reranker-v2-m3-onnx`，各含 `model_quantized.onnx` 与 tokenizer。丢了可从任一已构建的 bundle（`src\dist\LocalKB\models\`）取回，或从 GitHub Release `models-v1` 重下。<br>⚠️ **fp32 完整版（4.3G）与 HF 缓存（8.6G）已于 2026-08-20 随 `D:\00Zotero知识库\` 一并清理**——它们只在**重新量化**时才用得上；届时从 HuggingFace 重下 `BAAI/bge-m3`、`BAAI/bge-reranker-v2-m3` 再导出即可。 |
 | **Python 运行时** | `build\py312\` | 不在 git 里。重建法见 [docs/RELEASE.md](docs/RELEASE.md)。 |
 | **MinGit** | `build\assets\MinGit\` | 不在 git 里。`fetch_mingit.py` 可重下。 |
 
@@ -187,8 +187,8 @@ git switch -c fix/xxx      # 或在 main 上小步 commit
 **③ 源码态直接跑起来验证**（在仓库根执行）
 
 ```powershell
-# 模型母本目录（见 §2「外部硬依赖」；换机器就改这一行）
-$env:LOCALKB_MODELS = 'D:\00Zotero知识库\rag\data\models'
+# 本地模型目录（见 §2「外部硬依赖」；换机器就改这一行）
+$env:LOCALKB_MODELS = 'D:\Onedrive\AI\知识库应用\build\models'
 
 # 后端 only（浏览器开 http://127.0.0.1:8770）
 & .\build\py312\python.exe .\src\server.py
@@ -312,6 +312,8 @@ $env:LOCALKB_PORT = '8771'      # 只需这一个变量，整条链路一起换
   已改成机器强制：`check_guides ⑥` 扫全 src 的 `C.DATA / "xxx"` 落点，任何一个没在 `backup.py` 四个清单里分类 → **中止打包**。
   **教训**：凡是「清单」性质的代码（备份清单、排除清单、白名单），别信记忆，去 `ls` 一遍真实目录、再 grep 一遍所有写入点。
 - **注释会骗人，而它骗的正是最信注释的读者（下一个 agent）**。2026-07-14 的一次审查抓到三处过期/虚假注释（`agent_ws` 的落点说明、`_ensure_template` 的覆盖承诺、`updater` 的备份保护），每一处都会让人推出**相反**的结论。改行为时**同一口气把注释改掉**，别指望以后补。
+- **模型目录不存在时，报错完全看不出是「模型没了」**（2026-08-20 实测，排查了三层才定位）：`LOCALKB_MODELS` 指向的目录被删或改名后，服务**照常启动**、`/health` 返回 `ready:true`，一检索就 500，错误是 transformers 抛的 `Repo id must use alphanumeric chars, '-', '_' or '.' … : 'D:\…\bge-m3-onnx'`——它把一个不存在的本地路径**当成了 HuggingFace 仓库名**。**症状与真实原因毫无关联**，会把人带去查网络、密钥、模型名。
+  判据一行就够：`os.path.isdir(C.MODELS / "bge-m3-onnx")`。同类教训：`ready:true` 只说明服务起来了，**不代表检索可用**——模型是首次检索时才惰性加载的，启动期不碰它。
 
 ---
 
