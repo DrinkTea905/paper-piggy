@@ -33,7 +33,7 @@ class AgentOutputTests(unittest.TestCase):
         self.assertIn("set_wiki_theme", AW._WF_WIKI)
         self.assertIn("主题归类", AW._WF_WIKI)
         research = (AW._WF_JJ_DRAFT, AW._WF_JJ_REVIEW, AW._WF_GENERAL_DRAFT, AW._WF_REVIEW)
-        for body in research:
+        for body in research[1:]:   # v6 少年司法初稿只起草、不写回 wiki，不涉主题归类
             self.assertIn("既有主题", body)
         for body in (AW._README_OUTPUT, *research, AW._WF_WIKI, AW._WF_DIVERGENCE):
             self.assertIn("key", body)
@@ -46,39 +46,20 @@ class AgentOutputTests(unittest.TestCase):
         self.assertIn("云端检索或使用外部 AI 助手", AW._rules_summary_text())
         self.assertNotIn("不联网、不含大模型", AW._TASKS_README)
 
-    def test_juvenile_draft_has_two_skeleton_cards_and_stop_gate(self):
-        """v3：路线不再是固定二分法，改为决策树选出两类结构原型。"""
-        body = AW._WF_JJ_DRAFT
-        # 旧的固定二分法已废除
-        for stale in ("名称固定为“教义学路线”", "只有两条主路线"):
-            self.assertNotIn(stale, body)
-        # 2026-08-10：旧的「两张卡必须来自两个不同叶子」硬约束已放宽，不得回潮
-        self.assertNotIn("两个不同叶子", body)
-        for field in (
-            "决策树", "骨架卡", "逐字一级标题树", "各章字数占比",
-            "多动词路线图", "每章章首第一句", "不可调换处",
-            "每章、每节准备写什么",   # 2026-08-10：卡上除提纲外还要交代"准备怎么写"
-        ):
-            self.assertIn(field, body)
-        self.assertIn("用户选定前不得写摘要、引言或任何章节正文", body)
-        self.assertIn("少年司法 12 条", body)
+    def test_juvenile_draft_v6_shows_skeleton_once_then_keeps_writing(self):
+        """v6（2026-08-20 上线）：选型决策树与两张骨架卡整体废止，闸门收敛成一处。
 
-    def test_juvenile_draft_allows_self_built_skeleton_on_equal_footing(self):
-        """2026-08-10：套不进七类原型时必须能自建骨架，且自建不等于降标准。
-
-        根因：旧决策树 Q5a 的「不能 → 回类⑤」把最后一个出口封死，任何题目都会
-        被塞进某一型，工作流里写着的「不好归类就自建」永远触发不了 —— 表现为硬套。
+        v4 的决定性教训——可数指标能被优化到全绿而质量并不改善——所以 v6 只划禁区、
+        不设配额；用户看一眼骨架、没异议就接着写，不再停下来等。
         """
         body = AW._WF_JJ_DRAFT
-        self.assertIn("准入自检", body)
-        self.assertIn("原型＋原型、原型＋自建、自建＋自建", body)
-        self.assertIn("硬套才是错的", body)
-
-        manual = AW._JJ_DRAFT_CRAFT_HANDBOOK
-        self.assertIn("卡⑧ 自建骨架", manual)
-        self.assertIn("类⑧ 自建骨架", manual)          # 决策树里要有真出口
-        self.assertNotIn("不能 → 回 **类⑤**", manual)  # 旧的死循环出口
-        self.assertIn("自建不豁免任何东西", manual)
+        for stale in ("决策树", "骨架卡", "准入自检", "选型前侦查", "硬失败",
+                      "用户选定前不得写摘要、引言或任何章节正文"):
+            self.assertNotIn(stale, body, f"v4/v5 的「{stale}」不得回潮")
+        self.assertIn("## 用户决策点", body)
+        self.assertIn("逐字标题树", body)
+        self.assertIn("每章准备写什么", body)
+        self.assertIn("没有异议就接着写全文，不必停下来等", body)
 
     def test_juvenile_draft_reads_sources_before_choosing_structure(self):
         """2026-08-10：选型不得发生在读文献之前，但侦查要有上限、且不产出引注。
@@ -86,29 +67,31 @@ class AgentOutputTests(unittest.TestCase):
         旧流程把完整精读放在第一闸门之后，等于凭题目猜结构。
         """
         body = AW._WF_JJ_DRAFT
-        self.assertIn("## 选型前侦查", body)
-        self.assertLess(body.index("## 选型前侦查"), body.index("## 第一闸门"),
-                        "侦查节必须排在第一闸门之前")
-        # 有硬上限，不许无限读下去
-        self.assertIn("6—10 篇", body)
-        self.assertIn("完整逐页读 2—3 篇", body)
-        # 侦查读到的东西不得直接当引注——防止用局部阅读伪造页码
-        self.assertIn("不产生可引用论断", body)
-        self.assertIn("## 证据底座（选型后的完整精读）", body)
+        self.assertIn("## 开工前检查", body)
+        self.assertLess(body.index("## 开工前检查"), body.index("## 二、骨架与段落"),
+                        "读文献必须排在搭骨架之前")
+        self.assertIn("读文献，再动笔", body)
+        self.assertIn("不许凭题目猜结构", body)
+        self.assertIn("骨架是从读到的东西里长出来的", body)
+        # 片段/摘要不算读过——防止用检索片段伪造页码
+        self.assertIn("检索片段、摘要、SAC 摘要都不算读过", body)
         # 通用暂用版同样先摸底再定路线
         self.assertIn("先做小规模摸底再谈路线", AW._WF_GENERAL_DRAFT)
         self.assertIn("不得直接落成引注", AW._WF_GENERAL_DRAFT)
 
     def test_research_workflows_ask_user_before_spawning_subagents(self):
         """四条研究工作流都必须先问用户是否派子代理，由用户决定。"""
-        for body in (AW._WF_JJ_DRAFT, AW._WF_JJ_REVIEW, AW._WF_GENERAL_DRAFT, AW._WF_REVIEW):
+        for body in (AW._WF_JJ_REVIEW, AW._WF_GENERAL_DRAFT, AW._WF_REVIEW):
             self.assertIn("## 分工：是否派子代理（开工前问一次，由用户决定）", body)
             self.assertIn("用户回答前不要派", body)
             self.assertIn("子代理交回的是材料，不是成稿", body)
-        # 正文起草默认不派：章际回指等跨章约束会被并行起草打破
-        self.assertIn("默认不派", AW._WF_JJ_DRAFT)
-        self.assertIn("跨章约束", AW._WF_JJ_DRAFT)
-        self.assertIn("是否派子代理", AW._ROOT_AGENTS)
+        # 少年司法初稿（v6）按 2026-08-12 的固定规则改为默认派，不再开工前询问
+        jj = AW._WF_JJ_DRAFT
+        self.assertIn("默认派子代理", jj)
+        self.assertIn("起草正文各章不派", jj)   # 跨章约束，并行起草必然打破
+        self.assertIn("跨章约束", jj)
+        self.assertIn("你自己做", jj)           # 用户一句话即可全程不派
+        self.assertIn("默认派子代理", AW._ROOT_AGENTS)
 
     def test_research_workflows_require_retrieval_discovery_log(self):
         """2026-08-10：应用不落盘任何检索历史，工作流的发现日志是唯一真实记录。
@@ -125,44 +108,31 @@ class AgentOutputTests(unittest.TestCase):
             self.assertIn("漏召回", body)
             self.assertIn("不得事后凭记忆补写", body)
 
-    def test_juvenile_draft_v3_has_measurable_gates_and_companion_handbook(self):
-        """v3：判据必须可数、可 grep，不能只是自我声明。"""
-        body = AW._WF_JJ_DRAFT
-        for phrase in (
-            "骨架落位表", "本章交付的那个名词", "删掉本章后失去指涉的那一句",
-            "章首过渡", "段末回收", "编号词四套不混用", "硬失败", "完成标准",
-        ):
-            self.assertIn(phrase, body)
-        # 事实命题与规范命题分开管——不因缺数据而降低规范论断强度
-        self.assertIn("事实命题与规范命题分开管", body)
-        self.assertIn("缺少实证材料不是降低论断强度的理由", body)
-        self.assertIn("解释论", body)
-        self.assertIn("立法论", body)
-        # 书面语层与工作流术语泄漏
-        self.assertIn("书面语层", body)
-        self.assertIn("工作流术语泄漏", body)
-        # 旧的填表式条款已删除
-        for stale in ("写作设计单", "分节论证契约", "五轮独立修改"):
-            self.assertNotIn(stale, body)
-        self.assertIn("自动附带", body)
+    def test_juvenile_draft_v6_bans_and_companion_structure_ref(self):
+        """v6：护栏要的五节外壳齐全；三条新禁区与两条旧账都已落进文件。
 
-        manual = AW._JJ_DRAFT_CRAFT_HANDBOOK
-        for phrase in (
-            "选型决策树", "骨架卡", "底盘八条", "句型库", "标题词组池",
-            "少年司法专门约束", "不得挪用的自造命名表", "成稿自检",
-            "上户口型", "编格子型", "定性辨异型", "立论型",
-            "清点型", "出清单型", "换轨型",
-        ):
-            self.assertIn(phrase, manual)
-        # 手册必须挂真实论文出处（v2 的通病是全部「自拟」）
-        self.assertIn("印", manual)
-        self.assertNotIn("负例（自拟）", manual)
-        # 手册不得复制主工作流的闸门章节
-        for heading in ("## 触发条件", "## 开工前检查", "## 用户决策点", "## 最终报告"):
-            self.assertNotIn(heading, manual)
+        三条禁区来自 2026-08-20 的对照——用户亲手成稿 vs 同题 AI 稿。
+        """
+        body = AW._WF_JJ_DRAFT
+        for heading in ("## 触发条件", "## 开工前检查", "## 用户决策点",
+                        "## 完成标准", "## 最终报告"):
+            self.assertIn(heading, body)
+        self.assertIn("把作业过程写进正文", body)          # 证据强度自白不进正文
+        self.assertIn("结论进正文，出处、样本与限度进脚注", body)
+        self.assertIn("制度建议要嫁接，不要发明", body)
+        self.assertIn("五条不能破", body)
+        self.assertIn("显式标注为核验结果", body)          # 引注可靠性双口径
+        self.assertIn("结构指标整体降为参考", body)        # 用户已给大纲时的降级开关
+
+        # 自动附带材料换成三大刊结构台账；成文技艺手册停用但文件保留
         companions = AW.workflow_companion_specs("论文初稿（少年司法版）")
         self.assertEqual(1, len(companions))
-        self.assertEqual(AW._JJ_DRAFT_HANDBOOK_KEY, companions[0][0])
+        self.assertEqual(AW._JJ_DRAFT_COMPANION_KEY, companions[0][0])
+        self.assertIn("三大刊结构", companions[0][0])
+        self.assertIn("本手册已随 v6 版工作流停用", AW._JJ_DRAFT_CRAFT_HANDBOOK)
+        for heading in ("## 触发条件", "## 开工前检查", "## 用户决策点", "## 最终报告"):
+            self.assertNotIn(heading, AW._JJ_DRAFT_STRUCTURE_REF,
+                             "伴随材料不得复制主工作流的规程章节")
 
     def test_juvenile_review_has_reproducible_log_and_numeric_recalculation(self):
         body = AW._WF_JJ_REVIEW
@@ -195,7 +165,7 @@ class AgentOutputTests(unittest.TestCase):
             "论文初稿（通用暂用版）.md", "综述.md",
         ):
             self.assertIn(name, body)
-        self.assertIn("用户选择前不得起草全文", body)
+        self.assertIn("没有异议就接着写全文", body)
 
     def test_frontend_destructive_and_error_guards_are_wired(self):
         app_js = (ROOT / "web" / "app.js").read_text(encoding="utf-8")

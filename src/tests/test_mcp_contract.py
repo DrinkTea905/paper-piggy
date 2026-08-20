@@ -158,50 +158,50 @@ class McpContractTests(unittest.TestCase):
         self.assertNotIn("user-backup-auto-upgrade", text)
         self.assertNotIn("agent-ws-migration-backup", text)
 
-    def test_read_juvenile_draft_automatically_includes_actual_handbook(self):
+    def test_read_juvenile_draft_automatically_includes_structure_ref(self):
         with tempfile.TemporaryDirectory() as td, mock.patch.object(AW, "base_dir", return_value=Path(td)):
             AW.ensure_scaffold()
             text = MCP.do_tool("read_workflow", {"name": "论文初稿（少年司法版）"})
 
         self.assertIn("工作流文件：", text)
         self.assertIn(AW._WF_JJ_DRAFT, text)
-        self.assertIn("自动附带参考手册：", text)
-        self.assertIn(AW._JJ_DRAFT_CRAFT_HANDBOOK, text)
+        # v6：自动附带的是三大刊结构台账，停用的成文技艺手册不再附带
+        self.assertIn("自动附带参考材料：", text)
+        self.assertIn(AW._JJ_DRAFT_STRUCTURE_REF, text)
+        self.assertNotIn(AW._JJ_DRAFT_CRAFT_HANDBOOK, text)
         self.assertIn("不是独立工作流", text)
-        # DOCX 交付仍是硬要求（v3 措辞：工作流卷首 + 「交付与沉淀」节 + 手册自检表）
-        self.assertIn("最终成稿必须是可打开的 `.docx`", text)
-        self.assertIn("最终论文成稿固定写为 `0_Agent交付物/<主题>/<题目>.docx`", text)
-        self.assertIn("不能替代最终成稿", text)
-        self.assertIn("DOCX 打开检查", text)
+        # DOCX 交付仍是硬要求
+        self.assertIn("最终成稿交 `.docx`", text)
+        self.assertIn("Markdown 只作中间稿", text)
 
-    def test_read_juvenile_draft_preserves_user_main_and_handbook(self):
+    def test_read_juvenile_draft_preserves_user_main_and_companion(self):
         with tempfile.TemporaryDirectory() as td, mock.patch.object(AW, "base_dir", return_value=Path(td)):
             AW.ensure_scaffold()
             main = AW.skills_dir() / "论文初稿（少年司法版）.md"
-            handbook = AW.handbooks_dir() / "论文初稿（少年司法版）—成文技艺手册.md"
+            companion = AW.handbooks_dir() / "论文初稿（少年司法版）—三大刊结构.md"
             main.write_text("# 用户主流程\n保留我的第一闸门。\n", encoding="utf-8")
-            handbook.write_text("# 用户手册\n保留我的段落规则。\n", encoding="utf-8")
+            companion.write_text("# 用户结构台账\n保留我的段落规则。\n", encoding="utf-8")
 
             text = MCP.do_tool("read_workflow", {"name": "论文初稿（少年司法版）"})
 
         self.assertIn("保留我的第一闸门", text)
         self.assertIn("保留我的段落规则", text)
         self.assertNotIn(AW._WF_JJ_DRAFT, text)
-        self.assertNotIn(AW._JJ_DRAFT_CRAFT_HANDBOOK, text)
+        self.assertNotIn(AW._JJ_DRAFT_STRUCTURE_REF, text)
 
-    def test_read_workflow_ignores_handbook_sidecar_and_other_workflows_have_no_companion(self):
+    def test_read_workflow_ignores_companion_sidecar_and_other_workflows_have_no_companion(self):
         with tempfile.TemporaryDirectory() as td, mock.patch.object(AW, "base_dir", return_value=Path(td)):
             AW.ensure_scaffold()
-            handbook = AW.handbooks_dir() / "论文初稿（少年司法版）—成文技艺手册.md"
-            sidecar = handbook.with_name(handbook.stem + ".new" + handbook.suffix)
+            companion = AW.handbooks_dir() / "论文初稿（少年司法版）—三大刊结构.md"
+            sidecar = companion.with_name(companion.stem + ".new" + companion.suffix)
             sidecar.write_text("# 尚未合并的旁本\n不得自动使用。\n", encoding="utf-8")
 
             juvenile = MCP.do_tool("read_workflow", {"name": "论文初稿（少年司法版）"})
             review = MCP.do_tool("read_workflow", {"name": "综述（少年司法版）"})
 
         self.assertNotIn("不得自动使用", juvenile)
-        self.assertIn(AW._JJ_DRAFT_CRAFT_HANDBOOK, juvenile)
-        self.assertNotIn("自动附带参考手册", review)
+        self.assertIn(AW._JJ_DRAFT_STRUCTURE_REF, juvenile)
+        self.assertNotIn("自动附带参考材料", review)
         self.assertIn(AW._WF_JJ_REVIEW, review)
 
     def test_every_tool_has_new_contract_and_dispatch(self):

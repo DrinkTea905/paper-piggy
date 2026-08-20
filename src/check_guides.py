@@ -174,15 +174,15 @@ def check_workflows():
             errs.append(f"应用内指引缺项目记忆语义「{phrase}」")
     companion = agent_ws.workflow_companion_specs("论文初稿（少年司法版）.md")
     if len(companion) != 1:
-        errs.append(f"少年司法初稿应登记 1 份自动附带手册，实际 {len(companion)} 份")
+        errs.append(f"少年司法初稿应登记 1 份自动附带材料，实际 {len(companion)} 份")
     else:
         ckey, cpath, ctext, _cmask, _cseed = companion[0]
-        if ckey != agent_ws._JJ_DRAFT_HANDBOOK_KEY:
-            errs.append("少年司法初稿的伴随手册键与单一事实源不一致")
+        if ckey != agent_ws._JJ_DRAFT_COMPANION_KEY:
+            errs.append("少年司法初稿的伴随材料键与单一事实源不一致")
         if cpath.parent != agent_ws.handbooks_dir():
-            errs.append("伴随手册没有落在 技能/参考手册 子目录")
+            errs.append("伴随材料没有落在 技能/参考手册 子目录")
         if cpath.name in files or any(h in ctext for h in required):
-            errs.append("伴随手册被误建成第七条顶层工作流")
+            errs.append("伴随材料被误建成第七条顶层工作流")
     bad(name, "；".join(errs)) if errs else ok(name, f"{n} 条：{', '.join(files)}")
 
 
@@ -209,7 +209,7 @@ def check_wiki_schema():
 
 
 def check_template_factory_hashes():
-    name = "④b Agent 出厂模板当前 hash 全部已登记（工作流与伴随手册含精确指纹）"
+    name = "④b Agent 出厂模板当前 hash 全部已登记（工作流与伴随材料含精确指纹）"
     try:
         import agent_ws as A
     except Exception as e:
@@ -229,7 +229,7 @@ def check_template_factory_hashes():
         if missing:
             parts.append("normalized 缺失：" + "；".join(missing))
         if missing_exact:
-            parts.append("工作流/伴随手册 exact 缺失：" + "；".join(missing_exact))
+            parts.append("工作流/伴随材料 exact 缺失：" + "；".join(missing_exact))
         return bad(name, "请运行 agent_ws.py --print-hashes 并追加对应指纹：" + "；".join(parts))
     ok(name, f"{len(A._template_specs())} 份模板全部已登记")
 

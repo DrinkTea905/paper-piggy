@@ -45,8 +45,8 @@ class JuvenileForwardValidationRecordsTests(unittest.TestCase):
         # 见冻结清单第七节。上一版（2026-08-10）散列
         # 7bf354c39b692f58d8c933f22a5e20e8c16abcf386febb17455703edbe04b199 转为历史，留在第六节。
         expected_current = {
-            "workflow": "03cbe7a672d4dfa28a91a38bfd0ac2d07489bf2f9668728d5f8c134da90fb1f1",
-            "handbook": "28f1bb30f95ac4af7d11bf0958ae9021de58e3e3782a64e3aa33be0e6814e903",
+            "workflow": "202f217199ffb5055494755ba6f8941ea7ce6e0935015b34d14b9afe60caaca9",
+            "handbook": "b172c4b0fbc729b04e3a7615b27094d27ee8d5955969c678179ce30db0198012",
             "rules": "288f0760342cb00ef7450b8d95d8a1ab091f8f3e09891b3f587f112fa975e612",
             "tasks": "3d6f033ba98fd1d9375dceca800fe60349b100be2e7f697647fb6ce0255f8e58",
         }
@@ -61,11 +61,11 @@ class JuvenileForwardValidationRecordsTests(unittest.TestCase):
             ).hexdigest(),
         }
         self.assertEqual(expected_current, actual)
-        # v3 措辞：卷首「最终成稿必须是可打开的 .docx」+「交付与沉淀」节的落点与检查要求
-        self.assertIn("最终成稿必须是可打开的 `.docx`", AW._WF_JJ_DRAFT)
-        self.assertIn("最终论文成稿固定写为 `0_Agent交付物/<主题>/<题目>.docx`", AW._WF_JJ_DRAFT)
-        # v3 手册把 DOCX 检查并入 §7 成稿自检的可数判据表
-        self.assertIn("DOCX 打开检查", AW._JJ_DRAFT_CRAFT_HANDBOOK)
+        # v6 措辞：DOCX 仍是硬要求，落在「完成标准」节
+        self.assertIn("最终成稿交 `.docx`", AW._WF_JJ_DRAFT)
+        self.assertIn("Markdown 只作中间稿", AW._WF_JJ_DRAFT)
+        # 成文技艺手册已随 v6 停用，只保留文件与停用戳，不再自动附带
+        self.assertIn("本手册已随 v6 版工作流停用", AW._JJ_DRAFT_CRAFT_HANDBOOK)
 
     def test_six_raw_outputs_exist_and_do_not_contain_blind_keys(self):
         for run_id in ("D01", "D02", "T03", "T04", "M05", "S06"):

@@ -38,7 +38,7 @@
 | `export_disclosure(page_ids)` | 读 | 半自动研究助手·G4：按所选综合页(digest/outline 等的 id)生成《生成式 AI 使用声明》文本（规则拼装、零 LLM），用于论文投稿的 AIGC 合规披露。传入相关 wiki 页 id 列表即可。 |
 | `localkb_status()` | 读 | 查看本地知识库索引状态（词法/语义/全文各档就绪情况、已索引篇数）。查【深索】进度请用 deep_status。 |
 | `list_workflows()` | 读 | 列出用户本机现有工作流及路径。请求命中工作流时必须先调用，再用 read_workflow 读取全文。 |
-| `read_workflow(name)` | 读 | 读取指定工作流全文，并自动附带该工作流登记的参考手册。开始写作、维护或跨学科发散前必须先读匹配工作流并照完成标准执行。 |
+| `read_workflow(name)` | 读 | 读取指定工作流全文，并自动附带该工作流登记的参考材料。开始写作、维护或跨学科发散前必须先读匹配工作流并照完成标准执行。 |
 | `maintenance_audit()` | 读 | 全量维护统一入口：一次盘点模板、索引、全文附件深索/PDF OCR、检索摘要、wiki 待办和体检，并区分自动处理/需决策/外部阻塞。用户只要提到维护就先调用。 |
 | `get_template_upgrade_diff(key)` | 读 | 读取某条 Agent 模板/工作流升级的差异与并发校验 hash，供 Agent 保留用户定制后完成语义合并。 |
 | `merge_template_upgrade(key, current_hash, main_hash, merged_text)` | 写 | 提交 Agent 合并后的模板正文；写前校验文件未变化并自动存入集中历史备份。只有真实语义冲突才应先问用户。 |
