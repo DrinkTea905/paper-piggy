@@ -22,7 +22,7 @@
 |---|---|---|---|
 | **Python 运行时 + 全部依赖** | `build/py312/` (~800M) | ❌ | 按 §0.2 重建（**这是唯一不可自动重建的东西**） |
 | **MinGit** | `build/assets/MinGit/` (~90M) | ❌ | `python src/fetch_mingit.py` |
-| **ONNX 模型** | `D:\00Zotero知识库\rag\data\models\` | ❌ | **母本，勿删**。重新量化要几小时 |
+| **ONNX 模型** | `build\models\`（仓库内，不进 git） | ❌ | 运行必需的**量化版**（1.13G）。丢了可从已构建的 bundle（`src\dist\LocalKB\models\`）或 GitHub Release `models-v1` 取回。fp32 完整版已于 2026-08-20 清理，重新量化时从 HuggingFace 重下再导出 |
 | 源码 | `src/` | ✅ | `git checkout` |
 
 ### 0.1b Inno Setup（ISCC）装在**用户级路径** —— 别因 `where ISCC` 查不到就以为出不了安装器
