@@ -165,10 +165,10 @@ class McpContractTests(unittest.TestCase):
 
         self.assertIn("工作流文件：", text)
         self.assertIn(AW._WF_JJ_DRAFT, text)
-        # v6：自动附带的是三大刊结构台账，停用的成文技艺手册不再附带
+        # v6：自动附带的只有三大刊结构台账
         self.assertIn("自动附带参考材料：", text)
         self.assertIn(AW._JJ_DRAFT_STRUCTURE_REF, text)
-        self.assertNotIn(AW._JJ_DRAFT_CRAFT_HANDBOOK, text)
+        self.assertNotIn("成文技艺手册", text)
         self.assertIn("不是独立工作流", text)
         # DOCX 交付仍是硬要求
         self.assertIn("最终成稿交 `.docx`", text)

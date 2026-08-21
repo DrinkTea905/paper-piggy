@@ -124,12 +124,12 @@ class AgentOutputTests(unittest.TestCase):
         self.assertIn("显式标注为核验结果", body)          # 引注可靠性双口径
         self.assertIn("结构指标整体降为参考", body)        # 用户已给大纲时的降级开关
 
-        # 自动附带材料换成三大刊结构台账；成文技艺手册停用但文件保留
+        # 自动附带材料只保留三大刊结构台账；成文技艺手册不再进入模板清单
         companions = AW.workflow_companion_specs("论文初稿（少年司法版）")
         self.assertEqual(1, len(companions))
         self.assertEqual(AW._JJ_DRAFT_COMPANION_KEY, companions[0][0])
         self.assertIn("三大刊结构", companions[0][0])
-        self.assertIn("本手册已随 v6 版工作流停用", AW._JJ_DRAFT_CRAFT_HANDBOOK)
+        self.assertFalse(any("成文技艺手册" in key for key, *_ in AW._template_specs()))
         for heading in ("## 触发条件", "## 开工前检查", "## 用户决策点", "## 最终报告"):
             self.assertNotIn(heading, AW._JJ_DRAFT_STRUCTURE_REF,
                              "伴随材料不得复制主工作流的规程章节")

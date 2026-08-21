@@ -48,13 +48,11 @@ class JuvenileForwardValidationRecordsTests(unittest.TestCase):
         # 7bf354c39b692f58d8c933f22a5e20e8c16abcf386febb17455703edbe04b199 转为历史，留在第六节。
         expected_current = {
             "workflow": "dabb2da80f23a3296ee23c25dc03ead4a2dafc98d0bf64c276efe1da5806a0ca",
-            "handbook": "b172c4b0fbc729b04e3a7615b27094d27ee8d5955969c678179ce30db0198012",
             "rules": "288f0760342cb00ef7450b8d95d8a1ab091f8f3e09891b3f587f112fa975e612",
             "tasks": "3d6f033ba98fd1d9375dceca800fe60349b100be2e7f697647fb6ce0255f8e58",
         }
         actual = {
             "workflow": hashlib.sha256(AW._WF_JJ_DRAFT.encode("utf-8")).hexdigest(),
-            "handbook": hashlib.sha256(AW._JJ_DRAFT_CRAFT_HANDBOOK.encode("utf-8")).hexdigest(),
             "rules": hashlib.sha256(
                 doc("少年司法论文初稿工作流v2-24篇规则冻结与运行时映射.md").read_bytes()
             ).hexdigest(),
@@ -66,8 +64,8 @@ class JuvenileForwardValidationRecordsTests(unittest.TestCase):
         # v6 措辞：DOCX 仍是硬要求，落在「完成标准」节
         self.assertIn("最终成稿交 `.docx`", AW._WF_JJ_DRAFT)
         self.assertIn("Markdown 只作中间稿", AW._WF_JJ_DRAFT)
-        # 成文技艺手册已随 v6 停用，只保留文件与停用戳，不再自动附带
-        self.assertIn("本手册已随 v6 版工作流停用", AW._JJ_DRAFT_CRAFT_HANDBOOK)
+        # 成文技艺手册已彻底退出运行时与安装包
+        self.assertFalse(hasattr(AW, "_JJ_DRAFT_CRAFT_HANDBOOK"))
 
     def test_six_raw_outputs_exist_and_do_not_contain_blind_keys(self):
         for run_id in ("D01", "D02", "T03", "T04", "M05", "S06"):

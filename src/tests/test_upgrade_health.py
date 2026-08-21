@@ -435,80 +435,47 @@ class AgentTemplateUpgradeTests(unittest.TestCase):
             self.assertGreaterEqual(first_actions["migration/升级与备份布局"]["sidecars"], 2)
             self.assertEqual(0, second_actions["migration/升级与备份布局"]["sidecars"])
 
-    def test_new_install_creates_nested_juvenile_craft_handbook(self):
+    def test_new_install_does_not_create_juvenile_craft_handbook(self):
         with tempfile.TemporaryDirectory() as td, mock.patch.object(AW, "base_dir", return_value=Path(td)):
             actions = AW.ensure_scaffold()
-            handbook = AW.handbooks_dir() / "论文初稿（少年司法版）—成文技艺手册.md"
+            handbook = AW.handbooks_dir() / AW._OBSOLETE_JJ_DRAFT_HANDBOOK_FILENAME
 
-            self.assertEqual("created", actions[AW._JJ_DRAFT_HANDBOOK_KEY])
-            self.assertEqual(AW._JJ_DRAFT_CRAFT_HANDBOOK, handbook.read_text(encoding="utf-8"))
-            self.assertEqual(handbook.parent, AW.skills_dir() / "参考手册")
+            self.assertFalse(handbook.exists())
+            self.assertFalse(any("成文技艺手册" in key for key, *_ in AW._template_specs()))
+            self.assertEqual("absent", actions["migration/移除停用成文技艺手册"]["status"])
 
-    def test_handbook_markdown_whitespace_change_is_preserved_with_sidecar(self):
+    def test_upgrade_deletes_all_managed_handbook_copies_including_user_edits(self):
+        with tempfile.TemporaryDirectory() as td, mock.patch.object(AW, "base_dir", return_value=Path(td)):
+            filename = AW._OBSOLETE_JJ_DRAFT_HANDBOOK_FILENAME
+            stem = Path(filename).stem
+            copies = [
+                AW.handbooks_dir() / filename,
+                AW.handbooks_dir() / f"{stem}.new.md",
+                AW.pending_dir() / "技能" / "参考手册" / f"{stem}.新版待合并.2.md",
+                AW.history_dir() / "自动升级" / "旧事件" / "技能" / "参考手册" / filename,
+            ]
+            for i, path in enumerate(copies):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(f"# 用户修改件 {i}\n", encoding="utf-8")
+
+            actions = AW.ensure_scaffold()
+
+            self.assertTrue(all(not path.exists() for path in copies))
+            result = actions["migration/移除停用成文技艺手册"]
+            self.assertEqual("removed", result["status"])
+            self.assertEqual(4, result["removed"])
+            self.assertFalse(result["failed"])
+
+    def test_handbook_removal_is_one_time_not_a_permanent_filename_ban(self):
         with tempfile.TemporaryDirectory() as td, mock.patch.object(AW, "base_dir", return_value=Path(td)):
             AW.ensure_scaffold()
-            key, path, current, _mask, _seed = next(
-                x for x in AW._template_specs() if x[0] == AW._JJ_DRAFT_HANDBOOK_KEY)
-            changed = current.replace("\n1. 首章与末章一律不分节", "\n  1. 首章与末章一律不分节", 1)
-            self.assertEqual(AW._norm_hash(changed), AW._norm_hash(current))
-            self.assertNotEqual(AW._exact_hash(changed), AW._exact_hash(current))
-            path.write_text(changed, encoding="utf-8")
+            recreated = AW.handbooks_dir() / AW._OBSOLETE_JJ_DRAFT_HANDBOOK_FILENAME
+            recreated.write_text("# 用户升级后主动新建\n", encoding="utf-8")
 
-            action = AW.ensure_scaffold()[key]
+            actions = AW.ensure_scaffold()
 
-            self.assertEqual("forked", action)
-            self.assertEqual(changed, path.read_text(encoding="utf-8"))
-            self.assertEqual(
-                current,
-                AW._pending_candidates(key, path)[0].read_text(encoding="utf-8"),
-            )
-
-    def test_concurrent_handbook_creation_preserves_user_file(self):
-        with tempfile.TemporaryDirectory() as td, mock.patch.object(AW, "base_dir", return_value=Path(td)):
-            target = AW.handbooks_dir() / "论文初稿（少年司法版）—成文技艺手册.md"
-            user_text = "# 用户并发创建的手册\n不能覆盖。\n"
-            real_open = Path.open
-
-            def race_open(path, mode="r", *args, **kwargs):
-                if path == target and mode == "x":
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    target.write_text(user_text, encoding="utf-8")
-                    raise FileExistsError(str(target))
-                return real_open(path, mode, *args, **kwargs)
-
-            with mock.patch.object(Path, "open", autospec=True, side_effect=race_open):
-                actions = AW.ensure_scaffold()
-
-            self.assertEqual(user_text, target.read_text(encoding="utf-8"))
-            self.assertEqual("forked", actions[AW._JJ_DRAFT_HANDBOOK_KEY])
-            self.assertEqual(
-                AW._JJ_DRAFT_CRAFT_HANDBOOK,
-                AW._pending_candidates(AW._JJ_DRAFT_HANDBOOK_KEY, target)[0].read_text(encoding="utf-8"),
-            )
-
-    def test_concurrent_handbook_sidecar_creation_is_never_overwritten(self):
-        with tempfile.TemporaryDirectory() as td, mock.patch.object(AW, "base_dir", return_value=Path(td)):
-            AW.ensure_scaffold()
-            target = AW.handbooks_dir() / "论文初稿（少年司法版）—成文技艺手册.md"
-            target.write_text("# 用户主手册\n", encoding="utf-8")
-            candidates = AW._pending_candidates(AW._JJ_DRAFT_HANDBOOK_KEY, target)
-            sidecar = candidates[0]
-            user_sidecar = "# 用户并发创建的旁本\n保留笔记。\n"
-            real_open = Path.open
-
-            def race_open(path, mode="r", *args, **kwargs):
-                if path == sidecar and mode == "x":
-                    sidecar.write_text(user_sidecar, encoding="utf-8")
-                    raise FileExistsError(str(sidecar))
-                return real_open(path, mode, *args, **kwargs)
-
-            with mock.patch.object(Path, "open", autospec=True, side_effect=race_open):
-                action = AW.ensure_scaffold()[AW._JJ_DRAFT_HANDBOOK_KEY]
-
-            second = candidates[1]
-            self.assertEqual("forked", action)
-            self.assertEqual(user_sidecar, sidecar.read_text(encoding="utf-8"))
-            self.assertEqual(AW._JJ_DRAFT_CRAFT_HANDBOOK, second.read_text(encoding="utf-8"))
+            self.assertTrue(recreated.exists())
+            self.assertEqual("already_done", actions["migration/移除停用成文技艺手册"]["status"])
 
     def test_historical_main_saved_after_validation_is_restored_not_overwritten(self):
         with tempfile.TemporaryDirectory() as td:
@@ -679,13 +646,13 @@ class AgentTemplateUpgradeTests(unittest.TestCase):
             self.assertTrue(target.exists())
             self.assertEqual(historical, target.read_text(encoding="utf-8"))
 
-    def test_juvenile_workflow_and_handbook_keep_normalized_and_exact_history(self):
+    def test_juvenile_workflow_and_structure_ref_keep_normalized_and_exact_history(self):
         main_key = "rely/技能/论文初稿（少年司法版）.md"
         self.assertIn("b5cc328f23e1a82aaec6f98c5e00ded5f94cec92", AW._FACTORY_HASHES[main_key])
         self.assertIn("14bbdb70138279391a48afc0576af3db07d1b29a", AW._WORKFLOW_FACTORY_EXACT_HASHES[main_key])
         for key, text in (
             (main_key, AW._WF_JJ_DRAFT),
-            (AW._JJ_DRAFT_HANDBOOK_KEY, AW._JJ_DRAFT_CRAFT_HANDBOOK),
+            (AW._JJ_DRAFT_COMPANION_KEY, AW._JJ_DRAFT_STRUCTURE_REF),
         ):
             self.assertIn(AW._norm_hash(text), AW._FACTORY_HASHES[key])
             self.assertIn(AW._exact_hash(text), AW._WORKFLOW_FACTORY_EXACT_HASHES[key])
