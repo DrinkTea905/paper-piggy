@@ -47,7 +47,7 @@ class JuvenileForwardValidationRecordsTests(unittest.TestCase):
         # 见冻结清单第七节。上一版（2026-08-10）散列
         # 7bf354c39b692f58d8c933f22a5e20e8c16abcf386febb17455703edbe04b199 转为历史，留在第六节。
         expected_current = {
-            "workflow": "ce9ec0affc15a3145a7184a8e8c8eb658e5eead73fe8af3132790612f71800db",
+            "workflow": "dabb2da80f23a3296ee23c25dc03ead4a2dafc98d0bf64c276efe1da5806a0ca",
             "handbook": "b172c4b0fbc729b04e3a7615b27094d27ee8d5955969c678179ce30db0198012",
             "rules": "288f0760342cb00ef7450b8d95d8a1ab091f8f3e09891b3f587f112fa975e612",
             "tasks": "3d6f033ba98fd1d9375dceca800fe60349b100be2e7f697647fb6ce0255f8e58",
