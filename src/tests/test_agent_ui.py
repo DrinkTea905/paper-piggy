@@ -152,6 +152,18 @@ class AgentOutputTests(unittest.TestCase):
         self.assertIn("暂用版", body)
         self.assertNotIn("少年司法八项迁移闸门", body)
 
+    def test_public_jj_draft_copy_matches_v6(self):
+        surfaces = (
+            (ROOT / "web" / "index.html").read_text(encoding="utf-8"),
+            (ROOT / "MCP接入说明.md").read_text(encoding="utf-8"),
+            (ROOT.parent / "README.md").read_text(encoding="utf-8"),
+        )
+        for body in surfaces:
+            self.assertIn("三大刊结构", body)
+            self.assertNotIn("选型决策树", body)
+            self.assertNotIn("七类结构原型", body)
+            self.assertNotIn("两张骨架卡", body)
+
     def test_root_entry_routes_by_task_then_domain(self):
         body = AW._ROOT_AGENTS
         self.assertIn("项目记忆闸门（最高优先级）", body)
@@ -176,6 +188,11 @@ class AgentOutputTests(unittest.TestCase):
         self.assertNotIn('fetch("/build"', app_js)
         self.assertIn('const s = await jget("/build/status")', app_js)
         self.assertIn('id="ed-gokey" class="ag-link ag-linkbtn" type="button"', index_html)
+        self.assertIn(
+            'data-open="rely">📂 打开资料库文件夹</button><button class="ghost2 ag-openbtn" '
+            'data-open="skills">📂 打开技能文件夹</button>',
+            index_html,
+        )
         self.assertIn('id="ag-open-skills" type="button"', index_html)
         self.assertIn('id="settings-modal" class="modal" role="dialog"', index_html)
         self.assertIn('id="btn-release-memory"', index_html)
