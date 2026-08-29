@@ -402,11 +402,40 @@ def _load_wiki_index():
             log("综合页回灌失败（不影响其余检索）：", e)
 
 # ═══ 检索：full 模式 ════════════════════════════════════════════
-def dense_search(q, k):
+def _cap_per_key(chunk_ids, k, per_key):
+    """按 key 限流：每篇文献最多取 per_key 个块，凑够 k 个为止。
+
+    召回是按**块**排名的，而一篇深索长文有几十上百块、彼此又高度相似——
+    命中一块往往意味着命中一片。不限流时它们会把召回名额整个吃光，
+    候选池里只剩两三篇文献，后面的融合、重排、加权全都无从发挥。
+    chunk_id 的 `::` 前缀即 key，不用回表就能分组。"""
+    if per_key <= 0:
+        return chunk_ids[:k]
+    seen, out = {}, []
+    for cid in chunk_ids:
+        key = str(cid).split("::", 1)[0]
+        n = seen.get(key, 0)
+        if n >= per_key:
+            continue
+        seen[key] = n + 1
+        out.append(cid)
+        if len(out) >= k:
+            break
+    return out
+
+
+# 限流会丢弃大量同篇块，所以要超取。8 倍是量出来的：per_key=2 时 38 条金标
+# 查询全部能凑满 k，再大只是白读 IO。
+_RECALL_OVERFETCH = 8
+
+
+def dense_search(q, k, per_key=None):
+    per_key = getattr(C, "DENSE_PER_KEY", 0) if per_key is None else per_key
     qv = M["embed"].encode([q], max_length=256)[0]
+    want = k * _RECALL_OVERFETCH if per_key > 0 else k
     hits = (M["tbl"].search(qv.tolist()).metric("cosine")
-            .select(_existing_columns(("chunk_id",)) + ["_distance"]).limit(k).to_list())
-    return [h["chunk_id"] for h in hits]
+            .select(_existing_columns(("chunk_id",)) + ["_distance"]).limit(want).to_list())
+    return _cap_per_key([h["chunk_id"] for h in hits], k, per_key)
 
 # EN-L3：同义词命中判定里的"含中文"检查（英文缩写组员如 ai/dpa 只走 token 全等通道，
 # 不走 substring 通道——"ai" 是 "chain"/"detail" 的子串，substring 会大面积误命中）
@@ -443,12 +472,14 @@ def _expand_tokens(query, toks):
                     extra.append(t)
     return toks + extra
 
-def bm25_search(q, k):
+def bm25_search(q, k, per_key=None):
+    per_key = getattr(C, "BM25_PER_KEY", 0) if per_key is None else per_key
     toks = _expand_tokens(q, tokenize(q))   # EN-L3：查询侧同义扩展（索引侧不动）
     if not toks:
         return []
-    res, _ = M["bm25"].retrieve([toks], k=min(k, len(M["bm25_ids"])))
-    return [M["bm25_ids"][int(i)] for i in res[0]]
+    want = k * _RECALL_OVERFETCH if per_key > 0 else k    # 同 dense：限流前先超取
+    res, _ = M["bm25"].retrieve([toks], k=min(want, len(M["bm25_ids"])))
+    return _cap_per_key([M["bm25_ids"][int(i)] for i in res[0]], k, per_key)
 
 def rrf(dense_ids, bm25_ids, k=C.RRF_K):
     score = {}
@@ -561,7 +592,13 @@ def _page_cite(r):
     if pg: s += f"，第{pg}页"
     return s.strip()
 
-def search_full(query, topk, sort, keys=None, max_per_key=None, include_wiki=True):
+def search_full(query, topk, sort, keys=None, max_per_key=None, include_wiki=True, trace=None):
+    """trace：传入一个 dict 就把各阶段候选数与排名变动填进去（⛔ 竞赛版的检索管线可视化用）。
+
+    为什么做成可选参数、而不是另写一个 debug 版：检索管线只能有**一份**实现。
+    复制一份出来画图，两边迟早漂移，画出来的就不是真实发生的事了。
+    默认 None 时不做任何额外工作，对正常检索零开销。
+    """
     # BF6：白名单场景源头召回放大到 150（见 config.FILTER_SRC_TOPK）——限定分类后
     # 50 条粗召回被过滤剩不下几条，池子先天不足；常规检索维持 50 不拖慢。
     src_k = C.FILTER_SRC_TOPK if keys is not None else 0
@@ -584,10 +621,18 @@ def search_full(query, topk, sort, keys=None, max_per_key=None, include_wiki=Tru
             if cid in records
             and (keys is None or records[cid].get("key") in keys)
             and (include_wiki or not _is_wiki(records[cid]))][:pool]
+    if trace is not None:
+        trace.update({"dense": len(di), "bm25": len(bi), "fused": len(fused),
+                      "pool_limit": pool, "cand": len(cand),
+                      "fused_rank": {cid: i + 1 for i, cid in enumerate(fused)}})
     if not cand:
         return []
     scores = M["rerank"].scores(query, [records[cid].get("text") or "" for cid in cand])
     ranked = sorted(zip(cand, scores), key=lambda x: -x[1])
+    if trace is not None:
+        # 重排后的名次与分数：与 fused_rank 一比，就能看出「重排把谁提上来、把谁压下去」。
+        trace["rerank_rank"] = {cid: i + 1 for i, (cid, _) in enumerate(ranked)}
+        trace["rerank_score"] = {cid: round(float(sc), 4) for cid, sc in ranked}
     # 发现型检索默认每篇最多 C.MAX_PER_KEY 段；不拿同一篇的溢出段硬凑 topk。
     # 只有 verify_claim/read-source 这类明确的定向核验才会传入更高的 max_per_key。
     per_key_limit = max(1, int(max_per_key or C.MAX_PER_KEY))
@@ -698,10 +743,20 @@ def _neighbors_loaded(key, topk=8):
             qv = [float(x) for x in M["embed"].encode([title], max_length=256)[0]]
         except Exception:
             return None
+    # 自身的块必须在向量搜索**之前**排除，搜完再滤等于没滤：一篇深索文献动辄
+    # 几十上百块，且每一块都和自己最像，近邻榜会被它自己整个占满。
+    # 实测（2026-08-29，《附条件不起诉制度实施状况研究》90 行）：取 70 条近邻，
+    # 69 条是它自己，滤完只剩 1 条 —— 深索越充分的文献越是返回空，
+    # 而那恰恰是最该找近邻的文献。
+    q = (M["tbl"].search(list(qv)).metric("cosine")
+         .select(_existing_columns(_RESULT_COLUMNS) + ["_distance"]))
+    where = "key != '%s'" % str(key).replace("'", "''")
     try:
-        hits = (M["tbl"].search(list(qv)).metric("cosine")
-                .select(_existing_columns(_RESULT_COLUMNS) + ["_distance"])
-                .limit(max(topk * 5, 40)).to_list())
+        q = q.where(where, prefilter=True)
+    except TypeError:                              # 旧版 lancedb 无 prefilter 形参
+        q = q.where(where)
+    try:
+        hits = q.limit(max(topk * 5, 40)).to_list()
     except Exception:
         return None
     seen, out = set(), []
@@ -1070,7 +1125,7 @@ def _apply_sort(items, sort, lex=False):
 
 # ═══ 统一入口 ════════════════════════════════════════════════════
 def _search_loaded(query, topk, sort=None, min_weight=0.0, keys=None, max_per_key=None,
-                   include_wiki=True):
+                   include_wiki=True, trace=None):
     sort = sort if sort in ("relevance", "tier", "blend") else C.DEFAULT_SORT
     topk = max(1, int(topk))
     try:
@@ -1091,7 +1146,7 @@ def _search_loaded(query, topk, sort=None, min_weight=0.0, keys=None, max_per_ke
         out = search_light(query, fetch, sort, keys=keys)
     else:
         out = search_full(query, fetch, sort, keys=keys, max_per_key=max_per_key,
-                          include_wiki=include_wiki)
+                          include_wiki=include_wiki, trace=trace)
     if min_weight > 0:
         out = [d for d in out
                if d.get("journal_weight") is None or d.get("journal_weight", 0) >= min_weight]
@@ -1099,7 +1154,7 @@ def _search_loaded(query, topk, sort=None, min_weight=0.0, keys=None, max_per_ke
 
 
 def search(query, topk, sort=None, min_weight=0.0, keys=None, max_per_key=None,
-           include_wiki=True):
+           include_wiki=True, trace=None):
     """统一公开入口。
 
     默认每篇最多返回 C.MAX_PER_KEY 段，保证发现型检索的文献覆盖面；定向核验可显式提高
@@ -1113,7 +1168,7 @@ def search(query, topk, sort=None, min_weight=0.0, keys=None, max_per_key=None,
     _begin_retrieval(load_if_cold=True)
     try:
         return _search_loaded(query, topk, sort, min_weight, keys, max_per_key,
-                              include_wiki=include_wiki)
+                              include_wiki=include_wiki, trace=trace)
     finally:
         _end_retrieval()
 

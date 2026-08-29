@@ -78,8 +78,27 @@ def main():
         topics.append({"id": c, "name": name, "size": len(ks), "keys": ks})
     topics.sort(key=lambda x: -x["size"])
 
+    # 人工命名的还原表。jieba 高频词拼出来的名字（「少年司法 · 少年 · 少年事件处理法」
+    # 三个词互为子串）几乎等于没说，所以允许人工改名，并在**重跑聚类时沿用**——
+    # 否则每次 rebuild 都把人工整理的结果冲掉，没人愿意整理第二次。
+    # 簇 id 在同一批数据 + random_state=42 下稳定；文献大改后 id 语义会漂，故重跑时提醒复核。
+    outf = C.CATEGORIES_DIR / "ai_topics.json"
+    manual = {}
+    if outf.exists():
+        try:
+            manual = json.loads(outf.read_text(encoding="utf-8")).get("manual_names") or {}
+        except Exception:
+            manual = {}
+    for t_ in topics:
+        m = manual.get(str(t_["id"])) or {}
+        if m.get("name"):
+            t_["name"] = m["name"]
+        if m.get("desc"):
+            t_["desc"] = m["desc"]
+
     out = {
         "topics": topics,
+        "manual_names": manual,
         "by_key": {K[i]: int(labels[i]) for i in range(len(K))},
         "k": km.n_clusters,
         "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),

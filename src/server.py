@@ -690,6 +690,70 @@ def purge_deleted(q: PurgeDeletedQ = None):
 
 # ── 启动加载 ──────────────────────────────────────────────
 _LOADING = True   # 冷启动读取库目录与轻量句柄期间为 True；/health 暴露给前端显示启动遮罩，完成后置 False。
+def _relocate_folder_paths():
+    """folder 模式：题录里的绝对路径失效时，按 stable_key 重新映射到当前受管目录。
+
+    为什么必须有：papers.jsonl 存的是**建库那台机器上的绝对路径**，而 open_source
+    直接拿 fulltext_path 去 os.startfile，路径不在就回「未找到主全文附件」。
+    于是交付包换个位置解压、或顶层目录被改个名，164 篇原文就一篇都打不开——
+    2026-08-28 实测踩到：包名改了之后全部失效，重启也不会自愈，因为只有重建题录
+    才会重写这些字段，而拿到包的人根本不会去重建。
+
+    stable_key = 'f_' + sha1(相对受管目录的路径)[:10]，只要文件没被改名，
+    扫一遍当前目录就能把 key 映射回新的绝对路径，无需重建索引、不碰向量库。
+
+    只在**多数条目都失效**时才动手（阈值 30%）：个别文件被用户删掉是正常状态，
+    不该因此触发全量重写。
+    """
+    try:
+        import folder_source as FS
+        import settings as S
+        folder = S.folder_dir()
+        if not folder or not Path(folder).is_dir():
+            return
+        pj = C.PAPERS_JSONL
+        if not pj.exists():
+            return
+        rows = [json.loads(l) for l in pj.read_text(encoding="utf-8").splitlines() if l.strip()]
+        withft = [r for r in rows if (r.get("fulltext_path") or "").strip()]
+        if not withft:
+            return
+        missing = [r for r in withft if not Path(r["fulltext_path"]).exists()]
+        if len(missing) < max(1, int(len(withft) * 0.3)):
+            return
+
+        by_key = {}
+        for f in FS.scan(folder):
+            by_key[FS.stable_key(folder, Path(f))] = str(Path(f))
+        fixed = 0
+        for r in rows:
+            np = by_key.get(r.get("key"))
+            if not np:
+                continue
+            old = r.get("fulltext_path") or ""
+            if old and Path(old).exists():
+                continue
+            if old:
+                r["fulltext_path"] = np
+            if r.get("pdf_path"):
+                r["pdf_path"] = np
+            atts = r.get("fulltext_attachments")
+            if isinstance(atts, list):
+                for a in atts:
+                    if isinstance(a, dict) and a.get("path") and not Path(a["path"]).exists():
+                        a["path"] = np
+            fixed += 1
+        if not fixed:
+            return
+        tmp = pj.with_suffix(pj.suffix + ".tmp")
+        tmp.write_text("".join(json.dumps(r, ensure_ascii=False) + chr(10) for r in rows), encoding="utf-8")
+        os.replace(tmp, pj)
+        print(f"[relocate] 受管目录变了：已把 {fixed} 条题录的全文路径重新指向 {folder}", flush=True)
+    except Exception as e:
+        log_error("relocate folder paths", repr(e))
+
+
+@app.on_event("startup")
 @app.on_event("startup")
 def _startup():
     try:
@@ -716,6 +780,11 @@ def _startup():
         AW.ensure_scaffold()
     except Exception as e:
         log_error("startup agent workspace scaffold", repr(e))
+        # 题录里的绝对路径是建库那台机器上的。包换位置解压或改名后全部失效，
+        # 「打开原文」会一篇都开不了——启动时按 stable_key 重新映射回来。
+        _relocate_folder_paths()
+    except Exception as e:
+        log_error("startup relocate folder paths", repr(e))
     threading.Thread(target=_safe_load, daemon=True).start()
     threading.Thread(target=_auto_update_loop, daemon=True).start()
     threading.Thread(target=_retrieval_idle_loop, daemon=True).start()
@@ -797,9 +866,12 @@ def agent_mcp_config():
     mcp_json = json.dumps(
         {"mcpServers": {"localkb": {"command": py, "args": [mcp]}}},
         ensure_ascii=False, indent=2)
+    # ensure_ascii=False：路径含中文时，默认会转义成一串 uXXXX 码点。TOML 认这种
+    # 转义，但用户读不出那是哪个目录，手改必错。上面的 mcp_json 一直是 False，
+    # 这里漏了——两处本该同一口径。
     codex_toml = (f'[mcp_servers.localkb]\n'
-                  f'command = {json.dumps(py)}\n'
-                  f'args = [{json.dumps(mcp)}]')
+                  f'command = {json.dumps(py, ensure_ascii=False)}\n'
+                  f'args = [{json.dumps(mcp, ensure_ascii=False)}]')
     try:                                       # 真实 MCP 工具数（前端"看到 N 个工具"用它，别写死）
         import mcp_server as MCP
         tool_count = len(MCP.TOOLS)
@@ -1161,6 +1233,10 @@ def _parse_frontmatter(txt):
                 s = line.replace("：", ":")
                 if ":" in s:
                     k, v = s.split(":", 1)
+                    # 剥行内注释。不剥的话「启用: true  # 说明」会被判成未启用，
+                    # 界面显示「已暂停」而任务实际每周在跑（实测踩过）。
+                    # 要求 # 前有空白，免得误伤「第 #3 期」这类合法值。
+                    v = re.split(r"\s+#", v, 1)[0]
                     meta[k.strip()] = v.strip()
     return meta, body
 
@@ -2501,7 +2577,8 @@ def topics():
     for t in ait.get("topics", []):
         keys = t.get("keys") or []
         deep = sum(1 for k in keys if is_deep(k, deepk))
-        out.append({"id": t["id"], "name": t["name"], "size": t["size"], "deep": deep})
+        out.append({"id": t["id"], "name": t["name"], "size": t["size"], "deep": deep,
+                    "desc": t.get("desc") or ""})
     return {"topics": out}
 
 # ── AI 主题聚类：用向量 KMeans 把已索引文献自动归类（无 LLM，簇数自适应）──

@@ -26,6 +26,7 @@ DEV_ONLY = {
     "gen_mcp_doc.py",    # 从 mcp_server.TOOLS 生成文档工具表；只在开发机跑，不进分发包
     "check_guides.py",   # 指引↔代码一致性校验器；构建期跑（见 main()），不进分发包
     "fetch_mingit.py",   # 下载 MinGit 塞进包；构建期跑，不进分发包（它下载的 git/ 才进）
+    "build_contest.py",  # 竞赛版打包器；构建期跑，不进分发包
 }
 KEEP_MD = {"README.md", "MCP接入说明.md"}
 LEGAL_DOCS = ("LICENSE", "THIRD-PARTY-NOTICES.md")
