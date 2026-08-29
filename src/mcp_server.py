@@ -477,6 +477,21 @@ TOOLS = [
             "required": ["topic"]},
     },
     {
+        "name": "check_duplicates",
+        "description": "外部题录批量查重：把库外检索到的一批文献题录（标题/作者/年份）交给它，"
+                       "逐条返回『库里已有 / 疑似已有 / 库里没有』。用于补文献时先筛掉重复，再决定下载哪些。"
+                       "只看题名同一性（归一化 + 相似度 + 作者年份旁证），**不是语义检索**——"
+                       "search_localkb 会把同题不同篇判成高相关，拿它查重必然误判。只读、零 LLM、不联网，一次最多 200 条。",
+        "inputSchema": {"type": "object", "properties": {
+            "items": {"type": "array", "description": "待查的外部题录，一次最多 200 条",
+                      "items": {"type": "object", "properties": {
+                          "title": {"type": "string", "description": "文献标题（必填）"},
+                          "authors": {"type": "string", "description": "作者，多位用分号或逗号分隔（可选，能显著提高判定把握）"},
+                          "year": {"type": "string", "description": "年份（可选，同上）"}},
+                          "required": ["title"]}}},
+            "required": ["items"]},
+    },
+    {
         "name": "export_disclosure",
         "description": "半自动研究助手·G4：按所选综合页(digest/outline 等的 id)生成《生成式 AI 使用声明》文本（规则拼装、零 LLM），"
                        "用于论文投稿的 AIGC 合规披露。传入相关 wiki 页 id 列表即可。",
@@ -957,6 +972,7 @@ _TOOL_TITLES = {
     "build_digest": "生成资料汇编",
     "research_outline": "生成研究大纲",
     "suggest_new_sources": "建议补充文献",
+    "check_duplicates": "外部题录查重",
     "export_disclosure": "生成 AI 使用声明",
     "localkb_status": "查看知识库状态",
     "list_workflows": "列出研究工作流",
@@ -1325,6 +1341,43 @@ def do_tool(name, args):
             for it in mm[:10]:
                 out.append(f"- {it.get('citation') or it.get('title')}")
         return "\n".join(x for x in out if x)
+    if name == "check_duplicates":
+        if not ensure_up():
+            return "错误：知识库服务启动失败。"
+        items = args.get("items") or []
+        if not items:
+            return "需要 items：待查的外部题录列表（每条至少给 title）。"
+        payload = [{"title": str(it.get("title") or ""),
+                    "authors": str(it.get("authors") or it.get("author") or ""),
+                    "year": str(it.get("year") or "")} for it in items]
+        resp = requests.post(URL + "/papers/dedup_check", json={"items": payload}, timeout=120)
+        if resp.status_code != 200:
+            return f"查重失败：{_err_of(resp)}"
+        r = resp.json()
+        if not r.get("ok"):
+            return "查重失败：" + str(r.get("detail") or r)
+        c = r.get("counts") or {}
+        rows = r.get("results") or []
+        out = [f"外部候选 {len(rows)} 条 × 库内 {r.get('n_library', 0)} 篇题录查重："
+               f"已有 {c.get('exists', 0)} · 疑似 {c.get('probable', 0)} · 缺失 {c.get('missing', 0)}"]
+        for verdict, head in (("exists", "【库里已有】不要重复收录"),
+                              ("probable", "【疑似已有】需人工确认后再决定"),
+                              ("missing", "【库里没有】可以补进来")):
+            picked = [x for x in rows if x.get("verdict") == verdict]
+            if not picked:
+                continue
+            out.append("")
+            out.append(f"{head}（{len(picked)} 条）：")
+            for x in picked:
+                if verdict == "missing":
+                    out.append(f"- {x.get('title')}")
+                    continue
+                m = (x.get("matches") or [{}])[0]
+                out.append(f"- {x.get('title')}")
+                out.append(f"    → 库内 [{m.get('key')}] {m.get('title')}"
+                           f"（{m.get('year') or '年份不详'}）｜{x.get('reason')}")
+        return "\n".join(out)
+
     if name == "export_disclosure":
         if not ensure_up():
             return "错误：知识库服务启动失败。"

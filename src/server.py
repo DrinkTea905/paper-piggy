@@ -18,7 +18,7 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-from typing import Optional, List
+from typing import Optional, List, Union
 import uvicorn
 
 app = FastAPI(title="本地知识库")
@@ -3534,6 +3534,40 @@ def research_disclosure(q: DisclosureQ):
     except Exception as e:
         log_error("research/disclosure", repr(e), traceback.format_exc())
         return JSONResponse({"detail": str(e)}, status_code=400)
+
+class DedupItem(BaseModel):
+    title: str = ""
+    authors: str = ""
+    year: Union[str, int, None] = ""
+
+class DedupCheckQ(BaseModel):
+    items: List[DedupItem] = []
+
+DEDUP_MAX_ITEMS = 200
+
+@app.post("/papers/dedup_check")
+def papers_dedup_check(q: DedupCheckQ):
+    """外部题录批量查重：库里已经有哪些、哪些还缺。只读，零 LLM，不联网。
+
+       给 Agent 用的场景：从库外（知网、万方、Google Scholar…）一次检索回几十条题录，
+       下载之前先问一句「哪些已经有了」。判定只看题名同一性（归一化 + 字符 bigram 相似度
+       + 作者/年份旁证），**不走语义检索**——语义检索会把同题不同篇判成同一篇，用来查重必然出错。"""
+    items = q.items or []
+    if not items:
+        return {"ok": False, "detail": "items 为空。"}
+    if len(items) > DEDUP_MAX_ITEMS:
+        return JSONResponse(
+            {"ok": False, "detail": f"一次最多查 {DEDUP_MAX_ITEMS} 条，收到 {len(items)} 条。"},
+            status_code=400)
+    try:
+        import dedup_match as DM
+        out = DM.check_batch(_load_papers().values(),
+                             [{"title": it.title, "authors": it.authors,
+                               "year": "" if it.year is None else str(it.year)} for it in items])
+        return {"ok": True, "n_library": len(_load_papers()), **out}
+    except Exception as e:
+        log_error("papers/dedup_check", repr(e), traceback.format_exc())
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
 
 _SOURCE_TYPE_FILTERS = {
     "journal_article": {"journal_article"}, "book": {"book"}, "book_section": {"book_section"},
