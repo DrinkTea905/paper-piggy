@@ -108,6 +108,12 @@ build\py312\python.exe -c "import onnxruntime, lancedb, pypdfium2, rapidocr, cv2
 > 用户连吃两次假报错。**跑测试 ≠ 跑起来。**
 
 **构建产物**
+- [ ] **`src\dist\LocalKB\models\` 必须是空的** —— 正式版的模型是首启从云端下载的，
+      不进安装器。`--slim-models`（竞赛版/自测用）会把 1.1 GB 模型拷进去，而 **`build_bundle.py`
+      不会清掉上一次的残留**，两个用途共用同一个 dist 目录，一污染就跨构建带过去。
+      判据很直观：**v1.1.8 的安装器是 230 MB**；2026-08-29 因为这条没清，压出了一个
+      1 GB 的错包，是拿上一版大小一比才发现的。压之前先 `du -sm src\dist\LocalKB`，
+      2 GB 量级就是带了模型。
 - [ ] `bundle/python/` 下有 `msvcp140.dll` + `msvcp140_1.dll`（≥14.40）
 - [ ] `python-docx` 已装（用于 DOCX 全文解析与深索）
 - [ ] `rapidocr` + `cv2` 可导入，并用一页真实扫描 PDF 做过本地 OCR 冒烟测试
