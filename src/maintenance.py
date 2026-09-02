@@ -35,6 +35,74 @@ def _wiki_suggestions():
         return []
 
 
+MEMORY_DOMAIN_SOFT_MAX = 40000   # 单个工具经验子域的软上限：超了建议再分，不拒绝写入
+
+
+def _memory_health():
+    """记忆分区的健康度。
+
+    记忆进维护清单的理由：它是 agent **每次开工都要整份读**的东西，长歪的代价比 wiki 长歪更大
+    ——单向堆积的作业经验涨到十几万字时，「开工必读」实际上变成了「读第一段就开工」。
+    这里顺带调 ensure_scaffold()，所以用户说一句「维护」，还没分区的工具经验就已经拆好了。
+    """
+    try:
+        import agent_ws as AW
+        AW.ensure_scaffold()
+        core_chars, core_full, core_warn = AW.check_core_budget()
+        doms = AW.list_memory_tooldoms()
+        topics = AW.list_memory_topics()
+        legacy = AW.read_memory_section("tools")[1]
+        unfiled_path = AW.find_memory_tooldom(AW.MEMORY_TOOLDOM_FALLBACK)
+        unfiled_n = (len(AW._split_tools_entries(unfiled_path.read_text(encoding="utf-8")))
+                     if unfiled_path else 0)
+        return {
+            "core": {"chars": core_chars, "max": AW.MEMORY_CORE_MAX_CHARS,
+                     "full": core_full, "warn": core_warn},
+            "domains": doms,
+            "unpartitioned": len(AW._split_tools_entries(legacy)),
+            "unfiled": unfiled_n,
+            "oversized": [d["name"] for d in doms if d["chars"] > MEMORY_DOMAIN_SOFT_MAX],
+            "missing_when": [d["name"] for d in doms
+                             if d["when"] == "未标注" or d["when"].startswith("（补一句")],
+            "topics_unlabelled": [t["name"] for t in topics if t["status"] == "未标注"],
+        }
+    except Exception:
+        return {}
+
+
+def _memory_todo(mem):
+    """记忆健康度 → 自动处理项。全是 agent 自己能做完的活，不涉及付费与删除。"""
+    out = []
+    if not mem:
+        return out
+    if mem.get("unpartitioned"):
+        out.append({"kind": "memory_unpartitioned", "count": mem["unpartitioned"],
+                    "action": "工具经验仍堆在单文件里（自动迁移没跑成）：按子域拆进 工具经验/，"
+                              "每份写清「何时该读」，原文一字不改"})
+    if mem.get("unfiled"):
+        out.append({"kind": "memory_unfiled_tools", "count": mem["unfiled"],
+                    "action": "逐条读「未归类」子域，改投到合适子域"
+                              "（append_project_memory target=\"tools:<子域>\"），搬完把原条目删掉"})
+    if mem.get("oversized"):
+        out.append({"kind": "memory_domain_oversized", "count": len(mem["oversized"]),
+                    "action": "子域过大（" + "、".join(mem["oversized"]) + "）：按更细的作业环节再分，"
+                              "取一份正文的代价才降得下来"})
+    if mem.get("missing_when"):
+        out.append({"kind": "memory_domain_missing_when", "count": len(mem["missing_when"]),
+                    "action": "补「何时该读」那一行（" + "、".join(mem["missing_when"]) + "）："
+                              "core 索引全靠它决定要不要展开"})
+    if mem.get("topics_unlabelled"):
+        out.append({"kind": "memory_topic_unlabelled", "count": len(mem["topics_unlabelled"]),
+                    "action": "主题档案缺状态行（" + "、".join(mem["topics_unlabelled"]) + "）："
+                              "用 set_memory_topic_status 标 进行中/已完成/已作废"})
+    core = mem.get("core") or {}
+    if core.get("warn"):
+        out.append({"kind": "memory_core_bloated", "count": core.get("chars", 0),
+                    "action": f"项目记忆已 {core.get('chars')} 字（上限 {core.get('max')}）："
+                              "把主题结论移进 主题档案/、把历史移进 变更日志.md，只留当前真相"})
+    return out
+
+
 def audit_all(index_status=None):
     """返回完整维护快照，并把问题分为自动处理/需决策/外部阻塞三类。"""
     import sac as SAC
@@ -78,6 +146,9 @@ def audit_all(index_status=None):
         auto.append({"kind": "wiki_lint", "count": lint.get("n_issues", 0),
                      "action": "修复可处理问题；无来源不等同于过时"})
 
+    memory = _memory_health()
+    auto.extend(_memory_todo(memory))
+
     index_health = upgrade.get("index") or {}
     if index_health.get("state") == "stale":
         decision.append({"kind": "rebuild_index", "count": 1,
@@ -99,6 +170,7 @@ def audit_all(index_status=None):
         "summaries": {"generator": generator, "issues": summary_issues,
                       "missing": int(idx.get("sac_missing") or 0)},
         "wiki": {"pending": pending_suggestions, "all_items": suggestions, "lint": lint},
+        "memory": memory,
         "auto": auto, "decision": decision, "blocked": blocked,
         "complete": not auto and not decision,
     }

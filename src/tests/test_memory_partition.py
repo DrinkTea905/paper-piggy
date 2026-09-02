@@ -58,26 +58,30 @@ class MemoryPartitionTests(unittest.TestCase):
         self.assertTrue(AW.tools_file().exists(), "工具经验.md")
         self.assertTrue(AW.changelog_file().exists(), "变更日志.md")
         self.assertTrue(AW.topics_dir().is_dir(), "主题档案/ 目录")
+        self.assertTrue(AW.tooldoms_dir().is_dir(), "工具经验/ 目录")
 
     def test_paths_info_exposes_every_partition(self):
         """别让 mcp_server 自己拼路径——落点 SSOT 只有 agent_ws 一处（CLAUDE.md §5）。"""
         p = AW.paths_info()
         self.assertEqual(str(AW.memory_file()), p["memory_file"])
         self.assertEqual(str(AW.tools_file()), p["memory_tools_file"])
+        self.assertEqual(str(AW.tooldoms_dir()), p["memory_tooldoms_dir"])
         self.assertEqual(str(AW.topics_dir()), p["memory_topics_dir"])
         self.assertEqual(str(AW.changelog_file()), p["memory_changelog_file"])
 
     # ── 验收 4：四个 target 各写一条，落点正确、不覆盖 ──────────
     def test_append_routes_to_four_targets_without_overwriting(self):
-        before = {k: AW.read_memory_section(k)[1] for k in ("core", "tools", "log")}
+        before = {k: AW.read_memory_section(k)[1] for k in ("core", "log")}
         self.assertTrue(AW.append_memory("core", "偏好脚注引注。")[0])
-        self.assertTrue(AW.append_memory("tools", "LibreOffice 首次转 PDF 慢属正常。")[0])
+        self.assertTrue(AW.append_memory("tools:DOCX交付", "LibreOffice 首次转 PDF 慢属正常。")[0])
         self.assertTrue(AW.append_memory("log", "今天建了分流转处主题。")[0])
         self.assertTrue(AW.append_memory("topic:分流转处", "已定五章结构。")[0])
 
         self.assertIn("偏好脚注引注。", AW.read_memory_section("core")[1])
-        self.assertIn("LibreOffice", AW.read_memory_section("tools")[1])
         self.assertIn("今天建了分流转处主题。", AW.read_memory_section("log")[1])
+        found, _disp, tbody = AW.read_memory_tooldom("DOCX交付")
+        self.assertTrue(found)
+        self.assertIn("LibreOffice", tbody)
         found, _disp, body = AW.read_memory_topic("分流转处")
         self.assertTrue(found)
         self.assertIn("已定五章结构。", body)
@@ -85,7 +89,7 @@ class MemoryPartitionTests(unittest.TestCase):
         for k, old in before.items():
             self.assertIn(old.strip()[:80], AW.read_memory_section(k)[1])
         # 不串区
-        self.assertNotIn("LibreOffice", AW.read_memory_section("core")[1])
+        self.assertNotIn("首次转 PDF 慢", AW.read_memory_section("core")[1])
         self.assertNotIn("已定五章结构。", AW.read_memory_section("core")[1])
 
     # ── 硬约束（写入时拒绝，不是劝告）────────────────────────────
@@ -94,19 +98,25 @@ class MemoryPartitionTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("topic:", msg)          # 必须告诉他该写哪儿，否则拒绝等于添堵
 
-    def test_core_rejects_when_line_budget_is_full(self):
-        AW.memory_file().write_text("\n".join(f"行{i}" for i in range(AW.MEMORY_CORE_MAX_LINES + 5)),
-                                    encoding="utf-8")
+    def test_core_rejects_when_char_budget_is_full(self):
+        """按字数而不按行数：一行能写六百字，行数管不住 core 每次开工的读取成本。"""
+        AW.memory_file().write_text("满" * (AW.MEMORY_CORE_MAX_CHARS + 5), encoding="utf-8")
         n, full, _warn = AW.check_core_budget()
         self.assertTrue(full, n)
         ok, msg = AW.append_memory("core", "再来一条")
         self.assertFalse(ok)
-        self.assertIn(str(AW.MEMORY_CORE_MAX_LINES), msg)
+        self.assertIn(str(AW.MEMORY_CORE_MAX_CHARS), msg)
+
+    def test_one_fat_line_still_counts_against_the_budget(self):
+        """按行算时，一行三万字是「1 行」，照样能一直写下去——这正是要改口径的原因。"""
+        AW.memory_file().write_text("字" * (AW.MEMORY_CORE_MAX_CHARS + 1), encoding="utf-8")
+        self.assertEqual(1, len(AW.memory_file().read_text(encoding="utf-8").splitlines()))
+        self.assertFalse(AW.append_memory("core", "再来一条")[0])
 
     def test_unknown_target_is_rejected(self):
         ok, msg = AW.append_memory("随便写哪", "x")
         self.assertFalse(ok)
-        self.assertIn("core / tools / log / topic:<主题名>", msg)
+        self.assertIn("core / tools:<子域> / log / topic:<主题名>", msg)
 
     def test_topic_status_must_be_one_of_three(self):
         AW.append_memory("topic:甲主题", "内容")
@@ -252,6 +262,9 @@ class MemoryPartitionTests(unittest.TestCase):
         for p in AW.topics_dir().glob("*.md"):
             p.unlink()
         AW.topics_dir().rmdir()
+        for p in AW.tooldoms_dir().glob("*.md"):
+            p.unlink()
+        AW.tooldoms_dir().rmdir()
 
     def test_legacy_single_file_layout_returns_the_old_body_verbatim(self):
         """兼容分支在 _memory_view_text 这一层：只有 项目记忆.md 时，返回体与改造前一字不差。
@@ -277,7 +290,7 @@ class MemoryPartitionTests(unittest.TestCase):
         out = MCP.do_tool("read_project_memory", {})
         self.assertTrue(AW.tools_file().exists())
         self.assertTrue(AW.topics_dir().is_dir())
-        self.assertIn("工具经验.md", out)
+        self.assertIn("工具经验", out)
         self.assertTrue(MCP._project_memory_read_succeeded(out))
 
     def test_append_recreates_missing_topic_dir(self):
@@ -286,9 +299,111 @@ class MemoryPartitionTests(unittest.TestCase):
         self.assertTrue(AW.topics_dir().is_dir())
 
     def test_append_recreates_a_deleted_partition_file(self):
-        AW.tools_file().unlink()
-        self.assertTrue(AW.append_memory("tools", "重建后的第一条")[0])
-        self.assertIn("重建后的第一条", AW.read_memory_section("tools")[1])
+        AW.changelog_file().unlink()
+        self.assertTrue(AW.append_memory("log", "重建后的第一条")[0])
+        self.assertIn("重建后的第一条", AW.read_memory_section("log")[1])
+
+    # ── 工具经验按子域分区 ──────────────────────────────────────
+    def test_tools_target_lands_in_a_domain_file_not_the_single_file(self):
+        AW.append_memory("tools:页码与引注核验", "印刷页 ＝ PDF 页 + 101。")
+        self.assertEqual(["页码与引注核验"], [d["name"] for d in AW.list_memory_tooldoms()])
+        self.assertNotIn("印刷页", AW.read_memory_section("tools")[1])
+
+    def test_bare_tools_target_is_accepted_and_says_where_it_went(self):
+        """拒绝光写 tools 只会让一条真经验丢在报错里；收下并当场教他下次写子域。"""
+        ok, msg = AW.append_memory("tools", "某个工具的坑。")
+        self.assertTrue(ok)
+        self.assertIn(AW.MEMORY_TOOLDOM_FALLBACK, msg)
+        self.assertIn('tools:<子域>', msg)
+        _f, _d, body = AW.read_memory_tooldom(AW.MEMORY_TOOLDOM_FALLBACK)
+        self.assertIn("某个工具的坑。", body)
+
+    def test_similar_tool_domain_is_refused_and_points_back(self):
+        AW.append_memory("tools:DOCX与PDF交付", "第一条")
+        ok, msg = AW.append_memory("tools:DOCX交付", "另起炉灶")
+        self.assertFalse(ok)
+        self.assertIn("DOCX与PDF交付", msg)
+        self.assertEqual(1, len(AW.list_memory_tooldoms()))
+
+    def test_new_tool_domain_always_carries_a_when_line(self):
+        """「何时该读」由产品写入——core 视图只给索引，缺这一行 agent 就无从判断要不要展开。"""
+        AW.append_memory("tools:检索经验", "内容")
+        _f, _d, body = AW.read_memory_tooldom("检索经验")
+        self.assertNotEqual("未标注", AW.parse_tooldom_when(body))
+
+    def test_core_view_lists_tool_domains_without_their_bodies(self):
+        AW.append_memory("tools:页码与引注核验", "秘密操作：印刷页 ＝ PDF 页 + 101。")
+        head, body = MCP._memory_view_text(AW, full=False)
+        self.assertIn("页码与引注核验", body)        # 索引里有
+        self.assertIn("何时该读", body)              # 有它才知道要不要展开
+        self.assertNotIn("秘密操作", body)           # ★ 正文绝不能进 core
+        self.assertIn("core", head)
+
+    def test_all_scope_does_include_tool_domain_bodies(self):
+        AW.append_memory("tools:页码与引注核验", "秘密操作：印刷页 ＝ PDF 页 + 101。")
+        _head, body = MCP._memory_view_text(AW, full=True)
+        self.assertIn("秘密操作", body)
+
+    def test_reading_a_single_tool_domain_does_not_release_other_tools(self):
+        AW.append_memory("tools:页码与引注核验", "换算式")
+        out = _rpc([
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+             "params": {"protocolVersion": MCP.PROTO}},
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+             "params": {"name": "read_project_memory",
+                        "arguments": {"scope": "tools:页码与引注核验"}}},
+            {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+             "params": {"name": "search_localkb", "arguments": {"query": "测试"}}},
+        ], tool_result="不应执行")
+        self.assertIn("换算式", _text(out[1]))
+        self.assertTrue(out[2]["result"]["isError"])
+
+    def test_missing_tool_domain_keeps_the_gate_locked_and_lists_candidates(self):
+        AW.append_memory("tools:页码与引注核验", "换算式")
+        out = MCP.do_tool("read_project_memory", {"scope": "tools:不存在的子域"})
+        self.assertTrue(out.startswith("读项目记忆失败："))
+        self.assertIn("页码与引注核验", out)
+
+    # ── 旧的单文件工具经验：升级时自动拆成子域 ──────────────────
+    def test_legacy_tools_file_is_split_into_domains_on_scaffold(self):
+        AW.tools_file().write_text(
+            "# 工具经验\n\n"
+            "<!-- 2026-08-13 由 AI 助手追加 -->\n"
+            "soffice --headless --convert-to pdf 对含中文路径的 docx 会挂住。\n\n"
+            "<!-- 2026-08-14 由 AI 助手追加 -->\n"
+            "该文印刷页 ＝ PDF 页 + 101，locate_quote 对全角引号会失配。\n",
+            encoding="utf-8")
+        r = AW._migrate_tools_memory_to_domains()
+        self.assertEqual("migrated", r["status"])
+        self.assertEqual(2, r["moved"])
+        names = [d["name"] for d in AW.list_memory_tooldoms()]
+        self.assertIn("DOCX与PDF交付", names)
+        self.assertIn("页码与引注核验", names)
+        # 原文一字不改地搬过去
+        _f, _d, a = AW.read_memory_tooldom("DOCX与PDF交付")
+        _f, _d, b = AW.read_memory_tooldom("页码与引注核验")
+        self.assertIn("--convert-to pdf", a)
+        self.assertIn("＝ PDF 页 + 101", b)
+        # 原件留了备份，本体换成指路页
+        self.assertTrue(any((AW.maintenance_dir() / "记忆迁移备份").glob("*/工具经验.md")))
+        self.assertIn("按子域分开存放", AW.read_memory_section("tools")[1])
+
+    def test_migration_does_not_run_twice(self):
+        AW.tools_file().write_text("<!-- 2026-08-13 由 AI 助手追加 -->\nsoffice 转 pdf 的坑。\n",
+                                   encoding="utf-8")
+        self.assertEqual("migrated", AW._migrate_tools_memory_to_domains()["status"])
+        AW.tools_file().write_text("<!-- 2026-08-15 由 AI 助手追加 -->\n又一条。\n", encoding="utf-8")
+        self.assertEqual("already_done", AW._migrate_tools_memory_to_domains()["status"])
+
+    def test_migration_keeps_every_entry(self):
+        """搬运不能丢条目——丢了不会报错，只会在几周后发现某条经验没了。"""
+        entries = [f"<!-- 2026-08-{d:02d} 由 AI 助手追加 -->\n第{d}条内容。" for d in range(10, 26)]
+        AW.tools_file().write_text("# 工具经验\n\n" + "\n\n".join(entries) + "\n", encoding="utf-8")
+        r = AW._migrate_tools_memory_to_domains()
+        self.assertEqual(len(entries), r["moved"])
+        seen = "".join(AW.read_memory_tooldom(d["name"])[2] for d in AW.list_memory_tooldoms())
+        for d in range(10, 26):
+            self.assertIn(f"第{d}条内容。", seen)
 
     # ── 工具契约 ────────────────────────────────────────────────
     def test_scope_and_target_are_free_strings_not_enums(self):

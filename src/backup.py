@@ -70,7 +70,8 @@ CORE_IN_DATA = [
 ]
 # ① 必备 —— 相对 C.DATA.parent（0_Agent* 落在数据家根，不在 data/ 里面）
 CORE_IN_HOME = [C.AGENT_OUTPUT_NAME, C.AGENT_RELY_NAME,
-                "AGENTS.md", "CLAUDE.md"]   # Agent 工作流强入口（用户可定制）
+                "AGENTS.md", "CLAUDE.md",   # Agent 工作流强入口（用户可定制）
+                "其他"]                     # 绿色包把启动入口与上面两份规约收在这里
 
 # ② 贵重派生（可选）—— 相对 C.DATA。见文件头：这几个必须同进同出。
 INDEX_IN_DATA = ["lancedb", "bm25", "bm25_meta", "chunks", "extracted", "state"]

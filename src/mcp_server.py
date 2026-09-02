@@ -79,10 +79,10 @@ _INSTRUCTIONS_HEAD = """你连接的是用户的**本地文献知识库**（Pape
 项目记忆闸门（最高优先级）：
 - 开始任何任务前，必须先调用 read_project_memory（默认 scope="core"），完整读取 PaperPiggy 的项目记忆 core 视图；未读时服务器会拒绝其他工具调用。调用一次 core 即放行。
 - 项目记忆是不同 Agent 之间唯一共享的长期记忆。你可以另用自己的 auto memory，但它不能替代项目记忆。
-- 记忆**分四区存放，写错地方会被拒绝**：项目记忆.md（长期偏好/固定规则/已定决策/各主题一行状态，单条 ≤600 字、全文 ≤200 行）、工具经验.md（与研究题目无关的作业经验）、主题档案/<主题名>.md（某一个研究主题的结论与待核项）、变更日志.md（流水账）。
-- core 视图只给主题档案的**清单与状态**，不给正文。要用某一份才调 read_project_memory(scope="topic:<主题名>")。用户说「旧结论作废、这个题从头再来」时就别取——不取，旧结论才进不了你的上下文。
+- 记忆**分四区存放，写错地方会被拒绝**：项目记忆.md（长期偏好/固定规则/已定决策/各主题一行状态，单条 ≤600 字、全文 ≤3 万字）、工具经验/<子域>.md（与研究题目无关的作业经验，**一个子域一份文件**）、主题档案/<主题名>.md（某一个研究主题的结论与待核项）、变更日志.md（流水账）。
+- core 视图只给工具经验各子域的**索引**（子域名｜何时该读｜体量）与主题档案的**清单与状态**，两者的正文都不给。要用哪一份才调 read_project_memory(scope="tools:<子域>") / scope="topic:<主题名>"。用户说「旧结论作废、这个题从头再来」时就别取——不取，旧结论才进不了你的上下文。
 - **一个研究主题只有一个档案**：新建时会查重，撞了会被退回既有那份。
-- 任务产生新的长期偏好、已定决策、关键进度或事实时，结束前必须调用 append_project_memory（target 选 core / tools / topic:<主题名> / log）。凡写进其他私有记忆的本项目长期信息，也必须把同一实质内容同步到项目记忆。
+- 任务产生新的长期偏好、已定决策、关键进度或事实时，结束前必须调用 append_project_memory（target 选 core / tools:<子域> / topic:<主题名> / log）。凡写进其他私有记忆的本项目长期信息，也必须把同一实质内容同步到项目记忆。
 - 没有新的长期信息时不要追加空话；历史流水账写 target="log"（即同目录「变更日志.md」），别塞进项目记忆。
 
 工作流闸门（最高优先级）：
@@ -165,16 +165,18 @@ def _workspace_text():
         return ""
     mem_file = p.get("memory_file", "")
     has_mem, mem_body = _memory_inline(mem_file)
-    # 内联的只是 项目记忆.md 的启动快照，**不是** core 视图（不含工具经验与主题清单）。
+    # 内联的只是 项目记忆.md 的启动快照，**不是** core 视图（不含工具经验索引与主题清单）。
     # 说清楚这一点很要紧：否则 agent 会以为「快照 = 全部」而不再调 read_project_memory，
     # 这正是「启动快照冒充完整读取」的老问题换个形式复发。
     mem_layout = ("  记忆分四区（写错地方会被拒绝）：项目记忆.md＝长期偏好/固定规则/已定决策/各主题一行状态；"
-                  "工具经验.md＝与研究题目无关的作业经验；主题档案/<主题名>.md＝某一个研究主题的结论"
+                  "工具经验/<子域>.md＝与研究题目无关的作业经验（**一子域一文件**，默认不进上下文，"
+                  "core 只给「何时该读」索引，用 read_project_memory(scope=\"tools:<子域>\") 单独取）；"
+                  "主题档案/<主题名>.md＝某一个研究主题的结论"
                   "（**一主题一档案**，默认不进上下文，用 read_project_memory(scope=\"topic:<主题名>\") 单独取）；"
                   "变更日志.md＝流水账。\n"
-                  "  写入走 append_project_memory 的 target=core / tools / topic:<主题名> / log，或直接改对应文件。\n")
+                  "  写入走 append_project_memory 的 target=core / tools:<子域> / topic:<主题名> / log，或直接改对应文件。\n")
     if has_mem:
-        mem_block = ("· 项目记忆（下面内联的**只是 项目记忆.md 的启动快照**，不含工具经验与主题档案清单；"
+        mem_block = ("· 项目记忆（下面内联的**只是 项目记忆.md 的启动快照**，不含工具经验索引与主题档案清单；"
                      "开始任务仍须先调用 read_project_memory 读取完整 core 视图。换任何 AI 助手都从这里接上）：\n"
                      f"  目录：{p.get('memory_dir', '') or mem_file}\n"
                      "  ┌─ 当前项目记忆 ─────────────\n"
@@ -219,9 +221,22 @@ def _workspace_text():
     )
 
 
+def _instance_line():
+    """同一台机器上可能并存多份 PaperPiggy（正式安装 / 竞赛包 / 开发态），
+       每份有自己的库、自己的 wiki、自己的项目记忆。agent 若不知道自己连的是哪一份，
+       就会拿 A 库的结论写回 B 库——而两边看起来一模一样，错了也没有任何报错。
+       所以把身份放在 instructions 最前面，随 initialize 一次性下发。"""
+    return ("══ 本次连接的是哪一份库 ══\n"
+            f"· 名称：{C.APP_TITLE}（MCP server 名 {C.MCP_NAME}）\n"
+            f"· 服务：{C.DAEMON_URL}\n"
+            f"· 数据目录：{C.DATA}\n"
+            "同机可能并存多份 PaperPiggy，各有各的文献、综述与项目记忆。你读到和写回的一切都只属于"
+            "上面这一份；用户同时开着别的实例时，别把那边的结论搬过来，也别把这边的写过去。\n\n")
+
+
 def instructions():
     s = _wiki_schema_text()
-    body = _INSTRUCTIONS_HEAD + (s or "（WIKI.md 尚未生成；首次写回综合页时会自动创建。）")
+    body = _instance_line() + _INSTRUCTIONS_HEAD + (s or "（WIKI.md 尚未生成；首次写回综合页时会自动创建。）")
     try:
         pending = W.upgrade_status().get("items", [])
         if pending:
@@ -251,17 +266,23 @@ MEMORY_VIEW_MAX_CHARS = 15000
 
 
 def _memory_scope_parse(scope):
-    """scope → (kind, 主题名)。kind ∈ core|topic|all；非法返回 (None, 原串)。"""
+    """scope → (kind, 名字)。kind ∈ core|topic|tooldom|tools|all；非法返回 (None, 原串)。"""
     s = str(scope or "core").strip()
     if not s or s.casefold() == "core":
         return "core", ""
     if s.casefold() == "all":
         return "all", ""
+    if s.casefold() == "tools":
+        return "tools", ""
     low = s.casefold()
     for pre in ("topic:", "主题:", "主题："):
         if low.startswith(pre.casefold()):
             n = s[len(pre):].strip()
             return ("topic", n) if n else (None, s)
+    for pre in ("tools:", "工具:", "工具："):
+        if low.startswith(pre.casefold()):
+            n = s[len(pre):].strip()
+            return ("tooldom", n) if n else ("tools", "")
     return None, s
 
 
@@ -276,13 +297,16 @@ def _memory_scope_opens_gate(args):
 
 def _memory_view_text(AW, full=False):
     """组装 core / all 视图 → (抬头, 正文)。
-    core = 项目记忆.md + 工具经验.md 全文 + 主题档案**目录清单**（不含正文）。
-    向后兼容（需求 §5）：只有 项目记忆.md、既没有工具经验也没有主题档案时，退回旧的单文件
-    返回体、一个字不变——老用户不迁移也照样能用，不要求先迁移才能升级。"""
+    core = 项目记忆.md + 工具经验**索引** + 主题档案**目录清单**（后两者都不含正文）。
+    工具经验尚未分区时（迁移没跑成、或用户手动改回单文件）仍带旧单文件全文：迁移失败
+    不能让攒下来的经验读不到，宁可这一次开工的返回体长一点。
+    向后兼容（需求 §5）：只有 项目记忆.md、别的分区都没有时，退回旧的单文件返回体、
+    一个字不变——老用户不迁移也照样能用，不要求先迁移才能升级。"""
     core_exists, core_body = AW.read_memory_section("core")
     tools_exists, tools_body = AW.read_memory_section("tools")
+    domains = AW.list_memory_tooldoms()
     topics = AW.list_memory_topics()
-    if not tools_exists and not topics:
+    if not tools_exists and not domains and not topics:
         if not core_exists:
             return "", ""
         body = core_body.strip()
@@ -290,7 +314,25 @@ def _memory_view_text(AW, full=False):
             return "", f"项目记忆还是空的（{AW.memory_file()}）。开工时把用户是谁/偏好/已定决策补进去。"
         return "", f"项目记忆（{AW.memory_file()}）：\n\n{body}"
     parts = [f"━━ 项目记忆.md ━━\n{core_body.strip() or '（还是空的——开工时把用户是谁/偏好/已定决策补进去）'}"]
-    parts.append(f"\n━━ 工具经验.md ━━\n{tools_body.strip() or '（还是空的）'}")
+    if domains:
+        drows = "\n".join(
+            f"- {d['name']} ｜ 何时该读: {d['when']} ｜ {d['chars']} 字 ｜ 改于 {d['modified']}"
+            for d in domains)
+        if full:
+            parts.append(f"\n━━ 工具经验（{len(domains)} 个子域，全文）━━\n{drows}")
+            for d in domains:
+                _f, _n, db = AW.read_memory_tooldom(d["name"])
+                parts.append(f"\n──── 工具经验《{d['name']}》────\n{db.strip()}")
+        else:
+            parts.append(
+                f"\n━━ 工具经验（{len(domains)} 个子域 · 只列索引，正文未读）━━\n{drows}\n"
+                "「何时该读」对上了本次任务，才调 read_project_memory(scope=\"tools:<子域>\") 取正文，"
+                "名字照抄上面这张索引。用不上的不要取——取了就再也不能不看见。")
+    elif tools_exists and tools_body.strip() != str(getattr(AW, "_TOOLS_NOTE", "")).strip():
+        parts.append(f"\n━━ 工具经验.md（尚未分区）━━\n{tools_body.strip() or '（还是空的）'}")
+    else:
+        parts.append("\n━━ 工具经验 ━━\n（还没有任何工具经验子域。与研究题目无关的作业经验用 "
+                     "append_project_memory(target=\"tools:<子域>\") 建档，一个作业子域一份文件。）")
     if topics:
         rows = "\n".join(
             f"- {t['name']} ｜ 状态: {t['status']} ｜ {t['chars']} 字 ｜ 改于 {t['modified']}"
@@ -312,7 +354,8 @@ def _memory_view_text(AW, full=False):
     head = (f"项目记忆 · {scope_name} 视图（{AW.memory_dir()}）\n"
             + ("包含四类记忆的全部正文，仅供维护类任务使用。"
                if full else
-               "本视图 = 项目记忆.md + 工具经验.md 全文 + 主题档案清单（不含主题正文）。"
+               "本视图 = 项目记忆.md 全文 + 工具经验各子域的索引 + 主题档案清单"
+               "（工具经验与主题档案的正文都不在其中，按需单独取）。"
                "读到本视图即视为已读项目记忆，其他 PaperPiggy 工具已放行。"))
     return head, "\n".join(parts)
 
@@ -920,7 +963,7 @@ TOOLS = [
     {
         "name": "read_project_memory",
         "description": "读用户的**项目记忆**。它是换任何 AI 助手都共享的本地文件，按四类分区存放："
-                       "项目记忆.md（长期偏好/固定规则/当前在做/各主题一行状态）、工具经验.md（与研究题目无关的作业经验）、"
+                       "项目记忆.md（长期偏好/固定规则/当前在做/各主题一行状态）、工具经验/<子域>.md（与研究题目无关的作业经验，一子域一文件）、"
                        "主题档案/<主题名>.md（某一个研究主题的结论与待核项）、变更日志.md（流水账）。"
                        "**每次任务开工前必须先调用一次本工具**（默认 scope=\"core\"）；在此之前，服务器会拒绝其他 PaperPiggy 工具调用。"
                        "调用一次 scope=\"core\" 即视为已读、立即放行——**主题档案不读也能开工**，这是刻意的：用户要求"
@@ -928,7 +971,8 @@ TOOLS = [
                        "initialize 只内联启动快照，不能替代本次读取。",
         "inputSchema": {"type": "object", "properties": {
             "scope": {"type": "string", "default": "core",
-                      "description": "core（默认）=项目记忆.md + 工具经验.md 全文 + 主题档案的**目录清单**（文件名/状态/字数/修改日期，不含正文）；"
+                      "description": "core（默认）=项目记忆.md 全文 + 工具经验各子域的**索引**（子域名/何时该读/字数）+ 主题档案的**目录清单**（文件名/状态/字数/修改日期）——后两者都不含正文；"
+                                     "tools:<子域>=只读某一份工具经验子域正文（索引里的名字照抄，「何时该读」对上了才取）；tools=只重列一次索引；"
                                      "topic:<主题名>=只读某一份主题档案正文（清单里的名字照抄）；all=全部内容，仅维护类任务用。"},
             "part": {"type": "integer", "default": 1,
                      "description": "分段序号。返回体超过 15000 字时会分段，尾部会告诉你还剩几段、下一段传几。"}}},
@@ -936,8 +980,10 @@ TOOLS = [
     {
         "name": "append_project_memory",
         "description": "把一条长期信息追加进项目记忆。**先想清楚写哪一区**——写错地方会被拒绝，不是提醒：\n"
-                       "· target=\"core\"（默认）：长期偏好、固定规则、已定决策、各主题一行状态。单条 ≤600 字、全文 ≤200 行，超了写不进去。\n"
-                       "· target=\"tools\"：与研究题目无关的作业经验（DOCX 生成链、检索方法、某工具的坑）。判据=换个题目还用得上。\n"
+                       "· target=\"core\"（默认）：长期偏好、固定规则、已定决策、各主题一行状态。单条 ≤600 字、全文 ≤3 万字，超了写不进去。\n"
+                       "· target=\"tools:<子域>\"：与研究题目无关的作业经验（DOCX 生成链、检索方法、某工具的坑）。判据=换个题目还用得上。"
+                       "**一个作业子域一份文件**，子域名照抄 core 视图里的工具经验索引；新子域会查重。"
+                       "光写 target=\"tools\" 也收，但会落进「未归类」等着维护时分流。\n"
                        "· target=\"topic:<主题名>\"：**某一个研究主题**的结论、材料判断、待核项。"
                        "一个研究主题只有一个档案——新建时会查重，撞了会被退回既有那份。档案不存在则自动新建并写入状态行。\n"
                        "· target=\"log\"：历史流水账（变更日志.md）。\n"
@@ -946,7 +992,7 @@ TOOLS = [
         "inputSchema": {"type": "object", "properties": {
             "text": {"type": "string", "description": "要记住的一条内容。只在 target=topic 且单纯改状态时可以省略。"},
             "target": {"type": "string", "default": "core",
-                       "description": "core（默认）/ tools / topic:<主题名> / log。见上面的分区判据。"},
+                       "description": "core（默认）/ tools:<子域> / topic:<主题名> / log。见上面的分区判据。"},
             "status": {"type": "string",
                        "description": "只在 target=\"topic:<主题名>\" 时有效：顺带把该档案的状态行改成 进行中 / 已完成 / 已作废。"}}},
     },
@@ -1142,7 +1188,7 @@ RESOURCES = [
      "description": "当前的孤儿页 / 过时页 / 断链 / 无来源页 / 缺失概念页。",
      "mimeType": "application/json"},
     {"uri": "localkb://memory", "name": "项目记忆 — core 视图",
-     "description": "用户是谁/偏好/已定决策/当前在做 + 工具经验 + 主题档案清单（不含主题正文）。"
+     "description": "用户是谁/偏好/已定决策/当前在做 + 工具经验子域索引 + 主题档案清单（两者都不含正文）。"
                     "换任何 AI 助手都读这份接上之前的工作；主题正文用 read_project_memory(scope=\"topic:<主题名>\") 单独取。",
      "mimeType": "text/markdown"},
 ]
@@ -1931,8 +1977,28 @@ def do_tool(name, args):
             scope_raw = str(args.get("scope") or "core").strip()
             kind, topic = _memory_scope_parse(scope_raw)
             if kind is None:
-                return ("读项目记忆失败：scope 只能是 core / topic:<主题名> / all，"
-                        f"收到「{scope_raw}」。先用 scope=\"core\" 拿主题清单，再照抄清单里的名字。")
+                return ("读项目记忆失败：scope 只能是 core / tools:<子域> / topic:<主题名> / all，"
+                        f"收到「{scope_raw}」。先用 scope=\"core\" 拿索引与清单，再照抄里面的名字。")
+            if kind == "tooldom":
+                found, disp, body = AW.read_memory_tooldom(topic)
+                if not found:
+                    names = [x["name"] for x in AW.list_memory_tooldoms()]
+                    tip = ("；现有子域：" + "、".join(names)) if names else "；当前还没有任何工具经验子域"
+                    return f"读项目记忆失败：没有名为「{topic}」的工具经验子域{tip}。"
+                head = (f"工具经验《{disp}》\n"
+                        "这只是**一个作业子域**，不是项目记忆全部；开工闸门要的是 scope=\"core\"。")
+                return _memory_paged(head, body, scope_raw, int(args.get("part") or 1))
+            if kind == "tools":
+                doms = AW.list_memory_tooldoms()
+                if not doms:
+                    return ("工具经验还没有任何子域。作业经验用 "
+                            "append_project_memory(target=\"tools:<子域>\") 建档。")
+                rows = "\n".join(
+                    f"- {d['name']} ｜ 何时该读: {d['when']} ｜ {d['chars']} 字 ｜ 改于 {d['modified']}"
+                    for d in doms)
+                return (f"工具经验索引（{len(doms)} 个子域，正文未读）\n"
+                        "这只是索引，不是项目记忆全部；开工闸门要的是 scope=\"core\"。\n\n" + rows
+                        + "\n\n取正文：read_project_memory(scope=\"tools:<子域>\")。")
             if kind == "topic":
                 found, disp, body = AW.read_memory_topic(topic)
                 if not found:
@@ -2230,7 +2296,7 @@ def read_resource(uri):
     if uri == "localkb://schema":
         return _wiki_schema_text() or "（WIKI.md 尚未生成）", "text/markdown"
     if uri == "localkb://memory":
-        # 与 read_project_memory 的 core 视图同口径（含工具经验与主题清单、不含主题正文）：
+        # 与 read_project_memory 的 core 视图同口径（含工具经验索引与主题清单、两者都不含正文）：
         # 这条是闸门的第二条放行路径，两边口径必须一致，否则「读资源开了闸却没拿到 core」。
         try:
             import agent_ws as AW
@@ -2346,7 +2412,7 @@ def main():
                 "protocolVersion": negotiated_protocol,
                 "capabilities": {"tools": {}, "resources": {}, "prompts": {}},
                 # 版本号不再硬编码：唯一事实源是 config.APP_VERSION（发版只改那一处）
-                "serverInfo": {"name": "localkb", "version": C.APP_VERSION},
+                "serverInfo": {"name": C.MCP_NAME, "version": C.APP_VERSION},
                 "instructions": instructions()}})
         elif m == "tools/list":
             send({"jsonrpc": "2.0", "id": rid,

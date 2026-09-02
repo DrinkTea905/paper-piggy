@@ -11,14 +11,17 @@
 
 | 放什么 | 文件 | 写入参数 |
 |---|---|---|
-| 长期偏好、固定规则、已定决策、各主题一行状态 | `项目记忆.md`（单条 ≤600 字、全文 ≤200 行） | `append_project_memory(target="core")` |
-| 与研究题目无关的作业经验 | `工具经验.md` | `target="tools"` |
+| 长期偏好、固定规则、已定决策、各主题一行状态 | `项目记忆.md`（单条 ≤600 字、全文 ≤3 万字） | `append_project_memory(target="core")` |
+| 与研究题目无关的作业经验 | `工具经验/<子域>.md`（一子域一文件，首行写「何时该读」） | `target="tools:<子域>"` |
 | **某一个研究主题**的结论与待核项 | `主题档案/<主题名>.md` | `target="topic:<主题名>"` |
 | 历史流水账 | `变更日志.md` | `target="log"` |
 
-`core` 视图 = 前两份全文 + 主题档案的**清单与状态**（不含正文）。要读某个主题的正文才调 `read_project_memory(scope="topic:<主题名>")`。
+`core` 视图 = `项目记忆.md` 全文 + 工具经验各子域的**索引**（子域名｜何时该读｜体量）+ 主题档案的**清单与状态**，后两者都不含正文。
+要哪一份才单独取：`read_project_memory(scope="tools:<子域>")` / `scope="topic:<主题名>"`。
 这是刻意的物理隔离：用户要求「旧结论作废、这个题从头再来」时，不取旧档案，它就进不了 Agent 的上下文——靠提示词说「看见了别用」拦不住。
-**一个研究主题只有一个档案**：新建时会查重，撞了退回既有那份。改状态行用 `set_memory_topic_status`。
+同一道理也适用于作业经验：单向堆积的大文件会把「开工必读」变成「读第一段就开工」，分了子域才谈得上真读。
+**一个研究主题只有一个档案、一个作业子域只有一份文件**：新建时会查重，撞了退回既有那份。改主题状态行用 `set_memory_topic_status`。
+旧版的单文件 `工具经验.md` 在升级后首次启动时自动按子域拆开，原件备份进 `升级与备份/记忆迁移备份/`，本体换成指路页。
 
 零依赖（纯 stdlib + requests），不需要装 `mcp` 包。
 
@@ -69,8 +72,8 @@
 | `add_source(path, note?)` | 写 | 把本机一个全文文件收进知识库（支持 PDF、EPUB、DOCX、Markdown、TXT；只加不删，不支持 HTML）。用户在对话里给了本地文件路径、想让它进库时用。题录由 AI 自动抽取、**待人工核对**（应用里会标「题录待核对」）。收录后建库在后台跑，稍后可用 localkb_status / deep_status 查进度。仅 folder（文件夹）模式可用：Zotero 模式会拒绝并提示把全文文件附到 Zotero 条目上。 |
 | `add_statute(title, short_title?, issuing_authority, passed_date?, revision_dates?, effective_date?, legal_level?, document_number?, source_url, fetched_at?, version_label?, validity_status=现行有效, body_markdown, summary?, confirm=False, confirmation_token?, confirm_unofficial=False)` | 写 | 把 Agent 从官方网页取得并核对的法律法规/司法解释原文写入独立本地法规库，不修改 Zotero。必须先 confirm=false 预览校验；向用户展示版本、域名、条文范围与哈希并获确认后，再携 confirmation_token 调 confirm=true。非 gov.cn/court.gov.cn/spp.gov.cn 官方域名还必须显式 confirm_unofficial=true。正文必须是保留第X条结构的完整 Markdown，不得提交网页 HTML。可同时提交约150字中文 summary；它会在预检阶段经过与 submit_agent_summaries 相同的质量检查，并在确认入库后随条文一并嵌入。未提交时不会自动生成，入库结果会提示后续补写。 |
 | `pending_wiki_updates(offset=0, limit=30)` | 读 | 拉取服务器已算好的「待处理综合页更新」清单——最近深索/新增的文献可能影响哪些既有 wiki 页。深索一批文献后、或想主动维护 wiki 时**先调它**，直接拿到受影响页清单（无需自己对每篇跑 propose_wiki_updates），再逐页处理；有 next_offset 时必须继续翻页，直到全部清零。 |
-| `read_project_memory(scope=core, part=1)` | 读 | 读用户的**项目记忆**。它是换任何 AI 助手都共享的本地文件，按四类分区存放：项目记忆.md（长期偏好/固定规则/当前在做/各主题一行状态）、工具经验.md（与研究题目无关的作业经验）、主题档案/<主题名>.md（某一个研究主题的结论与待核项）、变更日志.md（流水账）。**每次任务开工前必须先调用一次本工具**（默认 scope="core"）；在此之前，服务器会拒绝其他 PaperPiggy 工具调用。调用一次 scope="core" 即视为已读、立即放行——**主题档案不读也能开工**，这是刻意的：用户要求「旧结论作废、从头重来」时，不取旧主题档案，它就物理上进不了你的上下文。initialize 只内联启动快照，不能替代本次读取。 |
-| `append_project_memory(text?, target=core, status?)` | 写 | 把一条长期信息追加进项目记忆。**先想清楚写哪一区**——写错地方会被拒绝，不是提醒： · target="core"（默认）：长期偏好、固定规则、已定决策、各主题一行状态。单条 ≤600 字、全文 ≤200 行，超了写不进去。 · target="tools"：与研究题目无关的作业经验（DOCX 生成链、检索方法、某工具的坑）。判据=换个题目还用得上。 · target="topic:<主题名>"：**某一个研究主题**的结论、材料判断、待核项。一个研究主题只有一个档案——新建时会查重，撞了会被退回既有那份。档案不存在则自动新建并写入状态行。 · target="log"：历史流水账（变更日志.md）。 任务产生新的长期信息时结束前必须调用；若也写入了 Agent 自己的 auto memory，必须把同一实质内容同步到这里。纯追加、不覆盖已有内容。 |
+| `read_project_memory(scope=core, part=1)` | 读 | 读用户的**项目记忆**。它是换任何 AI 助手都共享的本地文件，按四类分区存放：项目记忆.md（长期偏好/固定规则/当前在做/各主题一行状态）、工具经验/<子域>.md（与研究题目无关的作业经验，一子域一文件）、主题档案/<主题名>.md（某一个研究主题的结论与待核项）、变更日志.md（流水账）。**每次任务开工前必须先调用一次本工具**（默认 scope="core"）；在此之前，服务器会拒绝其他 PaperPiggy 工具调用。调用一次 scope="core" 即视为已读、立即放行——**主题档案不读也能开工**，这是刻意的：用户要求「旧结论作废、从头重来」时，不取旧主题档案，它就物理上进不了你的上下文。initialize 只内联启动快照，不能替代本次读取。 |
+| `append_project_memory(text?, target=core, status?)` | 写 | 把一条长期信息追加进项目记忆。**先想清楚写哪一区**——写错地方会被拒绝，不是提醒： · target="core"（默认）：长期偏好、固定规则、已定决策、各主题一行状态。单条 ≤600 字、全文 ≤3 万字，超了写不进去。 · target="tools:<子域>"：与研究题目无关的作业经验（DOCX 生成链、检索方法、某工具的坑）。判据=换个题目还用得上。**一个作业子域一份文件**，子域名照抄 core 视图里的工具经验索引；新子域会查重。光写 target="tools" 也收，但会落进「未归类」等着维护时分流。 · target="topic:<主题名>"：**某一个研究主题**的结论、材料判断、待核项。一个研究主题只有一个档案——新建时会查重，撞了会被退回既有那份。档案不存在则自动新建并写入状态行。 · target="log"：历史流水账（变更日志.md）。 任务产生新的长期信息时结束前必须调用；若也写入了 Agent 自己的 auto memory，必须把同一实质内容同步到这里。纯追加、不覆盖已有内容。 |
 | `set_memory_topic_status(topic, status, reason?)` | 写 | 只改某份**主题档案**首部的状态行，不追加正文（改一行不必重发全文）。状态只能是 进行中 / 已完成 / 已作废；建议一并写 reason，日后回看才知道为什么作废。档案不存在时不会顺手新建——建档案请走 append_project_memory(target="topic:<主题名>")，那条路上有查重闸。 |
 <!-- TOOLS:END -->
 
@@ -178,6 +181,12 @@ args = ["<你的PaperPiggy目录>\\app\\mcp_server.py"]
 
 ## 说明
 - MCP server 是**瘦客户端**：它调用 LocalKB 的 HTTP 服务（127.0.0.1:8770），服务没起会自动拉起（首次加载模型约 30-60s）。
+- **同一台机器上并存多份 PaperPiggy 时（正式安装 / 竞赛包 / 演示包），别照抄上面的 `localkb` 和 8770。**
+  换过端口的那一份，Agent 页给出的命令会自动变成
+  `claude mcp add localkb-<端口> --env LOCALKB_PORT=<端口> -- …` —— server 名与端口一起带上，
+  两份才不会互相覆盖，也不会连错后端（mcp_server 是瘦客户端，不带 env 就默认去连 8770 那一份）。
+  接上之后，agent 在 `initialize` 里会收到「本次连接的是哪一份库」（名称 / 服务地址 / 数据目录），
+  自己认得出该往哪儿读写。**一律复制 Agent 页上的真实命令，不要手改。**
 - 中文查询、结果全部 UTF-8，日志走 stderr 不干扰协议。
 - 当前正在运行的 Claude Code 会话**无法热加载**新 MCP——配好后要新开会话才生效。
 - **非 MCP 生态**（自写脚本、LangChain、别家 agent 框架）可直接调 HTTP：OpenAPI 交互文档在

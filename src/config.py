@@ -21,7 +21,7 @@ SUBPROC_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0   # CREATE_NO_W
 # 全项目**只有这一处**版本字面量：发版改版本号只改这里，其余地方一律 `C.APP_VERSION` 引用
 # （踩过的坑：版本号散落在 mcp_server 的 serverInfo、打包脚本、页脚里，改一处漏三处，
 #  用户报 bug 时报的版本对不上代码）。1.0.0 = 首个公开发布版（Apache-2.0 开源）。
-APP_VERSION = "1.1.11"
+APP_VERSION = "1.1.12"
 
 APP = Path(__file__).parent                 # 源码目录；分发版 = bundle/app
 RAG = APP                                    # 兼容：引擎脚本都在项目根
@@ -244,7 +244,10 @@ MAX_PER_KEY = 2     # 每篇文献最多几块进入最终 topk（按 key 去重
 DAEMON_HOST = (os.environ.get("LOCALKB_HOST") or "").strip() or "127.0.0.1"
 
 
-def _resolve_port(default=8770):
+DEFAULT_DAEMON_PORT = 8770
+
+
+def _resolve_port(default=DEFAULT_DAEMON_PORT):
     raw = (os.environ.get("LOCALKB_PORT") or "").strip()
     if not raw:
         return default
@@ -260,6 +263,17 @@ def _resolve_port(default=8770):
 
 DAEMON_PORT  = _resolve_port()
 DAEMON_URL   = f"http://{DAEMON_HOST}:{DAEMON_PORT}"
+
+# ---- 实例标识（同一台机器上并存多份 PaperPiggy 时，用来把它们区分开）----
+# 出厂默认与以前完全一样：窗口叫 PaperPiggy、MCP 叫 localkb。只有换过端口
+# （＝这台机器上不止一份库在跑）才需要区分，两处都会静默出错：
+#   · APP_TITLE：窗口标题。launcher 的单实例唤起靠 FindWindowW **按标题**找窗口，
+#     两份都叫 PaperPiggy 时会认错人——点第二份的启动器，被拉到前台的是第一份，
+#     第二份自己退出，用户看到的就是「点了没反应」。
+#   · MCP_NAME：`claude mcp add` 用的 server 名。两份都叫 localkb 会互相覆盖，
+#     而且 agent 光看名字不知道自己连的是哪个库，写回的结论就落到了另一份里。
+APP_TITLE = (os.environ.get("LOCALKB_TITLE") or "").strip() or "PaperPiggy"
+MCP_NAME  = "localkb" if DAEMON_PORT == DEFAULT_DAEMON_PORT else f"localkb-{DAEMON_PORT}"
 
 # ---- 期刊分级 ----
 JOURNAL_TIERS_FILE = DATA / "journal_tiers.json"

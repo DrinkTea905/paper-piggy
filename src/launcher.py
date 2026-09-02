@@ -127,7 +127,8 @@ def _open_existing_server(health):
 def _focus_existing_window():
     """单实例：把已经在跑的那个 PaperPiggy 窗口拉到前台。找到并唤起 → True。
 
-    窗口标题固定是 "PaperPiggy"（`webview.create_window` 的第一个参数），
+    窗口标题是 `C.APP_TITLE`（`webview.create_window` 的第一个参数，默认 "PaperPiggy"；
+    竞赛包/演示包用 LOCALKB_TITLE 换个名字，两份才不会互相认错窗口），
     与 `_tint_titlebar_async()` 用的是同一套 FindWindowW 查找。
     ⚠️ 必须先 ShowWindow(SW_SHOW)，不能只 SetForegroundWindow：
        窗口有可能正处于**隐藏**状态（见 CLAUDE.md §6「启动器的 SW_HIDE」），
@@ -138,7 +139,7 @@ def _focus_existing_window():
     try:
         import ctypes
         u32 = ctypes.windll.user32
-        hwnd = u32.FindWindowW(None, "PaperPiggy")
+        hwnd = u32.FindWindowW(None, C.APP_TITLE)
         if not hwnd:
             return False
         SW_SHOW, SW_RESTORE = 5, 9
@@ -231,13 +232,15 @@ def _ensure_icon():
         _, rebuilt = ensure_multi_size_ico(png, ico)
 
         # 应用内更新只替换 app/，不会动安装目录根的 PaperPiggy.ico。
-        # 分发目录可写时同步根图标，桌面/开始菜单快捷方式与卸载项便能收到新版。
         root = C.APP.parent
-        is_bundle = ((root / "run_localkb.py").exists()
-                     or (root / "python" / "python.exe").exists()
-                     or (root / "portable.txt").exists())
+        # 安装器版的根目录带 run_localkb.py，也带桌面/开始菜单快捷方式和卸载项——
+        # 那些外壳引用的正是根图标，所以要跟着新版一起换。
+        # 绿色包（竞赛包/演示包）把 run_localkb.py 收进了「其他\」，根目录是刻意清爽的，
+        # 快捷方式与卸载项一个也没有，再往根上生成一份 100KB 的 .ico 只是添乱。
+        # 图标真源始终是 data/PaperPiggy.ico，这里同步的只是给外壳看的那份副本。
+        sync_root_icon = (root / "run_localkb.py").exists()
         root_rebuilt = False
-        if is_bundle:
+        if sync_root_icon:
             try:
                 _, root_rebuilt = ensure_multi_size_ico(png, root / "PaperPiggy.ico")
             except Exception as e:
@@ -287,7 +290,7 @@ def _tint_titlebar_async():
             user32 = ctypes.windll.user32
             dwm = ctypes.windll.dwmapi
             for _ in range(50):                       # 最多等 ~10s 直到窗口出现
-                hwnd = user32.FindWindowW(None, "PaperPiggy")
+                hwnd = user32.FindWindowW(None, C.APP_TITLE)
                 if hwnd:
                     # DWMWA_USE_IMMERSIVE_DARK_MODE=20：0=浅色标题栏，1=深色（Win10 2004+）
                     val = ctypes.c_int(0 if light else 1)
@@ -532,7 +535,7 @@ def main():
         import webview
         # text_select=True：允许在原生窗口里选中/复制文本（pywebview 默认整窗禁选，
         # 导致「检索结果不可复制」——根因在此，非 CSS）。改后须重启原生窗口实测。
-        webview.create_window("PaperPiggy", C.DAEMON_URL,
+        webview.create_window(C.APP_TITLE, C.DAEMON_URL,
                               width=1300, height=880, min_size=(960, 640),
                               text_select=True, js_api=_JsApi())   # 原生目录选择器桥（pick_folder）
         _tint_titlebar_async()   # #1：标题栏跟随系统浅/深色，别再是突兀的黑条

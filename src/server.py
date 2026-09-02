@@ -862,16 +862,25 @@ def agent_mcp_config():
         pass
     mcp = str(C.APP / "mcp_server.py")
     def q(s): return '"' + s + '"'             # 路径带空格/中文，命令行统一加引号
-    add_core = f'claude mcp add localkb -- {q(py)} {q(mcp)}'
+    name = C.MCP_NAME                          # 换过端口的实例叫 localkb-<端口>，见 config「实例标识」段
+    # 非默认端口的实例，接入命令必须把端口一起带上：mcp_server 是**瘦客户端**，自己 import config
+    # 决定连哪个后端——不带 env 就会连到 8770 上的那一份库。用户从这里复制的命令看不出异样，
+    # agent 却在另一个库里读写，结论也写回了那一份。
+    envs = "" if C.DAEMON_PORT == C.DEFAULT_DAEMON_PORT else f"--env LOCALKB_PORT={C.DAEMON_PORT} "
+    add_core = f'claude mcp add {name} {envs}-- {q(py)} {q(mcp)}'
+    entry = {"command": py, "args": [mcp]}
+    if envs:
+        entry["env"] = {"LOCALKB_PORT": str(C.DAEMON_PORT)}
     mcp_json = json.dumps(
-        {"mcpServers": {"localkb": {"command": py, "args": [mcp]}}},
+        {"mcpServers": {name: entry}},
         ensure_ascii=False, indent=2)
     # ensure_ascii=False：路径含中文时，默认会转义成一串 uXXXX 码点。TOML 认这种
     # 转义，但用户读不出那是哪个目录，手改必错。上面的 mcp_json 一直是 False，
     # 这里漏了——两处本该同一口径。
-    codex_toml = (f'[mcp_servers.localkb]\n'
+    codex_toml = (f'[mcp_servers.{name}]\n'
                   f'command = {json.dumps(py, ensure_ascii=False)}\n'
-                  f'args = [{json.dumps(mcp, ensure_ascii=False)}]')
+                  f'args = [{json.dumps(mcp, ensure_ascii=False)}]'
+                  + (f'\nenv = {{ LOCALKB_PORT = "{C.DAEMON_PORT}" }}' if envs else ''))
     try:                                       # 真实 MCP 工具数（前端"看到 N 个工具"用它，别写死）
         import mcp_server as MCP
         tool_count = len(MCP.TOOLS)
@@ -895,9 +904,10 @@ def agent_mcp_config():
         "python": py, "mcp_server": mcp,
         "daemon_url": C.DAEMON_URL, "server_running": True,
         "wiki_schema_md": str(C.WIKI_SCHEMA_MD), "tool_count": tool_count,
+        "mcp_name": name,
         "claude_cmd": add_core,
-        "claude_cmd_user": add_core.replace("claude mcp add localkb ",
-                                            "claude mcp add localkb --scope user "),
+        "claude_cmd_user": add_core.replace(f"claude mcp add {name} ",
+                                            f"claude mcp add {name} --scope user "),
         "mcp_json": mcp_json, "codex_toml": codex_toml,
         # 0_Agent交付物 / 0_Agent资料库 落点（前端「打开文件夹」用）
         # 注：曾有个 skill_src_dir 字段指向 app/skills/localkb-paper，是历史遗留——

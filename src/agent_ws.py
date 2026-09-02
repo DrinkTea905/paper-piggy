@@ -80,25 +80,32 @@ def resolve(which):
 #
 # 所以下面这些上限是**写入时拒绝**，不是劝告。散文里写「保持简短」四个字，
 # 换来的就是 669 行；机器拒绝才拦得住。
+#   ③ 工具经验按时间单向堆积，同一笔账又付一遍：涨到 1642 行 / 15 万字，而 core 规定带它
+#      全文——开工必读的返回体要翻十二段，「必读」就变成了「读不完」。所以它与主题档案同构：
+#      分子域文件，core 只带索引（名字｜何时该读｜体量），用得上哪一份才取哪一份。
 MEMORY_CORE_NAME = "项目记忆.md"
 MEMORY_TOOLS_NAME = "工具经验.md"
 MEMORY_LOG_NAME = "变更日志.md"
 MEMORY_TOPICS_NAME = "主题档案"
+MEMORY_TOOLDOMS_NAME = "工具经验"          # 目录 工具经验/<子域>.md，与同名的 工具经验.md 指路页并存
+MEMORY_TOOLDOM_FALLBACK = "未归类"         # target="tools" 没写子域时的落点
 
-MEMORY_CORE_MAX_LINES = 200      # 项目记忆.md 的行数硬顶：它是「当前真相」，不是台账
-MEMORY_CORE_WARN_LINES = 160     # 到这就在返回体里催精简（仍写入）
+# 上限按**字符**算：一行可以写六百字，行数管不住体积，而 core 每次开工都要整份读进上下文。
+MEMORY_CORE_MAX_CHARS = 30000    # 项目记忆.md 的硬顶：它是「当前真相」，不是台账
+MEMORY_CORE_WARN_CHARS = 24000   # 到这就在返回体里催精简（仍写入）
 MEMORY_CORE_MAX_ENTRY = 600      # core 单条上限：一条「已定决策」写不了这么长；长的属于主题档案
 MEMORY_TOOLS_MAX_ENTRY = 2000    # 工具经验可以带命令与参数，放宽些，但也不是论文
-MEMORY_TOPIC_DUP_RATIO = 0.82    # 新建主题档案的查重阈值：一个研究主题只能有一个档案
+MEMORY_TOPIC_DUP_RATIO = 0.82    # 查重阈值：一个研究主题一个档案，一个作业子域一个文件
 TOPIC_STATUSES = ("进行中", "已完成", "已作废")
 
-MEMORY_TARGETS = ("core", "tools", "log")   # 另有 topic:<名>
+MEMORY_TARGETS = ("core", "tools", "log")   # 另有 topic:<名> / tools:<子域>
 
 
 def memory_file():    return memory_dir() / MEMORY_CORE_NAME
 def tools_file():     return memory_dir() / MEMORY_TOOLS_NAME
 def changelog_file(): return memory_dir() / MEMORY_LOG_NAME
 def topics_dir():     return memory_dir() / MEMORY_TOPICS_NAME
+def tooldoms_dir():   return memory_dir() / MEMORY_TOOLDOMS_NAME
 
 
 # 本地文件名净化：刻意**不**复用 textutil.safe_name —— 那个模块 import jieba，
@@ -220,11 +227,10 @@ def list_memory_topics():
     return sorted(out, key=lambda x: x["name"])
 
 
-def find_memory_topic(name):
-    """按主题名找档案，返回 Path 或 None。
+def _find_archive(d, name):
+    """在档案目录 d 里按显示名找文件，返回 Path 或 None。
     以**真实目录**做匹配（精确名 → 净化名 → 归一化名），而不是「净化后拼路径」：
-    净化有损，两个不同主题名可能指向同一文件，反过来 agent 手里的原名也可能与文件名不同。"""
-    d = topics_dir()
+    净化有损，两个不同的名字可能指向同一文件，反过来 agent 手里的原名也可能与文件名不同。"""
     if not d.exists():
         return None
     want_raw = str(name or "").strip()
@@ -242,23 +248,104 @@ def find_memory_topic(name):
     return None
 
 
-def similar_memory_topics(name, ratio=None):
-    """与 name 高度相似的既有主题档案（用于新建前查重）。返回 [显示名]。"""
+def find_memory_topic(name):
+    return _find_archive(topics_dir(), name)
+
+
+def find_memory_tooldom(name):
+    return _find_archive(tooldoms_dir(), name)
+
+
+def _similar_archives(items, name, ratio=None):
+    """与 name 高度相似的既有档案（用于新建前查重）。返回 [显示名]。"""
     want = _norm_topic(name)
     thr = MEMORY_TOPIC_DUP_RATIO if ratio is None else ratio
     hits = []
     if not want:
         return hits
-    for it in list_memory_topics():
+    for it in items:
         other = _norm_topic(it["name"])
         if not other:
             continue
         if other == want or want in other or other in want:
             hits.append(it["name"])
             continue
-        if difflib.SequenceMatcher(None, want, other).ratio() >= thr:
+        m = difflib.SequenceMatcher(None, want, other)
+        if m.ratio() >= thr:
+            hits.append(it["name"])
+            continue
+        # 短名几乎整个嵌在长名里也算撞（「DOCX交付」之于「DOCX与PDF交付」）：ratio 用两串总长
+        # 做分母，长度一差就掉到阈值以下，而这恰恰是同一个东西被起了两个名字的典型形态。
+        short = min(len(want), len(other))
+        if short >= 4 and sum(b.size for b in m.get_matching_blocks()) / short >= 0.9:
             hits.append(it["name"])
     return hits
+
+
+def similar_memory_topics(name, ratio=None):
+    return _similar_archives(list_memory_topics(), name, ratio)
+
+
+def similar_memory_tooldoms(name, ratio=None):
+    return _similar_archives(list_memory_tooldoms(), name, ratio)
+
+
+_WHEN_RE = re.compile(r"^\s*何时该读\s*[:：]\s*(.+?)\s*$")
+
+
+def parse_tooldom_when(text, scan_lines=12):
+    """从子域文件首部读「何时该读」。core 视图的索引就靠这一行——没有它，
+    agent 面对一张只有文件名的清单，只能靠猜要不要展开，猜错就等于没分区。"""
+    for ln in str(text or "").splitlines()[:scan_lines]:
+        m = _WHEN_RE.match(ln)
+        if m and m.group(1).strip():
+            return m.group(1).strip()
+    return "未标注"
+
+
+def tooldom_seed(name, when=""):
+    """新建工具经验子域的固定首部。标题行与「何时该读」由**产品**写，agent 无从跳过——
+    这样「每份子域都能在 core 索引里说清自己何时该被展开」是结构保证，不是模板提醒。"""
+    hint = str(when or "").strip() or "（补一句：什么样的任务该展开这一份）"
+    return f"""# {name}
+
+何时该读: {hint}
+
+> 本子域的作业经验：怎么把活干成，不放研究结论。默认**不进**上下文；需要时用
+> read_project_memory(scope="tools:{name}") 单独取用。
+> 一个作业子域只有这一份文件——别为同一件事另开新档。
+"""
+
+
+def list_memory_tooldoms():
+    """工具经验子域清单（不含正文）：[{name, when, chars, lines, modified, file}]，按名排序。"""
+    out = []
+    d = tooldoms_dir()
+    try:
+        if not d.exists():
+            return out
+        for p in sorted(d.glob("*.md")):
+            body = _read(p)
+            out.append({
+                "name": _topic_display_name(body, p.stem),
+                "file": p.name,
+                "when": parse_tooldom_when(body),
+                "chars": len(body),
+                "lines": len(body.splitlines()),
+                "modified": time.strftime("%Y-%m-%d", time.localtime(p.stat().st_mtime)),
+            })
+    except Exception:
+        pass
+    return sorted(out, key=lambda x: x["name"])
+
+
+def read_memory_tooldom(name):
+    """→ (找到?, 显示名, 正文)。"""
+    p = find_memory_tooldom(name)
+    if p is None:
+        return False, str(name or "").strip(), ""
+    body = _read(p)
+    return True, _topic_display_name(body, p.stem), body
 
 
 def read_memory_section(kind):
@@ -280,7 +367,9 @@ def read_memory_topic(name):
 
 
 def parse_memory_target(target):
-    """把 target 串解析成 (kind, 主题名)。kind ∈ core|tools|log|topic；非法返回 (None, 原串)。"""
+    """把 target 串解析成 (kind, 名字)。kind ∈ core|tools|log|topic|tooldom；非法返回 (None, 原串)。
+    光秃秃的 tools 仍然合法（老 agent、老文档都这么写），它落进「未归类」子域并被提醒下次写子域
+    ——拒绝它只会让一条真经验丢在报错里。"""
     t = str(target or "core").strip()
     if not t:
         return "core", ""
@@ -290,13 +379,17 @@ def parse_memory_target(target):
     for pre in ("topic:", "主题:", "主题："):
         if low.startswith(pre.casefold()):
             return "topic", t[len(pre):].strip()
+    for pre in ("tools:", "工具:", "工具："):
+        if low.startswith(pre.casefold()):
+            n = t[len(pre):].strip()
+            return ("tooldom", n) if n else ("tools", "")
     return None, t
 
 
 def check_core_budget():
-    """项目记忆.md 的行数预算 → (行数, 是否已满, 是否该催)。"""
-    n = len(_read(memory_file()).splitlines())
-    return n, n >= MEMORY_CORE_MAX_LINES, n >= MEMORY_CORE_WARN_LINES
+    """项目记忆.md 的体量预算 → (字符数, 是否已满, 是否该催)。"""
+    n = len(_read(memory_file()))
+    return n, n >= MEMORY_CORE_MAX_CHARS, n >= MEMORY_CORE_WARN_CHARS
 
 
 def set_topic_status(name, status, reason=""):
@@ -350,45 +443,83 @@ def _atomic_write_text(path, text):
 def append_memory(target="core", text="", status=None, allow_new_topic=True):
     """记忆写入的唯一入口。→ (ok, 人话消息)。
     这里的每一条拒绝都是**硬约束**，因为散文劝告已经被证伪过一次（单文件涨到 669 行）。"""
-    kind, topic = parse_memory_target(target)
+    kind, name = parse_memory_target(target)
     if kind is None:
-        return False, (f"target 只能是 core / tools / log / topic:<主题名>，收到「{topic}」。"
-                       "core=长期偏好与已定决策；tools=与题目无关的作业经验；"
+        return False, (f"target 只能是 core / tools:<子域> / log / topic:<主题名>，收到「{name}」。"
+                       "core=长期偏好与已定决策；tools:<子域>=与题目无关的作业经验；"
                        "topic:<名>=某个研究主题的结论；log=历史流水账。")
     body = str(text or "").strip()
     if kind == "topic":
-        return _append_topic(topic, body, status, allow_new_topic)
+        return _append_topic(name, body, status, allow_new_topic)
     if status is not None:
         return False, "status 只在 target=\"topic:<主题名>\" 时有意义。"
     if not body:
         return False, "需要 text（要记住的一条内容）。"
+    if kind in ("tools", "tooldom"):
+        if len(body) > MEMORY_TOOLS_MAX_ENTRY:
+            return False, (f"这条 {len(body)} 字，超过工具经验单条上限 {MEMORY_TOOLS_MAX_ENTRY} 字。"
+                           "工具经验记「怎么操作」；某个研究主题的实质结论请写 target=\"topic:<主题名>\"。")
+        return _append_tooldom(name, body, allow_new=allow_new_topic)
     if kind == "core":
         if len(body) > MEMORY_CORE_MAX_ENTRY:
             return False, (f"这条 {len(body)} 字，超过项目记忆单条上限 {MEMORY_CORE_MAX_ENTRY} 字。"
                            "项目记忆只放「当前真相」（长期偏好 / 固定规则 / 已定决策 / 各主题一行状态）。"
-                           "研究主题的结论请写 target=\"topic:<主题名>\"；作业经验写 target=\"tools\"；"
+                           "研究主题的结论请写 target=\"topic:<主题名>\"；作业经验写 target=\"tools:<子域>\"；"
                            "过程流水写 target=\"log\"。")
         n, full, warn = check_core_budget()
         if full:
-            return False, (f"项目记忆已 {n} 行，达到上限 {MEMORY_CORE_MAX_LINES} 行。"
+            return False, (f"项目记忆已 {n} 字，达到上限 {MEMORY_CORE_MAX_CHARS} 字。"
                            "它是「当前真相」不是台账——请先精简（把主题结论移进 主题档案/、"
-                           "把历史移进 变更日志.md），或改用 target=\"topic:<名>\" / \"tools\" / \"log\"。")
-    if kind == "tools" and len(body) > MEMORY_TOOLS_MAX_ENTRY:
-        return False, (f"这条 {len(body)} 字，超过工具经验单条上限 {MEMORY_TOOLS_MAX_ENTRY} 字。"
-                       "工具经验记「怎么操作」；某个研究主题的实质结论请写 target=\"topic:<主题名>\"。")
-    path = {"core": memory_file, "tools": tools_file, "log": changelog_file}[kind]()
+                           "把历史移进 变更日志.md），或改用 target=\"topic:<名>\" / \"tools:<子域>\" / \"log\"。")
+    path = {"core": memory_file, "log": changelog_file}[kind]()
     try:
         _ensure_seeded(path, kind)
         _append_text(path, f"\n\n<!-- {time.strftime('%Y-%m-%d')} 由 AI 助手追加 -->\n{body}\n")
     except Exception as e:
         return False, f"写记忆失败：{e}"
-    label = {"core": "项目记忆.md", "tools": "工具经验.md", "log": "变更日志.md"}[kind]
+    label = {"core": "项目记忆.md", "log": "变更日志.md"}[kind]
     msg = f"已追加进 {label}（{path}）。"
     if kind == "core":
         n, _full, warn = check_core_budget()
         if warn:
-            msg += (f"⚠ 项目记忆已 {n} 行（上限 {MEMORY_CORE_MAX_LINES}）——"
+            msg += (f"⚠ 项目记忆已 {n} 字（上限 {MEMORY_CORE_MAX_CHARS}）——"
                     "请顺手精简，把主题结论移进 主题档案/。")
+    return True, msg
+
+
+def _append_tooldom(name, body, allow_new=True):
+    """工具经验按子域落文件。没写子域的落「未归类」并当场提示——分区只有在写入口就分好，
+    才不会又长回一个十五万字的单文件。"""
+    named = bool(str(name or "").strip())
+    name = str(name or "").strip() or MEMORY_TOOLDOM_FALLBACK
+    p = find_memory_tooldom(name)
+    if p is None:
+        dup = similar_memory_tooldoms(name)
+        if dup:
+            return False, (f"已有高度相似的工具经验子域：{'、'.join('「%s」' % d for d in dup)}。"
+                           "一个作业子域只有一份文件——请写进既有那份"
+                           f"（target=\"tools:{dup[0]}\"）；确实是另一回事就换个区分度更高的名字。")
+        if not allow_new:
+            return False, f"没有名为「{name}」的工具经验子域，且本次不允许新建。"
+        p = tooldoms_dir() / (topic_filename(name) + ".md")
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            _write_text_exclusively(p, tooldom_seed(
+                name, "尚未归类的零散经验，维护时应分流到合适子域" if name == MEMORY_TOOLDOM_FALLBACK else ""))
+        except FileExistsError:
+            pass
+        except Exception as e:
+            return False, f"新建工具经验子域失败：{e}"
+    try:
+        _append_text(p, f"\n\n<!-- {time.strftime('%Y-%m-%d')} 由 AI 助手追加 -->\n{body}\n")
+    except Exception as e:
+        return False, f"写记忆失败：{e}"
+    msg = f"已追加进 工具经验/{p.name}（{p}）。"
+    if not named:
+        others = "、".join(x["name"] for x in list_memory_tooldoms()
+                          if x["name"] != MEMORY_TOOLDOM_FALLBACK)
+        msg += (f"⚠ 你没写子域，这条落进了「{MEMORY_TOOLDOM_FALLBACK}」。"
+                f"下次写 target=\"tools:<子域>\"" + (f"，现有子域：{others}。" if others else "。"))
     return True, msg
 
 
@@ -461,7 +592,7 @@ _README_RELY = """# 0_Agent资料库 —— 你的 AI 助手的专属资料库
 
 - **记忆/** —— 项目记忆，按四类分开存放（刻意分开，别让记忆膨胀成一锅流水账）：
   - `项目记忆.md` —— 「当前定了什么」：长期偏好、固定规则、已定决策、各研究主题一行状态。**上限 200 行**，超了写不进去。
-  - `工具经验.md` —— 与研究题目无关的作业经验（DOCX 生成、检索方法、某工具的坑）。换个题目还用得上的才写这。
+  - `工具经验/<子域>.md` —— 与研究题目无关的作业经验（DOCX 生成、检索方法、某工具的坑），**一个作业子域一份文件**，首行写明「何时该读」。换个题目还用得上的才写这。
   - `主题档案/` —— **一个研究主题一个 .md**，装该主题的结论、材料判断、待核项，首部带「状态: 进行中／已完成／已作废」。
   - `变更日志.md` —— 历史流水账（只增不改）。
   任何助手开工前都必须先完整读取前两份（= core 视图）；**主题档案默认不读**，需要时才按主题单独取——
@@ -636,7 +767,7 @@ _README_OUTPUT = """# 0_Agent交付物 —— AI 助手的成品都在这
 
 _PROJECT_MEMORY = """# 项目记忆 —— 当前真相
 
-> 这里只记「现在定了什么」：长期偏好、固定规则、当前在做什么、各研究主题一行状态。**保持简短**（上限 200 行，超了写不进去）。
+> 这里只记「现在定了什么」：长期偏好、固定规则、当前在做什么、各研究主题一行状态。**保持简短**（上限 3 万字，超了写不进去）。
 > 这是不同 AI 助手之间唯一共享的项目记忆。任何助手开始任务前必须先完整读取本文件（= `read_project_memory` 的 core 视图）。
 > 助手可以另用自己的 auto memory，但凡在那里保存本项目的长期信息，也必须把同一实质内容同步到这里；私有记忆不能替代本文件。
 > 任务产生新的长期偏好、已定决策、关键进度或事实时，助手必须在结束前更新这里（你也可以随手改）。
@@ -646,13 +777,14 @@ _PROJECT_MEMORY = """# 项目记忆 —— 当前真相
 | 放什么 | 落点 | 工具参数 |
 |---|---|---|
 | 长期偏好、固定规则、已定决策、各主题一行状态 | 本文件 `项目记忆.md` | `append_project_memory(target="core")` |
-| 与研究题目无关的作业经验（DOCX 生成、检索方法、工具缺陷…） | `工具经验.md` | `target="tools"` |
+| 与研究题目无关的作业经验（DOCX 生成、检索方法、工具缺陷…） | `工具经验/<子域>.md` | `target="tools:<子域>"` |
 | **某一个研究主题**的结论、材料判断、待核项 | `主题档案/<主题名>.md` | `target="topic:<主题名>"` |
 | 历史流水账（只增不改） | `变更日志.md` | `target="log"` |
 
-**一个研究主题只有一个档案**——新建时会查重，撞了会被退回既有那份。
-主题档案**默认不进上下文**，要用时才 `read_project_memory(scope="topic:<主题名>")` 单独取。
-这是刻意的：旧主题结论不该在你重开一个题目时挤进来。
+**一个研究主题只有一个档案、一个作业子域只有一份文件**——新建时会查重，撞了会被退回既有那份。
+主题档案与工具经验子域**默认不进上下文**，core 视图只给清单与索引；要用时才
+`read_project_memory(scope="topic:<主题名>")` / `scope="tools:<子域>"` 单独取。
+这是刻意的：旧主题结论不该在你重开一个题目时挤进来，跟本次任务无关的作业经验也一样。
 
 ## 关于我 / 我的偏好
 <!-- 例：我是法学研究者，主攻少年司法；引注偏好脚注、CLSCI 优先…… -->
@@ -670,26 +802,24 @@ _PROJECT_MEMORY = """# 项目记忆 —— 当前真相
 <!-- 篇幅 / 引注风格 / 要不要 docx …… -->
 """
 
-_TOOLS_NOTE = """# 工具经验 —— 与研究题目无关的作业经验
+_TOOLS_NOTE = """# 工具经验 —— 按子域分开存放
 
-> 这里记「怎么把活干成」，不记「研究结论」：DOCX 生成链与 LibreOffice 调用、某个工具的已知缺陷
-> 与绕法、Zotero 题录修正的做法、检索词该怎么配……换任何 AI 助手都能直接照做，不必重新踩坑。
-> 由 `append_project_memory(target="tools")` 追加；它和 `项目记忆.md` 一起构成开工必读的 core 视图。
-
-> **不要**把某个研究主题的实质结论写这里——那属于 `主题档案/<主题名>.md`。
-> 判据很简单：换一个研究题目还用得上的，才是工具经验。
-
-<!-- 示例：
-## DOCX 交付
-- 改格式走样式层手术，保护 Zotero 引注域，不重建文档。
-- LibreOffice 转 PDF：soffice --headless --convert-to pdf，首次调用会慢，属正常。
--->
+> 与研究题目无关的作业经验（DOCX 生成链与 LibreOffice 调用、工具的已知缺陷与绕法、
+> Zotero 题录修正、检索词怎么配……）不堆在本文件里，而是**按子域分文件**：`工具经验/<子域>.md`。
+>
+> 每份子域首部有一行「何时该读」。开工必读的 core 视图只带这张**索引**（子域名｜何时该读｜体量），
+> 正文用 `read_project_memory(scope="tools:<子域>")` 按需取——单向堆积的大文件谁也读不完，
+> 读不完的「必读」等于没读。
+>
+> 写入走 `append_project_memory(target="tools:<子域>")`；没写子域的落 `工具经验/未归类.md`，
+> 维护时再分流。判据不变：换一个研究题目还用得上的，才是工具经验；
+> 某个研究主题的实质结论属于 `主题档案/<主题名>.md`。
 """
 
 _CHANGELOG = """# 变更日志 —— 历史流水账（只增不改，最新在最上）
 
 > AI 助手把每次重要动作 / 结论追加到这里，供回溯。由 `append_project_memory(target="log")` 追加。
-> 当前真相看同目录 `项目记忆.md`，作业经验看 `工具经验.md`，某个研究主题的长线笔记看 `主题档案/<主题名>.md`。
+> 当前真相看同目录 `项目记忆.md`，作业经验看 `工具经验/<子域>.md`，某个研究主题的长线笔记看 `主题档案/<主题名>.md`。
 
 <!-- 示例：
 ## 2026-07-14
@@ -785,12 +915,12 @@ _ROOT_AGENTS = """# PaperPiggy Agent 工作入口
 
 ## 项目记忆闸门（最高优先级）
 
-- 开始任何任务前，必须先完整读取项目记忆的 **core 视图**：接入 `localkb` 时调用 `read_project_memory`（默认 `scope="core"`），否则直接读 `0_Agent资料库/记忆/` 下的 `项目记忆.md` 与 `工具经验.md`。未读不得检索、写作、维护或调用其他 PaperPiggy 工具。
+- 开始任何任务前，必须先完整读取项目记忆的 **core 视图**：接入 `localkb` 时调用 `read_project_memory`（默认 `scope="core"`），否则直接读 `0_Agent资料库/记忆/` 下的 `项目记忆.md`，并浏览 `工具经验/` 各子域首行的「何时该读」。未读不得检索、写作、维护或调用其他 PaperPiggy 工具。
 - 这套记忆是不同 Agent 之间唯一共享的项目记忆。Claude Code / Codex 等自己的 auto memory 可以作为附加记忆，但不能替代它。
-- 记忆目录**分区存放，写错地方会被拒绝**：`项目记忆.md`＝长期偏好/固定规则/已定决策/各主题一行状态；`工具经验.md`＝与研究题目无关的作业经验；`主题档案/<主题名>.md`＝某一个研究主题的结论与待核项；`变更日志.md`＝历史流水账。
+- 记忆目录**分区存放，写错地方会被拒绝**：`项目记忆.md`＝长期偏好/固定规则/已定决策/各主题一行状态；`工具经验/<子域>.md`＝与研究题目无关的作业经验（一子域一文件，core 只给「何时该读」索引，用得上才取正文）；`主题档案/<主题名>.md`＝某一个研究主题的结论与待核项；`变更日志.md`＝历史流水账。
 - **主题档案默认不读**：core 视图只给主题清单与状态，正文要用 `read_project_memory(scope="topic:<主题名>")` 单独取。用户说「旧结论作废、重新来」时，不取就是不取——别让旧结论渗进本轮判断。
 - **一个研究主题只有一个档案**。新建时会查重，撞了会被退回既有那份；确实是新主题就换一个区分度更高的名字。
-- 任务产生新的长期偏好、已定决策、关键进度或事实时，结束前必须调用 `append_project_memory`（`target` 选 `core` / `tools` / `topic:<主题名>` / `log`），或直接改对应文件。凡写进其他私有记忆的本项目长期信息，也必须把同一实质内容同步到这里。
+- 任务产生新的长期偏好、已定决策、关键进度或事实时，结束前必须调用 `append_project_memory`（`target` 选 `core` / `tools:<子域>` / `topic:<主题名>` / `log`），或直接改对应文件。凡写进其他私有记忆的本项目长期信息，也必须把同一实质内容同步到这里。
 - 没有产生新的长期信息时不要追加空话；历史流水账写 `target="log"`（即同目录 `变更日志.md`），别塞进项目记忆。
 
 ## 工作流闸门（最高优先级）
@@ -1572,7 +1702,7 @@ _WF_WIKI = """# 工作流：维护知识库与综述库（wiki）
 
 ## 开工前检查
 1. 明确告诉用户：本次采用《维护知识库与综述库》工作流。
-2. 调 `maintenance_audit`，一次盘点模板升级、索引、全文附件深索/PDF OCR、检索摘要、wiki 更新建议和 wiki 体检。
+2. 调 `maintenance_audit`，一次盘点模板升级、索引、全文附件深索/PDF OCR、检索摘要、wiki 更新建议、wiki 体检和**记忆分区健康度**（返回体的 `memory` 段）。
 3. 把清单分为：可自动处理、需用户决策、外部阻塞。盘点不是完成，不能只解释待办。
 
 ## 执行步骤
@@ -1582,8 +1712,15 @@ _WF_WIKI = """# 工作流：维护知识库与综述库（wiki）
 4. **wiki 更新建议**：用 `pending_wiki_updates` 分页拉完全部清单。逐条读来源：优先更新或并入已有主题页；只有形成可复用的新概念/实体时才新建，或用 `resolve_wiki_suggestion` 记录“无需写入”及理由。数量多、主题杂不是停止理由，也不得据此散建逐篇镜像页。
 5. **综述主题归类**：先用 `list_wiki` 盘点现有主题体系与每页归属。对本轮新增/更新页逐一选择最贴合的既有主题并调用 `set_wiki_theme`；同一研究主线的页面沿用既定分类名称，不另造近义主题。只有现有体系确实无法容纳、且新方向足以成为长期导航入口时才新增主题。维护不能在“内容已写但主题未归类”的状态下结束。
 6. **wiki 体检**：`lint_wiki` 查孤儿、过时、断链、无来源、降级页与缺概念页。无来源只代表待补来源/待核验，**不等于过时**；只有新证据明确推翻页内结论时才能 `mark_stale`。
-7. **接图与记忆**：新页用 `set_wiki_links` 接入真实相关页面；按落点分别写回记忆——已定的维护规则进 `target="core"`，工具用法与踩坑进 `target="tools"`，某个研究主题的实质结论进 `target="topic:<主题名>"`，本次动作的流水进 `target="log"`。写错落点会被拒绝。每个论断带 [n]，sources 填实际读过的论文 key。key 可保留在 wiki 的正文引用与 `sources` 中，但写给用户的维护报告只能使用文献题名/作者等人类可读标识。
-8. **复核**：再次调 `maintenance_audit`，并复查主题归类是否完整一致。可自动处理项或应归类页面未清零就继续循环，不得提前收工。
+7. **记忆分区**：`memory` 段报出来的都是你自己能做完的活，一律直接做，不要只解释。
+   - `memory_unpartitioned`：工具经验还堆在单文件里（自动迁移没跑成）。按作业子域拆进 `工具经验/`，**原文一字不改地搬**，每份补上「何时该读」。
+   - `memory_unfiled_tools`：`工具经验/未归类.md` 里的条目逐条读，改投到对应子域（`append_project_memory` 的 `target="tools:<子域>"`），搬完把原条目从未归类里删掉。
+   - `memory_domain_oversized`：子域过大就按更细的作业环节再分——子域存在的意义是「取一份的代价小」，一份五万字就又回到了老样子。
+   - `memory_domain_missing_when`：补「何时该读」那一行。core 视图只给索引，agent 全靠这一行判断要不要展开正文，缺了等于没分区。
+   - `memory_topic_unlabelled` / `memory_core_bloated`：标状态行；项目记忆超警戒就精简——主题结论移进 `主题档案/`、历史移进 `变更日志.md`，只留当前真相。
+   - 搬运是**移动不是复制**：同一条经验不能既在未归类又在子域里，否则下次维护还会看见它。
+8. **接图与记忆**：新页用 `set_wiki_links` 接入真实相关页面；按落点分别写回记忆——已定的维护规则进 `target="core"`，工具用法与踩坑进 `target="tools:<子域>"`，某个研究主题的实质结论进 `target="topic:<主题名>"`，本次动作的流水进 `target="log"`。写错落点会被拒绝。每个论断带 [n]，sources 填实际读过的论文 key。key 可保留在 wiki 的正文引用与 `sources` 中，但写给用户的维护报告只能使用文献题名/作者等人类可读标识。
+9. **复核**：再次调 `maintenance_audit`，并复查主题归类与记忆分区是否完整一致。可自动处理项或应归类页面未清零就继续循环，不得提前收工。
 
 ## 用户决策点
 - 只在付费调用、删除/清空重建、外部文件修复、用户规则之间真实冲突、或内容取舍会显著改变知识结构时询问。
@@ -1591,6 +1728,7 @@ _WF_WIKI = """# 工作流：维护知识库与综述库（wiki）
 
 ## 完成标准
 - 全量审查的每一类都已复核；可自动处理项为 0；所有需决策项已执行用户选择；剩余项全部是明确的外部阻塞并写明下一步。
+- 记忆分区无未归类条目、无缺「何时该读」的子域、无未标状态的主题档案；项目记忆在预算内。
 - 摘要选择“交给 Agent”时，可读取正文的异常/缺失项已由 Agent 生成、通过质量检查并完成重嵌入。
 - wiki 建议不再有未说明的“待处理”项；模板不再有能自动合并却未处理的提示。
 - 所有综述页已按现有主题体系归类，新增/更新页不存在散乱或近义主题重复；维护报告不含裸文献 key。
@@ -1800,6 +1938,7 @@ _FACTORY_HASHES = {
                                             "db394a944698d6d3dcef8cc0699a7463c1c68de4",
                                             "c6fbc5f1bca2f5ba6ea1ac11e80389e70980c834",   # 2026-08-10 自建骨架＋子代理分工
                                             "35ff785250b8963550ca03dad5580e2c80146abb",   # 2026-08-13 记忆分区闸门
+                                            "9377e9e53fb9885e15681bfac8bd64dd2d1b56cb",   # 2026-09-02 工具经验按子域分区
     },
     "home/CLAUDE.md":                     {"959ea188788c2fd5ea974fa8ff0b581b8d2811c6",   # 2026-08-20 v6 工作流上线
                                             "4e7fc7f0d4ba2a199e11897b8c7fdc5c286cab04",
@@ -1808,6 +1947,7 @@ _FACTORY_HASHES = {
                                             "854430041085e33f28ae80db7b175d202586ff61",
                                             "1a48521824986471499c18f320515ddc76129974",   # 2026-08-10 自建骨架＋子代理分工
                                             "a7f290f76c89d465b434152322491cb66394acdf",   # 2026-08-13 记忆分区闸门
+                                            "3ca15a86d1268e79823e2f5cb2c643feb2e58611",   # 2026-09-02 工具经验按子域分区
     },
     "output/README.md":                 {"0e59bde65651fba0a5bd3a54f45484ea1864ed5e",
                                              "58902f982ad4222627b011e0ee0dc3bc9c82537d"},   # v2 成品禁止裸 key
@@ -1819,14 +1959,18 @@ _FACTORY_HASHES = {
                                               "459f767e0b9861a5413d12a516017fb8474d6860",
                                               "a554e6c0d7244c2701ce0c83076029541fdf7152",
                                               "2201243125fbc85c144b42e3d7886b742dc9f1ce",   # v7 项目记忆强制闸门
-                                              "a9a0fbf625e8e8d92b390d2f9944cd2dee9d8fb2"},   # v8 记忆四分区
+                                              "a9a0fbf625e8e8d92b390d2f9944cd2dee9d8fb2",   # v8 记忆四分区
+                                              "0edc373dfa74961ea7f66e17ecf15c276bb29ac7"},   # 2026-09-02 工具经验按子域分区
     "rely/升级与备份/说明.md":          {"a2c6dd7d34fe37f6d12bb769501417fd8dd77591"},
     "rely/记忆/项目记忆.md":            {"3c8387860ad95913a602b87b9447bc80bf5a7403",
                                              "1777cb6d1c2e0d764d138cf8dc51ea02a4ad75d8",   # v2 项目记忆强制闸门
-                                             "c42a75c9539a179b0fb92e2461368b8254f01c08"},   # v3 记忆四分区
-    "rely/记忆/工具经验.md":            {"d326325e7c7df3d92f03d82fe6e99e9f3aa95c86"},   # v1 2026-08-13 新增分区
+                                             "c42a75c9539a179b0fb92e2461368b8254f01c08",   # v3 记忆四分区
+                                             "1fc3d75e76c51a0d19f69c44ea1f52d49568ec05"},   # 2026-09-02 工具经验按子域分区
+    "rely/记忆/工具经验.md":            {"d326325e7c7df3d92f03d82fe6e99e9f3aa95c86",   # v1 2026-08-13 新增分区
+                                             "ced11f8b3f51666bd0bd364967987c4a0b2c8855"},   # 2026-09-02 工具经验按子域分区
     "rely/记忆/变更日志.md":            {"4d9a267ca46f94ff7d257c8c7b9ac486ec15f1fc",   # v1 2026-07-14
-                                             "286d0967f7c9adb33e298a4cef3c6eaef427fa4d"},   # v2 指向四分区
+                                             "286d0967f7c9adb33e298a4cef3c6eaef427fa4d",   # v2 指向四分区
+                                             "55427411d77871234127df308fd78e73e425a697"},   # 2026-09-02 工具经验按子域分区
     "rely/交付模板/交付说明书模板.md":  {"ad22abdf9bfa208e19f761c42e4ddcceb93031a2"},   # v1 2026-07-14
     "rely/参考格式/说明.md":            {"6613758c89cf04441a5dd11b75f23912e5092fd0"},   # v1 2026-07-14
     "rely/定时任务/说明.md":            {"3a3e8897533e902d48eaa21c20bd1d9143dcd2e8",
@@ -1896,7 +2040,8 @@ _FACTORY_HASHES = {
                                              "e32747b30fa5bb155b1756f6280407cc503a1a43",
         "9c114123b56aab2270c0acb17124ec41b383eac0",   # 2026-08-13 记忆分区：写回按落点分流
                                              "5b888af8252c80be37bf708001f6043edc284bc7",
-                                             "0f634960b09378940467eb5cbc2a551f3b3c985b"},   # v5 维护主题归类与成品引注
+                                             "0f634960b09378940467eb5cbc2a551f3b3c985b",   # v5 维护主题归类与成品引注
+                                             "203ea66b14077258413eeede2d19fb4ea4ae7da0"},   # 2026-09-02 工具经验按子域分区
     "rely/技能/跨学科发散与补文献.md":  {"5dc99c7cd7cac23354e6915eee406e6b47e42a8e",
                                              "31bdc59679d88640ed0d0dcfbb6c925792329a77",   # 2026-08-29 按语种路由：外文元数据库 / 中文全文库
                                              "82638e95b18d9a1ed33da80d42dfe9b676814548",   # 2026-08-29 外部数据库接入说明
@@ -1969,6 +2114,7 @@ _WORKFLOW_FACTORY_EXACT_HASHES = {
         "42269c82a699624e52560c3085dadde6f75bbd1b",
         "94bdefa8c0bb07b729c751eb4c4dcf3881410480",
         "6ba9a21b2bbd223c83e6a8bfec8aeae318b5b3af",   # 2026-08-13 记忆分区：写回按落点分流
+        "a44d7ca97c564b3c1f507f489ab67245f3770838",   # 2026-09-02 工具经验按子域分区
     },
     "rely/技能/跨学科发散与补文献.md": {
         "6edb19366d284a4ffc6bad63a5c506b337d6526f",   # 2026-08-29 按语种路由：外文元数据库 / 中文全文库
@@ -1997,6 +2143,25 @@ def _factory_hashes_for(key):
     return _WORKFLOW_FACTORY_EXACT_HASHES.get(key, _FACTORY_HASHES.get(key, set()))
 
 
+def home_docs_dir():
+    """AGENTS.md / CLAUDE.md 的落点——跟着启动入口 run_localkb.py 走。
+
+       安装器版的入口在安装目录根，规约也放根：用户打开安装目录就看得到，
+       Claude Code / Codex 把它当工作目录时还会自动读进去。
+       绿色包（竞赛包/演示包）把入口收进了「其他\」，根目录是刻意清爽的，
+       这两份便跟着过去——那里接上 MCP 时 instructions 会下发同样的规约，
+       不靠文件被自动读，所以搬走不丢东西。
+       备份照样带上：backup.CORE_IN_HOME 里登记了「其他」这个根。
+    """
+    base = base_dir()
+    if (base / "run_localkb.py").exists():
+        return base
+    alt = base / "其他"
+    if (alt / "run_localkb.py").exists():
+        return alt
+    return base
+
+
 def _template_specs():
     """全部出厂模板的清单：(名单键, 落点, 当前文本, 掩码, 是否「用户数据种子」)。
        ensure_scaffold 与 --print-hashes 共用这一份，防止两边漂移（漏算 hash = 老用户平白多出待合并文件）。
@@ -2004,8 +2169,8 @@ def _template_specs():
        出厂原样时照样升级（没有用户内容可丢），但一旦被写过就**安静保留**、不再塞待合并文件骚扰——
        模板头改几个字就往人家记忆旁边扔个新文件，纯属噪音。"""
     return [
-        ("home/AGENTS.md",                    base_dir() / "AGENTS.md",                    _ROOT_AGENTS,           None, False),
-        ("home/CLAUDE.md",                    base_dir() / "CLAUDE.md",                    _ROOT_CLAUDE,           None, False),
+        ("home/AGENTS.md",                    home_docs_dir() / "AGENTS.md",                    _ROOT_AGENTS,           None, False),
+        ("home/CLAUDE.md",                    home_docs_dir() / "CLAUDE.md",                    _ROOT_CLAUDE,           None, False),
         ("output/README.md",                output_dir() / "README.md",              _README_OUTPUT,        None, False),
         ("rely/README.md",                  rely_dir() / "README.md",                _README_RELY,          None, False),
         ("rely/升级与备份/说明.md",         maintenance_dir() / "说明.md",           _MAINTENANCE_README,   None, False),
@@ -2850,6 +3015,116 @@ def _remove_obsolete_jj_draft_handbook():
     return {"status": status, "removed": len(removed), "failed": failed}
 
 
+# 归类规则：(子域名, 何时该读, 关键词)。命中数最高者胜，全零落「未归类」。
+# 关键词照着真实积累出来的内容取（十五万字里反复出现的那些），不是凭空设想的分类学。
+_TOOLDOM_RULES = (
+    ("DOCX与PDF交付", "生成或修改 DOCX/PDF 成稿、处理脚注体例、跑 LibreOffice 转换、克隆范本时读",
+     ("docx", "libreoffice", "soffice", "范本", "样式", "脚注", "footnote", "styles.xml",
+      "document.xml", "zipfile", "转 pdf", "word/", "斜体", "标题层级")),
+    ("页码与引注核验", "写引注、换算印刷页码、回原文溯源、locate_quote 结果可疑时读",
+     ("印刷页", "页码", "换算", "official_pages", "locate_quote", "页脚", "页眉", "抽印本",
+      "ocr", "转引", "同前注", "引注", "题录格式")),
+    ("法条与法源核对", "核对法条条号、法律文本版本、上官方法源站点时读",
+     ("刑事诉讼法", "条号", "第二百", "少年法", "e-gov", "法令", "flk.npc", "法规", "法条",
+      "處理法", "现行法", "修正", "施行")),
+    ("外部检索与站点", "配检索词、跑 WebFetch、上外部数据库找文献时读",
+     ("webfetch", "检索词", "search_localkb", "站点", "url", "openalex", "知网", "cnki",
+      "http", "api", "查重", "召回", "检索式")),
+    ("子代理与任务调度", "派子代理、拆批量任务、排查任务失联时读",
+     ("子代理", "派单", "失联", "任务书", "jsonl", "分段落盘", "接棒", "独立校核", "并发")),
+    ("知识库工具与题录", "用 PaperPiggy 自身的工具、修 Zotero 题录、判断库内条目可信度时读",
+     ("read_source", "zotero", "题录", "journal_tier", "深索", "入库", "localkb", "wiki",
+      "综合页", "sac", "条目题名")),
+)
+
+_TOOLDOM_ENTRY_RE = re.compile(r"^\s*(?:<!--\s*\d{4}-\d{2}-\d{2}\b|##\s+\S)")
+
+
+def _split_tools_entries(text):
+    """把旧的单文件工具经验切成条目：以「<!-- 日期 … -->」或二级标题为界。
+    首个边界之前的内容是文件头（出厂说明），不进条目。"""
+    entries, cur = [], None
+    for ln in str(text or "").splitlines():
+        if _TOOLDOM_ENTRY_RE.match(ln):
+            if cur is not None:
+                entries.append("\n".join(cur).strip())
+            cur = [ln]
+        elif cur is not None:
+            cur.append(ln)
+    if cur is not None:
+        entries.append("\n".join(cur).strip())
+    return [e for e in entries if e]
+
+
+def _classify_tools_entry(text):
+    """条目 → 子域名。命中数最高者胜；全零落「未归类」。"""
+    low = str(text or "").casefold()
+    best, best_n = MEMORY_TOOLDOM_FALLBACK, 0
+    for name, _when, kws in _TOOLDOM_RULES:
+        n = sum(low.count(k) for k in kws)
+        if n > best_n:
+            best, best_n = name, n
+    return best
+
+
+def _tooldom_when(name):
+    for n, when, _kws in _TOOLDOM_RULES:
+        if n == name:
+            return when
+    return "尚未归类的零散经验，维护时应分流到合适子域"
+
+
+def _migrate_tools_memory_to_domains():
+    """把单文件《工具经验.md》拆成 `工具经验/<子域>.md`，原文一字不改地搬。
+
+    只在「旧文件有实质内容 且 子域目录还没有任何 .md」时跑一次；迁移后原文件被换成指路页，
+    实质内容判定即为否，天然幂等。原件另存进 升级与备份/记忆迁移备份/，不删。
+    任一子域写失败就把本次已写的清掉、原文件原样留着——宁可不迁移，也不能拆一半。
+    """
+    try:
+        src = tools_file()
+        dst = tooldoms_dir()
+        if dst.exists() and any(dst.glob("*.md")):
+            return {"status": "already_done", "moved": 0}
+        raw = _read(src)
+        entries = _split_tools_entries(raw)
+        if not entries:
+            return {"status": "nothing_to_move", "moved": 0}
+        buckets = {}
+        for e in entries:
+            buckets.setdefault(_classify_tools_entry(e), []).append(e)
+        written = []
+        try:
+            dst.mkdir(parents=True, exist_ok=True)
+            for name, items in sorted(buckets.items()):
+                f = dst / (topic_filename(name) + ".md")
+                body = tooldom_seed(name, _tooldom_when(name)) + "\n" + "\n\n".join(items) + "\n"
+                _atomic_write_text(f, body)
+                written.append(f)
+        except Exception as e:
+            for f in written:
+                try:
+                    f.unlink()
+                except Exception:
+                    pass
+            return {"status": "failed", "moved": 0, "error": str(e)}
+        try:
+            backup = maintenance_dir() / "记忆迁移备份" / (
+                time.strftime("%Y%m%d-%H%M%S") + "_工具经验分区前")
+            backup.mkdir(parents=True, exist_ok=True)
+            _atomic_write_text(backup / MEMORY_TOOLS_NAME, raw)
+        except Exception:
+            pass
+        try:
+            _atomic_write_text(src, _TOOLS_NOTE)
+        except Exception:
+            pass
+        return {"status": "migrated", "moved": len(entries),
+                "domains": {k: len(v) for k, v in sorted(buckets.items())}}
+    except Exception as e:
+        return {"status": "failed", "moved": 0, "error": str(e)}
+
+
 def _remove_obsolete_catalog_check_task():
     """删除曾误放进用户资料库的开发维护任务。
 
@@ -2874,7 +3149,7 @@ def ensure_scaffold():
     acts = {}
     try:
         for d in (output_dir(), output_dir() / "定时任务", rely_dir(),
-                  memory_dir(), topics_dir(),
+                  memory_dir(), topics_dir(), tooldoms_dir(),
                   skills_dir(), handbooks_dir(), formats_dir(), templates_dir(), tasks_dir(),
                   maintenance_dir(), pending_dir(), history_dir()):
             try:
@@ -2886,6 +3161,7 @@ def ensure_scaffold():
         _migrate_legacy_workflow()
         acts["migration/写论文与综述.md"] = _migrate_combined_paper_workflow()
         acts["migration/移除停用成文技艺手册"] = _remove_obsolete_jj_draft_handbook()
+        acts["migration/工具经验分区"] = _migrate_tools_memory_to_domains()
         _remove_obsolete_catalog_check_task()
         for key, path, text, mask, seed in _template_specs():
             acts[key] = _ensure_template(
@@ -2905,6 +3181,7 @@ def paths_info():
         "memory_file": str(memory_file()),
         "memory_dir": str(memory_dir()),
         "memory_tools_file": str(tools_file()),
+        "memory_tooldoms_dir": str(tooldoms_dir()),
         "memory_topics_dir": str(topics_dir()),
         "memory_changelog_file": str(changelog_file()),
         "skills_dir": str(skills_dir()),
@@ -2915,8 +3192,8 @@ def paths_info():
         "maintenance_dir": str(maintenance_dir()),
         "pending_dir": str(pending_dir()),
         "history_dir": str(history_dir()),
-        "agents_file": str(base_dir() / "AGENTS.md"),
-        "claude_file": str(base_dir() / "CLAUDE.md"),
+        "agents_file": str(home_docs_dir() / "AGENTS.md"),
+        "claude_file": str(home_docs_dir() / "CLAUDE.md"),
     }
 
 
