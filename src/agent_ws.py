@@ -53,6 +53,7 @@ def output_dir():    return base_dir() / C.AGENT_OUTPUT_NAME
 def rely_dir():      return base_dir() / C.AGENT_RELY_NAME
 def memory_dir():    return rely_dir() / "记忆"
 def skills_dir():    return rely_dir() / "技能"
+def tools_dir():     return rely_dir() / "工具"      # 出厂随附的可执行工具（目前只有直读桥 kb.py）
 def handbooks_dir(): return skills_dir() / "参考手册"
 def formats_dir():   return rely_dir() / "参考格式"
 def templates_dir(): return rely_dir() / "交付模板"
@@ -912,6 +913,36 @@ _SKILLS_README = """# 技能 / 工作流
 """
 
 _ROOT_AGENTS = """# PaperPiggy Agent 工作入口
+
+## 远程会话闸门（最高优先级，先于下面各闸门判定）
+
+**判据只有一条**：手上有没有 `localkb` 的工具（`read_project_memory`／`search_localkb`…）。
+有就照常走下面各闸门，本节不用管；**没有**（Claude Cowork 等远程会话的常态）就照本节走，
+**不要停下来问用户「连不上知识库怎么办」**。远程会话跑在与 Windows 宿主隔离的 Linux 侧，
+`mcp_server.py` 要用宿主的 `pythonw.exe`、daemon 只绑宿主的 `127.0.0.1`，两条路都不通，
+不必再试；但安装目录是挂载可读的，所以改走直读桥。
+
+**第一条命令**（跑过即满足下面的项目记忆闸门）：
+
+```bash
+# 挂载点一般是 ~/mnt/<安装目录名>，不确定先 ls ~/mnt
+python3 ~/mnt/PaperPiggy/0_Agent资料库/工具/kb.py boot
+```
+
+一次做完三件事：接上知识库、报库内状态、输出**项目记忆 core 视图**。core 分段输出，
+按结尾提示 `--part 2` 往下读完。
+
+- **零安装**：jieba 借应用自带的那份（与建库时同版本、法律词典同源），BM25 用 numpy 直算库里
+  现成的索引，精排走标准库 HTTP，**不需要 pip 装任何包**。`kb.py doctor` 报每个依赖从哪来、精排通不通。
+- **检索口径**：召回是词法的（BM25＋法律词典＋同义扩展），精排调应用同一个 reranker、期刊加成同一条
+  公式，所以名次与应用高度接近；**但没有向量召回**——字面不沾、语义相近的文献仍可能漏掉。
+  可以用它发现文献、判断相关性排序，**不得据以断言「库里没有 X」**；凡用其结果，交付时写明本轮走的是直读桥。
+- **之后一切取数都走 `kb.py` 子命令**：`search` 检索／`read` 读原文（PDF 带印刷页码，法规 `--article 第X条`）／
+  `meta` 题录／`cite` 出脚注／`page` 页码换算／`quote` 核对引文／`sources` 列题录／`wiki` 综合层／
+  `statutes` 法规库／`memory --append` 写回记忆。逐条用法见
+  `0_Agent资料库/技能/远程会话直读桥（无MCP时）.md`——远程侧直接 `cat` 它，`read_workflow` 在那边没有。
+- **桥只读**：不建库、不写 wiki、不改综合页；唯一的写操作是 `kb.py memory --append`。挂载目录里的文件
+  删不掉也移不走（`rm` 报 `Operation not permitted`），中间产物一律放远程 shell 自己的 `$HOME` 或 `/tmp`。
 
 ## 项目记忆闸门（最高优先级）
 
@@ -1931,7 +1962,11 @@ def _exact_hash(text, mask=None):
 
 # 各出厂模板的**历史** normalized-sha1 名单（新版往对应集合里 add，旧的永不删）。
 _FACTORY_HASHES = {
-    "home/AGENTS.md":                     {"903219e637563515cc0b85eb50229352784c4e66",   # 2026-08-20 v6 工作流上线
+    "rely/技能/远程会话直读桥（无MCP时）.md": {"a4fab7f59c51c159aec9b88d32cdaebe344814fe"},   # 2026-09-08 首版
+    "rely/工具/kb.py":                    {"3219fa5fb854ccfbc9115d8437571da2852727e8",   # 2026-09-08 词法召回+API 精排
+                                           "021e3ba3df14e11b62a6322c86f7dc0214da3abd"},
+    "home/AGENTS.md":                     {"b0d3287a85db180a4095849223d2bf4ce19517f3",   # 2026-09-08 远程会话闸门
+                                            "903219e637563515cc0b85eb50229352784c4e66",   # 2026-08-20 v6 工作流上线
                                             "4484e95570ece0386e0734797a7ccd487fc464cc",
                                              "e50c7cafd16ca2c6e8ba88b6b607465605e65af5",
                                             "f1441b3010fd1f86b0062e76760233d8a71bb50b",
@@ -1940,7 +1975,8 @@ _FACTORY_HASHES = {
                                             "35ff785250b8963550ca03dad5580e2c80146abb",   # 2026-08-13 记忆分区闸门
                                             "9377e9e53fb9885e15681bfac8bd64dd2d1b56cb",   # 2026-09-02 工具经验按子域分区
     },
-    "home/CLAUDE.md":                     {"959ea188788c2fd5ea974fa8ff0b581b8d2811c6",   # 2026-08-20 v6 工作流上线
+    "home/CLAUDE.md":                     {"59f57afc8b801a6b286597ce1434fd3e38f39b7a",   # 2026-09-08 远程会话闸门
+                                            "959ea188788c2fd5ea974fa8ff0b581b8d2811c6",   # 2026-08-20 v6 工作流上线
                                             "4e7fc7f0d4ba2a199e11897b8c7fdc5c286cab04",
                                              "d7d13de421a115ad0eab0b3ae72b1097155dd053",
                                             "779426078d1d3180f5e4bc981366ecba00c9c38b",
@@ -2065,6 +2101,11 @@ _FACTORY_HASHES = {
 # 工作流历史出厂正文的 exact-sha1：破坏性升级只认这里，不再仅凭“去所有空白”的旧指纹。
 # 既有工作流的值从 git 历史正文复算；本轮新增工作流保留每次已登记的出厂候选指纹，旧值不删。
 _WORKFLOW_FACTORY_EXACT_HASHES = {
+    # kb.py 也登记在这张表里：它是 **Python 代码**，缩进与空行都有语义，
+    # 用「去掉所有空白」的 normalized 指纹会让「只改了缩进」的新版被判成「已是最新」而静默不升级。
+    "rely/工具/kb.py": {"574098ef7779da96465a400bfccafb6908fbf7d0",                        # 2026-09-08
+                       "109dccf385639bcbce050028ce14d19518b85a6b"},
+    "rely/技能/远程会话直读桥（无MCP时）.md": {"26e1e8402fe448a86b73bda9d1fcb55f1ec6c67c"},  # 2026-09-08
     "rely/技能/论文初稿（少年司法版）.md": {
         "1c5e3856bdcf6929c022d88b63b5ae0eef397568",   # 2026-08-21 引号规则去掉台湾地区例外 + 示例改真全角
         "c56b37b96aacefa194f661bfd6696501fc00d929",   # 2026-08-21 v6 新增「施工蓝图」交付形态
@@ -2162,13 +2203,156 @@ def home_docs_dir():
     return base
 
 
+_REMOTE_BRIDGE_GUIDE = r"""# 远程会话直读桥（无 MCP 时）
+
+## 触发条件
+
+**当前会话里没有 `localkb` 的任何工具时，一律用这条。** 典型场景是 Claude 的 Cowork／远程会话：
+会话跑在与 Windows 宿主隔离的 Linux 侧，只把安装目录挂载进来读。`claude mcp add localkb …`
+配的是本机 Claude Code 的 MCP，跟远程会话是两套东西，配了也不会出现在那边。
+
+判据只有一条：**手上有没有 `read_project_memory` / `search_localkb` 这些工具。**
+有就走正常的 MCP 路径，本条不用读；没有就照本条执行，不要因为「连不上知识库」停下来问用户。
+
+两条已经堵死、不必再试的路：
+
+- **起 MCP 服务器**——`mcp_server.py` 要用 `python\pythonw.exe`（Windows 可执行文件），远程侧是 Linux，起不来。
+- **打 daemon 的 HTTP**——daemon 绑在宿主的 `127.0.0.1:8770`，远程侧没有到宿主的路由，全部 `ConnectionRefused`。
+  远程侧**有**外网（精排就靠它），但那对连宿主没用。
+
+## 开工前检查
+
+工作目录是挂载进来的安装目录，一般在 `~/mnt/<安装目录名>`（不确定先 `ls ~/mnt`）。
+下文一律以 `~/mnt/PaperPiggy` 为例，换成你实际看到的那个。
+
+### 第 0 步：一条命令接上（**新会话的第一件事，不要跳**）
+
+```bash
+python3 ~/mnt/PaperPiggy/0_Agent资料库/工具/kb.py boot
+```
+
+一次做完三件事：接上知识库、报库内状态、输出**项目记忆 core 视图**——**跑过即满足项目记忆闸门**。
+core 分段输出（每段 15000 字，与应用 `read_project_memory` 同口径），按结尾提示 `--part 2` 往下读完。
+
+**零安装**：jieba 借应用自带的那份（版本与建库时一致，法律词典口径同源），BM25 用 numpy 直算库里
+现成的索引，精排走标准库 HTTP，**不需要 pip 装任何包**。
+`python3 kb.py doctor` 报每个依赖从哪来、索引在不在、精排通不通（含一次真实往返自检）。
+
+## 用户决策点
+
+- **精排不通时要不要继续**：`doctor` 报精排不可用（不是 API 模式、没配 Key、余额为 0），检索会自动回退纯词法
+  并在每次结果里打警告。这时可以照常干活，但名次质量下降，**须在报告里说明**；要不要先去应用里配好，问用户。
+- **写回记忆**：`kb.py memory --append` 是桥唯一的写操作。产生了长期信息就照写，不必问；
+  但**新建主题档案**桥不代劳（查重闸在应用侧），档案不存在会直接报错——此时先确认是不是同题的另一个名字。
+
+## 分步做法
+
+### 第 1 步：记忆的其余取法
+
+```bash
+python3 kb.py memory core --part 2        # core 往下读
+python3 kb.py memory topics               # 只看主题清单与状态
+python3 kb.py memory "topic:核准追诉"      # 取某一份主题档案正文（默认不取；用户说旧结论作废时不许取）
+python3 kb.py memory "tools:页码与引注核验"  # 取某一个工具经验子域
+```
+
+### 第 2 步：检索与读原文
+
+```bash
+python3 kb.py search "低龄未成年人核准追诉" -k 12          # 发现型检索，每篇最多 2 段
+python3 kb.py search "保护处分" -k 8 --sort tier          # 按期刊等级排
+python3 kb.py search "先议" --scope meta                  # 只搜题录（题名＋摘要）
+python3 kb.py search "分流" --key I59T6HU6,KRTHAULJ       # 只在指定几篇内搜
+python3 kb.py search "……" --pool 400                     # 加深候选池（更全，API 往返更多）
+python3 kb.py search "……" --no-rerank                    # 跳过精排，只看纯词法名次
+
+python3 kb.py read I59T6HU6 --from 3 --to 6              # 读原文，PDF 逐页并附期刊印刷页码
+python3 kb.py read STAT-7524D91BD031E4 --article 第二百七十八条
+python3 kb.py meta KRTHAULJ                              # 完整题录 ＋ 深索状态 ＋ 被哪些综合页引用
+python3 kb.py sources --q 姚建龙                          # 按作者/题名/刊名列题录
+```
+
+### 第 3 步：引注与核验
+
+```bash
+python3 kb.py cite I59T6HU6 --page 3                     # 出脚注（自动把 PDF 顺序页换成印刷页）
+python3 kb.py page I59T6HU6 3                            # 只做页码换算，带 conf/quality
+python3 kb.py quote "核准追诉……属于侦查程序的行为" --key I59T6HU6   # 核对引文是否真在原文、在哪一页
+```
+
+### 第 4 步：法条与综合层
+
+```bash
+python3 kb.py statutes                                   # 按条入库的法规清单
+python3 kb.py statutes "刑事诉讼法" --article 第二百七十八条
+python3 kb.py wiki list
+python3 kb.py wiki get concept-bao-huchufen-yu-shaonianchengxu
+```
+
+### 第 5 步：收工写记忆
+
+```bash
+python3 kb.py memory --target core  --append "……"        # 长期偏好／固定规则／已定决策
+python3 kb.py memory --target "tools:<子域>" --append "……"  # 与题目无关的作业经验
+python3 kb.py memory --target "topic:核准追诉" --append "……"
+python3 kb.py memory --target log   --append "……"        # 流水账
+```
+
+## 铁律
+
+1. **只读。** 桥不建库、不写 wiki、不改综合页、不动 `data/` 下任何文件。唯一的写操作是
+   `memory --append`，落点是 `0_Agent资料库/记忆/` 下的纯文本，与应用索引无耦合。
+   要建页改页，等回到有 MCP 的会话，或让用户在应用里做。
+2. **召回是词法的，没有向量召回——这一条必须写进交付。** 桥用库里现成的词法索引、应用自己的
+   jieba 法律词典与同义词扩展召回，再调应用同一个 reranker 精排、同一条公式加期刊权重，所以
+   **名次与应用高度接近**；但 dense 那一路要读向量库，远程侧装不动，**字面不沾、语义相近的文献仍可能漏掉**。
+   所以：靠它**发现**文献可以，靠它断言「库里没有 X」不行——换几组词再搜，或用 `--scope meta`
+   与 `sources --q` 从题录侧兜一遍。凡研究报告用到桥的检索结果，在分工说明里写清本轮走的是直读桥。
+3. **主题档案默认不取。** `memory core` 只给清单；用户说「旧结论作废、重新来」时，一次 `topic:` 都不许调。
+4. **`memory --target "topic:<名>"` 不代建新档案。** 一个研究主题只有一个档案，查重闸在应用侧，
+   桥不绕过它：档案不存在就报错退出，请先确认是不是同题的另一个名字。
+5. **不要写进 `data/`，也不要在挂载目录里留临时文件。** 远程侧删不掉挂载目录里的文件
+   （`rm` 报 `Operation not permitted`），中间产物一律放远程 shell 自己的 `$HOME` 或 `/tmp`。
+6. **法条仍走《查法条闸门》三步。** 第 ① 步「库内」在这里就是 `kb.py statutes` / `kb.py read --article`；
+   库内没有再走 `chineselaw` MCP——但**远程会话里通常也没有那个 MCP**，那就直接告诉用户，
+   再走联网路径找官方原文并双来源交叉验证。
+7. **写作类工作流照旧全额生效。** 本条只解决「拿不到数据」，不改任何研究与体例规则：
+   论文初稿、综述、重新起草那几条该读还得读（在远程侧直接 `cat 0_Agent资料库/技能/<文件名>.md`，
+   `list_workflows`／`read_workflow` 在那边没有）。
+
+## 完成标准
+
+- 开工第一条命令就是 `kb.py boot`，并在报告里写明已读记忆 core。
+- 每一处进正文的引证，都用 `kb.py read` 读过该页原文，或用 `kb.py quote` 核对过；
+  页码用 `kb.py cite`／`kb.py page` 换算，标「页码推算」的逐条人工核对。
+- 报告里写明本轮走的是直读桥、无向量召回，以及精排是否可用。
+- 产生长期信息的，收工前 `kb.py memory --append` 写回对应分区。
+
+## 最终报告
+
+除各工作流本身要求的内容外，另写明三项：① 本轮取数走直读桥（无向量召回），精排可用与否；
+② 检索用过哪些查询词、各自命中什么（有《检索发现日志》要求的照记）；③ 写回了哪几条记忆、落在哪个分区。
+"""
+
+
+def _kb_bridge_source():
+    """直读桥 kb.py 的出厂正文＝应用模块目录里的那份源码（分发包在 app/，开发仓库在 src/）。
+       它是**代码**不是文案：真源在 kb.py 自身，这里只负责把它铺进资料库，绝不另存一份副本
+       ——两处各写各的正是「改了源码忘同步」那类幽灵 bug 的温床。
+       读不到就返回 None，调用方跳过这条 spec（宁可不铺，也不铺一个空文件覆盖用户的）。"""
+    try:
+        return (Path(__file__).resolve().parent / "kb.py").read_text(encoding="utf-8")
+    except Exception:
+        return None
+
+
 def _template_specs():
     """全部出厂模板的清单：(名单键, 落点, 当前文本, 掩码, 是否「用户数据种子」)。
        ensure_scaffold 与 --print-hashes 共用这一份，防止两边漂移（漏算 hash = 老用户平白多出待合并文件）。
        seed=True 的两份是**给用户/agent 写满的空表**（项目记忆 / 变更日志），不是给他读的指引：
        出厂原样时照样升级（没有用户内容可丢），但一旦被写过就**安静保留**、不再塞待合并文件骚扰——
        模板头改几个字就往人家记忆旁边扔个新文件，纯属噪音。"""
-    return [
+    specs = [
         ("home/AGENTS.md",                    home_docs_dir() / "AGENTS.md",                    _ROOT_AGENTS,           None, False),
         ("home/CLAUDE.md",                    home_docs_dir() / "CLAUDE.md",                    _ROOT_CLAUDE,           None, False),
         ("output/README.md",                output_dir() / "README.md",              _README_OUTPUT,        None, False),
@@ -2191,7 +2375,13 @@ def _template_specs():
         ("rely/技能/跨学科发散与补文献.md", skills_dir() / "跨学科发散与补文献.md",  _WF_DIVERGENCE,        None, False),
         ("rely/接入外部文献数据库（可选）.md", rely_dir() / "接入外部文献数据库（可选）.md", _EXTERNAL_DB_NOTE, None, False),
         ("rely/AI写综述遵守的规约.md",      rely_dir() / "AI写综述遵守的规约.md",    _rules_summary_text(), _MASK_WIKI_PATH, False),
+        ("rely/技能/远程会话直读桥（无MCP时）.md", skills_dir() / "远程会话直读桥（无MCP时）.md",
+                                                     _REMOTE_BRIDGE_GUIDE,   None, False),
     ]
+    kb = _kb_bridge_source()
+    if kb:
+        specs.append(("rely/工具/kb.py", tools_dir() / "kb.py", kb, None, False))
+    return specs
 
 
 _UPDATE_STATE = "agent-template-updates.json"
@@ -3151,6 +3341,7 @@ def ensure_scaffold():
         for d in (output_dir(), output_dir() / "定时任务", rely_dir(),
                   memory_dir(), topics_dir(), tooldoms_dir(),
                   skills_dir(), handbooks_dir(), formats_dir(), templates_dir(), tasks_dir(),
+                  tools_dir(),
                   maintenance_dir(), pending_dir(), history_dir()):
             try:
                 d.mkdir(parents=True, exist_ok=True)
@@ -3185,6 +3376,7 @@ def paths_info():
         "memory_topics_dir": str(topics_dir()),
         "memory_changelog_file": str(changelog_file()),
         "skills_dir": str(skills_dir()),
+        "tools_dir": str(tools_dir()),
         "handbooks_dir": str(handbooks_dir()),
         "formats_dir": str(formats_dir()),
         "templates_dir": str(templates_dir()),
