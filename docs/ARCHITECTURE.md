@@ -497,7 +497,9 @@ MCP `localkb://browser` 与 `dedicated_browser.py --config` 都从该模块只�
 `browser_devtools_mcp.py` 在外部浏览器工具启动前读取并核对实际 endpoint，再传给工具，避免固定端口。
 开发资料和端口独立，正式模式才核对明确旧连接；不按“唯一浏览器进程”猜测关联。
 配置只有在启动成功并核对进程、目录归属后才保存；已保存端口冲突或旧目录丢失时停止，不换号、不重建资料。
-关联属于核心备份，默认 `data/browser_profile` 含登录资料，明确排除普通备份；两者均不参与恢复默认设置或应用代码替换。
+关联属于核心备份；独立 PaperPiggy 备份任务可包含已关联的完整专用浏览器资料，并排除明确可再生的缓存。
+普通数据白名单仍排除 `data/browser_profile`，浏览器资料由显式来源根处理，避免漏掉外置资料目录。
+关联和登录资料均不参与恢复默认设置或应用代码替换。
 
 ### 运行时必需（server / MCP / 检索链路）
 
@@ -538,6 +540,9 @@ MCP `localkb://browser` 与 `dedicated_browser.py --config` 都从该模块只�
 | `models_bootstrap.py` | 首启从云端下载两个 INT8 ONNX 模型（归档合计约 900MB，解压后约 1.2GB），校验 sha256 + 解压 |
 | `updater.py` | **应用自更新**（不同于知识库自动更新）：`server /update/*` 下载增量包 → `launcher.apply_update()` 拉起独立进程换 `app\` 并重启；暂存验证+改名交换+回滚。**只碰 `app\`，从不引用 DATA/models/0_Agent**。顶栏 `#up-badge` 提示新版 |
 | `backup.py` | 备份/恢复（zip）+ 清空重建的落点分类源（`CORE/INDEX/NEVER/SPECIAL_IN_DATA`，`check_guides ⑥` 据此断言） |
+| `backup_jobs.py` / `backup_archive.py` / `backup_restore.py` | 独立任务配置、持久记录与成功版本归属；格式 2 完整包逐文件和 SQLite 校验；新目录验证、带日志与回退件的原位恢复 |
+| `backup_sources.py` / `backup_runner.py` / `backup_api.py` | 来源发现与约束；无界面同步执行和登录补跑；HTTP 队列适配。Zotero 与小猪使用各自任务与备份包 |
+| `backup_vss.py` / `backup_service.py` | Windows 同批多卷 VSS 与受保护计划任务；实际文件处理使用普通用户权限，快照原生操作单独使用已授权权限 |
 
 ### 建库管线（子进程，由 `build_all.py` 编排）
 

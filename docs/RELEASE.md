@@ -47,6 +47,14 @@ ISCC 时仍会产出 `paper-piggy-app-<ver>.zip`，但这不代表一定可以�
 “没找到 ISCC”。现在构建脚本会在变量缺失时由 `USERPROFILE\AppData\Local` 回退解析；用户级
 Codex 配置仍应保留 `APPDATA` 与 `LOCALAPPDATA`，否则 GitHub CLI 也会找不到原有登录配置。
 
+### 0.1c 原生备份组件随应用发布
+
+后台 VSS 能力使用固定的原生 Inno 组件安装器，普通应用与主安装器仍按用户权限运行。首次配置及必要更新备份组件时，由用户点击设置页入口确认 UAC；不把日常应用整体提权，也不在启动、检查状态或普通备份时请求授权。
+
+`build_bundle.py` 会先调用 `installer/build_backup_component.py`，从明确的模块清单及最小 Python 标准库构建 `build/backup-component/backup_component.exe` 和配套 `backup_component.json`。二者均进入 `app/`，因此完整安装器与应用内更新 ZIP 都携带同一组件。组件只嵌入公开源码与运行时，不打包任务配置、浏览器登录资料或真实文库。
+
+源模块（包括 `config.py` 的版本）变化后必须重新编译组件。`source_app_files()` 同时检查组件元数据、全部源模块 SHA-256 和 EXE 哈希；缺失、损坏或陈旧会中止出包。禁止手工复制旧 EXE 绕过检查，正式构建也不得跳过此门禁。组件的受保护运行位置独立于应用数据家；换机后需重新关联和授权配置，不把复制应用目录等同于迁移系统计划。
+
 ### 0.2 重建 `build/py312`（唯一不可自动重建的环节）
 
 `build_bundle.py` 完整构建时会把 `build/py312/` 复制为 bundle 的 `python/`，但它**不会下载或重建**
@@ -107,6 +115,15 @@ build\py312\python.exe -c "import onnxruntime, lancedb, pypdfium2, rapidocr, cv2
 > ② 重算是纯 CPU 紧循环，独占 GIL 42.8 秒，uvicorn 答不上 `/health`，launcher 报「未能启动」。
 > 用户连吃两次假报错。**跑测试 ≠ 跑起来。**
 
+**真实 VSS 备份与恢复验收（本功能发布门禁）**
+- [ ] 在开发仓库的隔离数据、测试 profile 和独立浏览器端口完成真实同批多卷 VSS 验收；单元测试或 FakeSnapshot 不代替真实快照。不得使用正式安装、真实 Zotero、正式专用浏览器资料或既有备份进行破坏性测试。
+- [ ] 持续写入及活动 WAL 下，核对主库、嵌套插件数据库、附件和完整用户配置；备份只能读取快照，不能在源库 checkpoint 或修复。
+- [ ] 快照失败、哈希或数据库校验失败、空间不足及取消任务时，不登记成功，不删除旧成功版本，不降级为复制活动数据库。
+- [ ] 在小猪未打开的条件下核对后台触发、登录补跑、防重入及长任务跨计划时刻；恢复默认设置与应用升级保留任务关联。
+- [ ] 新目录恢复覆盖全部来源；原位恢复核对程序退出与 MCP 断开，交换中断后按日志回滚；恢复期间 launcher、后端与 MCP 的门禁均有效。
+- [ ] 浏览器恢复保留端口和同类程序映射；Zotero 恢复保留原自动同步设置及其他 profile 注册。回退件手动清理，旧包和“过时备份”不受自动清理影响。
+- [ ] 记录组件 build_id、源码提交、运行命令、测试日志与未覆盖范围；任何未完成项都不得在发布说明中写成已实测。
+
 **构建产物**
 - [ ] **`src\dist\LocalKB\models\` 必须是空的** —— 正式版的模型是首启从云端下载的，
       不进安装器。`--slim-models`（竞赛版/自测用）会把 1.1 GB 模型拷进去，而 **`build_bundle.py`
@@ -119,6 +136,7 @@ build\py312\python.exe -c "import onnxruntime, lancedb, pypdfium2, rapidocr, cv2
 - [ ] `rapidocr` + `cv2` 可导入，并用一页真实扫描 PDF 做过本地 OCR 冒烟测试
 - [ ] `models_manifest.json` 存在，且直链可匿名下载（私有仓库的 Release 资产会 404）
 - [ ] `app/version.json` 的 sha256 与磁盘文件一致
+- [ ] `app/backup_component.exe` 与配套元数据均存在，源码指纹与本次提交一致，完整安装器及 app ZIP 都包含二者
 - [ ] bundle 根目录含 `LICENSE` 与 `THIRD-PARTY-NOTICES.md`，安装器也明确安装这两份法律文档
 - [ ] 包内**没有** `app/data/`、`app/logs/` 残留
 - [ ] 包内**没有** `settings.json` 里的 API 密钥
@@ -174,7 +192,7 @@ build\py312\python.exe -c "import onnxruntime, lancedb, pypdfium2, rapidocr, cv2
   （`PrivilegesRequired=lowest` 之下 `{autopf}` 就解析到这里；**无需管理员权限、不弹 UAC**）。
   安装向导的「选择位置」页**刻意保留** —— 包 800M + 模型 1~2G + 索引若干 G，用户想装 `D:\` 就该让他装。
 - **数据与程序同目录**：安装器带 `portable.txt`，索引/模型/wiki/`0_Agent*` 全落在安装目录内。
-  一个文件夹搬走就能换电脑，C 盘不占。卸载重装不丢索引 —— Inno 只删自己装进去的文件。
+  知识库资产可随应用目录迁移；Zotero、专用浏览器按各自来源目录核对，后台备份组件和系统计划在新电脑重新配置。卸载重装不丢索引 —— Inno 只删自己装进去的文件。
   兜底：万一用户把它装进 `Program Files`（不可写），`config._writable()` 探测到就回退
   `%LOCALAPPDATA%\PaperPiggy`，不崩。
 - 注意事项：安装器**不要命名为 setup.exe**（加重 Defender 盯梢），填全 Publisher/ProductName/版本元数据；加一段检测注册表无 WebView2 时运行 Evergreen Bootstrapper（约 2MB，随包携带）的脚本 —— Win11 出厂预装，Win10 绝大多数已推送但仍有漏网。

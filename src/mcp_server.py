@@ -2390,6 +2390,10 @@ def _watch_parent():
                 pass   # 权限等其它错：视作还活着，不误退
 
 def main():
+    import backup_runner
+    if backup_runner.active_paperpiggy_restore(C.DATA):
+        log("小猪正在原位恢复，暂不启动 MCP；请恢复完成后重新连接。")
+        return
     log("MCP server 就绪（stdio）")
     threading.Thread(target=_watch_parent, daemon=True).start()
     negotiated_protocol = PROTO

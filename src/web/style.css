@@ -1772,3 +1772,40 @@ input:focus, select:focus, textarea:focus, #q:focus, #chat-q:focus,
   .topbar { flex-wrap: wrap; }
   .topbar > .actions { flex-wrap: wrap; justify-content: flex-end; }
 }
+
+/* 两类独立备份任务 */
+.bk2-service { display: flex; align-items: center; gap: 14px; justify-content: space-between; padding: 12px;
+  margin: 12px 0; border: 1px solid var(--line); border-radius: 10px; background: var(--card); }
+.bk2-service > div { min-width: 0; }
+.bk2-service p { margin: 4px 0 0; }
+.bk2-service button { flex: 0 0 auto; }
+.bk2-task-tabs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 16px 0; }
+.bk2-task-tabs button { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; padding: 13px;
+  border: 1px solid var(--line); border-radius: 10px; color: var(--fg); background: var(--card); text-align: left; cursor: pointer; }
+.bk2-task-tabs button[aria-selected="true"] { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(216,91,124,.12); }
+.bk2-task-tabs span { font-size: 12px; color: var(--muted); }
+.bk2-task-tabs button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.bk2-path { overflow-wrap: anywhere; white-space: pre-line; }
+#bk2-editor > label, #bk2-zotero-sources > label, #bk2-restore label, .bk2-import > label {
+  display: flex; flex-direction: column; gap: 5px; margin: 10px 0; }
+#sec-backup input:not([type="checkbox"]), #sec-backup select { width: 100%; min-width: 0; box-sizing: border-box;
+  border: 1px solid var(--line); border-radius: 7px; padding: 7px 9px; background: var(--card); color: var(--fg); }
+#sec-backup input[type="checkbox"] { flex: 0 0 16px; width: 16px; }
+.bk2-schedule { margin: 14px 0; border-top: 1px solid var(--line); padding-top: 9px; }
+.bk2-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: center; gap: 10px 16px; }
+.bk2-grid > label:not(.sac-toggle) { display: flex; flex-direction: column; gap: 5px; }
+#sec-backup .bk-item { display: flex; gap: 12px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+#sec-backup .bk-item > div { min-width: 0; flex: 1 1 220px; }
+#sec-backup .bk-item p { overflow-wrap: anywhere; }
+.bk2-history, .bk2-import, .bk2-legacy { margin-top: 16px; }
+.bk2-history > summary, .bk2-import > summary, .bk2-legacy > summary { cursor: pointer; color: var(--fg); font-size: 13px; }
+.bk2-history-item { display: flex; flex-direction: column; gap: 3px; margin: 8px 0; overflow-wrap: anywhere; }
+.bk2-restore { margin-top: 16px; border: 1px solid var(--accent); border-radius: 10px; padding: 12px; }
+.bk2-restore h5 { font-size: 14px; margin: 0 0 8px; }
+#sec-backup .set-errbtns { flex-wrap: wrap; }
+@media (max-width: 700px) {
+  .bk2-service { align-items: stretch; flex-direction: column; }
+  .bk2-grid { grid-template-columns: 1fr; }
+  .bk2-task-tabs { gap: 7px; }
+  .bk2-task-tabs button { padding: 10px; }
+}

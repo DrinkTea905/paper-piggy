@@ -351,6 +351,48 @@ class _JsApi:
     """暴露给前端的原生桥（window.pywebview.api）。必须住在 launcher 进程——原生窗口在这里，
        server 是独立子进程、其 webview.windows 恒空，之前的 /setup/pick_folder 在 server 里
        调 create_file_dialog 永远失败（死按钮）。"""
+    @staticmethod
+    def _backup_window():
+        """管理员入口只接受本应用本机页面，不接受远端导航后的桥调用。"""
+        import webview
+        from urllib.parse import urlsplit
+        windows = getattr(webview, "windows", None)
+        window = windows[0] if windows else None
+        if window is None:
+            raise ValueError("请在小猪原生窗口中操作。")
+        actual = urlsplit(window.get_current_url() or "")
+        expected = urlsplit(C.DAEMON_URL)
+        if (actual.scheme, actual.hostname, actual.port) != (expected.scheme, expected.hostname, expected.port):
+            raise ValueError("请返回小猪的本机备份与恢复页面。")
+        return window
+
+    def install_backup_service(self):
+        """明确点击后准备固定载荷，再交由 Windows 请求管理员授权。"""
+        try:
+            self._backup_window()
+            import backup_service as service
+            payload = service.install_payload(C.DATA, [C.APP / name for name in sorted(service.MODULES)],
+                                              runtime_dir=Path(sys.executable).parent)
+            return service.request_install(payload)
+        except Exception as exc:
+            _logline(f"后台备份组件安装失败：{exc!r}")
+            return {"ok": False, "error": str(exc)}
+
+    def close_for_backup_restore(self):
+        """只关闭已确认原位恢复对应的小猪窗口；launcher 收尾停止本次后端。"""
+        try:
+            window = self._backup_window()
+            import backup_runner
+            if not backup_runner.active_paperpiggy_restore(C.DATA):
+                raise ValueError("没有等待退出的原位恢复任务。")
+            def close():
+                time.sleep(0.4)
+                window.destroy()
+            threading.Thread(target=close, daemon=True).start()
+            return {"ok": True}
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+
     def pick_folder(self):
         """弹原生目录选择器，返回选中的绝对路径（取消/失败返回空串）。"""
         try:
@@ -460,6 +502,10 @@ def _stop_server(proc=None, attached=None):
 
 
 def main():
+    import backup_runner
+    if backup_runner.active_paperpiggy_restore(C.DATA):
+        _notify("正在恢复数据", "后台正在处理小猪原位恢复，请完成后再打开。")
+        return
     _set_app_user_model_id()
     _ensure_icon()
     _check_path_ascii()

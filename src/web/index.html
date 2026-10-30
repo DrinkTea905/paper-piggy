@@ -192,7 +192,7 @@
           <div class="ag-ch-n">8</div>
           <div class="ag-ch-c">
             <h3>人工控制台、备份与隐私</h3>
-            <p class="ag-note">· <b>文献页</b>用于浏览分类、查看处理状态、人工挑选文献和打开原文；“题录查找”输入后会自动显示结果，“全文与相关内容”仍需点击“检索全文”或按 Enter。<br>· <b>综述库</b>用于阅读、核验、查看历史和回滚。<br>· 顶栏<b>释放检索内存</b>只清理临时占用；有界面、对话或 Agent 查询时会拒绝，不会中断查询。<br>· 应用升级会自动登记兼容的索引契约；只有题录、切块或向量输入规则真正不兼容时才提示相应更新或重建，并显示具体原因。不要因为普通版本升级就主动清空索引。<br>· Agent 工作区升级产生的待合并内容与恢复件统一放在 <b>0_Agent资料库 → 升级与备份</b>，不会再散落在技能或说明文件旁边。<br>· <b>设置 → 数据与维护</b>可把综述、Agent 交付物、资料库、分类和人工数据备份为 zip；自动备份在后台执行，页面会显示下次时间和当前进度，正在创建的备份可安全停止。云备份请同步这个静态备份包，不要同步整个数据目录。完整备份会把当前资料、待合并内容和历史备份一起保存。浏览器关联配置会备份，浏览器 Cookie、密码和登录资料不进入普通或完整数据备份。应用升级、恢复默认设置均保留浏览器关联及原资料目录。<br>· 本地检索的待检索文本留在电脑上；SiliconFlow 云端检索和所选 AI 服务会接收完成对应任务所需的文本。API Key 保存在本机设置中。</p>
+            <p class="ag-note">· <b>文献页</b>用于浏览分类、查看处理状态、人工挑选文献和打开原文；“题录查找”输入后会自动显示结果，“全文与相关内容”仍需点击“检索全文”或按 Enter。<br>· <b>综述库</b>用于阅读、核验、查看历史和回滚。<br>· 顶栏<b>释放检索内存</b>只清理临时占用；有界面、对话或 Agent 查询时会拒绝，不会中断查询。<br>· 应用升级会自动登记兼容的索引契约；只有题录、切块或向量输入规则真正不兼容时才提示相应更新或重建，并显示具体原因。不要因为普通版本升级就主动清空索引。<br>· Agent 工作区升级产生的待合并内容与恢复件统一放在 <b>0_Agent资料库 → 升级与备份</b>，不会再散落在技能或说明文件旁边。<br>· <b>设置 → 数据与维护</b>可把综述、Agent 交付物、资料库、分类和人工数据备份为 zip；自动备份在后台执行，页面会显示下次时间和当前进度，正在创建的备份可安全停止。云备份请同步这个静态备份包，不要同步整个数据目录。完整备份会把当前资料、待合并内容和历史备份一起保存。小猪与 Zotero 是两类独立备份任务，可分别选择位置、周期、时刻和保留数量；Zotero 完整保存数据目录与全部用户配置，默认保留 2 份。小猪备份可包含已关联专用浏览器的完整资料，排除可再生缓存。首次配置或必要更新后台备份组件需管理员确认，软件运行中也可备份，小猪未打开时仍可按计划执行并在登录后补跑。新版本校验成功后才清理本任务旧版，现有“过时备份”不受影响。备份包不加密，请保护登录资料和密钥。先恢复到新目录验证，原位恢复需你退出相应程序并明确确认；恢复小猪自身还须断开 MCP 并退出小猪，后台完成前不要重开。回退件由你手动清理。Zotero 保持原自动同步设置，异机浏览器可能需重新登录。浏览器热备恢复后，首次打开可能提示“恢复上次会话”，请在专用窗口自行核对并确认，再检查标签和登录状态。<br>· 本地检索的待检索文本留在电脑上；SiliconFlow 云端检索和所选 AI 服务会接收完成对应任务所需的文本。API Key 保存在本机设置中。</p>
           </div>
         </section>
 
@@ -609,6 +609,7 @@
           <div class="ag-ch-n">8</div>
           <div class="ag-ch-c">
             <h3>它会怎么动你的库（权限与安全）</h3>
+            <p class="ag-note">备份与恢复由你在“设置 → 数据与维护”控制。小猪和 Zotero 分别建立独立恢复点，后台可在软件运行时读取同批卷快照；快照或校验失败会保留已有成功版本，不直接复制活动数据库。小猪备份可包含专用浏览器资料，Zotero 备份包含整个所选 profile 与插件配置，均可能含敏感信息且不加密。恢复先到新目录验证；原位恢复必须由你退出对应程序并确认；恢复小猪自身须先断开 MCP，再退出小猪，完成前不要重开。回退件手动清理。浏览器热备恢复后，首次打开可能提示“恢复上次会话”，由用户在专用窗口自行核对并确认。Agent 不得代为确认，也不得自行关闭程序、覆盖资料、删除历史备份或更改 Zotero 同步设置。</p>
             <p class="ag-note">法规入库有独立双重保护：Agent 必须提交官方 URL、完整正文和版本信息，PaperPiggy 先做结构与哈希预检、保持零写入，向你展示预览；可选检索摘要也在此时完成质量检查并绑定令牌。只有你确认后，原确认令牌才能把同一份内容写进独立法规库，后续不同正文和摘要都不能静默替换，既有摘要也不会被重复入库覆盖。法规快照保存在本机，不会写入或修改 Zotero。</p>
             <p class="ag-note">默认<b>只读检索 + 另存综合</b>，不直接改动你的原始文献或 Zotero；只有你明确要求并通过工具安全闸时，Agent 才能添加来源、建库或深索，从而更新 PaperPiggy 索引。Agent 新写的综述标 🤖 未核验；它更新已核验页时只提交待审稿，不覆盖、不重新索引核验版，只有你接受或编辑保存后才发布为新的核验版。综述页可一键删，是否核验由你决定。原始文献与写回成果保存在本机；云端检索和 AI 助手会接收完成对应任务所需的文本。下面是 AI 必须遵守的写回规约文件（可打开查看它被约束成什么样）：</p>
             <div class="ag-code"><code id="ag-schema"></code><button class="ag-copy" data-copy="ag-schema">复制路径</button></div>
@@ -684,7 +685,7 @@
   <div id="settings-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="settings-title" hidden>
     <div class="modal-box settings-box">
       <h3 id="settings-title">设置</h3>
-      <p class="hint">改动即时生效、无需「保存」。切换检索引擎（本地↔API）会让旧向量不兼容，改动前会二次确认。</p>
+      <p class="hint">大多数设置即时生效；备份任务修改后需点击“保存本任务设置”。切换检索引擎（本地↔API）会让旧向量不兼容，改动前会二次确认。</p>
 
       <div class="settings-shell">
         <nav class="settings-nav" aria-label="设置分类">
@@ -859,55 +860,78 @@
 
       <div class="set-section" id="sec-backup">
         <h4>💾 备份与恢复</h4>
-        <p class="hint">把<b>丢了就再也没有的东西</b>打成一个 zip：综述库、Agent 写的论文与记忆、收藏夹、
-              文献元数据、来源评价数据（其中部分结果花过 API 钱）。<br>
-          <b>想要云备份？</b>把下面的备份位置指到 OneDrive / 坚果云里的一个文件夹就行——
-          云盘同步一个<b>静态 zip</b> 是安全的。⛔ 但<b>千万别把整个数据目录丢进云盘</b>：
-          向量索引是持续读写的数据库，云盘同步它会锁文件、造重复副本，早晚把索引搞坏。</p>
+        <p class="hint">小猪与 Zotero 分别保存完整备份，互不依赖。新备份通过文件、数据库与归档校验后，才清理本任务超出保留数量的旧版本；现有“过时备份”和其他任务的文件不会被接管。云盘请同步完成后的静态备份包，不要直接同步正在使用的数据目录。</p>
 
-        <label>备份位置
-          <input id="bk-dir" placeholder="（默认：数据目录下的 backups\）" />
-        </label>
-        <div class="set-errbtns">
-          <button id="bk-pick" class="ghost" hidden>📁 浏览…</button>
-          <button id="bk-open" class="ghost">📂 打开备份文件夹</button>
+        <div class="bk2-service" aria-live="polite">
+          <div><b id="bk2-service-title">正在检查后台备份…</b><p id="bk2-service-detail" class="hint"></p></div>
+          <button id="bk2-install" class="ghost" type="button">配置后台备份</button>
         </div>
-
-        <label class="sac-toggle">
-          <input type="checkbox" id="bk-with-index" />
-          包含向量索引（体积大，但<b>换电脑时不用重建</b>——重建 1400 篇要几小时或再花一次 API 钱）
-          <span id="bk-size" class="hint"></span>
-        </label>
-        <label class="sac-toggle">
-          <input type="checkbox" id="bk-with-key" />
-          包含 API 密钥 <b class="danger-text">（谨慎）</b>——勾了之后备份包里就有你的密钥，
-          传到云盘、发给别人、丢了 U 盘都等于泄漏。不勾的话恢复后重填一次即可。
-        </label>
-        <label class="sac-toggle">
-          <input type="checkbox" id="bk-auto" />
-          自动备份：每
-          <input type="number" id="bk-days" min="1" max="90" style="width:4em" /> 天一次
-          （只打手写资产、不含索引、不含密钥），保留最近
-          <input type="number" id="bk-keep" min="1" max="20" style="width:3.5em" /> 份
-        </label>
-        <p class="hint">自动备份在后台执行，不会弹出窗口。关闭开关只停止以后自动触发；
-          如果当前正在创建备份，可在下面单独停止。数据恢复为保护完整性，不能中途停止。</p>
-
-        <div id="bk-runtime" class="bk-runtime" aria-live="polite">
-          <span id="bk-runtime-dot" class="bk-runtime-dot"></span>
-          <div class="bk-runtime-copy">
-            <b id="bk-runtime-title">正在读取备份状态…</b>
-            <span id="bk-runtime-detail" class="hint"></span>
+        <p id="bk2-machine-notice" class="hint" hidden></p>
+        <div class="bk2-task-tabs" role="tablist" aria-label="备份任务">
+          <button id="bk2-tab-paperpiggy" type="button" role="tab" data-bk-kind="paperpiggy" aria-selected="true"><b>🐷 小猪备份</b><span id="bk2-summary-paperpiggy">知识库与专用浏览器</span></button>
+          <button id="bk2-tab-zotero" type="button" role="tab" data-bk-kind="zotero" aria-selected="false"><b>📚 Zotero 完整备份</b><span id="bk2-summary-zotero">数据目录与全部用户配置</span></button>
+        </div>
+        <div id="bk2-editor" role="tabpanel" aria-labelledby="bk2-tab-paperpiggy">
+          <p id="bk2-scope" class="hint"></p>
+          <div id="bk2-zotero-sources" hidden>
+            <label>Zotero 数据目录<input id="bk2-data-dir" autocomplete="off" placeholder="含 zotero.sqlite、storage、styles 等内容的目录" /></label>
+            <button class="ghost bk2-pick" type="button" data-pick-target="bk2-data-dir" hidden>📁 选择数据目录</button>
+            <label>Zotero 用户配置目录<input id="bk2-profile-dir" autocomplete="off" placeholder="含 prefs.js、extensions 等内容的 profile 目录" /></label>
+            <button class="ghost bk2-pick" type="button" data-pick-target="bk2-profile-dir" hidden>📁 选择用户配置目录</button>
           </div>
-          <button id="bk-cancel" class="ghost danger" hidden>停止当前备份</button>
+          <label>备份位置<input id="bk2-destination" autocomplete="off" placeholder="请选择用于保存本任务备份包的目录" /></label>
+          <div class="set-errbtns">
+            <button class="ghost bk2-pick" type="button" data-pick-target="bk2-destination" hidden>📁 浏览…</button>
+            <button id="bk2-open" class="ghost" type="button">📂 打开备份文件夹</button>
+          </div>
+          <div id="bk2-paperpiggy-options">
+            <label class="sac-toggle"><input type="checkbox" id="bk2-with-index" />包含向量索引，换电脑时可减少重建</label>
+            <label class="sac-toggle"><input type="checkbox" id="bk2-with-key" />包含 API 密钥；未勾选时恢复后需要重填</label>
+            <label class="sac-toggle"><input type="checkbox" id="bk2-with-browser" checked />包含已关联专用浏览器的完整资料，排除明确可再生的缓存</label>
+            <p id="bk2-browser-source" class="hint bk2-path"></p>
+          </div>
+          <p class="hint danger-text">备份包不加密。Zotero 用户配置和浏览器资料可能包含登录会话、插件密钥等敏感内容，请保护备份位置。浏览器资料可以迁移，重装系统或换机后仍可能需要重新登录；不会解密导出密码。</p>
+          <div class="bk2-schedule">
+            <label class="sac-toggle"><input type="checkbox" id="bk2-enabled" />开启自动备份</label>
+            <div class="bk2-grid">
+              <label>每隔多少天<input id="bk2-days" type="number" min="1" max="365" inputmode="numeric" /></label>
+              <label>执行时刻<input id="bk2-time" type="time" /></label>
+              <label>保留成功版本<input id="bk2-keep" type="number" min="1" max="100" inputmode="numeric" /></label>
+              <label class="sac-toggle"><input type="checkbox" id="bk2-catch-up" checked />登录 Windows 后补跑错过的计划</label>
+            </div>
+            <p class="hint">可在软件运行时备份，无需关闭 Zotero 或浏览器。配置后台备份后，小猪未打开也能按计划执行；位置未选好时不能开启。关闭自动备份不取消当前任务。</p>
+          </div>
+          <div class="set-errbtns"><button id="bk2-save" class="ghost" type="button">保存本任务设置</button><span id="bk2-dirty" class="hint"></span></div>
+
+          <div id="bk-runtime" class="bk-runtime" aria-live="polite">
+            <span class="bk-runtime-dot" aria-hidden="true"></span>
+            <div class="bk-runtime-copy"><b id="bk-runtime-title">正在读取备份状态…</b><span id="bk-runtime-detail" class="hint"></span></div>
+            <button id="bk2-cancel" class="ghost danger" type="button" hidden>停止当前备份</button>
+          </div>
+          <div class="set-errbtns"><button id="bk2-create" class="ghost" type="button">💾 立即备份</button><button id="bk2-refresh" class="ghost" type="button">刷新记录</button></div>
+          <p id="bk2-msg" class="hint" role="status"></p>
+          <details class="bk2-history"><summary>任务记录与失败原因</summary><div id="bk2-history" class="hint">暂无任务记录。</div></details>
+          <div id="bk2-list" class="bk-list"></div>
         </div>
 
-        <div class="set-errbtns">
-          <button id="bk-create" class="ghost">💾 立即备份</button>
-          <span id="bk-msg" class="hint"></span>
-        </div>
-
-        <div id="bk-list" class="bk-list"></div>
+        <details class="bk2-import"><summary>读取其他位置的备份</summary>
+          <label>备份文件完整路径<input id="bk2-import-path" autocomplete="off" placeholder="输入 .zip 备份文件路径" /></label>
+          <button id="bk2-import-inspect" class="ghost" type="button">校验并查看恢复选项</button>
+        </details>
+        <section id="bk2-restore" class="bk2-restore" aria-labelledby="bk2-restore-title" hidden>
+          <h5 id="bk2-restore-title">恢复备份</h5><p id="bk2-restore-info" class="hint bk2-path"></p>
+          <p id="bk2-restore-warnings" class="hint"></p>
+          <label>恢复方式<select id="bk2-restore-mode"><option value="new">恢复到新目录，先验证</option><option value="in_place">确认后恢复到使用位置</option></select></label>
+          <div id="bk2-new-target">
+            <label>新的恢复目录<input id="bk2-restore-destination" autocomplete="off" placeholder="选择一个空目录；不会覆盖现有资料" /></label>
+            <button class="ghost bk2-pick" type="button" data-pick-target="bk2-restore-destination" hidden>📁 选择新目录</button>
+          </div>
+          <div id="bk2-browser-remap" hidden><label>本机同类浏览器程序<input id="bk2-restore-browser-executable" autocomplete="off" placeholder="已安装的同类 Chrome 或 Edge 的完整 .exe 路径" /></label><p class="hint">换机时请核对程序路径。恢复 Chrome 资料不会自动改用 Edge，恢复资料后网站可能要求重新登录。</p></div>
+          <div id="bk2-in-place-targets" hidden><p class="hint">逐项核对恢复位置。替换前须由你退出对应的 Zotero 或专用浏览器；小猪不会强制结束进程。恢复小猪自身还须先断开 MCP，再退出小猪，由后台完成，期间不要重新打开。当前目录将另存回退件，由你手动清理。</p><div id="bk2-targets"></div></div>
+          <p class="hint">Zotero 恢复后保持原自动同步设置；再次同步时，云端较新的修改或删除可能重新应用。恢复不自动改动云端库。重装或换机时将核对程序版本及 profile 关联。</p>
+          <div class="set-errbtns"><button id="bk2-restore-start" class="ghost" type="button">开始新目录恢复与验证</button><button id="bk2-restore-close" class="ghost" type="button">收起</button></div>
+        </section>
+        <details id="bk2-legacy" class="bk2-legacy"><summary>旧版小猪备份</summary><p class="hint">旧包仍可校验和恢复；其内容以原清单为准，不包含 Zotero 和专用浏览器登录资料，不按新任务保留策略清理。</p><div id="bk2-legacy-list" class="bk-list"></div></details>
       </div>
 
       <div class="set-section" id="sec-rebuild">

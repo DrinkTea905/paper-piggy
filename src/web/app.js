@@ -4386,251 +4386,457 @@
     }); } catch (e) {} } }
   applyAppearance();
 
-  // ── 备份与恢复 ────────────────────────────────────────────
-  // 设计见 backup.py 文件头。一句话：备份包是**静态 zip**，放进云盘同步是安全的；
-  // 而向量索引是持续读写的数据库，让云盘去实时同步它，早晚把索引搞坏。
+  // ── 两类独立备份任务：配置、持久状态与恢复 ──────────────────
   const _bkSize = (b) => b >= 1e9 ? (b / 1e9).toFixed(2) + " GB"
                        : b >= 1e6 ? (b / 1e6).toFixed(1) + " MB"
-                       : Math.max(1, Math.round(b / 1e3)) + " KB";
-  let lastBackupConfig = null;
-
-  function renderBackupRuntime(state, conf) {
-    const box = $("#bk-runtime"); if (!box) return;
-    const title = $("#bk-runtime-title"), detail = $("#bk-runtime-detail"),
-          cancel = $("#bk-cancel"), create = $("#bk-create");
-    const s = state || {}, c = conf || lastBackupConfig || {};
-    box.className = "bk-runtime";
-    if (s.running) {
-      box.classList.add("running");
-      const p = s.total ? ` · ${num(s.done || 0)}/${num(s.total)} 个文件` : "";
-      const kind = s.kind === "auto" ? "后台自动备份" : s.kind === "restore" ? "数据恢复" : "手动备份";
-      if (title) title.textContent = s.stage || (kind + "中");
-      if (detail) detail.textContent = kind + p +
-        (s.cancel_requested ? " · 已请求停止，正在清理临时包" : "");
-      if (cancel) {
-        cancel.hidden = !s.cancellable;
-        cancel.disabled = !!s.cancel_requested;
-        cancel.textContent = s.cancel_requested ? "正在停止…" : "停止当前备份";
-      }
-      if (create) create.disabled = true;
-      return;
-    }
-    if (cancel) { cancel.hidden = true; cancel.disabled = false; cancel.textContent = "停止当前备份"; }
-    if (create) create.disabled = false;
-    if (s.error) {
-      box.classList.add("warn");
-      if (title) title.textContent = "上次备份未完成";
-      if (detail) detail.textContent = s.error;
-      return;
-    }
-    if (c.auto) box.classList.add("ok");
-    if (title) title.textContent = c.auto ? "自动备份已开启" : "自动备份已关闭";
-    if (detail) {
-      if (s.result && s.result.cleaned_stale) {
-        detail.textContent = "检测到异常残留占用，已自动释放；现在可以更新知识库。";
-      } else if (s.result && s.result.cancelled) {
-        detail.textContent = "上次备份已停止，未留下不完整备份包。";
-      } else if (c.auto && c.due) {
-        detail.textContent = "已到计划时间，后台下一轮检查时会自动开始。";
-      } else if (c.auto && c.next_at) {
-        detail.textContent = "下次自动备份：" + c.next_at + (c.last_at ? " · 上次成功：" + c.last_at : "");
-      } else {
-        detail.textContent = c.last_at ? "上次成功备份：" + c.last_at : "还没有成功备份过。";
-      }
-    }
+                       : Math.max(1, Math.round((b || 0) / 1e3)) + " KB";
+  const BK2 = { kind: "paperpiggy", config: null, jobs: {}, states: {}, dirty: false,
+    loading: false, polling: false, installing: false, legacyBusy: false, saving: false, waitingExit: false, epoch: 0, restore: null };
+  const bk2Name = (kind) => kind === "zotero" ? "Zotero 完整备份" : "小猪备份";
+  const bk2Error = (e) => (e && (e.message || e.detail || e.error || e.msg)) || String(e || "操作未完成");
+  const bk2Message = (value) => { const el = $("#bk2-msg"); if (el) el.textContent = value || ""; };
+  const bk2Current = () => BK2.jobs[BK2.kind] || {};
+  const bk2Warnings = value => Array.isArray(value) ? value.map(String).join("；") : value ? String(value) : "";
+  const bk2When = value => typeof value === "number" ? new Date(value * (value < 1e12 ? 1000 : 1)).toLocaleString("zh-CN") : String(value || "");
+  function bk2Ready() {
+    const s = (BK2.config && BK2.config.service) || {};
+    return !!s.installed && s.ready !== false && !s.pending && !s.installing && !s.needs_update && !s.error;
   }
-
+  function bk2Native() {
+    const api = window.pywebview && window.pywebview.api;
+    $$(".bk2-pick").forEach(b => b.hidden = !(api && api.pick_folder));
+  }
+  function bk2Dirty() {
+    BK2.dirty = true;
+    const el = $("#bk2-dirty"); if (el) el.textContent = "有未保存的修改";
+  }
+  function bk2Roots(info) {
+    const m = info.manifest || info, roots = m.roots || info.roots || [];
+    if (Array.isArray(roots)) return roots.map((r, i) => typeof r === "string" ? { id: r, source: "" } : Object.assign({ id: String(i) }, r));
+    return Object.entries(roots).map(([id, r]) => typeof r === "string" ? { id, source: r } : Object.assign({ id }, r));
+  }
+  function bk2RootName(id) {
+    return ({ zotero_data: "Zotero 数据目录", zotero_profile: "Zotero 用户配置",
+      zotero_registry: "Zotero 配置关联", browser: "专用浏览器资料",
+      paperpiggy_data: "小猪数据", paperpiggy_home: "小猪工作区",
+      data: "小猪数据", home: "小猪工作区" })[id] || id;
+  }
+  function bk2ServiceView() {
+    const s = (BK2.config && BK2.config.service) || {}, ready = bk2Ready();
+    $("#bk2-service-title").textContent = ready ? "后台备份已就绪"
+      : (BK2.installing || s.pending || s.installing) ? "等待后台备份配置完成"
+      : s.error ? "后台备份需要处理" : s.needs_update ? "后台备份组件需要更新" : "尚未配置后台备份";
+    $("#bk2-service-detail").textContent = ready
+      ? "运行中备份使用同批卷快照；关闭小猪后仍可按计划备份，并在登录后补跑。"
+      : s.error || (s.needs_update ? "请确认管理员授权以更新后台组件，再开始备份。更新完成前不会执行任务。" : "首次配置需要一次 Windows 管理员确认。尚未就绪时不会退回直接复制活动数据库。");
+    const button = $("#bk2-install");
+    button.disabled = BK2.installing || !!s.pending || !!s.installing;
+    button.textContent = ready ? "检查后台备份配置" : button.disabled ? "正在配置…" : s.needs_update ? "更新后台备份（管理员确认）" : "配置后台备份（管理员确认）";
+  }
+  function bk2RenderForm() {
+    const j = bk2Current(), discovered = (BK2.config && BK2.config.discovered) || {};
+    const z = discovered.zotero || {}, browser = discovered.browser || {};
+    const notice = $("#bk2-machine-notice");
+    notice.textContent = (BK2.config && BK2.config.notice) || "";
+    notice.hidden = !notice.textContent;
+    $$("#sec-backup [data-bk-kind]").forEach(b => {
+      b.setAttribute("aria-selected", String(b.dataset.bkKind === BK2.kind));
+      b.tabIndex = b.dataset.bkKind === BK2.kind ? 0 : -1;
+    });
+    $("#bk2-editor").setAttribute("aria-labelledby", "bk2-tab-" + BK2.kind);
+    $("#bk2-zotero-sources").hidden = BK2.kind !== "zotero";
+    $("#bk2-paperpiggy-options").hidden = BK2.kind !== "paperpiggy";
+    $("#bk2-scope").textContent = BK2.kind === "zotero"
+      ? "完整保存数据目录、全部用户配置、插件与配置关联。每份可独立恢复；运行期间也能备份，不会强制退出 Zotero。"
+      : "保存知识库、综述、Agent 资料和成果；可包含索引、API 密钥及已关联专用浏览器资料。不会顺带收集其他日常浏览器。";
+    $("#bk2-browser-source").textContent = browser.user_data_dir
+      ? "专用浏览器来源：" + browser.user_data_dir
+      : "尚未取得专用浏览器关联；需要包含浏览器资料时，请先用顶栏按钮建立关联。";
+    for (const kind of ["paperpiggy", "zotero"]) {
+      const job = BK2.jobs[kind] || {};
+      $("#bk2-summary-" + kind).textContent = (job.enabled ? "自动备份开启" : "自动备份关闭")
+        + (job.destination ? " · 已选位置" : " · 尚未选择位置");
+    }
+    bk2ServiceView(); bk2Native();
+    if (BK2.dirty) return;
+    const source = j.sources || {};
+    $("#bk2-destination").value = j.destination || "";
+    $("#bk2-data-dir").value = source.data_dir || source.zotero_data_dir || z.data_dir || "";
+    $("#bk2-profile-dir").value = source.profile_dir || source.zotero_profile_dir || z.profile_dir || "";
+    $("#bk2-days").value = j.every_days || 7;
+    $("#bk2-time").value = j.at_time || "07:00";
+    $("#bk2-keep").value = j.keep || (BK2.kind === "zotero" ? 2 : 3);
+    $("#bk2-enabled").checked = !!j.enabled;
+    $("#bk2-catch-up").checked = j.catch_up !== false;
+    $("#bk2-with-index").checked = !!j.include_index;
+    $("#bk2-with-key").checked = !!j.include_key;
+    $("#bk2-with-browser").checked = j.include_browser !== false;
+    $("#bk2-dirty").textContent = "";
+  }
+  function bk2StatusView(raw, kind) {
+    const s = (raw && (raw.status || raw)) || {};
+    BK2.states[kind] = s;
+    if (kind !== BK2.kind) return;
+    const job = bk2Current(), running = !!(s.running || s.pending || s.queued);
+    const warning = s.result && (s.result.warning || s.result.cleanup_warning || bk2Warnings(s.result.cleanup_errors) || bk2Warnings(s.result.warnings));
+    const box = $("#bk-runtime"), title = $("#bk-runtime-title"), detail = $("#bk-runtime-detail");
+    box.className = "bk-runtime" + (running ? " running" : s.error || warning ? " warn" : s.result ? " ok" : "");
+    const stages = { queued: "等待后台执行", snapshot: "正在创建一致快照", copying: "正在读取快照",
+      writing: "正在打包", validating: "正在校验", verifying: "正在校验", pruning: "正在整理本任务旧版本",
+      restoring: "正在恢复", success: "上次备份成功", failed: "上次备份未完成" };
+    title.textContent = running ? stages[s.stage] || s.message || (typeof s.stage === "string" && /[^\x00-\x7f]/.test(s.stage) ? s.stage : "后台备份处理中")
+      : s.state === "cancelled" ? "上次备份已停止" : s.error ? "上次任务未完成" : warning ? (s.operation === "restore" ? "恢复完成，请查看注意事项" : "备份成功，有需处理事项")
+      : s.result && s.result.cancelled ? "上次备份已停止" : job.enabled ? "自动备份已开启" : "自动备份已关闭";
+    const progress = s.total ? " · " + num(s.done || 0) + "/" + num(s.total) + " 个文件" : "";
+    const last = s.last_success || job.last_success || job.last_at || "";
+    detail.textContent = s.error || warning
+      || (running ? (s.pending || s.queued ? "任务已登记，等待后台执行。" : "正在处理" + progress)
+      : (s.next_at || job.next_at ? "下次：" + bk2When(s.next_at || job.next_at) + " · " : "")
+        + (last ? "上次成功：" + bk2When(last) : "还没有成功备份。"));
+    $("#bk2-create").disabled = running || BK2.legacyBusy || BK2.installing || BK2.saving || BK2.waitingExit;
+    $("#bk2-save").disabled = running || BK2.saving || BK2.waitingExit;
+    $("#bk2-cancel").hidden = !running || s.cancellable === false || s.operation === "restore";
+    $("#bk2-cancel").disabled = !!s.cancel_requested;
+    const history = s.history || s.attempts || job.history || [];
+    $("#bk2-history").innerHTML = history.length ? history.slice(-20).reverse().map(h => {
+      const when = h.finished_at || h.created_at || h.created || h.at || h.started_at || "";
+      const label = ({ success: "成功", success_with_warning: "成功，有需处理事项", failed: "失败", cancelled: "已停止", running: "进行中",
+        queued: "等待执行", started: "已开始", interrupted: "意外中断", cleanup_failed: "备份成功，清理失败" })[h.status || h.state] || h.message || h.reason || "任务记录";
+      return "<div class=\"bk2-history-item\"><b>" + esc(bk2When(when)) + " · " + esc(label)
+        + "</b><span>" + esc(String(h.error || h.reason || h.warning || bk2Warnings(h.warnings) || (h.result && (h.result.cleanup_warning || bk2Warnings(h.result.cleanup_errors) || bk2Warnings(h.result.warnings) || h.result.path)) || h.path || "")) + "</span></div>";
+    }).join("") : "暂无任务记录。";
+  }
+  // /health 仍可能报告旧版备份恢复；只用来防止并发，不覆盖新任务状态。
+  function renderBackupRuntime(state) {
+    BK2.legacyBusy = !!(state && state.running);
+    const current = BK2.states[BK2.kind]; if (current) bk2StatusView(current, BK2.kind);
+  }
   async function loadBackup() {
-    const dirEl = $("#bk-dir"); if (!dirEl) return;
+    if (!$("#bk2-editor") || BK2.loading) return;
+    BK2.loading = true;
+    const epoch = ++BK2.epoch;
     try {
-      const [c, s] = await Promise.all([jget("/backup/config"), jget("/backup/status")]);
-      lastBackupConfig = c;
-      dirEl.value = c.dir || "";
-      dirEl.placeholder = "（默认：" + (c.effective_dir || "数据目录下的 backups") + "）";
-      $("#bk-with-index").checked = !!c.include_index;
-      $("#bk-auto").checked = !!c.auto;
-      $("#bk-days").value = c.every_days || 7;
-      $("#bk-keep").value = c.keep || 3;
-      const msg = $("#bk-msg");
-      if (msg) msg.textContent = c.last_at ? "上次备份：" + c.last_at : "还没有备份过。";
-      renderBackupRuntime(s, c);
-    } catch (e) {}
-    // 原生目录选择器只有 launcher 注入了 pywebview 桥时才有；浏览器回退时藏起来，别留死按钮
-    const canPick = !!(window.pywebview && window.pywebview.api && window.pywebview.api.pick_folder);
-    const pick = $("#bk-pick"); if (pick) pick.hidden = !canPick;
-    refreshBkSize();
-    renderBkList();
+      const config = await jget("/backup2/config");
+      if (epoch !== BK2.epoch) return;
+      if (config.ok === false) throw new Error(config.error || config.detail || "无法读取备份配置");
+      BK2.config = config;
+      const jobs = Array.isArray(config.jobs) ? config.jobs : Object.values(config.jobs || {});
+      BK2.jobs = {};
+      jobs.forEach(j => BK2.jobs[j.kind] = j);
+      bk2RenderForm();
+      const kind = BK2.kind, state = await jget("/backup2/status?kind=" + kind);
+      bk2StatusView(state, kind);
+      await Promise.all([renderBk2List(kind), renderLegacyBackups()]);
+    } catch (e) { bk2Message("读取备份设置失败：" + bk2Error(e)); }
+    finally { BK2.loading = false; }
   }
-
-  async function refreshBkSize() {
-    const el = $("#bk-size"); if (!el) return;
-    const withIdx = $("#bk-with-index").checked ? 1 : 0;
-    el.textContent = "…";
-    try {
-      const r = await jget("/backup/estimate?with_index=" + withIdx);
-      el.textContent = r.ok ? "≈ " + _bkSize(r.bytes) : "";
-    } catch (e) { el.textContent = ""; }
-  }
-
-  async function renderBkList() {
-    const box = $("#bk-list"); if (!box) return;
-    let r;
-    try { r = await jget("/backup/list"); } catch (e) { return; }
-    const items = (r && r.items) || [];
-    if (!items.length) { box.innerHTML = '<p class="hint">还没有备份包。</p>'; return; }
-    box.innerHTML = items.map((it) => {
-      if (it.broken) return `<div class="bk-item"><b>${esc(String(it.name || ""))}</b> <span class="danger-text">（包已损坏，不能用来恢复）</span></div>`;
-      const m = it.manifest || {};
-      const tags = [m.includes_index ? "含索引" : "仅手写资产"];
-      if (m.has_api_key) tags.push("⚠️ 含密钥");
-      const c = m.counts || {};
-      const detail = [c.wiki_pages != null ? esc(String(c.wiki_pages)) + " 篇综述" : null,
-                      c.papers != null ? esc(String(c.papers)) + " 条文献" : null,
-                      c.agent_outputs ? esc(String(c.agent_outputs)) + " 个交付物主题" : null]
-                     .filter(Boolean).join(" · ");
-      return `<div class="bk-item">
-        <div><b>${esc(String(it.mtime || ""))}</b> · ${esc(String(_bkSize(it.size)))} · ${tags.join(" / ")}</div>
-        <div class="hint">${detail || "&nbsp;"}</div>
-        <button class="ghost danger bk-restore" data-path="${esc(String(it.path || ""))}">↩ 从这个包恢复</button>
-      </div>`;
-    }).join("");
-    box.querySelectorAll(".bk-restore").forEach(b =>
-      b.addEventListener("click", () => doRestore(b.dataset.path)));
-  }
-
-  async function pollBackup(doneMsg) {
-    const msg = $("#bk-msg");
-    for (let i = 0; i < 3600; i++) {
-      await new Promise(r => setTimeout(r, 700));
-      let s;
-      try { s = await jget("/backup/status"); } catch (e) { continue; }
-      renderBackupRuntime(s);
-      if (s.running) {
-        const p = s.total ? ` ${s.done}/${s.total}` : "";
-        if (msg) msg.textContent = (s.stage || "处理中") + p + "…";
-        continue;
-      }
-      if (s.error) { if (msg) msg.textContent = "❌ " + s.error; return null; }
-      if (s.result && s.result.cancelled) {
-        if (msg) msg.textContent = "已停止备份，临时文件已清理。";
-        return s.result;
-      }
-      if (msg) msg.textContent = doneMsg(s.result || {});
-      return s.result || {};
+  async function saveBk2() {
+    if (BK2.saving) return false;
+    const kind = BK2.kind, destination = $("#bk2-destination").value.trim(), enabled = $("#bk2-enabled").checked;
+    const days = Number($("#bk2-days").value), keep = Number($("#bk2-keep").value), at = $("#bk2-time").value;
+    if (!Number.isInteger(days) || days < 1 || days > 365 || !Number.isInteger(keep) || keep < 1 || keep > 100 || !/^([01]\d|2[0-3]):[0-5]\d$/.test(at)) {
+      bk2Message("请填写有效的间隔天数、时刻和保留份数。"); return false;
     }
+    if (enabled && (!destination || !bk2Ready())) {
+      bk2Message(!destination ? "请先选择备份位置，再开启自动备份。" : "请先完成后台备份配置，再开启自动备份。"); return false;
+    }
+    const patch = { destination, enabled, every_days: days, at_time: at, catch_up: $("#bk2-catch-up").checked, keep };
+    if (kind === "zotero") {
+      patch.sources = { data_dir: $("#bk2-data-dir").value.trim(), profile_dir: $("#bk2-profile-dir").value.trim() };
+      if (enabled && (!patch.sources.data_dir || !patch.sources.profile_dir)) {
+        bk2Message("请先确认 Zotero 数据目录与用户配置目录。"); return false;
+      }
+    } else {
+      patch.include_index = $("#bk2-with-index").checked;
+      patch.include_key = $("#bk2-with-key").checked;
+      patch.include_browser = $("#bk2-with-browser").checked;
+    }
+    BK2.saving = true; const epoch = ++BK2.epoch;
+    const controls = [...$("#bk2-editor").querySelectorAll("input, select, button"), ...$$("#sec-backup [data-bk-kind]")];
+    const disabled = controls.map(el => el.disabled); controls.forEach(el => el.disabled = true);
+    try {
+      const r = await jpost("/backup2/config", { kind, patch });
+      if (!r || r.ok === false) throw new Error((r && (r.detail || r.error || r.msg)) || "保存失败");
+      const config = await jget("/backup2/config");
+      if (epoch !== BK2.epoch) return false;
+      BK2.config = config; BK2.jobs = {};
+      (Array.isArray(config.jobs) ? config.jobs : Object.values(config.jobs || {})).forEach(j => BK2.jobs[j.kind] = j);
+      BK2.dirty = false; bk2RenderForm();
+      await renderBk2List(kind);
+      bk2Message("已保存" + bk2Name(kind) + "设置。" + (enabled ? "计划由后台执行，小猪无需保持打开。" : ""));
+      return true;
+    } catch (e) { bk2Message("保存失败：" + bk2Error(e)); return false; }
+    finally {
+      BK2.saving = false; controls.forEach((el, i) => el.disabled = disabled[i]);
+      if (BK2.states[BK2.kind]) bk2StatusView(BK2.states[BK2.kind], BK2.kind);
+    }
+  }
+  async function renderBk2List(kind) {
+    const r = await jget("/backup2/list?kind=" + kind);
+    if (kind !== BK2.kind) return;
+    const items = r.items || [];
+    $("#bk2-list").innerHTML = items.length ? items.map(it => {
+      const m = it.manifest || it, browser = it.has_browser != null ? it.has_browser : m.has_browser || m.includes_browser || m.include_browser;
+      const title = it.created_at || it.created || m.created_at || m.created || it.mtime || it.name || "备份";
+      const tags = kind === "zotero" ? ["Zotero 完整资料"] : [m.includes_index || m.include_index ? "含索引" : "知识库资产", browser ? "含专用浏览器资料" : "不含浏览器资料"];
+      if (m.has_api_key || m.include_key) tags.push("含 API 密钥");
+      return "<div class=\"bk-item\"><div><b>" + esc(bk2When(title)) + "</b> · " + esc(_bkSize(it.size || 0))
+        + "<p class=\"hint\">" + tags.map(esc).join(" · ") + (it.available === false ? " · 文件不在原位置，不能恢复" : it.broken ? " · 无法校验，不能恢复" : "") + "</p></div>"
+        + (it.broken ? "" : "<button class=\"ghost bk2-inspect\" type=\"button\"" + (it.available === false ? " disabled" : "") + " data-path=\"" + esc(String(it.path || "")) + "\">校验与恢复…</button>") + "</div>";
+    }).join("") : "<p class=\"hint\">本任务还没有成功备份。其他任务和历史目录不会被自动纳入清理。</p>";
+    $("#bk2-list").querySelectorAll(".bk2-inspect").forEach(b => b.addEventListener("click", () => inspectBk2(b.dataset.path)));
+  }
+  async function renderLegacyBackups() {
+    try {
+      const r = await jget("/backup/list");
+      const items = r.items || [];
+      $("#bk2-legacy-list").innerHTML = items.length ? items.map(it => {
+        const m = it.manifest || {};
+        return "<div class=\"bk-item\"><div><b>" + esc(String(m.created_at || m.created || it.mtime || it.name || "旧版备份"))
+          + "</b> · " + esc(_bkSize(it.size || 0)) + "<p class=\"hint\">旧格式 · 不含 Zotero 与浏览器登录资料"
+          + (m.includes_index ? " · 含索引" : "") + (m.has_api_key ? " · 含 API 密钥" : "") + "</p></div>"
+          + (it.broken ? "<span class=\"danger-text\">文件已损坏，不能恢复</span>"
+          : "<button class=\"ghost bk2-legacy-restore\" type=\"button\" data-path=\"" + esc(String(it.path || "")) + "\">查看旧包恢复…</button>") + "</div>";
+      }).join("") : "<p class=\"hint\">当前位置没有旧格式小猪备份。</p>";
+      $("#bk2-legacy-list").querySelectorAll(".bk2-legacy-restore").forEach(b => b.addEventListener("click", () => restoreLegacyBackup(b.dataset.path)));
+    } catch (e) { $("#bk2-legacy-list").textContent = "无法读取旧包：" + bk2Error(e); }
+  }
+  function bk2Marker(s) {
+    return JSON.stringify([s.request_id, s.operation_id, s.task_id, s.updated_at, s.last_attempt, s.finished_at,
+      s.result && (s.result.created_at || s.result.created || s.result.path || s.result.destination), s.error]);
+  }
+  async function waitBk2(kind, start, baseline) {
+    const wanted = start.request_id || start.operation_id || start.task_id;
+    let observed = !!(start.running || start.pending || start.queued);
+    for (let i = 0; i < 7200; i++) {
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      let raw; try { raw = await jget("/backup2/status?kind=" + kind); } catch (_) { continue; }
+      const s = raw.status || raw, current = s.request_id || s.operation_id || s.task_id;
+      const matches = wanted && current && String(wanted) === String(current);
+      if (s.running || s.pending || s.queued) observed = true;
+      bk2StatusView(s, kind);
+      if (s.running || s.pending || s.queued || (wanted && current && !matches)) continue;
+      if (!observed && !matches && bk2Marker(s) === baseline) continue;
+      if (s.error && s.state !== "cancelled") throw new Error(s.error);
+      if (!s.result && !s.completed && !s.finished_at && !s.last_success) continue;
+      await renderBk2List(BK2.kind);
+      return Object.assign({}, s.result || s, { cancelled: s.state === "cancelled" || !!(s.result && s.result.cancelled) });
+    }
+    bk2Message("任务仍可能在后台执行，请稍后查看任务记录；不要重复发起。");
     return null;
   }
-
-  async function doBackup() {
-    const btn = $("#bk-create"), msg = $("#bk-msg");
-    const withKey = $("#bk-with-key").checked;
-    if (withKey && !(await uiConfirm(
-        "备份包里将包含你的 API 密钥。\n\n" +
-        "这个 zip 要是传到云盘、发给别人、或者存进 U 盘弄丢了，密钥就等于泄漏了。\n\n" +
-        "确定包含密钥吗？（不含也没关系，恢复后重填一次即可）",
-        { title: "确认在备份中包含密钥？", okText: "仍然包含", danger: true }))) return;
-    btn.disabled = true;
-    if (msg) msg.textContent = "打包中…";
+  async function createBk2() {
+    const kind = BK2.kind;
+    if (!bk2Ready()) { await uiNotice("请先配置后台备份，待状态显示“已就绪”后再开始。", { title: "后台备份尚未就绪" }); return; }
+    if (BK2.dirty && !(await saveBk2())) return;
+    if (!bk2Current().destination) { bk2Message("请先选择备份位置并保存设置。"); return; }
+    if (kind === "paperpiggy" && $("#bk2-with-key").checked && !(await uiConfirm("这份备份将包含 API 密钥。备份文件不加密，请保护保存位置。", { title: "包含 API 密钥？", okText: "包含并备份", danger: true }))) return;
+    $("#bk2-create").disabled = true;
+    const baseline = bk2Marker(BK2.states[kind] || {});
     try {
-      const r = await jpost("/backup/create", {
-        include_index: $("#bk-with-index").checked,
-        include_key: withKey,
-      });
-      if (!r.ok) { if (msg) msg.textContent = "❌ " + (r.error || "备份失败"); return; }
-      await pollBackup((m) => "✅ 已备份 → " + (m.path || "") + "（" + _bkSize(m.size || 0) + "）");
-      await renderBkList();
-    } catch (e) {
-      if (msg) msg.textContent = "❌ " + e;
-    } finally {
-      btn.disabled = false;
-    }
+      const r = await jpost("/backup2/create", { kind, include_index: $("#bk2-with-index").checked,
+        include_key: $("#bk2-with-key").checked, include_browser: $("#bk2-with-browser").checked });
+      if (!r || r.ok === false) throw new Error((r && (r.error || r.msg)) || "任务未能登记");
+      bk2Message("备份任务已登记，正在等待后台执行与校验。");
+      const result = await waitBk2(kind, r, baseline);
+      if (result && kind === BK2.kind) bk2Message(result.cancelled ? "备份已停止，已有成功版本保持不变。"
+        : "备份已完成并通过校验。" + (result.path ? " 文件：" + result.path : "")
+        + ((result.warning || bk2Warnings(result.warnings)) ? " 注意：" + (result.warning || bk2Warnings(result.warnings)) : ""));
+    } catch (e) { bk2Message("备份未完成：" + bk2Error(e)); }
+    finally { const s = BK2.states[BK2.kind] || {}; $("#bk2-create").disabled = !!(s.running || s.pending || s.queued); }
   }
-
-  async function doRestore(path) {
-    const msg = $("#bk-msg");
-    let info;
-    try { info = await jpost("/backup/inspect", { path }); } catch (e) {
-      await uiNotice("读不了这个包：" + e, { title: "无法读取备份包" }); return;
-    }
-    if (!info.ok) { await uiNotice(info.err || info.error || "这个备份包不可用", { title: "备份包不可用" }); return; }
-
-    const warns = (info.warnings || []).map(w => "· " + w).join("\n");
-    if (!(await uiConfirm(
-        "要从这个备份恢复吗？\n\n" +
-        "备份时间：" + ((info.manifest || {}).created || "?") + "\n" +
-        (warns ? "\n注意：\n" + warns + "\n" : "") +
-        "\n你现在的数据不会被删掉——会先整体挪进一个 _restore_backup_<时间> 文件夹，" +
-        "万一恢复错了还能捞回来。\n\n恢复完需要重启应用。",
-        { title: "从这个备份恢复？", okText: "开始恢复", danger: true }))) return;
-
-    if (msg) msg.textContent = "恢复中…";
+  async function inspectBk2(path) {
+    if (!path) { bk2Message("请填写备份文件的完整路径。"); return; }
     try {
-      const r = await jpost("/backup/restore", { path });
-      if (!r.ok) { if (msg) msg.textContent = "❌ " + (r.error || "恢复失败"); return; }
-      const res = await pollBackup(() => "✅ 恢复完成");
-      if (res) await uiNotice("恢复完成。\n\n" + (res.msg || "") +
-                     "\n\n请关闭并重新打开 PaperPiggy —— 内存里还是旧的索引。", { title: "恢复完成" });
-    } catch (e) {
-      if (msg) msg.textContent = "❌ " + e;
+      const info = await jpost("/backup2/inspect", { path });
+      if (!info || info.ok === false) throw new Error((info && (info.error || info.detail)) || "备份不可用");
+      if (info.legacy || Number((info.manifest || {}).format) === 1) { await restoreLegacyBackup(path); return; }
+      const m = info.manifest || info;
+      BK2.restore = { path, info, kind: m.kind || info.kind || BK2.kind };
+      $("#bk2-restore-info").textContent = bk2Name(BK2.restore.kind) + " · " + bk2When(m.created_at || m.created || "") + "\n" + path;
+      $("#bk2-restore-warnings").textContent = bk2Warnings(info.warnings || m.warnings);
+      $("#bk2-restore-mode").value = "new";
+      $("#bk2-restore-destination").value = "";
+      const roots = bk2Roots(info);
+      const browser = (m.metadata && m.metadata.browser) || {};
+      const hasBrowser = roots.some(root => root.id === "browser");
+      $("#bk2-browser-remap").hidden = !hasBrowser;
+      $("#bk2-restore-browser-executable").value = browser.executable || "";
+      BK2.restore.hasBrowser = hasBrowser;
+      $("#bk2-targets").innerHTML = roots.map(root => "<label>" + esc(bk2RootName(root.id))
+        + "<input class=\"bk2-root-target\" data-root=\"" + esc(String(root.id)) + "\" value=\""
+        + esc(String(root.original_source || root.source || "")) + "\" autocomplete=\"off\" /></label>").join("");
+      $("#bk2-restore").hidden = false;
+      bk2RestoreMode();
+      $("#bk2-restore").scrollIntoView({ behavior: "smooth", block: "nearest" });
+    } catch (e) { await uiNotice("备份校验未通过：" + bk2Error(e), { title: "无法恢复备份" }); }
+  }
+  function bk2RestoreMode() {
+    const inPlace = $("#bk2-restore-mode").value === "in_place";
+    $("#bk2-new-target").hidden = inPlace;
+    $("#bk2-in-place-targets").hidden = !inPlace;
+    $("#bk2-restore-start").textContent = inPlace ? "确认位置后恢复…" : "开始新目录恢复与验证";
+    $("#bk2-restore-start").classList.toggle("danger", inPlace);
+  }
+  async function bk2HandleRestoreExit(r) {
+    if (!r.requires_exit) return false;
+    BK2.waitingExit = true;
+    bk2StatusView(BK2.states[BK2.kind] || {}, BK2.kind);
+    $("#bk2-restore-start").disabled = true;
+    $("#bk2-restore-start").textContent = "已排队，等待退出小猪";
+    bk2Message("恢复已校验并排队，正在等待小猪及 MCP 连接退出；尚未替换资料。");
+    const api = window.pywebview && window.pywebview.api;
+    await uiNotice("备份已校验并排队。请先断开使用这份小猪的 MCP 连接。"
+      + "\n\n退出小猪后，后台组件才会开始替换数据。恢复期间不要重新打开小猪；完成后再打开查看结果。"
+      + (api && api.close_for_backup_restore ? "\n\n点击确定后将关闭当前小猪窗口。"
+      : "\n\n请手动完全退出小猪。仅关闭浏览器标签不等于退出小猪后台服务。"),
+      { title: "退出小猪后完成恢复" });
+    if (api && api.close_for_backup_restore) {
+      try {
+        const closed = await api.close_for_backup_restore();
+        if (closed && closed.ok === false) await uiNotice(closed.error || closed.message || "未能自动退出，请手动完全退出小猪及 MCP 连接。", { title: "等待退出" });
+      } catch (_) {
+        bk2Message("恢复已排队；若窗口仍在，请手动完全退出小猪及 MCP 连接。");
+      }
     }
+    return true;
   }
-
-  async function saveBkConf(patch) {
+  async function startBk2Restore() {
+    const selected = BK2.restore; if (!selected) return;
+    const mode = $("#bk2-restore-mode").value, destination = $("#bk2-restore-destination").value.trim(), targets = {};
+    const browserExecutable = $("#bk2-restore-browser-executable").value.trim();
+    if (selected.hasBrowser && !browserExecutable) {
+      bk2Message("请填写本机已安装的同类浏览器程序路径，以便恢复浏览器关联。"); return;
+    }
+    if (mode === "new" && !destination) { bk2Message("请为恢复结果选择一个新的空目录。"); return; }
+    $("#bk2-targets").querySelectorAll(".bk2-root-target").forEach(el => targets[el.dataset.root] = el.value.trim());
+    if (mode === "in_place" && (!Object.keys(targets).length || Object.values(targets).some(v => !v))) {
+      await uiNotice("请逐项填写并核对恢复位置。无法确认目标时，请先恢复到新目录。", { title: "恢复位置未确认" }); return;
+    }
+    const summary = mode === "in_place"
+      ? "将先校验备份，再替换以下位置：\n" + Object.entries(targets).map(([id, value]) => bk2RootName(id) + "：" + value).join("\n")
+        + "\n\n请先自行退出对应的 Zotero 或专用浏览器。恢复小猪数据还会关闭当前小猪窗口，并等待 MCP 连接退出，再由后台组件替换资料。当前目录会另留回退件，不自动清理。Zotero 保持原自动同步设置，后续同步可能重新应用云端修改。"
+      : "将恢复到空目录：\n" + destination + "\n\n现有使用中的数据不会被覆盖；完成后请先核对资料和恢复报告。";
+    if (!(await uiConfirm(summary, { title: mode === "in_place" ? "确认原位恢复？" : "恢复到新目录？",
+      okText: mode === "in_place" ? "确认位置并恢复" : "恢复与验证", danger: mode === "in_place" }))) return;
+    const kind = selected.kind, baseline = bk2Marker(BK2.states[kind] || {});
+    $("#bk2-restore-start").disabled = true;
     try {
-      const r = await jpost("/backup/config", patch);
-      if (!r.ok) { const m = $("#bk-msg"); if (m) m.textContent = "❌ " + (r.error || "保存失败"); return false; }
-      lastBackupConfig = r;
-      const dirEl = $("#bk-dir");
-      if (dirEl && r.effective_dir) dirEl.placeholder = "（默认：" + r.effective_dir + "）";
-      await renderBkList();
-      try { renderBackupRuntime(await jget("/backup/status"), r); } catch (e) {}
-      return r;
-    } catch (e) { return false; }
+      const r = await jpost("/backup2/restore", { path: selected.path, mode, destination, targets, browser_executable: browserExecutable, confirm: true, kind });
+      if (!r || r.ok === false) throw new Error((r && (r.error || r.detail)) || "恢复未能开始");
+      if (await bk2HandleRestoreExit(r)) return;
+      bk2Message("恢复任务已登记；恢复期间不能中途停止。");
+      const result = await waitBk2(kind, r, baseline);
+      if (result) {
+        const place = result.destination || result.path || destination;
+        const rollback = result.rollback_dirs || [];
+        const rollbackPaths = (Array.isArray(rollback) ? rollback : Object.values(rollback)).map(v => typeof v === "string" ? v : v.path || "").filter(Boolean);
+        await uiNotice((mode === "new" ? "已恢复到新目录并完成校验。" : "原位恢复已完成。")
+          + (place ? "\n\n位置：" + place : "") + (result.message || result.msg ? "\n\n" + (result.message || result.msg) : "")
+          + (rollbackPaths.length ? "\n\n回退目录：\n" + rollbackPaths.join("\n") : "")
+          + (bk2Warnings(result.warnings) ? "\n\n注意：" + bk2Warnings(result.warnings) : "")
+          + "\n\n" + (mode === "new" ? "请核对恢复报告；不要直接覆盖正在使用的资料。" : "回退件由你手动清理。恢复小猪数据后请重新打开小猪；网站可能需要重新登录。"),
+          { title: "恢复完成" });
+      }
+    } catch (e) { await uiNotice("恢复未完成：" + bk2Error(e), { title: "恢复未完成" }); }
+    finally { $("#bk2-restore-start").disabled = BK2.waitingExit; }
   }
+  async function restoreLegacyBackup(path) {
+    try {
+      const info = await jpost("/backup/inspect", { path });
+      if (!info.ok) throw new Error(info.error || info.err || "旧包不可用");
+      if (!(await uiConfirm("这是旧格式小猪备份，不包含 Zotero 与浏览器登录资料。\n\n备份时间："
+        + bk2When((info.manifest || {}).created_at || (info.manifest || {}).created || "未知") + "\n" + bk2Warnings(info.warnings)
+        + "\n\n旧格式恢复会替换当前小猪资料，现有资料会先另留回退目录。请先断开使用这份小猪的 MCP 连接；确认后需退出小猪，后台组件完成恢复后再重新打开。",
+        { title: "从旧包恢复小猪？", okText: "确认恢复旧包", danger: true }))) return;
+      const r = await jpost("/backup2/restore", { kind: "paperpiggy", path, mode: "in_place", confirm: true });
+      if (!r.ok) throw new Error(r.error || r.msg || "恢复未能开始");
+      if (await bk2HandleRestoreExit(r)) return;
+      bk2Message("旧包恢复已登记，请等待后台完成。");
+      const result = await waitBk2("paperpiggy", r, bk2Marker(BK2.states.paperpiggy || {}));
+      if (result) await uiNotice("旧包恢复完成。请重新打开小猪。原资料回退目录请核对后自行清理。", { title: "恢复完成" });
+    } catch (e) { await uiNotice("旧包恢复未完成：" + bk2Error(e), { title: "恢复未完成" }); }
+  }
+  async function installBk2Service() {
+    const api = window.pywebview && window.pywebview.api;
+    if (!api || !api.install_backup_service) {
+      await uiNotice("请在 PaperPiggy 原生窗口中配置后台备份；当前窗口没有可用的管理员授权入口。", { title: "需要原生应用窗口" }); return;
+    }
+    const checking = bk2Ready();
+    BK2.installing = true; bk2ServiceView();
+    try {
+      if (checking) {
+        const config = await jget("/backup2/config");
+        if (!config || config.ok === false) throw new Error((config && config.error) || "无法核对后台配置");
+        BK2.config = config;
+        if (bk2Ready()) { bk2Message("后台备份已就绪，无需再次管理员授权。"); return; }
+      }
+      const r = await api.install_backup_service();
+      if (r && (r.ok === false || r.cancelled)) throw new Error(r.error || r.message || "管理员授权未完成");
+      bk2Message("已请求 Windows 管理员确认，正在核对后台组件是否安装完成。");
+      for (let i = 0; i < 60; i++) {
+        await new Promise(resolve => setTimeout(resolve, 1500));
+        const config = await jget("/backup2/config"); BK2.config = config;
+        if (bk2Ready()) { bk2Message("后台备份已就绪。请保存本任务的来源、位置与计划。"); return; }
+        if (config.service && config.service.error) throw new Error(config.service.error);
+      }
+      bk2Message("后台配置尚未确认完成，请稍后刷新状态；尚未开始任何自动备份。");
+    } catch (e) { bk2Message("后台配置未完成：" + bk2Error(e)); }
+    finally { BK2.installing = false; bk2ServiceView(); }
+  }
+  function wireBackup2() {
+    $$("#sec-backup input, #sec-backup select").forEach(el => {
+      if (el.id !== "bk2-import-path" && !el.id.startsWith("bk2-restore") && !el.classList.contains("bk2-root-target")) el.addEventListener("change", bk2Dirty);
+    });
+    $$("#sec-backup [data-bk-kind]").forEach(b => b.addEventListener("click", async () => {
+      if (BK2.saving || b.dataset.bkKind === BK2.kind) return;
+      if (BK2.dirty && !(await uiConfirm("本任务有未保存的修改。切换会放弃这些修改。", { title: "切换备份任务？", okText: "放弃修改并切换" }))) return;
+      const kind = b.dataset.bkKind; BK2.kind = kind; BK2.dirty = false; $("#bk2-restore").hidden = true;
+      bk2Message(""); bk2RenderForm();
+      try { bk2StatusView(await jget("/backup2/status?kind=" + kind), kind); await renderBk2List(kind); }
+      catch (e) { bk2Message(bk2Error(e)); }
+    }));
+    const tabs = Array.from($$("#sec-backup [data-bk-kind]"));
+    tabs.forEach((b, index) => b.addEventListener("keydown", e => {
+      if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
+      e.preventDefault(); const next = e.key === "Home" ? 0 : e.key === "End" ? tabs.length - 1
+        : (index + (e.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+      tabs[next].click(); tabs[next].focus();
+    }));
+    $$(".bk2-pick").forEach(b => b.addEventListener("click", async () => {
+      const api = window.pywebview && window.pywebview.api; if (!api || !api.pick_folder) return;
+      try {
+        const dir = await api.pick_folder();
+        if (dir) { $("#" + b.dataset.pickTarget).value = dir; if (!b.dataset.pickTarget.startsWith("bk2-restore")) bk2Dirty(); }
+      } catch (e) { bk2Message("选择目录未完成：" + bk2Error(e)); }
+    }));
+    $("#bk2-save").addEventListener("click", saveBk2);
+    $("#bk2-create").addEventListener("click", createBk2);
+    $("#bk2-refresh").addEventListener("click", loadBackup);
+    $("#bk2-install").addEventListener("click", installBk2Service);
+    $("#bk2-open").addEventListener("click", async () => {
+      try { const r = await jpost("/backup2/open_dir", { kind: BK2.kind }); if (r.ok === false) throw new Error(r.error || r.msg); }
+      catch (e) { await uiNotice(bk2Error(e), { title: "无法打开备份文件夹" }); }
+    });
+    $("#bk2-cancel").addEventListener("click", async () => {
+      try { const r = await jpost("/backup2/cancel", { kind: BK2.kind }); bk2Message(r.ok === false ? r.error || r.msg : "已请求停止；已有成功备份保持不变。"); }
+      catch (e) { bk2Message(bk2Error(e)); }
+    });
+    $("#bk2-import-inspect").addEventListener("click", () => inspectBk2($("#bk2-import-path").value.trim()));
+    $("#bk2-restore-mode").addEventListener("change", bk2RestoreMode);
+    $("#bk2-restore-start").addEventListener("click", startBk2Restore);
+    $("#bk2-restore-close").addEventListener("click", () => $("#bk2-restore").hidden = true);
+    window.addEventListener("pywebviewready", bk2Native);
+    setInterval(async () => {
+      if (BK2.polling || !BK2.config || $("#settings-modal").hidden) return;
+      BK2.polling = true; const kind = BK2.kind;
+      try { bk2StatusView(await jget("/backup2/status?kind=" + kind), kind); }
+      catch (_) {} finally { BK2.polling = false; }
+    }, 2500);
+  }
+  wireBackup2();
 
   {
-    const bkc = $("#bk-create"); if (bkc) bkc.addEventListener("click", doBackup);
-    const bwi = $("#bk-with-index"); if (bwi) bwi.addEventListener("change", () => {
-      refreshBkSize(); saveBkConf({ include_index: bwi.checked });
-    });
-    const bka = $("#bk-auto"); if (bka) bka.addEventListener("change", async () => {
-      const enabled = bka.checked, r = await saveBkConf({ auto: enabled });
-      const msg = $("#bk-msg");
-      if (!r || !msg) return;
-      let s = {}; try { s = await jget("/backup/status"); } catch (e) {}
-      msg.textContent = enabled
-        ? "已开启自动备份。" + (r.next_at ? "下次：" + r.next_at : "后台下一轮检查时执行首次备份。")
-        : (s.running ? "已关闭以后自动触发；当前备份仍在运行，可在上方停止。" : "已关闭自动备份。");
-      renderBackupRuntime(s, r);
-    });
-    const bkd = $("#bk-days"); if (bkd) bkd.addEventListener("change", () => saveBkConf({ every_days: +bkd.value || 7 }));
-    const bkk = $("#bk-keep"); if (bkk) bkk.addEventListener("change", () => saveBkConf({ keep: +bkk.value || 3 }));
-    const bkdir = $("#bk-dir"); if (bkdir) bkdir.addEventListener("change", () => saveBkConf({ dir: bkdir.value.trim() }));
-    const bko = $("#bk-open"); if (bko) bko.addEventListener("click", async () => {
-      const r = await jpost("/backup/open_dir", {});
-      if (!r.ok) await uiNotice("打不开：" + (r.error || ""), { title: "无法打开备份文件夹" });
-    });
-    const bkp = $("#bk-pick"); if (bkp) bkp.addEventListener("click", async () => {
-      try {
-        const dir = await window.pywebview.api.pick_folder();
-        if (dir) { bkdir.value = dir; await saveBkConf({ dir }); }
-      } catch (e) {}
-    });
-
-    const bkCancel = $("#bk-cancel"); if (bkCancel) bkCancel.addEventListener("click", async () => {
-      const msg = $("#bk-msg");
-      bkCancel.disabled = true;
-      try {
-        const r = await jpost("/backup/cancel", {});
-        if (msg) msg.textContent = r.ok ? r.msg : "❌ " + (r.error || "无法停止备份");
-        const s = await jget("/backup/status");
-        renderBackupRuntime(s);
-      } catch (e) {
-        if (msg) msg.textContent = "❌ " + e;
-        bkCancel.disabled = false;
-      }
-    });
-
     // 🧹 清空并从头重建索引（两步确认；destructive）
     const rbOpen = $("#rb-open"), rbConfirm = $("#rb-confirm"),
           rbCancel = $("#rb-cancel"), rbGo = $("#rb-go"), rbMsg = $("#rb-msg");

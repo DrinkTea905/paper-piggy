@@ -77,8 +77,16 @@
 
 专用浏览器的关联唯一源为 `dedicated_browser.CONFIG_FILE`，窗口打开、HTTP/MCP/CLI 发现和
 `browser_devtools_mcp.py` 启动桥必须保持同源。修改时覆盖首次校验后保存、明确旧关联沿用、
-端口/资料目录冲突、并发与窗口标签复用、开发隔离、后台不聚焦、设置重置保留和敏感资料备份排除。
+端口/资料目录冲突、并发与窗口标签复用、开发隔离、后台不聚焦、设置重置保留，以及独立任务中的完整浏览器资料备份和缓存排除。
 不得把用户的浏览器路径或调试端口写入出厂配置，也不得在升级安装时写用户关联。
+
+备份任务、归档与恢复分别由 `backup_jobs.py`、`backup_archive.py`、`backup_restore.py` 管理；
+`backup_sources.py` 约束来源，`backup_runner.py` 同步执行，`backup_api.py` 只做界面适配。
+Windows 组件和同批多卷快照由 `backup_service.py` / `backup_vss.py` 实现。
+修改这些链路时，必须验证热备 WAL、一份包独立恢复、失败保留成功版本、按 ledger 归属清理、
+登录补跑、关闭应用后执行、进程退出保护及 `backup_jobs/restore-gate.json` 中断恢复门禁。
+Zotero profile 和专用浏览器资料会包含敏感配置；不自动解密、同步或接管其他来源。
+旧格式包只通过兼容转换进入新恢复队列，旧自动线程不得重新启用。
 
 | 你改了 | 必须同步 | 校验 |
 |---|---|---|

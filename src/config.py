@@ -21,7 +21,7 @@ SUBPROC_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0   # CREATE_NO_W
 # 全项目**只有这一处**版本字面量：发版改版本号只改这里，其余地方一律 `C.APP_VERSION` 引用
 # （踩过的坑：版本号散落在 mcp_server 的 serverInfo、打包脚本、页脚里，改一处漏三处，
 #  用户报 bug 时报的版本对不上代码）。1.0.0 = 首个公开发布版（Apache-2.0 开源）。
-APP_VERSION = "1.1.15"
+APP_VERSION = "1.1.16"
 
 APP = Path(__file__).parent                 # 源码目录；分发版 = bundle/app
 RAG = APP                                    # 兼容：引擎脚本都在项目根
@@ -190,7 +190,9 @@ for _d in (EXTRACTED, CHUNKS, LANCEDB_DIR, BM25_DIR, STATE, LOGS,
            FOLDER_DIR_STATE, PAGEMAP_DIR, STATUTES_DIR,
            WIKI_DIR, WIKI_ANSWERS_DIR, WIKI_CONCEPTS_DIR, WIKI_TOPICS_DIR,
            WIKI_DIGEST_DIR, WIKI_OUTLINE_DIR, WIKI_ENTITY_DIR, WIKI_OVERVIEW_DIR):
-    _d.mkdir(parents=True, exist_ok=True)
+    # 原位恢复期间不能由新启动的 launcher/MCP 重建正在交换的目录。
+    if not (DATA / "backup_jobs" / "restore-gate.json").exists():
+        _d.mkdir(parents=True, exist_ok=True)
 
 # HF 缓存指向复用的模型目录；离线加载，防联网 etag 检查
 os.environ.setdefault("HF_HOME", str(MODELS))

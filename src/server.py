@@ -40,9 +40,35 @@ async def _task_log_mw(request: Request, call_next):
     return resp
 #  proc/cancelled：整库深索(scope=all)跑在 subprocess 里，此前不留句柄 → 一旦开始无法停，
 #  可能空跑数小时并烧掉 API 额度。存下 Popen 供 POST /build/cancel 终止。
-BUILD = {"running": False, "stage": None, "log": [], "started": None, "rc": None,
+class _BuildState(dict):
+    """维护写管线与独立备份共用数据家的进程锁，进程退出自动释放。"""
+    def __init__(self, *args, **kwargs):
+        self._data_guard = None
+        super().__init__(*args, **kwargs)
+
+    def __setitem__(self, key, value):
+        if key == "running":
+            if value and self._data_guard is None:
+                from backup_jobs import paperpiggy_maintenance_lock, BackupBusy
+                guard = paperpiggy_maintenance_lock(C.DATA)
+                try:
+                    guard.__enter__()
+                except BackupBusy as exc:
+                    raise BackupBusy("独立后台备份正在读取小猪资料，请完成后再维护索引。") from exc
+                self._data_guard = guard
+            elif not value and self._data_guard is not None:
+                guard, self._data_guard = self._data_guard, None
+                guard.__exit__(None, None, None)
+        super().__setitem__(key, value)
+
+    def update(self, *args, **kwargs):
+        for key, value in dict(*args, **kwargs).items():
+            self[key] = value
+
+
+BUILD = _BuildState({"running": False, "stage": None, "log": [], "started": None, "rc": None,
          "proc": None, "job": None, "cancelled": False,
-         "bulk": False}   # BF35：当前 deep 构建是否整库深索(scope=all)，队列批次为 False
+         "bulk": False})   # BF35：当前 deep 构建是否整库深索(scope=all)，队列批次为 False
 # B1：build 守卫锁——把「判 running + 置 True」做成原子并在调用线程内同步置位，
 # 杜绝多路触发并发起两个 build_all 子进程写坏同一 LanceDB/bm25/papers.jsonl。
 _BUILD_LOCK = threading.Lock()
@@ -50,7 +76,16 @@ _BUILD_LOCK = threading.Lock()
 
 def _backup_running():
     """BACKUP 在模块后部定义；通过 globals 安全查询，统一阻止维护任务互踩。"""
-    return bool((globals().get("BACKUP") or {}).get("running"))
+    if (globals().get("BACKUP") or {}).get("running"):
+        return True
+    from backup_jobs import JobStore
+    try:
+        current = JobStore(C.DATA / "backup_jobs")
+        return any(current.status(job["job_id"]).get("running")
+                   for job in current.list() if job["kind"] == "paperpiggy"
+                   and job.get("machine_id") == current.machine_id)
+    except Exception:
+        return True  # 归属或状态损坏时不在未知资料上启动维护。
 
 
 def _maintenance_busy_detail_locked():
@@ -101,6 +136,13 @@ def _maintenance_busy_detail_locked():
             "stage": kind or "backup",
             "msg": msg,
         }
+    from backup_jobs import paperpiggy_maintenance_lock, BackupBusy
+    try:
+        with paperpiggy_maintenance_lock(C.DATA):
+            pass
+    except BackupBusy:
+        return {"busy": True, "reason": "backup", "stage": "snapshot",
+                "msg": "独立后台备份正在读取小猪资料，请完成后再维护索引。"}
     return None
 
 
@@ -792,7 +834,15 @@ def _startup():
 def _safe_load():
     global _LOADING
     try:
-        R.load_all()
+        from backup_jobs import paperpiggy_maintenance_lock, BackupBusy
+        while True:
+            try:
+                with paperpiggy_maintenance_lock(C.DATA):
+                    R.load_all()
+                break
+            except BackupBusy:
+                # 后台快照/打包不阻塞 /health；等待后再加载可能需要修复的索引。
+                time.sleep(1)
     except Exception as e:
         log_error("startup load_all", repr(e), traceback.format_exc())
         print("[server] 索引加载失败：", e, flush=True)
@@ -2620,8 +2670,8 @@ def topics_rebuild():
         busy = _maintenance_busy_locked()
         if busy:
             return {"ok": False, "busy": True, "msg": busy}
-        TOPICS_BUILD["running"] = True; TOPICS_BUILD["msg"] = "归类中…"
         BUILD["running"] = True; BUILD["stage"] = "topics"
+        TOPICS_BUILD["running"] = True; TOPICS_BUILD["msg"] = "归类中…"
         BUILD["started"] = time.time(); BUILD["rc"] = None; BUILD["cancelled"] = False
     def run():
         p = job = None
@@ -5004,23 +5054,8 @@ def _start_backup_worker(kind, stage, include_index=False, include_key=False):
 
 
 def _auto_backup_tick():
-    """自动备份（由上面的定时循环每分钟叫一次；真正动手是每 N 天一次）。
-
-    刻意的两个决定：
-      · **只打「手写资产」，不含索引** —— 自动备份要是每次几个 G，用户的云盘和硬盘都会哭。
-        换机时想连索引一起带走，用手动备份勾「包含向量索引」。
-      · **永不含 API key** —— 自动备份的包会一声不响地躺进云盘。要含 key 只能手动勾选。
-    正在建索引就跳过，下一轮再来（打包一个写到一半的向量库 = 一个损坏的副本）。
-    """
-    import settings as S
-    conf = S.load().get("backup") or {}
-    if not conf.get("auto"):
-        return
-    # 先判断是否到期，再占备份槽。旧逻辑反过来做，在“尚未到期”分支直接 return，
-    # 会永久留下 running=True，让手动更新知识库误报“仍有任务在进行”。
-    if not _backup_schedule(conf)["due"]:
-        return
-    _start_backup_worker("auto", "自动备份中", include_index=False, include_key=False)
+    """兼容旧定时循环；备份由独立组件调度，不再复制活动资料。"""
+    return
 
 
 class BackupConfQ(BaseModel):
@@ -5082,14 +5117,7 @@ def backup_estimate(with_index: int = 0):
 
 @app.post("/backup/create")
 def backup_create(q: BackupQ = None):
-    q = q or BackupQ()
-    started, busy = _start_backup_worker(
-        "manual", "手动备份中",
-        include_index=bool(q.include_index), include_key=bool(q.include_key),
-    )
-    if busy:
-        return {"ok": False, "error": busy}
-    return {"ok": True, "started": started}
+    return {"ok": False, "error": "备份已升级，请使用同页的独立备份任务。"}
 
 
 @app.get("/backup/status")
@@ -5122,44 +5150,7 @@ def backup_inspect(q: BackupPathQ):
 
 @app.post("/backup/restore")
 def backup_restore(q: BackupPathQ):
-    busy = _backup_busy_reason()
-    if busy:
-        return {"ok": False, "error": busy}
-
-    import backup as BK
-    info = BK.inspect(q.path)
-    if not info.get("ok"):
-        return {"ok": False, "error": info.get("err") or "备份包不可用"}
-
-    # inspect 可能耗时，完成后重新原子检查并占位，不能沿用检查前的空闲结论。
-    busy = _claim_backup("恢复中", kind="restore", cancellable=False)
-    if busy:
-        return {"ok": False, "error": busy}
-
-    task_id = BACKUP["task_id"]
-    def work():
-        try:
-            r = BK.restore(q.path)
-            if r.get("ok"):
-                BACKUP["result"] = r
-                BACKUP["stage"] = "完成（需重启）"
-            else:
-                BACKUP["error"] = r.get("err") or "恢复失败"
-                BACKUP["stage"] = "失败"
-        except Exception as e:
-            log_error("backup_restore", repr(e))
-            BACKUP["error"] = str(e)
-            BACKUP["stage"] = "失败"
-        finally:
-            _release_backup(task_id)
-
-    global _BACKUP_WORKER
-    worker = threading.Thread(target=work, daemon=True, name=f"paperpiggy-restore-{task_id}")
-    with _BUILD_LOCK:
-        if BACKUP.get("task_id") == task_id:
-            _BACKUP_WORKER = worker
-    worker.start()
-    return {"ok": True, "started": True}
+    return {"ok": False, "error": "请从备份与恢复页面确认后恢复；旧备份包也可在该页恢复。"}
 
 
 @app.post("/backup/open_dir")
@@ -5317,6 +5308,13 @@ def index():
 
 app.mount("/static", StaticFiles(directory=str(WEB)), name="static")
 
+import backup_api
+backup_api.register(app, sys.modules[__name__])
+
 if __name__ == "__main__":
+    import backup_runner
+    if backup_runner.active_paperpiggy_restore(C.DATA):
+        print("小猪正在原位恢复，暂不启动后端；完成后请重新打开。", flush=True)
+        sys.exit(0)
     print(f"本地知识库服务启动：http://{C.DAEMON_HOST}:{C.DAEMON_PORT}", flush=True)
     uvicorn.run(app, host=C.DAEMON_HOST, port=C.DAEMON_PORT, log_level="warning")

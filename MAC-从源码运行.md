@@ -72,7 +72,7 @@ macOS 上落在：
   会起第二个实例（正常用不太会碰到）。
 - **应用内「一键升级」**：那套是给 Windows 安装器版的（下载增量包换 `app\`）。Mac 源码版**请用
   `git pull` 更新**，别点应用内升级。顶栏的「有新版」提示仍会亮（提醒你去 `git pull`）。
-- **系统文件管理器**：「打开备份/交付物文件夹」在 Mac 上走 `open`，应该正常。
+- **备份与恢复**：独立后台任务和运行中 VSS 备份目前仅支持 Windows。Mac 请退出 PaperPiggy、Zotero 等相关程序后，手动保留完整数据目录及用户配置；不要直接复制活动数据库。交付物文件夹在 Mac 上通过系统文件管理器打开。
 - **取消整库建索引**：已改成按进程组 `killpg` 杀，能连嵌入子进程一起停 —— 这条**特别帮我验一下**
   （点「停止」后用「活动监视器」看还有没有残留的 python 进程在跑）。
 - **窗口打不开 / 报 pyobjc 相关错**：多半是 `pyobjc` 没装全，试 `pip install pyobjc`（完整元包）再跑。
@@ -80,7 +80,7 @@ macOS 上落在：
 ## 7. 接入 AI agent（可选）
 
 应用「🤖 Agent」页会吐出本机真实可用的 `claude mcp add …` 命令（自动用当前 venv 的
-python + `src/mcp_server.py`），复制到 Claude Code 等即可接入 32 个工具。
+python + `src/mcp_server.py`）；工具清单以 Agent 页和 `MCP接入说明.md` 为准。
 
 ---
 

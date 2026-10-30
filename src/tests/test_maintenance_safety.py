@@ -171,10 +171,10 @@ class BackupRuntimeTests(unittest.TestCase):
 
     @mock.patch.object(server, "_start_backup_worker", return_value=(True, None))
     @mock.patch("settings.load", return_value={"backup": {"auto": True, "every_days": 7, "last_at": ""}})
-    def test_auto_backup_due_starts_background_worker(self, _load_settings, start_worker):
+    def test_legacy_auto_backup_never_copies_active_files(self, _load_settings, start_worker):
         server._auto_backup_tick()
-        start_worker.assert_called_once_with(
-            "auto", "自动备份中", include_index=False, include_key=False)
+        start_worker.assert_not_called()
+        self.assertFalse(server.BACKUP["running"])
 
     def test_cancel_is_allowed_for_backup_but_not_restore(self):
         self.assertIsNone(server._claim_backup("手动备份中", kind="manual", cancellable=True))

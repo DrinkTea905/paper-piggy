@@ -32,6 +32,38 @@ KEEP_MD = {"README.md", "MCP接入说明.md"}
 LEGAL_DOCS = ("LICENSE", "THIRD-PARTY-NOTICES.md")
 
 
+def backup_component_files():
+    """固定原生安装器也进入增量包；陈旧或缺失载荷禁止出包。"""
+    import json
+    import backup_service
+    root = SRC.parent / "build" / "backup-component"
+    executable, metadata = root / "backup_component.exe", root / "backup_component.json"
+    try:
+        info = json.loads(metadata.read_text(encoding="utf-8"))
+        current = {name: hashlib.sha256((SRC / name).read_bytes()).hexdigest()
+                   for name in backup_service.MODULES}
+        installer = SRC.parent / "installer"
+        if (info.get("schema") != 1 or info.get("source_hashes") != current
+                or info.get("app_version") != C.APP_VERSION
+                or info.get("installer_sha256") != hashlib.sha256((installer / "backup_component.iss").read_bytes()).hexdigest()
+                or info.get("builder_sha256") != hashlib.sha256((installer / "build_backup_component.py").read_bytes()).hexdigest()
+                or hashlib.sha256(executable.read_bytes()).hexdigest() != info.get("sha256")):
+            raise ValueError("组件载荷与当前源码不一致")
+    except Exception as exc:
+        raise SystemExit(f"[bundle] 备份组件缺失或陈旧：{exc}；请重新运行 build_bundle.py。") from exc
+    return {executable.name: executable, metadata.name: metadata}
+
+
+def prepare_backup_component(runtime=None):
+    import importlib.util
+    script = SRC.parent / "installer" / "build_backup_component.py"
+    spec = importlib.util.spec_from_file_location("paperpiggy_component_builder", script)
+    builder = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(builder)
+    result = builder.build(runtime=runtime)
+    print(f"[bundle] 原生备份组件就绪：{result['files']} 个固定文件")
+
+
 def _rm_ro(func, path, _):
     os.chmod(path, stat.S_IWRITE); func(path)
 
@@ -87,6 +119,7 @@ def source_app_files():
         p = SRC / name
         if p.exists():
             files[name] = p
+    files.update(backup_component_files())
     return dict(sorted(files.items()))
 
 
@@ -432,6 +465,7 @@ def main():
         pass
     if not args.skip_checks:
         verify_guides()     # 指引漂移 → 直接中止，别发出一个"说明书对不上代码"的包
+    prepare_backup_component(args.python_src or os.environ.get("LOCALKB_PY_SRC"))
     if args.sync_only:
         if not BUNDLE.exists():
             print(f"[bundle] ✗ 找不到已构建的 bundle：{BUNDLE}（先完整构建/解压一次）"); return
