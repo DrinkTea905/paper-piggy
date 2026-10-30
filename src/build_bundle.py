@@ -32,12 +32,26 @@ KEEP_MD = {"README.md", "MCP接入说明.md"}
 LEGAL_DOCS = ("LICENSE", "THIRD-PARTY-NOTICES.md")
 
 
+def backup_component_manifest(info, executable):
+    """签名协议只接受明确字段，发布前从本次构建产物派生。"""
+    import backup_component_auth as auth
+    return auth.validate_manifest({
+        "schema": auth.SCHEMA, "product": auth.PRODUCT,
+        "component_version": info["component_version"], "app_version": info["app_version"],
+        "helper_sha256": info["sha256"], "helper_size": executable.stat().st_size,
+        "build_id": info["build_id"], "source_hashes": info["source_hashes"],
+        "runtime_hashes": info["runtime_hashes"],
+    })
+
+
 def backup_component_files():
     """固定原生安装器也进入增量包；陈旧或缺失载荷禁止出包。"""
     import json
     import backup_service
+    import backup_component_auth as auth
     root = SRC.parent / "build" / "backup-component"
     executable, metadata = root / "backup_component.exe", root / "backup_component.json"
+    signature = root / "backup_component.sig.json"
     try:
         info = json.loads(metadata.read_text(encoding="utf-8"))
         current = {name: hashlib.sha256((SRC / name).read_bytes()).hexdigest()
@@ -45,13 +59,17 @@ def backup_component_files():
         installer = SRC.parent / "installer"
         if (info.get("schema") != 1 or info.get("source_hashes") != current
                 or info.get("app_version") != C.APP_VERSION
+                or info.get("component_version") != auth.release_component_version(C.APP_VERSION)
                 or info.get("installer_sha256") != hashlib.sha256((installer / "backup_component.iss").read_bytes()).hexdigest()
                 or info.get("builder_sha256") != hashlib.sha256((installer / "build_backup_component.py").read_bytes()).hexdigest()
                 or hashlib.sha256(executable.read_bytes()).hexdigest() != info.get("sha256")):
             raise ValueError("组件载荷与当前源码不一致")
+        expected = backup_component_manifest(info, executable)
+        if auth.verify_envelope(signature.read_bytes()) != expected:
+            raise ValueError("官方组件签名与本次完整构建清单不一致")
     except Exception as exc:
         raise SystemExit(f"[bundle] 备份组件缺失或陈旧：{exc}；请重新运行 build_bundle.py。") from exc
-    return {executable.name: executable, metadata.name: metadata}
+    return {executable.name: executable, metadata.name: metadata, signature.name: signature}
 
 
 def prepare_backup_component(runtime=None):
@@ -61,6 +79,22 @@ def prepare_backup_component(runtime=None):
     builder = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(builder)
     result = builder.build(runtime=runtime)
+    import backup_component_auth as auth
+    executable = Path(result["executable"])
+    manifest = backup_component_manifest(result, executable)
+    signature = executable.with_name("backup_component.sig.json")
+    reusable = False
+    try:
+        reusable = auth.verify_envelope(signature.read_bytes()) == manifest
+    except (OSError, ValueError):
+        pass
+    if not reusable:
+        signed = auth.sign_with_key_file(manifest)
+        temporary = signature.with_name(signature.name + ".new")
+        temporary.write_bytes(signed)
+        os.replace(temporary, signature)
+    if auth.verify_envelope(signature.read_bytes()) != manifest:
+        raise SystemExit("[bundle] 官方组件签名自检失败，已中止出包")
     print(f"[bundle] 原生备份组件就绪：{result['files']} 个固定文件")
 
 

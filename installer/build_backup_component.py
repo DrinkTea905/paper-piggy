@@ -21,25 +21,36 @@ def sha(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-def build(runtime=None, output=None, iscc=None, *, abi_probe=False):
+def release_component_version(app_version):
+    """每个应用补丁版本预留 1000 个组件修订序号；发布唯一源仍为 APP_VERSION。"""
+    from backup_component_auth import release_component_version as encode
+    return encode(app_version)
+
+
+def build(runtime=None, output=None, iscc=None, *, abi_probe=False, component_version=None, source_dir=None):
+    component_version = release_component_version(C.APP_VERSION) if component_version is None else component_version
+    if type(component_version) is not int or component_version < 1:
+        raise ValueError("组件版本必须是单调递增的正整数。")
     runtime = Path(runtime or ROOT / "build/py312").absolute()
     output = Path(output or ROOT / "build/backup-component").absolute()
-    source = ROOT / "src"
+    source = Path(source_dir or ROOT / "src").absolute()
     files = {"code/" + name: source / name for name in S.MODULES}
     files.update({"runtime/" + name: path for name, path in S._runtime_files(runtime).items()})
     entries = [{"path": name, "sha256": sha(path), "size": path.stat().st_size}
                for name, path in sorted(files.items())]
     build_id = hashlib.sha256(json.dumps(entries, separators=(",", ":")).encode()).hexdigest()
-    fingerprints = {"build_id": build_id, "app_version": C.APP_VERSION,
+    fingerprints = {"build_id": build_id, "app_version": C.APP_VERSION, "component_version": component_version,
         "installer_sha256": sha(ROOT / "installer/backup_component.iss"),
         "builder_sha256": sha(Path(__file__))}
     source_hashes = {e["path"][5:]: e["sha256"] for e in entries if e["path"].startswith("code/")}
+    runtime_hashes = {e["path"][8:]: e["sha256"] for e in entries if e["path"].startswith("runtime/")}
     executable, metadata = output / "backup_component.exe", output / "backup_component.json"
     if not abi_probe and executable.is_file() and metadata.is_file():
         try:
             cached = json.loads(metadata.read_text(encoding="utf-8"))
             if (cached.get("schema") == 1 and all(cached.get(k) == v for k, v in fingerprints.items())
                     and cached.get("source_hashes") == source_hashes
+                    and cached.get("runtime_hashes") == runtime_hashes
                     and cached.get("files") == len(entries)
                     and cached.get("bytes") == sum(e["size"] for e in entries)
                     and cached.get("sha256") == sha(executable)):
@@ -49,7 +60,8 @@ def build(runtime=None, output=None, iscc=None, *, abi_probe=False):
     stage = output / "stage" / build_id
     stage.mkdir(parents=True, exist_ok=True)
     template = stage / "payload-template.json"
-    template.write_text(json.dumps({"schema": S.SCHEMA, "build_id": build_id, "files": entries},
+    template.write_text(json.dumps({"schema": S.SCHEMA, "build_id": build_id,
+                                  "component_version": component_version, "files": entries},
                                   indent=2), encoding="utf-8")
     files["payload-template.json"] = template
     install = []
@@ -96,7 +108,7 @@ def build(runtime=None, output=None, iscc=None, *, abi_probe=False):
         raise RuntimeError("组件源码在编译期间发生变化，未发布组件清单，请重新构建。")
     meta = {"schema": 1, **fingerprints, "sha256": sha(executable),
             "files": len(entries), "bytes": sum(e["size"] for e in entries),
-            "source_hashes": source_hashes}
+            "source_hashes": source_hashes, "runtime_hashes": runtime_hashes}
     (output / "backup_component.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
     return {"executable": str(executable), "metadata": str(output / "backup_component.json"), **meta}
 
@@ -107,5 +119,7 @@ if __name__ == "__main__":
     parser.add_argument("--output")
     parser.add_argument("--iscc")
     parser.add_argument("--abi-probe", action="store_true")
+    parser.add_argument("--component-version", type=int)
     args = parser.parse_args()
-    print(json.dumps(build(args.runtime, args.output, args.iscc, abi_probe=args.abi_probe), ensure_ascii=False, indent=2))
+    print(json.dumps(build(args.runtime, args.output, args.iscc, abi_probe=args.abi_probe,
+                           component_version=args.component_version), ensure_ascii=False, indent=2))

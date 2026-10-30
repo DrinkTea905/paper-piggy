@@ -12,6 +12,8 @@
 
 ## 0. 为什么会漂
 
+后台官方更新另有发布门禁：`backup_component_auth.py` 与固定公钥负责签名验证，`backup_component_update.py` 和 `backup_service.py` 负责受保护切代与状态，`installer/sign_backup_component.py` 仅在发布端使用。变更这些代码时须重建、签名并实测组件；出包需同时校验源码、组件 EXE、签名描述与内置公钥一致。发布私钥不得进仓库、安装器、用户数据或日志。新任务／队列使用既有 `backup_work` 暂存范围，不能混入知识库备份。
+
 应用里的「指引」分三类，读者完全不同：
 
 | 类别 | 给谁看 | 物理位置 |

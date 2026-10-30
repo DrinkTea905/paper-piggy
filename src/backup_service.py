@@ -27,7 +27,8 @@ import xml.etree.ElementTree as ET
 SCHEMA = 1
 MODULES = frozenset({"backup_runner.py", "backup_sources.py", "backup_jobs.py",
     "backup_archive.py", "backup_restore.py", "backup_legacy.py", "backup_vss.py", "backup_service.py",
-    "backup.py", "config.py", "settings.py", "dedicated_browser.py"})
+    "backup.py", "config.py", "settings.py", "dedicated_browser.py",
+    "backup_component_auth.py", "backup_component_trust.py", "backup_component_update.py"})
 NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 _INSTALL_PROCESSES = {}
 
@@ -685,7 +686,7 @@ def _atomic(path, value, protected=False):
     os.replace(temporary, path)
 
 
-def task_xml(data_dir, payload_dir, owner_sid=None, *, enabled=True):
+def task_xml(data_dir, payload_dir, owner_sid=None, *, enabled=True, update_channel=False):
     """纯函数：固定受保护入口，用户参数通过 Windows argv 规则引用，绝不经 shell。"""
     data, sid, identifier = _identity(data_dir)
     sid = owner_sid or sid
@@ -729,11 +730,11 @@ def task_xml(data_dir, payload_dir, owner_sid=None, *, enabled=True):
     execution = element(actions, "Exec")
     element(execution, "Command", payload / "runtime/pythonw.exe")
     element(execution, "Arguments", subprocess.list2cmdline(["-I", "-S",
-        str(payload / "code/backup_service.py"), "--worker", "--data", str(data)]))
+        str(payload / "code/backup_service.py"), "--update-worker" if update_channel else "--worker", "--data", str(data)]))
     element(execution, "WorkingDirectory", payload / "code")
     # Task Scheduler 接收 BSTR，审阅副本也以 UTF-16 写入；声明须与二者一致。
     return '<?xml version="1.0" encoding="UTF-16"?>\n' + ET.tostring(
-        task, encoding="unicode"), "PaperPiggyBackup-" + identifier
+        task, encoding="unicode"), ("PaperPiggyBackupUpdate-" if update_channel else "PaperPiggyBackup-") + identifier
 
 
 def _queued_acceptance_jobs(data_dir):
@@ -803,7 +804,7 @@ def _wait_acceptance(task, running, data_dir, generation, job_ids, timeout=480):
         time.sleep(.25)
 
 
-def _register(path):
+def _register(path, *, commit=True):
     if not _elevated():
         raise ServiceError("注册后台备份任务需要 Windows 管理员授权。")
     manifest = _verified_manifest(path)
@@ -854,7 +855,8 @@ def _register(path):
     record = {"schema": SCHEMA, "owner_sid": manifest["owner_sid"],
         "data_dir": manifest["data_dir"], "payload_id": manifest["payload_id"],
         "manifest_sha256": _sha(path), "task_name": name, "installed_at": time.time()}
-    _atomic(target.parent / "current.json", record, protected=True)
+    if commit:
+        _atomic(target.parent / "current.json", record, protected=True)
     return record
 
 
@@ -873,12 +875,55 @@ def _register_native(data_dir, owner_sid, generation, acceptance=False):
     for p in (instance.parent, instance, target, target / "code", target / "runtime", template):
         _check_protected_directory(p)
     manifest = json.loads(template.read_text(encoding="utf-8"))
+    if type(manifest.get("component_version")) is not int or manifest["component_version"] < 1:
+        raise ServiceError("组件载荷缺少有效发布版本。")
     manifest.update(owner_sid=sid, data_dir=str(data), instance=instance.name, payload_id=generation)
     if acceptance:
         manifest["acceptance_once"] = True
     path = target / "payload.json"
     _atomic(path, manifest, protected=True)
-    return _register(path)
+    _verified_manifest(path)
+    if {row["path"][5:] for row in manifest["files"] if row["path"].startswith("code/")} != MODULES:
+        raise ServiceError("组件源码白名单不完整，未更换现有任务。")
+    for row in manifest["files"]:
+        if row["path"].startswith("code/"):
+            compile((target / row["path"]).read_bytes(), row["path"], "exec")
+    # 备份任务和独立更新通道都注册成功后才提交 current；失败恢复原任务定义。
+    old_xml = None
+    name = "PaperPiggyBackup-" + instance.name
+    with _scheduler() as folder:
+        try:
+            previous = folder.invoke("GetTask", name)
+            try:
+                old_xml = previous.invoke("Xml", flags=2)
+            finally:
+                previous.close()
+        except ServiceError:
+            pass
+    try:
+        record = _register(path, commit=False)
+        sys.path.insert(0, str(here.parent))
+        import backup_component_update
+        backup_component_update.ensure_channel(path, enabled=not acceptance)
+        _atomic(instance / "current.json", record, protected=True)
+        return record
+    except Exception:
+        with _scheduler() as folder:
+            if old_xml is not None:
+                task = folder.invoke("RegisterTask", name, old_xml, 22, sid, None, 3,
+                    f"O:BAG:BAD:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGX;;;{sid})")
+                if task:
+                    task.close()
+            else:
+                try:
+                    task = folder.invoke("GetTask", name)
+                    try:
+                        task.invoke("Enabled", False, flags=4)
+                    finally:
+                        task.close()
+                except ServiceError:
+                    pass
+        raise
 
 
 def install_status(data_dir):
@@ -900,7 +945,9 @@ def install_status(data_dir):
             waiting = bool(pending and not error and time.time() - pending.get("started_at", 0) < 600)
             if pending and not error and not waiting:
                 error = "后台组件安装未完成，请检查 Windows 授权或载荷校验后重试。"
-            return {"installed": False, "pending": waiting, "error": error, "schema": SCHEMA}
+            return {"installed": False, "pending": waiting, "error": error, "schema": SCHEMA,
+                    "can_run": False, "migration_required": False, "auto_update_supported": False,
+                    "auto_update": {"state": "idle", "pending": False, "error": ""}}
         _no_links(record_path)
         record = json.loads(record_path.read_text(encoding="utf-8"))
         if (record.get("owner_sid") != sid or _canonical(record.get("data_dir", "")) != _canonical(data)
@@ -923,12 +970,19 @@ def install_status(data_dir):
             error = native_error.read_text(encoding="mbcs", errors="replace")
         if updating and not error and time.time() - pending.get("started_at", 0) >= 600:
             error = "后台组件更新未完成；已有版本保留，请重新授权安装。"
+        from backup_component_update import channel_status
+        channel = channel_status(data)
+        changed = _sources_changed(manifest)
+        supported = channel["auto_update_supported"]
         return {"installed": True, "pending": bool(updating and not error and time.time() - pending.get("started_at", 0) < 600),
                 "error": error, "schema": record["schema"],
                 "task_name": record["task_name"], "installed_at": record["installed_at"],
-                "needs_update": _sources_changed(manifest)}
+                "needs_update": changed, "can_run": supported or not changed,
+                "migration_required": changed and not supported, **channel}
     except Exception as exc:
-        return {"installed": False, "pending": False, "error": str(exc), "schema": SCHEMA}
+        return {"installed": False, "pending": False, "error": str(exc), "schema": SCHEMA,
+                "can_run": False, "migration_required": False, "auto_update_supported": False,
+                "auto_update": {"state": "failed", "pending": False, "error": str(exc)}}
 
 
 def _sources_changed(manifest):
@@ -951,6 +1005,43 @@ def trigger_task(data_dir):
     if result.returncode:
         raise ServiceError("无法唤醒后台备份任务，请检查 Windows 任务计划程序。")
     return {"ok": True, "queued": True, "task_name": info["task_name"]}
+
+
+def request_component_update(data_dir, envelope_path=None, helper_path=None, *, retry=False):
+    """普通权限投递签名包；已安装通道自行验证和更新，此入口绝不显示 UAC。"""
+    from backup_component_update import request_update
+    return request_update(data_dir, envelope_path, helper_path, retry=retry)
+
+
+@contextmanager
+def component_guard(instance):
+    """高权更新和备份共享保护锁；不强制结束正在运行的备份。"""
+    path = Path(instance) / "component-operation.lock"
+    _no_links(path)
+    if not path.exists():
+        try:
+            _protected_bytes(path, b"")
+        except ServiceError:
+            if not path.exists():
+                raise
+    # 锁文件仅能由受保护父目录中的本组件创建。核对父目录而不对正在被另一
+    # worker 独占的文件做写权限探针，避免把正常 sharing violation 当 ACL 错误。
+    _check_protected_directory(path.parent)
+    kernel, _ = _libraries()
+    kernel.CreateFileW.argtypes = (wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+        ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE)
+    kernel.CreateFileW.restype = wintypes.HANDLE
+    handle = kernel.CreateFileW(str(path), 0xC0000000, 0, None, 3, 0x80, None)
+    if handle == ctypes.c_void_p(-1).value:
+        code = ctypes.get_last_error()
+        if code in (32, 33):
+            yield False
+            return
+        raise ServiceError("无法取得后台组件维护锁。")
+    try:
+        yield True
+    finally:
+        kernel.CloseHandle(handle)
 
 
 def _file_token_elevated():
@@ -1108,6 +1199,14 @@ def _worker(data_dir):
     if not _elevated():
         raise ServiceError("后台备份包装必须由已授权的计划任务启动。")
     _, _, instance = _instance(data_dir)
+    with component_guard(instance) as acquired:
+        return _worker_unlocked(data_dir) if acquired else 0
+
+
+def _worker_unlocked(data_dir):
+    if not _elevated():
+        raise ServiceError("后台备份包装必须由已授权的计划任务启动。")
+    _, _, instance = _instance(data_dir)
     here = Path(__file__).absolute()
     manifest = _verified_manifest(here.parent.parent / "payload.json")
     if _canonical(data_dir) != _canonical(manifest["data_dir"]):
@@ -1129,6 +1228,18 @@ def _worker(data_dir):
     return result
 
 
+def _update_worker(data_dir):
+    if not _elevated():
+        raise ServiceError("组件更新只由已授权的独立任务执行。")
+    here = Path(__file__).absolute()
+    manifest = _verified_manifest(here.parent.parent / "payload.json")
+    if _canonical(data_dir) != _canonical(manifest["data_dir"]):
+        raise ServiceError("更新任务的数据家与安装记录不符。")
+    sys.path.insert(0, str(here.parent))
+    import backup_component_update
+    return backup_component_update.run_update(data_dir, manifest)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--register", action="store_true")
@@ -1137,10 +1248,13 @@ def main(argv=None):
     parser.add_argument("--generation")
     parser.add_argument("--acceptance-once", action="store_true")
     parser.add_argument("--worker", action="store_true")
+    parser.add_argument("--update-worker", action="store_true")
     parser.add_argument("--manifest")
     parser.add_argument("--data")
     args = parser.parse_args(argv)
     try:
+        if args.update_worker and args.data and not args.register and not args.register_native and not args.worker:
+            return int(_update_worker(args.data) or 0)
         if args.register_native and args.data and args.owner_sid and args.generation and not args.worker and not args.register:
             _register_native(args.data, args.owner_sid, args.generation, args.acceptance_once)
             return 0

@@ -4410,7 +4410,12 @@
   }
   function bk2Ready() {
     const s = (BK2.config && BK2.config.service) || {};
+    if (typeof s.can_run === "boolean") return s.can_run;
     return !!s.installed && s.ready !== false && !s.pending && !s.installing && !s.needs_update && !s.error;
+  }
+  function bk2UpdatePending(service) {
+    const s = service || {}, update = s.auto_update || {};
+    return !!(s.pending || s.installing || update.pending || ["pending", "deferred", "updating"].includes(update.state));
   }
   function bk2Native() {
     const api = window.pywebview && window.pywebview.api;
@@ -4433,15 +4438,31 @@
   }
   function bk2ServiceView() {
     const s = (BK2.config && BK2.config.service) || {}, ready = bk2Ready();
-    $("#bk2-service-title").textContent = ready ? "后台备份已就绪"
-      : (BK2.installing || s.pending || s.installing) ? "等待后台备份配置完成"
-      : s.error ? "后台备份需要处理" : s.needs_update ? "后台备份组件需要更新" : "尚未配置后台备份";
-    $("#bk2-service-detail").textContent = ready
-      ? "运行中备份使用同批卷快照；关闭小猪后仍可按计划备份，并在登录后补跑。"
-      : s.error || (s.needs_update ? "请确认管理员授权以更新后台组件，再开始备份。更新完成前不会执行任务。" : "首次配置需要一次 Windows 管理员确认。尚未就绪时不会退回直接复制活动数据库。");
+    const automatic = !!s.auto_update_supported, update = s.auto_update || {};
+    const pending = bk2UpdatePending(s), updateError = update.error || (update.state === "failed" ? s.error || "更新未完成。" : "");
+    const migration = !!s.migration_required || !!(s.installed && s.needs_update && !automatic);
+    let title, detail;
+    if (automatic) {
+      title = pending ? (ready ? "后台可用，组件正在自动更新" : "后台组件正在自动更新")
+        : updateError ? (ready ? "后台可用，组件更新未完成" : "后台组件更新未完成")
+        : ready ? "后台备份已就绪" : "后台备份需要处理";
+      detail = pending ? (update.state === "deferred" ? "正在等待当前任务完成，再更新后台组件。" : "正在通过受保护通道处理官方组件更新。")
+        + (ready ? "现有后台仍可备份，已保存的计划保持运行；无需再次管理员确认。" : "更新完成前请稍候，无需管理员确认。")
+        : updateError ? "组件更新错误：" + updateError + (ready ? " 现有后台仍可备份，计划和已有成功备份保留；可普通权限重试。" : " 可普通权限重试，已有备份保留。")
+        : s.error || "运行中备份使用同批卷快照，小猪未打开也能执行并在登录后补跑。官方后台组件自动更新，无需重复管理员确认。";
+    } else {
+      title = BK2.installing || pending ? "等待一次性配置完成" : migration ? "后台组件需要一次性迁移" : s.error ? "后台备份需要处理" : ready ? "后台备份已就绪" : "尚未配置后台备份";
+      detail = s.error || (migration ? "请手动完成一次性迁移（管理员确认）。原任务、来源和备份继续保留；完成后官方后台更新无需重复授权。"
+        : ready ? "当前后台可用。后续需要时完成一次性迁移，再由受保护通道自动更新。"
+        : "首次配置需要你手动确认一次 Windows 管理员授权；后台检查不会自动弹出 UAC，普通应用不整体提权。");
+    }
+    $("#bk2-service-title").textContent = title;
+    $("#bk2-service-detail").textContent = detail;
     const button = $("#bk2-install");
-    button.disabled = BK2.installing || !!s.pending || !!s.installing;
-    button.textContent = ready ? "检查后台备份配置" : button.disabled ? "正在配置…" : s.needs_update ? "更新后台备份（管理员确认）" : "配置后台备份（管理员确认）";
+    button.disabled = BK2.installing || pending;
+    button.textContent = button.disabled ? (automatic ? "正在更新…" : "正在配置…")
+      : automatic ? (updateError ? "重试后台更新" : "检查后台更新")
+      : migration ? "完成一次性迁移（管理员确认）" : ready ? "检查后台备份配置" : "首次配置后台备份（管理员确认）";
   }
   function bk2RenderForm() {
     const j = bk2Current(), discovered = (BK2.config && BK2.config.discovered) || {};
@@ -4506,7 +4527,7 @@
     const coverage = bk2CoverageSummary(s);
     if (coverage && !running && !s.error && s.operation === "backup"
       && (s.state === "success" || s.state === "success_with_warning")) detail.textContent += "\n" + coverage;
-    $("#bk2-create").disabled = running || BK2.legacyBusy || BK2.installing || BK2.saving || BK2.waitingExit;
+    $("#bk2-create").disabled = running || BK2.legacyBusy || (BK2.installing && !bk2Ready()) || BK2.saving || BK2.waitingExit;
     $("#bk2-save").disabled = running || BK2.saving || BK2.waitingExit;
     $("#bk2-cancel").hidden = !running || s.cancellable === false || s.operation === "restore";
     $("#bk2-cancel").disabled = !!s.cancel_requested;
@@ -4773,31 +4794,51 @@
     } catch (e) { await uiNotice("旧包恢复未完成：" + bk2Error(e), { title: "恢复未完成" }); }
   }
   async function installBk2Service() {
-    const api = window.pywebview && window.pywebview.api;
-    if (!api || !api.install_backup_service) {
-      await uiNotice("请在 PaperPiggy 原生窗口中配置后台备份；当前窗口没有可用的管理员授权入口。", { title: "需要原生应用窗口" }); return;
-    }
-    const checking = bk2Ready();
+    if (BK2.installing) return;
     BK2.installing = true; bk2ServiceView();
+    let automatic = false;
     try {
-      if (checking) {
-        const config = await jget("/backup2/config");
-        if (!config || config.ok === false) throw new Error((config && config.error) || "无法核对后台配置");
-        BK2.config = config;
-        if (bk2Ready()) { bk2Message("后台备份已就绪，无需再次管理员授权。"); return; }
+      const fresh = await jget("/backup2/config");
+      if (!fresh || fresh.ok === false) throw new Error(fresh && fresh.error || "无法核对后台配置");
+      BK2.config = fresh;
+      const service = fresh.service || {}, update = service.auto_update || {};
+      automatic = !!service.auto_update_supported;
+      if (bk2Ready() && !service.needs_update && !service.migration_required && !update.error && update.state !== "failed") {
+        bk2Message("后台备份已就绪，无需再次管理员授权。"); return;
       }
-      const r = await api.install_backup_service();
-      if (r && (r.ok === false || r.cancelled)) throw new Error(r.error || r.message || "管理员授权未完成");
-      bk2Message("已请求 Windows 管理员确认，正在核对后台组件是否安装完成。");
+      let r;
+      if (automatic) {
+        r = await jpost("/backup2/component/update", {});
+      } else {
+        const api = window.pywebview && window.pywebview.api;
+        if (!api || !api.install_backup_service) {
+          await uiNotice("首次配置或一次性迁移需要在 PaperPiggy 原生窗口中手动确认；当前窗口没有管理员授权入口。", { title: "需要原生应用窗口" }); return;
+        }
+        r = await api.install_backup_service();
+      }
+      if (!r || r.ok === false || r.cancelled) throw new Error(r && (r.error || r.message) || "后台配置未完成");
+      if (r.service) BK2.config = Object.assign({}, BK2.config, { service: r.service });
+      bk2Message(automatic ? "后台更新已登记，正在普通权限等待完成；不会弹出管理员授权窗口。" : "已请求一次 Windows 管理员确认，正在核对一次性配置结果。");
       for (let i = 0; i < 60; i++) {
         await new Promise(resolve => setTimeout(resolve, 1500));
-        const config = await jget("/backup2/config"); BK2.config = config;
-        if (bk2Ready()) { bk2Message("后台备份已就绪。请保存本任务的来源、位置与计划。"); return; }
-        if (config.service && config.service.error) throw new Error(config.service.error);
+        const config = await jget("/backup2/config");
+        if (!config || config.ok === false) throw new Error(config && config.error || "无法核对后台配置");
+        BK2.config = config; bk2ServiceView();
+        const s = config.service || {}, u = s.auto_update || {};
+        if (u.error || u.state === "failed") throw new Error(u.error || "官方组件更新未完成");
+        if (bk2Ready() && !s.migration_required && !s.needs_update && !bk2UpdatePending(s)) {
+          bk2Message("后台备份已就绪。此后官方后台更新无需重复管理员确认，原任务与备份保持保留。"); return;
+        }
+        if (s.error && !bk2Ready()) throw new Error(s.error);
       }
-      bk2Message("后台配置尚未确认完成，请稍后刷新状态；尚未开始任何自动备份。");
-    } catch (e) { bk2Message("后台配置未完成：" + bk2Error(e)); }
-    finally { BK2.installing = false; bk2ServiceView(); }
+      bk2Message("后台配置仍在处理中，请稍后刷新。" + (bk2Ready() ? "现有后台仍可备份，已保存的计划继续运行。" : "已有备份保持保留。"));
+    } catch (e) {
+      bk2Message((automatic ? "后台更新未完成：" : "一次性配置未完成：") + bk2Error(e)
+        + (bk2Ready() ? " 现有后台仍可备份，计划和已有成功备份保持保留。" : ""));
+    } finally {
+      BK2.installing = false; bk2ServiceView();
+      if (BK2.states[BK2.kind]) bk2StatusView(BK2.states[BK2.kind], BK2.kind);
+    }
   }
   function wireBackup2() {
     $$("#sec-backup input, #sec-backup select").forEach(el => {
@@ -4845,8 +4886,14 @@
     setInterval(async () => {
       if (BK2.polling || !BK2.config || $("#settings-modal").hidden) return;
       BK2.polling = true; const kind = BK2.kind;
-      try { bk2StatusView(await jget("/backup2/status?kind=" + kind), kind); }
-      catch (_) {} finally { BK2.polling = false; }
+      try {
+        bk2StatusView(await jget("/backup2/status?kind=" + kind), kind);
+        const service = BK2.config.service || {}, update = service.auto_update || {};
+        if (bk2UpdatePending(service) || BK2.installing || service.needs_update && service.auto_update_supported && update.state !== "failed") {
+          const config = await jget("/backup2/config");
+          if (config && config.ok !== false) { BK2.config = config; bk2ServiceView(); }
+        }
+      } catch (_) {} finally { BK2.polling = false; }
     }, 2500);
   }
   wireBackup2();

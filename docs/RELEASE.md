@@ -49,11 +49,13 @@ Codex 配置仍应保留 `APPDATA` 与 `LOCALAPPDATA`，否则 GitHub CLI 也会
 
 ### 0.1c 原生备份组件随应用发布
 
-后台 VSS 能力使用固定的原生 Inno 组件安装器，普通应用与主安装器仍按用户权限运行。首次配置及必要更新备份组件时，由用户点击设置页入口确认 UAC；不把日常应用整体提权，也不在启动、检查状态或普通备份时请求授权。
+后台 VSS 能力使用固定的原生 Inno 组件安装器，普通应用与主安装器仍按用户权限运行。首次配置及从旧后台迁移时，由用户手动确认一次 UAC；完成迁移后的正常官方更新，由独立受保护更新任务验证官方签名并升级后台，不再要求逐次管理员确认。日常应用不整体提权，启动、状态检查和普通备份不自动触发 UAC。
 
-`build_bundle.py` 会先调用 `installer/build_backup_component.py`，从明确的模块清单及最小 Python 标准库构建 `build/backup-component/backup_component.exe` 和配套 `backup_component.json`。二者均进入 `app/`，因此完整安装器与应用内更新 ZIP 都携带同一组件。组件只嵌入公开源码与运行时，不打包任务配置、浏览器登录资料或真实文库。
+`build_bundle.py` 会先调用 `installer/build_backup_component.py`，从明确的模块清单及最小 Python 标准库构建 `build/backup-component/backup_component.exe` 和配套 `backup_component.json`，再生成 `backup_component.sig.json` 官方签名描述。三者均进入 `app/`，完整安装器与应用内更新 ZIP 携带同一组件。组件只嵌入公开源码、公钥与运行时，不打包任务配置、浏览器登录资料、真实文库或发布私钥。
 
-源模块（包括 `config.py` 的版本）变化后必须重新编译组件。`source_app_files()` 同时检查组件元数据、全部源模块 SHA-256 和 EXE 哈希；缺失、损坏或陈旧会中止出包。禁止手工复制旧 EXE 绕过检查，正式构建也不得跳过此门禁。组件的受保护运行位置独立于应用数据家；换机后需重新关联和授权配置，不把复制应用目录等同于迁移系统计划。
+源模块（包括 `config.py` 的版本）变化后必须重新编译组件。`source_app_files()` 同时检查组件元数据、全部源模块 SHA-256、EXE 哈希及固定公钥签名；缺失、损坏、陈旧、签名清单不符或混入私有验收 revision 都会中止出包。组件版本由 `backup_component_auth.release_component_version(config.APP_VERSION)` 派生；私有测试覆盖版本不能进入正式资产。禁止手工复制旧 EXE 或跳过签名门禁。组件的受保护运行位置独立于应用数据家；换机后重新关联和授权配置，不能把复制应用目录等同于迁移系统计划。
+
+发布私钥仅以当前 Windows 用户的 DPAPI 密文保存于仓库外 `%LOCALAPPDATA%\PaperPiggyRelease\component-key.dpapi`。发布脚本是 `installer/sign_backup_component.py`，公钥固定在 `src/backup_component_trust.py`。首次建立发布信任根须显式运行 `--init-key --public-output <公开资料文件>`，审核公开指纹后写入公钥；已有密钥禁止覆盖或自动重建。日常构建自动签名并验签，已有有效同清单签名直接复用。换发布机前需安排密钥迁移或受旧密钥认证的轮换，不能假定复制 DPAPI 密文后仍能签名。此密钥不是用户 API 密钥，也不进入知识库备份。
 
 ### 0.2 重建 `build/py312`（唯一不可自动重建的环节）
 

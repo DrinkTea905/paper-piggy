@@ -1,7 +1,9 @@
 """独立备份任务的 HTTP 适配；所有文件业务由普通用户身份的后台执行器完成。"""
 from datetime import datetime
 import json
+import math
 import os
+import threading
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -43,10 +45,47 @@ def _context(kind=None):
     return current, job
 
 
-def _service_ready():
+def _service_info():
+    """只读过滤已被受保护成功注册时间覆盖的普通端历史标记。"""
     info = SERVICE.install_status(C.DATA)
-    if not info.get("installed") or info.get("needs_update"):
-        raise ValueError(info.get("error") or "请先在原生小猪窗口授权安装或更新后台备份组件。")
+    if info.get("installed") is not True:
+        return info
+    try:
+        from backup_jobs import read_json
+        marker = read_json(C.DATA / "backup_work" / "component-install.json", {})
+        pending_at = marker.get("started_at") if isinstance(marker, dict) else None
+        installed_at = info.get("installed_at")
+        if (type(pending_at) in (int, float) and type(installed_at) in (int, float)
+                and math.isfinite(pending_at) and math.isfinite(installed_at)
+                and 0 < pending_at <= installed_at):
+            return {**info, "pending": False, "error": ""}
+    except Exception:
+        pass  # 缺失、损坏或无法确认归属时保留原状态，不隐藏真正错误。
+    return info
+
+
+def _component_status():
+    """Only the signed, already-migrated channel may queue updates automatically."""
+    info = _service_info()
+    if info.get("auto_update_supported") and info.get("needs_update"):
+        try:
+            result = SERVICE.request_component_update(C.DATA)
+            if result.get("ok") is False:
+                raise ValueError(result.get("error") or "后台组件自动更新未能排队。")
+            info = _service_info()
+        except Exception as exc:
+            info = {**info, "auto_update": {**(info.get("auto_update") or {}),
+                    "state": "failed", "pending": False, "error": str(exc)}}
+    return info
+
+
+def _service_ready():
+    info = _component_status()
+    can_run = info.get("can_run", bool(info.get("installed")) and not info.get("needs_update")
+                       and not info.get("pending") and not info.get("error"))
+    if not can_run:
+        raise ValueError(info.get("error") or
+                         "请先在原生小猪窗口完成首次配置或一次性迁移；之后后台更新无需重复管理员确认。")
     return info
 
 
@@ -119,6 +158,13 @@ def submit_restore(value, server):
 def register(app, server):
     from backup_jobs import BackupBusy
 
+    def component_update_startup():
+        # This path never invokes request_install/runas and never blocks launcher health.
+        if not RUN.active_paperpiggy_restore(C.DATA):
+            threading.Thread(target=_component_status, daemon=True,
+                             name="paperpiggy-component-check").start()
+    app.router.add_event_handler("startup", component_update_startup)
+
     @app.exception_handler(BackupBusy)
     async def maintenance_conflict(request: Request, exc):
         return JSONResponse({"ok": False, "detail": str(exc)}, status_code=409)
@@ -156,9 +202,22 @@ def register(app, server):
                              "status": state})
             notice = ("已保留其他电脑的 " + str(foreign_count) + " 个历史任务及备份记录，只显示本机任务。"
                       "换机后请重新选择本机来源、备份位置和计划，再确认启用；不会接管或清理旧电脑的备份。") if foreign_count else ""
-            return {"ok": True, "jobs": jobs, "service": SERVICE.install_status(C.DATA),
+            return {"ok": True, "jobs": jobs, "service": _component_status(),
                     "foreign_jobs_count": foreign_count, "notice": notice,
                     "discovered": {"zotero": SOURCES.discover_zotero(), "browser": SOURCES.discover_browser()}}
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+
+    @app.post("/backup2/component/update")
+    def component_update():
+        try:
+            info = _service_info()
+            if not info.get("auto_update_supported"):
+                raise ValueError("请先在原生小猪窗口完成首次配置或一次性迁移（管理员确认）。")
+            result = SERVICE.request_component_update(C.DATA, retry=True)
+            if result.get("ok") is False:
+                raise ValueError(result.get("error") or "后台更新未能排队。")
+            return {**result, "ok": True, "service": _service_info()}
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
 

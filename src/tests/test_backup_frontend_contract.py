@@ -36,33 +36,52 @@ const ctx = {
 };
 vm.createContext(ctx);
 vm.runInContext(source.slice(start,end) +
-  "\nthis.t={BK2,bk2Ready,bk2RenderForm,bk2StatusView,saveBk2,createBk2,installBk2Service,startBk2Restore,bk2HandleRestoreExit,waitBk2};", ctx);
+  "\nthis.t={BK2,bk2Ready,bk2ServiceView,bk2RenderForm,bk2StatusView,saveBk2,createBk2,installBk2Service,startBk2Restore,bk2HandleRestoreExit,waitBk2};", ctx);
 (async()=>{
   const t=ctx.t;
   t.BK2.jobs={paperpiggy:{},zotero:{}};
   t.BK2.config={service:{installed:false,schema:1},discovered:{zotero:{},browser:{}}};
+  const absent={installed:false,pending:false,schema:1,migration_required:false,auto_update_supported:false,can_run:false};
+  const legacy={installed:true,needs_update:true,migration_required:true,auto_update_supported:false,can_run:false};
+  const ready={installed:true,needs_update:false,pending:false,error:"",schema:2,migration_required:false,auto_update_supported:true,can_run:true,auto_update:{state:"success"}};
+  configReplies=[{service:absent}];
   await t.installBk2Service();
   assert.match(notices.pop(),/原生窗口/);
-  assert.equal(calls,0);
+  assert.equal(calls,1);
   ctx.window.pywebview={api:{install_backup_service:async()=>({ok:false,error:"缺少原生备份组件安装器"})}};
+  configReplies=[{service:absent}];
   await t.installBk2Service();
   assert.match(el("#bk2-msg").textContent,/缺少原生备份组件/);
-  assert.equal(calls,0);
-  ctx.window.pywebview.api.install_backup_service=async()=>({ok:true,pending:true});
-  configReplies=[
-    {service:{installed:false,pending:true,schema:1}},
-    {service:{installed:true,needs_update:true,schema:1}},
-    {service:{installed:true,needs_update:false,pending:false,error:"",schema:1}}
-  ];
+  assert.equal(calls,2);
+  t.BK2.config={service:legacy};t.bk2ServiceView();
+  assert.match(el("#bk2-install").textContent,/一次性迁移.*管理员/);
+  let adminCalls=0;
+  ctx.window.pywebview.api.install_backup_service=async()=>{adminCalls++;return {ok:true,pending:true};};
+  configReplies=[{service:legacy},{service:{...legacy,pending:true}},{service:ready}];
   await t.installBk2Service();
-  assert.equal(calls,3);
+  assert.equal(adminCalls,1);
   assert(t.bk2Ready());
   assert.match(el("#bk2-msg").textContent,/已就绪/);
   ctx.window.pywebview.api.install_backup_service=async()=>{ throw new Error("Unexpected repeated UAC"); };
-  configReplies=[{ok:true,service:{installed:true,needs_update:false,pending:false,error:"",schema:1}}];
+  configReplies=[{ok:true,service:ready}];
   await t.installBk2Service();
-  assert.equal(calls,4);
   assert.match(el("#bk2-msg").textContent,/无需再次管理员授权/);
+
+  const failed={...ready,needs_update:true,auto_update:{state:"failed",error:"signature rejected"}};
+  t.BK2.config={service:failed};t.bk2ServiceView();
+  assert(t.bk2Ready());
+  assert.match(el("#bk2-service-title").textContent,/后台可用.*更新未完成/);
+  assert.match(el("#bk2-install").textContent,/重试后台更新/);
+  assert.match(el("#bk2-service-detail").textContent,/原.*保留|计划.*保留/);
+  const pending={...failed,auto_update:{state:"deferred",pending:true}};
+  ctx.window.pywebview={api:{}};
+  let updates=0;
+  ctx.jpost=async(path,body)=>{assert.equal(path,"/backup2/component/update");assert.equal(Object.keys(body).length,0);updates++;calls++;return{ok:true,pending:true,service:pending};};
+  configReplies=[{service:failed},{service:pending},{service:ready}];
+  await t.installBk2Service();
+  assert.equal(updates,1);assert.equal(adminCalls,1);
+  assert.match(el("#bk2-msg").textContent,/已就绪/);
+  ctx.jpost=async()=>{calls++;throw new Error("Unexpected write");};
 
   t.BK2.kind="zotero";t.BK2.config.discovered={zotero:{},browser:{}};
   t.BK2.config.notice="换机后请重新选择本机来源和备份位置";

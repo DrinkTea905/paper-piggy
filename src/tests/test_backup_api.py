@@ -1,5 +1,6 @@
 from contextlib import closing
 import os
+import json
 import sqlite3
 import sys
 import tempfile
@@ -340,6 +341,150 @@ class BackupApiTests(unittest.TestCase):
         for path, content in saved_files.items():
             self.assertEqual(content, path.read_bytes())
         self.assertEqual(b'untouched previous backup', original_archive.read_bytes())
+
+
+    def test_auto_component_check_queues_without_admin_and_keeps_old_runner_available(self):
+        old = {'installed': True, 'needs_update': True, 'auto_update_supported': True,
+               'migration_required': False, 'can_run': True, 'auto_update': {'state': 'idle'}}
+        pending = {**old, 'auto_update': {'state': 'pending', 'pending': True}}
+        with mock.patch.object(api.SERVICE, 'install_status', side_effect=[old, pending]), \
+                mock.patch.object(api.SERVICE, 'request_component_update', create=True,
+                                  return_value={'ok': True, 'pending': True}) as update, \
+                mock.patch.object(api.SERVICE, 'request_install') as admin:
+            result = api._component_status()
+        update.assert_called_once_with(self.data)
+        admin.assert_not_called()
+        self.assertTrue(result['can_run'])
+        self.assertEqual('pending', result['auto_update']['state'])
+
+    def test_old_mode_config_never_triggers_admin_or_auto_migration(self):
+        old = {'installed': True, 'needs_update': True, 'migration_required': True,
+               'auto_update_supported': False, 'can_run': False}
+        with mock.patch.object(api.SERVICE, 'install_status', return_value=old), \
+                mock.patch.object(api.SERVICE, 'request_component_update', create=True) as update, \
+                mock.patch.object(api.SERVICE, 'request_install') as admin, \
+                mock.patch.object(api.SOURCES, 'discover_zotero', return_value={}), \
+                mock.patch.object(api.SOURCES, 'discover_browser', return_value={}):
+            result = self.client.get('/backup2/config').json()
+            retry = self.client.post('/backup2/component/update', json={}).json()
+        self.assertTrue(result['ok'])
+        self.assertTrue(result['service']['migration_required'])
+        self.assertFalse(retry['ok'])
+        self.assertIn('管理员', retry['error'])
+        update.assert_not_called()
+        admin.assert_not_called()
+
+    def test_auto_update_failure_does_not_fail_a_compatible_backup(self):
+        available = {'installed': True, 'needs_update': True, 'can_run': True,
+                     'auto_update_supported': True,
+                     'auto_update': {'state': 'failed', 'error': 'signature rejected'}}
+        with mock.patch.object(api.SERVICE, 'install_status', return_value=available), \
+                mock.patch.object(api.SERVICE, 'request_component_update', create=True,
+                                  side_effect=ValueError('signature rejected')), \
+                mock.patch.object(api.SERVICE, 'request_install') as admin, \
+                mock.patch.object(api.SOURCES, 'validate_sources'), \
+                mock.patch.object(api.RUN, 'enqueue', return_value={'request_id': 'a' * 32}) as enqueue, \
+                mock.patch.object(api.SERVICE, 'trigger_task'):
+            state = api._service_ready()
+            result = self.client.post('/backup2/create', json={'kind': 'zotero'}).json()
+        self.assertTrue(state['can_run'])
+        self.assertEqual('signature rejected', state['auto_update']['error'])
+        self.assertTrue(result['ok'], result)
+        self.assertTrue(result['queued'])
+        enqueue.assert_called_once()
+        admin.assert_not_called()
+
+    def test_component_retry_uses_fixed_channel_and_ignores_client_paths(self):
+        state = {'installed': True, 'can_run': True, 'auto_update_supported': True,
+                 'auto_update': {'state': 'failed', 'error': 'old failure'}}
+        with mock.patch.object(api.SERVICE, 'install_status', return_value=state), \
+                mock.patch.object(api.SERVICE, 'request_component_update', create=True,
+                                  return_value={'ok': True, 'state': 'pending', 'pending': True,
+                                                'request_id': 'a' * 32}) as update, \
+                mock.patch.object(api.SERVICE, 'request_install') as admin:
+            result = self.client.post('/backup2/component/update', json={
+                'helper_path': 'untrusted.exe', 'envelope_path': 'untrusted.json'}).json()
+        self.assertTrue(result['ok'], result)
+        update.assert_called_once_with(self.data, retry=True)
+        admin.assert_not_called()
+        self.assertTrue(result['service']['can_run'])
+
+    def test_startup_component_check_is_background_only_and_respects_restore_gate(self):
+        startup = next(handler for handler in self.app.router.on_startup
+                       if handler.__name__ == 'component_update_startup')
+        with mock.patch.object(api.RUN, 'active_paperpiggy_restore', return_value=False), \
+                mock.patch.object(api.threading, 'Thread') as thread, \
+                mock.patch.object(api.SERVICE, 'request_install') as admin:
+            startup()
+        self.assertTrue(thread.call_args.kwargs['daemon'])
+        self.assertIs(api._component_status, thread.call_args.kwargs['target'])
+        thread.return_value.start.assert_called_once()
+        admin.assert_not_called()
+        with mock.patch.object(api.RUN, 'active_paperpiggy_restore', return_value=True), \
+                mock.patch.object(api.threading, 'Thread') as thread:
+            startup()
+        thread.assert_not_called()
+
+
+    def test_opening_settings_automatically_queues_only_the_signed_channel(self):
+        state = {'installed': True, 'needs_update': True, 'can_run': True,
+                 'auto_update_supported': True, 'migration_required': False,
+                 'auto_update': {'state': 'pending', 'pending': True}}
+        with mock.patch.object(api.SERVICE, 'install_status', return_value=state), \
+                mock.patch.object(api.SERVICE, 'request_component_update', create=True,
+                                  return_value={'ok': True, 'pending': True}) as update, \
+                mock.patch.object(api.SERVICE, 'request_install') as admin, \
+                mock.patch.object(api.SOURCES, 'discover_zotero', return_value={}), \
+                mock.patch.object(api.SOURCES, 'discover_browser', return_value={}):
+            result = self.client.get('/backup2/config').json()
+        self.assertTrue(result['ok'])
+        self.assertTrue(result['service']['can_run'])
+        update.assert_called_once_with(self.data)
+        admin.assert_not_called()
+
+
+    def test_old_migration_marker_is_read_only_and_superseded_by_auto_current(self):
+        marker = self.data / 'backup_work/component-install.json'
+        marker.parent.mkdir()
+        marker.write_text(json.dumps({'started_at': 100.0, 'payload_id': 'old-native-generation'}),
+                          encoding='utf-8')
+        original_bytes = marker.read_bytes()
+        original = {'installed': True, 'installed_at': 200.0, 'pending': True,
+                    'error': '后台组件更新未完成，请重新授权安装。',
+                    'can_run': True, 'needs_update': False, 'auto_update_supported': True,
+                    'auto_update': {'state': 'success', 'error': ''}}
+        with mock.patch.object(api.SERVICE, 'install_status', return_value=original):
+            result = api._service_ready()
+        self.assertTrue(result['installed'])
+        self.assertTrue(result['can_run'])
+        self.assertFalse(result['pending'])
+        self.assertEqual('', result['error'])
+        self.assertEqual(original['auto_update'], result['auto_update'])
+        self.assertTrue(original['pending'])
+        self.assertNotEqual('', original['error'])
+        self.assertEqual(original_bytes, marker.read_bytes())
+
+    def test_fresh_failed_marker_or_unverified_registration_is_not_hidden(self):
+        marker = self.data / 'backup_work/component-install.json'
+        marker.parent.mkdir()
+        original = {'installed': True, 'installed_at': 200.0, 'pending': True,
+                    'error': '当前新安装超时或失败', 'can_run': True, 'needs_update': False,
+                    'auto_update_supported': True,
+                    'auto_update': {'state': 'failed', 'error': 'separate update failure'}}
+        for pending_at, installed, installed_at in [
+                (201.0, True, 200.0), (float('nan'), True, 200.0),
+                (float('inf'), True, 200.0), (-1, True, 200.0), (True, True, 200.0),
+                (100.0, False, 200.0), (100.0, True, float('inf')),
+                (100.0, True, 'invalid-time')]:
+            with self.subTest(pending_at=pending_at, installed=installed, installed_at=installed_at):
+                marker.write_text(json.dumps({'started_at': pending_at}), encoding='utf-8')
+                saved = marker.read_bytes()
+                state = {**original, 'installed': installed, 'installed_at': installed_at}
+                with mock.patch.object(api.SERVICE, 'install_status', return_value=state):
+                    result = api._service_info()
+                self.assertEqual(state, result)
+                self.assertEqual('separate update failure', result['auto_update']['error'])
+                self.assertEqual(saved, marker.read_bytes())
 
 
 if __name__ == '__main__':

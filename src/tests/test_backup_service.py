@@ -251,6 +251,43 @@ class ServiceTests(unittest.TestCase):
                 S._register_native(self.data, S.current_sid(), "a" * 64)
         register.assert_not_called()
 
+    def test_native_channel_failure_restores_old_task_before_committing_current(self):
+        from contextlib import nullcontext
+        import backup_component_update as U
+        _, sid, instance = S._instance(self.data)
+        generation = "a" * 64
+        target = instance / generation
+        (target / "code").mkdir(parents=True)
+        entries = []
+        for name in S.MODULES:
+            source = target / "code" / name
+            source.write_text("# protected fixture\n")
+            entries.append({"path": "code/" + name, "sha256": S._sha(source), "size": source.stat().st_size})
+        template = {"schema": 1, "component_version": 1, "files": entries, "build_id": "b" * 64}
+        (target / "payload-template.json").write_text(json.dumps(template))
+        old = {"payload_id": "c" * 64}
+        (instance / "current.json").write_text(json.dumps(old))
+        manifest = {**template, "owner_sid": sid, "data_dir": str(self.data), "instance": instance.name, "payload_id": generation}
+        folder, task = Mock(), Mock()
+        folder.invoke.return_value = task
+        task.invoke.return_value = "<original-task/>"
+        saved_path = list(sys.path)
+        self.addCleanup(lambda: sys.path.__setitem__(slice(None), saved_path))
+        def write(path, value, **kwargs): Path(path).write_text(json.dumps(value))
+        with patch.object(S, "__file__", str(target / "code/backup_service.py")), \
+                patch.object(S, "_elevated", return_value=True), \
+                patch.object(S, "_check_protected_directory"), \
+                patch.object(S, "_verified_manifest", return_value=manifest), \
+                patch.object(S, "_scheduler", side_effect=lambda: nullcontext(folder)), \
+                patch.object(S, "_register", return_value={"payload_id": generation}) as register, \
+                patch.object(S, "_atomic", side_effect=write), \
+                patch.object(U, "ensure_channel", side_effect=S.ServiceError("channel registration failed")), \
+                self.assertRaisesRegex(S.ServiceError, "channel registration failed"):
+            S._register_native(self.data, sid, generation)
+        register.assert_called_once_with(target / "payload.json", commit=False)
+        self.assertEqual(json.loads((instance / "current.json").read_text()), old)
+        self.assertTrue(any(call.args[0] == "RegisterTask" and call.args[2] == "<original-task/>" for call in folder.invoke.call_args_list))
+
     def test_real_database_diagnostic_uses_copies_and_reports_missing_collation(self):
         import sqlite3
         source = self.root / "diagnostic-source"
@@ -364,10 +401,12 @@ class ServiceTests(unittest.TestCase):
         entries = [{"path": name, "sha256": builder.sha(path), "size": path.stat().st_size}
                    for name, path in sorted(files.items())]
         metadata = {"schema": 1, "build_id": hashlib.sha256(json.dumps(entries, separators=(",", ":")).encode()).hexdigest(),
-            "app_version": builder.C.APP_VERSION, "installer_sha256": builder.sha(installer),
+            "app_version": builder.C.APP_VERSION, "component_version": builder.release_component_version(builder.C.APP_VERSION),
+            "installer_sha256": builder.sha(installer),
             "builder_sha256": builder.sha(script), "sha256": builder.sha(executable),
             "files": len(entries), "bytes": sum(e["size"] for e in entries),
-            "source_hashes": {e["path"][5:]: e["sha256"] for e in entries if e["path"].startswith("code/")}}
+            "source_hashes": {e["path"][5:]: e["sha256"] for e in entries if e["path"].startswith("code/")},
+            "runtime_hashes": {e["path"][8:]: e["sha256"] for e in entries if e["path"].startswith("runtime/")}}
         (output / "backup_component.json").write_text(json.dumps(metadata), encoding="utf-8")
         with patch.object(builder, "ROOT", self.root), patch.object(builder.subprocess, "run") as compile:
             reused = builder.build(self.runtime, output, self.root / "missing-iscc.exe")
