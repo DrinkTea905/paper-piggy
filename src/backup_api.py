@@ -1,5 +1,6 @@
 """独立备份任务的 HTTP 适配；所有文件业务由普通用户身份的后台执行器完成。"""
 from datetime import datetime
+import hashlib
 import json
 import math
 import os
@@ -43,6 +44,204 @@ def _context(kind=None):
     if job is None:
         raise ValueError("未知备份任务类型。")
     return current, job
+
+
+def _summary_timestamp(value):
+    """Compare instants, never lexically compare timestamps with different offsets."""
+    try:
+        if type(value) in (int, float):
+            result = float(value) / (1000 if abs(value) >= 1e12 else 1)
+        elif isinstance(value, str) and value:
+            result = datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+        else:
+            return None
+        return result if math.isfinite(result) else None
+    except (ValueError, OverflowError, OSError):
+        return None
+
+
+def _summary_operation(event, context="unknown"):
+    if event.get("operation") in ("backup", "restore"):
+        return event["operation"]
+    result = event.get("result") or {}
+    if result.get("destination") or result.get("journal") or result.get("rollback_dirs"):
+        return "restore"
+    if result.get("path"):
+        return "backup"
+    if context in ("backup", "restore"):
+        return context
+    # A raw status can retain the previous operation if a newly claimed job fails
+    # before setting operation. Explicit history context is therefore stronger.
+    return event.get("_status_operation", "unknown")
+
+
+def _summary_validate(state, history):
+    """Broken-but-valid JSON is unknown, never a synthetic running/success state."""
+    states = {"idle", "pending", "queued", "running", "started", "success", "success_with_warning",
+              "failed", "interrupted", "cancelled"}
+    if not isinstance(state, dict) or not isinstance(history, list):
+        raise ValueError("备份任务状态或记录格式无效。")
+    for record in [state, *history]:
+        if not isinstance(record, dict):
+            raise ValueError("备份任务记录格式无效。")
+        for key in ("running", "pending", "queued"):
+            if key in record and not isinstance(record[key], bool):
+                raise ValueError("备份任务运行标记格式无效。")
+        if "state" in record and record["state"] not in states:
+            raise ValueError("备份任务状态值无效。")
+        if "operation" in record and record["operation"] not in ("backup", "restore", "unknown"):
+            raise ValueError("备份任务操作类型无效。")
+        for key in ("stage", "error", "reason", "trigger"):
+            if key in record and not isinstance(record[key], str):
+                raise ValueError("备份任务文字记录格式无效。")
+        for key in ("done", "total"):
+            if key in record and (type(record[key]) is not int or record[key] < 0):
+                raise ValueError("备份任务进度格式无效。")
+        for key in ("at", "finished_at", "started_at", "updated_at", "last_success"):
+            if key in record and record[key] != "" and _summary_timestamp(record[key]) is None:
+                raise ValueError("备份任务时间格式无效。")
+        result = record.get("result", {})
+        if not isinstance(result, dict):
+            raise ValueError("备份任务结果格式无效。")
+        for key in ("path", "destination", "journal", "warning", "cleanup_warning"):
+            if key in result and not isinstance(result[key], str):
+                raise ValueError("备份任务结果文字格式无效。")
+        for key in ("warnings", "cleanup_errors", "rollback_dirs"):
+            if key in result and (not isinstance(result[key], list)
+                                  or any(not isinstance(item, str) for item in result[key])):
+                raise ValueError("备份任务提醒列表格式无效。")
+
+
+def _summary_warning(result):
+    messages = []
+    for field in ("warning", "cleanup_warning", "cleanup_errors", "warnings"):
+        value = result.get(field)
+        if isinstance(value, list):
+            messages.extend(str(item) for item in value if item)
+        elif value:
+            messages.append(str(value))
+    return "；".join(dict.fromkeys(messages))
+
+
+def _summary_issue(job_id, history, state):
+    """Reconstruct unresolved outcomes without clearing a failed backup on retry/restore.
+
+    Legacy terminal history has no operation; started.trigger provides its context.
+    Unknown failures stay conservative until a later successful backup. Reading the
+    status after history also covers finish()'s status-before-history write window.
+    """
+    events = [dict(event) for event in history]
+    terminal = {"success", "success_with_warning", "failed", "interrupted", "cancelled"}
+    current_state = state.get("state")
+    if not (state.get("running") or state.get("pending") or state.get("queued")) and current_state in terminal:
+        current = {"state": current_state, "error": state.get("error") or "",
+                   "result": state.get("result") or {},
+                   "_status_operation": state.get("operation", "unknown"),
+                   "at": state.get("finished_at") or state.get("updated_at") or ""}
+        previous = next((event for event in reversed(events) if event.get("state") in terminal), None)
+        same = previous is not None and all(
+            (previous.get(key) or ({} if key == "result" else "")) == current[key]
+            for key in ("state", "error", "result"))
+        old_at = _summary_timestamp(previous.get("at")) if previous else None
+        current_at = _summary_timestamp(current["at"])
+        if same and (current_at is None or old_at is not None and current_at <= old_at):
+            # The current status can disambiguate the latest old-format event.
+            if current["_status_operation"] in ("backup", "restore"):
+                previous["_status_operation"] = current["_status_operation"]
+            if current_at is not None:
+                # finish() writes its status before appending history, possibly in
+                # the next second. Keep one failure identity across that boundary.
+                previous["at"] = current["at"]
+        elif previous is None or (current_at is not None and (old_at is None or current_at >= old_at)):
+            events.append(current)
+        elif current_at is None and current_state in ("failed", "interrupted"):
+            # Invalid times must never be used to erase a known failure with success.
+            current["_status_operation"] = "unknown"
+            events.append(current)
+
+    unresolved = {}
+    context = "unknown"
+    attempt = None
+    previous_terminal = None
+    for sequence, event in enumerate(events):
+        outcome = event.get("state")
+        if outcome == "started":
+            context = "restore" if event.get("trigger") == "restore" else (
+                "backup" if event.get("trigger") in ("manual", "timer", "login") else "unknown")
+            attempt = [event.get("at") or "", event.get("trigger") or "", event.get("slot")]
+            continue
+        operation = _summary_operation(event, context)
+        event_attempt = attempt
+        if outcome in terminal:
+            if (event_attempt is None and previous_terminal is not None
+                    and previous_terminal[2] is not None
+                    and all(event.get(key) == previous_terminal[0].get(key)
+                            for key in ("state", "error", "result"))):
+                # Both claim() and the request worker can record the same failed
+                # attempt. No intervening started event means one notification.
+                operation, event_attempt = previous_terminal[1:]
+            elif (operation == "unknown" and previous_terminal is not None
+                    and all(event.get(key) == previous_terminal[0].get(key)
+                            for key in ("state", "error", "result", "at"))):
+                operation = previous_terminal[1]
+                event_attempt = previous_terminal[2]
+            previous_terminal = (event, operation, event_attempt)
+            context = "unknown"
+            attempt = None
+        if outcome in ("success", "success_with_warning"):
+            if operation == "unknown":
+                continue  # An unclassified old success cannot prove a backup succeeded.
+            unresolved.pop(operation, None)
+            if operation == "backup":
+                unresolved.pop("unknown", None)
+            warning = _summary_warning(event.get("result") or {})
+            if not warning:
+                continue
+            level, message = "warning", warning
+        elif outcome in ("failed", "interrupted"):
+            level = "failed"
+            message = event.get("error") or event.get("reason") or (
+                "上次任务意外中断，已有成功备份保留。" if outcome == "interrupted" else "上次任务失败，请查看任务记录。")
+        else:
+            continue  # Starting, retrying, and cancellation cannot dismiss an issue.
+        at = event.get("at") or ""
+        # finish() status and history may be written in different seconds. The
+        # attempt's started event is immutable even after retrying clears status.
+        # Old pre-claim failures without a started record retain their event time.
+        identity_time = ["attempt", event_attempt] if event_attempt is not None else ["event", at]
+        identity = json.dumps([job_id, operation, outcome, identity_time, message], ensure_ascii=False, sort_keys=True)
+        unresolved[operation] = {"id": hashlib.sha256(identity.encode()).hexdigest(),
+                                 "level": level, "message": str(message), "at": at,
+                                 "operation": operation, "_sequence": sequence}
+    if not unresolved:
+        return None
+    selected = max(unresolved.values(), key=lambda issue: (issue["level"] == "failed", issue["_sequence"]))
+    return {key: value for key, value in selected.items() if not key.startswith("_")}
+
+
+def _backup_summary():
+    """Strictly read-only top-bar status: no defaults, scheduling, discovery, or update."""
+    from backup_jobs import JobStore, validate_job
+    current = JobStore(C.DATA / "backup_jobs")
+    jobs = []
+    for job in current.list():
+        if not isinstance(job, dict):
+            raise ValueError("备份任务配置格式无效。")
+        if job.get("machine_id") != current.machine_id:
+            continue
+        validate_job(job)
+        # Read history first so a subsequent status can cover an in-flight finish.
+        history = current.history(job["job_id"], 1000)
+        state = current.status(job["job_id"])
+        _summary_validate(state, history)
+        jobs.append({"kind": job["kind"], "job_id": job["job_id"],
+                     "enabled": job["enabled"], "configured": bool(job.get("destination")),
+                     "running": bool(state.get("running") or state.get("pending") or state.get("queued")),
+                     "operation": state.get("operation", "backup"), "state": state.get("state", "idle"),
+                     "stage": state.get("stage", ""), "done": state.get("done", 0),
+                     "total": state.get("total", 0), "last_success": state.get("last_success", ""),
+                     "issue": _summary_issue(job["job_id"], history, state)})
+    return {"ok": True, "jobs": jobs}
 
 
 def _service_info():
@@ -181,11 +380,18 @@ def register(app, server):
                                or parsed.port != request.url.port)):
                 return JSONResponse({"ok": False, "error": "请在 PaperPiggy 备份与恢复页面操作。"}, status_code=403)
         # 确认后的PP原位恢复等待本server退出。门禁阻止MCP/页面继续写当前数据。
-        allowed = ("/backup2/status", "/backup/status", "/health", "/static/")
+        allowed = ("/backup2/status", "/backup2/summary", "/backup/status", "/health", "/static/")
         if (not any(request.url.path.startswith(x) for x in allowed)
                 and RUN.active_paperpiggy_restore(C.DATA)):
             return JSONResponse({"ok": False, "error": "小猪原位恢复已排队，请退出小猪，完成后再重新打开。"}, status_code=503)
         return await call_next(request)
+
+    @app.get("/backup2/summary")
+    def summary():
+        try:
+            return _backup_summary()
+        except Exception as exc:
+            return {"ok": False, "error": str(exc), "jobs": []}
 
     @app.get("/backup2/config")
     def config_get():

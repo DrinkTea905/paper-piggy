@@ -4031,7 +4031,7 @@
   }
   $$(".settings-nav-btn").forEach((b) => b.addEventListener("click", () => showSettingsPane(b.dataset.settingsPane)));
 
-  function openSettings(targetId) {
+  function openSettings(targetId, options) {
     if (typeof targetId !== "string") targetId = "";  // 允许直接作为 click 监听器使用
     // LLM 服务商字段已搬到对话页折叠区，设置弹窗不再回填它们（避免覆盖对话页已填的 key）
     $("#settings-modal").hidden = false;
@@ -4044,7 +4044,7 @@
     loadAutoUpdate(); // 回填自动更新开关/间隔
     loadRetrievalMemory(); // 回填检索组件的空闲释放时间与当前状态
     loadOnlyPdf();    // 回填「只导入有全文附件」开关（旧函数名保留兼容）
-    loadBackup();     // 回填备份位置/自动备份，并列出已有备份包
+    if (!(options && options.skipBackupLoad)) loadBackup(); // 顶栏备份入口自行按编辑状态决定是否刷新。
     checkUpdate(true); // 静默查一次新版（用缓存、失败不吭声），有新版才显示升级面板
     loadMirror();     // 回填国内镜像地址
   }
@@ -4488,7 +4488,7 @@
       $("#bk2-summary-" + kind).textContent = (job.enabled ? "自动备份开启" : "自动备份关闭")
         + (job.destination ? " · 已选位置" : " · 尚未选择位置");
     }
-    bk2ServiceView(); bk2Native();
+    bk2ServiceView(); bk2Native(); bk2HeaderIssueView();
     if (BK2.dirty) return;
     const source = j.sources || {};
     $("#bk2-destination").value = j.destination || "";
@@ -4840,6 +4840,101 @@
       if (BK2.states[BK2.kind]) bk2StatusView(BK2.states[BK2.kind], BK2.kind);
     }
   }
+  // 顶栏只读摘要：不探测来源、不扫描备份包、不触发后台安装或备份。
+  const BK_HEADER = { jobs: [], error: "", known: false, loading: false, opening: false, seen: new Set() };
+  function bk2HeaderIssueView() {
+    const box = $("#bk2-header-issue"); if (!box) return;
+    const job = BK_HEADER.jobs.find(j => j.kind === BK2.kind), issue = job && job.issue;
+    box.hidden = !issue;
+    box.className = "bk2-header-issue" + (issue && issue.level === "failed" ? " failed" : "");
+    box.textContent = issue ? bk2Name(job.kind) + " · "
+      + (issue.level === "failed" ? "尚未解决的任务失败" : "有需留意事项")
+      + (issue.at ? "（" + bk2When(issue.at) + "）" : "") + "：" + issue.message
+      + (job.running ? " 当前任务正在重试或处理中，完成后会重新核对结果。" : " 请查看下方任务记录与失败原因。") : "";
+  }
+  function bk2HeaderView() {
+    const button = $("#btn-backup"), badge = $("#backup-header-badge"); if (!button || !badge) return;
+    const failed = BK_HEADER.jobs.filter(j => j.issue && j.issue.level === "failed");
+    const running = BK_HEADER.jobs.filter(j => j.running);
+    const warnings = BK_HEADER.jobs.filter(j => j.issue && j.issue.level === "warning");
+    const state = failed.length ? "failed" : BK_HEADER.error ? "unknown" : running.length ? "running" : warnings.length ? "warning" : "idle";
+    const labels = { failed: "失败", unknown: "状态未知", running: "进行中", warning: "需留意", idle: "" };
+    button.dataset.backupState = state;
+    badge.textContent = labels[state]; badge.hidden = !labels[state];
+    const lines = ["打开备份与恢复；可选择小猪或 Zotero 任务并立即备份。"];
+    if (BK_HEADER.error) lines.push((BK_HEADER.known ? "当前状态读取失败，已保留上次已知结果：" : "当前状态读取失败：") + BK_HEADER.error);
+    else if (!BK_HEADER.known) lines.push("正在读取备份状态…");
+    else if (!BK_HEADER.jobs.length) lines.push("尚未配置本机备份任务。");
+    BK_HEADER.jobs.forEach(j => {
+      let detail = j.running ? (j.operation === "restore" ? "恢复进行中" : "任务进行中")
+        : !j.configured ? "尚未选择备份位置" : j.enabled ? "自动备份已开启" : "自动备份已关闭";
+      if (j.issue) detail += "；" + (j.issue.level === "failed" ? "任务失败：" : "需留意：") + j.issue.message;
+      if (j.last_success) detail += "；上次成功：" + bk2When(j.last_success);
+      lines.push(bk2Name(j.kind) + "：" + detail);
+    });
+    button.title = lines.join("\n");
+    button.setAttribute("aria-label", "备份" + (labels[state] ? "，" + labels[state] : "") + "，打开备份与恢复");
+    bk2HeaderIssueView();
+    if (!document.hidden) {
+      const fresh = failed.filter(j => !BK_HEADER.seen.has(j.kind + ":" + j.issue.id));
+      if (fresh.length) {
+        fresh.forEach(j => BK_HEADER.seen.add(j.kind + ":" + j.issue.id));
+        flashToast(fresh.map(j => bk2Name(j.kind) + "失败：" + String(j.issue.message).slice(0, 100)).join("；")
+          + "。点右上角“备份”查看原因；已有成功备份保留。");
+      }
+    }
+  }
+  async function refreshBackupHeader() {
+    if (document.hidden || BK_HEADER.loading) return;
+    BK_HEADER.loading = true;
+    const controller = new AbortController(), timeout = setTimeout(() => controller.abort(), 8000);
+    try {
+      const response = await fetch("/backup2/summary", { signal: controller.signal, cache: "no-store" });
+      const data = await response.json();
+      if (!response.ok || !data || data.ok !== true || !Array.isArray(data.jobs)
+          || data.jobs.some(j => !j || !["paperpiggy", "zotero"].includes(j.kind)))
+        throw new Error(data && (data.error || data.detail || data.msg) || "无法读取备份摘要");
+      BK_HEADER.jobs = data.jobs; BK_HEADER.error = ""; BK_HEADER.known = true;
+    } catch (e) {
+      BK_HEADER.error = e && e.name === "AbortError" ? "读取超时，稍后自动重试。" : bk2Error(e);
+    } finally {
+      clearTimeout(timeout); BK_HEADER.loading = false; bk2HeaderView();
+    }
+  }
+  async function openBackupHeader() {
+    if (BK_HEADER.opening) return;
+    BK_HEADER.opening = true;
+    try {
+      if (BK2.saving) {
+        openSettings("sec-backup", { skipBackupLoad: true });
+        flashToast("正在保存备份设置，请完成后再切换任务。"); return;
+      }
+      const target = BK_HEADER.jobs.find(j => j.issue && j.issue.level === "failed")
+        || BK_HEADER.jobs.find(j => j.running) || BK_HEADER.jobs.find(j => j.issue);
+      const kind = target && target.kind;
+      if (kind && kind !== BK2.kind && BK2.dirty) {
+        const discard = await uiConfirm("本任务有未保存的修改。切换备份任务会放弃这些修改。", {
+          title: "切换备份任务？", okText: "放弃修改并切换" });
+        if (!discard) { openSettings("sec-backup", { skipBackupLoad: true }); return; }
+        BK2.dirty = false;
+      }
+      if (kind && kind !== BK2.kind) { BK2.kind = kind; $("#bk2-restore").hidden = true; }
+      openSettings("sec-backup", { skipBackupLoad: true });
+      if (!BK2.dirty) await loadBackup();
+      if (target && target.issue) {
+        const history = $(".bk2-history"); if (history) history.open = true;
+      }
+      bk2HeaderIssueView();
+      refreshBackupHeader();
+    } finally { BK_HEADER.opening = false; }
+  }
+  function wireBackupHeader() {
+    const button = $("#btn-backup"); if (!button) return;
+    button.addEventListener("click", openBackupHeader);
+    bk2HeaderView(); refreshBackupHeader();
+    setInterval(refreshBackupHeader, 20000);
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshBackupHeader(); });
+  }
   function wireBackup2() {
     $$("#sec-backup input, #sec-backup select").forEach(el => {
       if (el.id !== "bk2-import-path" && !el.id.startsWith("bk2-restore") && !el.classList.contains("bk2-root-target")) el.addEventListener("change", bk2Dirty);
@@ -4897,6 +4992,7 @@
     }, 2500);
   }
   wireBackup2();
+  wireBackupHeader();
 
   {
     // 🧹 清空并从头重建索引（两步确认；destructive）

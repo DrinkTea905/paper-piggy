@@ -487,5 +487,237 @@ class BackupApiTests(unittest.TestCase):
                 self.assertEqual(saved, marker.read_bytes())
 
 
+class BackupSummaryTests(unittest.TestCase):
+    setUp = BackupApiTests.setUp
+
+    def fixture(self, kind='paperpiggy', history=None, **status):
+        from backup_jobs import atomic_json
+        current = api.RUN.store(self.data)
+        job = api.RUN.get_job(current, kind)
+        atomic_json(current.base / 'history' / (job['job_id'] + '.json'), history or [])
+        if status:
+            current.set_status(job['job_id'], **status)
+        return current, job
+
+    def summary(self):
+        result = self.client.get('/backup2/summary').json()
+        self.assertTrue(result['ok'], result)
+        return {job['kind']: job for job in result['jobs']}
+
+    def snapshot(self):
+        return {str(path.relative_to(self.data)): path.read_bytes()
+                for path in self.data.rglob('*') if path.is_file()}
+
+    def event(self, state, at='2026-10-30T08:00:00+08:00', **fields):
+        return {'state': state, 'at': at, **fields}
+
+    def test_empty_summary_does_not_initialize_or_discover(self):
+        before = self.snapshot()
+        with mock.patch.object(api.RUN, 'store', side_effect=AssertionError('must not initialize')), \
+                mock.patch.object(api.SERVICE, 'install_status', side_effect=AssertionError('must not inspect component')), \
+                mock.patch.object(api.SOURCES, 'discover_zotero', side_effect=AssertionError('must not discover')), \
+                mock.patch.object(api.SOURCES, 'discover_browser', side_effect=AssertionError('must not discover')):
+            self.assertEqual({}, self.summary())
+        self.assertEqual(before, self.snapshot())
+        self.assertEqual([], list(self.data.iterdir()))
+
+    def test_summary_is_byte_for_byte_read_only_and_bypasses_scheduler(self):
+        from backup_jobs import JobStore
+        current, job = self.fixture(history=[self.event('failed', error='volume offline')],
+                                    operation='backup', state='failed', error='volume offline',
+                                    finished_at='2026-10-30T08:00:00+08:00')
+        before = self.snapshot()
+        directories = sorted(str(path) for path in self.data.rglob('*') if path.is_dir())
+        with mock.patch.object(JobStore, 'due', side_effect=AssertionError('must not schedule')), \
+                mock.patch.object(JobStore, 'ensure_defaults', side_effect=AssertionError('must not initialize')), \
+                mock.patch.object(api, '_component_status', side_effect=AssertionError('must not update')), \
+                mock.patch.object(api.SOURCES, 'validate_sources', side_effect=AssertionError('must not inspect sources')):
+            result = self.summary()['paperpiggy']
+        self.assertEqual('failed', result['issue']['level'])
+        self.assertEqual('volume offline', result['issue']['message'])
+        self.assertEqual('backup', result['issue']['operation'])
+        self.assertEqual(before, self.snapshot())
+        self.assertEqual(directories, sorted(str(path) for path in self.data.rglob('*') if path.is_dir()))
+
+    def test_retry_and_cancellation_keep_failure_visible_with_same_id(self):
+        failed = [self.event('started', trigger='timer'), self.event('failed', error='snapshot failed')]
+        current, job = self.fixture(history=failed)
+        initial = self.summary()['paperpiggy']['issue']
+        current.set_status(job['job_id'], running=True, pending=True, state='queued', operation='backup', error='')
+        self.assertEqual(initial, self.summary()['paperpiggy']['issue'])
+        current.finish(job['job_id'], 'cancelled', 'user stopped')
+        self.assertEqual(initial, self.summary()['paperpiggy']['issue'])
+
+    def test_restore_success_does_not_dismiss_backup_failure(self):
+        history = [self.event('started', trigger='manual'), self.event('failed', error='backup failed'),
+                   self.event('started', trigger='restore'),
+                   self.event('success', result={'destination': 'restore-target'})]
+        self.fixture(history=history)
+        issue = self.summary()['paperpiggy']['issue']
+        self.assertEqual('backup failed', issue['message'])
+        self.assertEqual('backup', issue['operation'])
+
+    def test_successful_backup_clears_failure_but_not_later_restore_failure(self):
+        history = [self.event('started', trigger='login'), self.event('failed', error='old failure'),
+                   self.event('started', trigger='manual'),
+                   self.event('success', result={'path': 'new.zip'})]
+        current, job = self.fixture(history=history)
+        self.assertIsNone(self.summary()['paperpiggy']['issue'])
+        current._event(job['job_id'], self.event('started', trigger='restore'))
+        current._event(job['job_id'], self.event('failed', error='restore failed'))
+        issue = self.summary()['paperpiggy']['issue']
+        self.assertEqual('restore', issue['operation'])
+        self.assertEqual('restore failed', issue['message'])
+        # A later successful backup also cannot prove that a failed restore was repaired.
+        current._event(job['job_id'], self.event('success', result={'path': 'later.zip'}))
+        self.assertEqual(issue, self.summary()['paperpiggy']['issue'])
+
+    def test_success_warning_is_yellow_and_source_missing_count_is_not_warning(self):
+        history = [self.event('started', trigger='timer'), self.event('failed', error='old failed'),
+                   self.event('success_with_warning', result={'path': 'good.zip', 'warnings': ['old cleanup failed']})]
+        current, job = self.fixture(history=history)
+        issue = self.summary()['paperpiggy']['issue']
+        self.assertEqual('warning', issue['level'])
+        self.assertEqual('old cleanup failed', issue['message'])
+        current._event(job['job_id'], self.event('success', result={'path': 'new.zip',
+                           'source_coverage': {'missing': 93, 'existing': 100}}))
+        self.assertIsNone(self.summary()['paperpiggy']['issue'])
+
+    def test_two_jobs_and_foreign_machine_are_independent(self):
+        from backup_jobs import JobStore
+        foreign = JobStore(self.data / 'backup_jobs', machine_id='other-machine')
+        foreign.ensure_defaults()
+        self.fixture('paperpiggy', history=[self.event('failed', error='local failure')])
+        self.fixture('zotero', running=True, operation='backup', stage='copying')
+        jobs = self.summary()
+        self.assertEqual({'paperpiggy', 'zotero'}, set(jobs))
+        self.assertEqual('local failure', jobs['paperpiggy']['issue']['message'])
+        self.assertTrue(jobs['zotero']['running'])
+        self.assertIsNone(jobs['zotero']['issue'])
+
+    def test_unknown_legacy_failure_is_not_cleared_by_unknown_or_restore_success(self):
+        history = [self.event('failed', error='legacy failure'), self.event('success'),
+                   self.event('success', result={'journal': 'restore-journal.json'})]
+        current, job = self.fixture(history=history)
+        self.assertEqual('unknown', self.summary()['paperpiggy']['issue']['operation'])
+        current._event(job['job_id'], self.event('success', result={'path': 'backup.zip'}))
+        self.assertIsNone(self.summary()['paperpiggy']['issue'])
+
+    def test_finish_status_before_history_is_included_without_writing(self):
+        self.fixture(history=[self.event('started', trigger='manual')],
+                     state='failed', operation='backup', running=False, error='disk full',
+                     finished_at='2026-10-30T08:01:00+08:00')
+        before = self.snapshot()
+        self.assertEqual('disk full', self.summary()['paperpiggy']['issue']['message'])
+        self.assertEqual(before, self.snapshot())
+
+    def test_finish_success_window_clears_old_failure_using_instant_not_offset_string(self):
+        self.fixture(history=[self.event('failed', at='2026-10-30T08:00:00+08:00', error='old')],
+                     state='success', operation='backup', running=False, result={'path': 'new.zip'},
+                     finished_at='2026-10-30T00:01:00+00:00')
+        self.assertIsNone(self.summary()['paperpiggy']['issue'])
+
+    def test_finish_history_written_next_second_does_not_create_second_failure_identity(self):
+        current, job = self.fixture(history=[self.event('started', trigger='manual')],
+                                    state='failed', operation='backup', running=False,
+                                    error='disk full', finished_at='2026-10-30T08:00:00+08:00')
+        issue = self.summary()['paperpiggy']['issue']
+        current._event(job['job_id'], self.event('failed', at='2026-10-30T08:00:01+08:00',
+                                                error='disk full', result={}))
+        self.assertEqual(issue, self.summary()['paperpiggy']['issue'])
+
+    def test_cross_second_failure_identity_survives_queue_and_running_retry(self):
+        current, job = self.fixture(history=[self.event('started', trigger='manual')],
+                                    state='failed', operation='backup', running=False,
+                                    error='disk full', finished_at='2026-10-30T08:00:00+08:00')
+        original_id = self.summary()['paperpiggy']['issue']['id']
+        current._event(job['job_id'], self.event('failed', at='2026-10-30T08:00:01+08:00',
+                                                error='disk full', result={}))
+        self.assertEqual(original_id, self.summary()['paperpiggy']['issue']['id'])
+        current.set_status(job['job_id'], state='queued', running=True, pending=True,
+                           operation='backup', error='', result={})
+        self.assertEqual(original_id, self.summary()['paperpiggy']['issue']['id'])
+        current._event(job['job_id'], self.event('started', at='2026-10-30T08:01:00+08:00', trigger='manual'))
+        current.set_status(job['job_id'], state='running', pending=False, running=True,
+                           started_at='2026-10-30T08:01:00+08:00')
+        self.assertEqual(original_id, self.summary()['paperpiggy']['issue']['id'])
+        current.finish(job['job_id'], 'failed', 'disk full')
+        self.assertNotEqual(original_id, self.summary()['paperpiggy']['issue']['id'])
+
+    def test_claim_and_request_worker_duplicate_failure_share_attempt_identity(self):
+        current, job = self.fixture(history=[self.event('started', trigger='timer'),
+                                              self.event('failed', error='snapshot failed', result={})],
+                                    state='failed', operation='backup', running=False,
+                                    error='snapshot failed', result={},
+                                    finished_at='2026-10-30T08:00:00+08:00')
+        original_id = self.summary()['paperpiggy']['issue']['id']
+        current._event(job['job_id'], self.event('failed', at='2026-10-30T08:00:01+08:00',
+                                                error='snapshot failed', result={}))
+        current.set_status(job['job_id'], finished_at='2026-10-30T08:00:01+08:00')
+        self.assertEqual(original_id, self.summary()['paperpiggy']['issue']['id'])
+        current.set_status(job['job_id'], state='queued', pending=True, running=True, error='', result={})
+        self.assertEqual(original_id, self.summary()['paperpiggy']['issue']['id'])
+
+    def test_current_same_second_outcome_is_authoritative_and_deduplicated(self):
+        history = [self.event('started', trigger='manual'), self.event('failed', error='old'),
+                   self.event('success', result={'path': 'new.zip'})]
+        current, job = self.fixture(history=history, state='success', operation='backup', running=False,
+                                    result={'path': 'new.zip'}, finished_at='2026-10-30T08:00:00+08:00')
+        self.assertIsNone(self.summary()['paperpiggy']['issue'])
+        current.set_status(job['job_id'], state='failed', error='new failure', result={},
+                           finished_at='2026-10-30T08:00:00+08:00')
+        self.assertEqual('new failure', self.summary()['paperpiggy']['issue']['message'])
+
+    def test_corrupt_status_returns_unknown_without_overwriting(self):
+        current, job = self.fixture()
+        path = current.base / 'status' / (job['job_id'] + '.json')
+        path.parent.mkdir(exist_ok=True)
+        path.write_bytes(b'{bad json')
+        before = self.snapshot()
+        result = self.client.get('/backup2/summary').json()
+        self.assertFalse(result['ok'])
+        self.assertIn('error', result)
+        self.assertEqual(before, self.snapshot())
+
+    def test_valid_json_with_corrupt_critical_fields_is_unknown_and_not_overwritten(self):
+        from backup_jobs import atomic_json
+        current, job = self.fixture()
+        path = current.base / 'status' / (job['job_id'] + '.json')
+        cases = [{'state': 'not-a-valid-state', 'running': 'false'},
+                 {'state': 'running', 'pending': 'false'}, {'queued': 1},
+                 {'operation': 'not-an-operation'}, {'done': -1}, {'total': True},
+                 {'stage': ['wrong']}, {'result': {'path': {'invalid': 'object'}}},
+                 {'result': {'warnings': ['good', {'bad': 'object'}]}},
+                 {'finished_at': 'not-a-time'}]
+        for value in cases:
+            with self.subTest(value=value):
+                atomic_json(path, value)
+                before = self.snapshot()
+                result = self.client.get('/backup2/summary').json()
+                self.assertFalse(result['ok'], result)
+                self.assertEqual(before, self.snapshot())
+        atomic_json(path, {})
+        history = current.base / 'history' / (job['job_id'] + '.json')
+        atomic_json(history, [self.event('failed', error=['invalid error'])])
+        self.assertFalse(self.client.get('/backup2/summary').json()['ok'])
+
+    def test_started_trigger_overrides_inherited_raw_restore_operation(self):
+        history = [self.event('started', trigger='timer'), self.event('failed', error='maintenance lock busy')]
+        current, job = self.fixture(history=history, running=False, state='failed', operation='restore',
+                                    error='maintenance lock busy', finished_at='2026-10-30T08:00:00+08:00')
+        self.assertEqual('backup', self.summary()['paperpiggy']['issue']['operation'])
+        current.set_status(job['job_id'], state='running', running=True, error='', operation='backup')
+        current._event(job['job_id'], self.event('started', trigger='manual'))
+        current._event(job['job_id'], self.event('success', result={'path': 'new.zip'}))
+        current.set_status(job['job_id'], state='success', running=False, result={'path': 'new.zip'},
+                           finished_at='2026-10-30T08:00:00+08:00')
+        self.assertIsNone(self.summary()['paperpiggy']['issue'])
+
+    def test_summary_remains_readable_during_paperpiggy_restore_gate(self):
+        self.fixture(operation='restore', running=True, state='running')
+        with mock.patch.object(api.RUN, 'active_paperpiggy_restore', return_value=True):
+            self.assertTrue(self.summary()['paperpiggy']['running'])
+
+
 if __name__ == '__main__':
     unittest.main()
