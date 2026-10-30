@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import re
 import sqlite3
+import stat
 import sys
 
 import config as C
@@ -267,10 +268,10 @@ def prepare_snapshot_roots(job, roots, snapshot):
 
 
 def validate_zotero_attachments(mapped_roots):
-    """在静态副本中检查附件覆盖。原库与其WAL从快照读，不打开活动库。"""
+    """从静态数据库记录来源覆盖；既有缺件原样保留，不补下载、不扩大来源。"""
     import shutil
     import tempfile
-    from backup_jobs import check_source_path
+    from backup_jobs import check_source_path, io_path
     data = next((r for r in mapped_roots if r["id"] == "zotero_data"), None)
     if not data:
         return
@@ -287,20 +288,37 @@ def validate_zotero_attachments(mapped_roots):
                 raise SourceError("Zotero 库缺少附件表，未能验证附件覆盖。")
             rows = con.execute("SELECT items.key, itemAttachments.linkMode, itemAttachments.path "
                                "FROM itemAttachments JOIN items USING(itemID)").fetchall()
-            missing, linked = [], []
+            coverage = {"schema": 1, "kind": "zotero", "scope": "declared_sources_only",
+                        "records_total": len(rows), "checked": 0, "existing": 0, "missing": 0,
+                        "linked": 0, "linked_url": 0, "missing_files": [], "linked_files": []}
             for key, mode, path in rows:
                 if not re.fullmatch(r"[A-Z0-9]{8}", str(key)):
                     raise SourceError("附件标识格式无效，未从异常路径读取文件。")
                 if mode == 2:
-                    linked.append(key)
+                    # 只保存原数据库字符串，绝不stat/read链接指向的外部目录。
+                    coverage["linked"] += 1
+                    coverage["linked_files"].append({"key": key, "database_path": path,
+                                                     "not_added": True})
+                elif mode == 3:
+                    coverage["linked_url"] += 1
                 elif path and str(path).startswith("storage:"):
                     relative = str(path).split(":", 1)[1]
                     candidate = source / "storage" / key / relative
-                    if not _under(candidate, source / "storage" / key) or not candidate.is_file():
-                        missing.append(key)
-            if linked or missing:
-                raise SourceError(f"附件覆盖未通过：{len(linked)} 个外部链接附件、{len(missing)} 个本地附件缺失。"
-                                  "未把不完整来源登记为成功备份，请先处理来源。")
+                    if not _under(candidate, source / "storage" / key):
+                        raise SourceError("附件路径越过其storage目录，未读取异常路径。")
+                    local_path = (Path("storage") / key / relative).as_posix()
+                    candidate = check_source_path(data, local_path)
+                    coverage["checked"] += 1
+                    try:
+                        info = Path(io_path(candidate)).stat()
+                    except (FileNotFoundError, NotADirectoryError):
+                        coverage["missing"] += 1
+                        coverage["missing_files"].append({"key": key, "relative_path": local_path})
+                    else:
+                        if not stat.S_ISREG(info.st_mode):
+                            raise SourceError("附件声明路径不是普通文件，未将其误记为已有缺件。")
+                        coverage["existing"] += 1
+            return coverage
         finally:
             con.close()
 

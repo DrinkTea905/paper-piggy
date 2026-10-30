@@ -244,14 +244,25 @@ class BackupArchiveTests(unittest.TestCase):
                 A.create(self.job, self.roots)
         self.assertTrue(Path(good["path"]).exists())
 
-    def test_hardlink_source_rejected(self):
+    def test_hardlink_source_archived_and_restored_as_independent_files(self):
         (self.source / "paper.pdf").write_bytes(b"x")
         try:
             os.link(self.source / "paper.pdf", self.source / "linked.pdf")
         except OSError:
             self.skipTest("本机不允许测试硬链接")
-        with self.assertRaises(BackupError):
-            A.create(self.job, self.roots)
+        result = A.create(self.job, self.roots)
+        self.assertEqual(A.inspect(result["path"])["n_entries"], 2)
+        import backup_restore as R
+        restored = self.base / "restored"
+        R.extract_to(result["path"], restored)
+        original = restored / "zotero_data/paper.pdf"
+        linked = restored / "zotero_data/linked.pdf"
+        self.assertEqual(original.read_bytes(), b"x")
+        self.assertEqual(linked.read_bytes(), b"x")
+        self.assertFalse(os.path.samefile(original, linked))
+        linked.write_bytes(b"changed")
+        self.assertEqual(original.read_bytes(), b"x")
+        self.assertEqual((self.source / "paper.pdf").read_bytes(), b"x")
 
     def test_destination_inside_source_or_historical_directory_rejected(self):
         for dest in (self.source / "backup", self.base / "过时备份"):

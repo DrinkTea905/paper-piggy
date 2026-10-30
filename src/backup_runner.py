@@ -115,7 +115,7 @@ def run_backup(current, job, trigger="manual", slot=None, request_id=None, snaps
         resources.enter_context(maintenance)
         work_dir = ensure_work_dir(current.base / "work")
         current.set_status(job["job_id"], pending=False, stage="核对来源与备份位置",
-                           request_id=request_id, operation="backup", done=0, total=0)
+                           request_id=request_id, operation="backup", source_coverage=None, done=0, total=0)
         roots, metadata = backup_sources.validate_sources(job, current.base.parent)
         current.check_cancel(job["job_id"])
         cancelled = _cancel(current, job["job_id"])
@@ -123,8 +123,13 @@ def run_backup(current, job, trigger="manual", slot=None, request_id=None, snaps
         with snapshot_factory([r["source"] for r in roots], cancel=cancelled) as snapshot:
             mapped = backup_sources.prepare_snapshot_roots(job, roots, snapshot)
             metadata["snapshot"] = {"set_id": str(snapshot.set_id), "volumes": snapshot.snapshots}
-            current.set_status(job["job_id"], stage="验证来源附件覆盖")
-            backup_sources.validate_zotero_attachments(mapped)
+            current.set_status(job["job_id"], stage="记录来源附件覆盖")
+            coverage = backup_sources.validate_zotero_attachments(mapped)
+            if coverage is not None:
+                metadata["source_coverage"] = coverage
+                current.set_status(job["job_id"], source_coverage={
+                    key: coverage[key] for key in ("schema", "kind", "records_total", "checked",
+                                                  "existing", "missing", "linked", "linked_url")})
             current.set_status(job["job_id"], stage="打包并逐文件校验")
             result = backup_archive.create(job, mapped, metadata=metadata,
                        progress=_progress(current, job["job_id"]), cancel=cancelled,

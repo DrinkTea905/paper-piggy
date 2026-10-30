@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 import sqlite3
 import sys
@@ -83,15 +84,67 @@ class BackupSourcesTests(unittest.TestCase):
         (self.root / "storage/ABCDEFGH").mkdir(parents=True)
         file = self.root / "storage/ABCDEFGH/test.pdf"
         file.write_bytes(b"test attachment")
-        BS.validate_zotero_attachments(roots)
+        coverage = BS.validate_zotero_attachments(roots)
+        self.assertEqual((coverage["checked"], coverage["existing"], coverage["missing"]), (1, 1, 0))
         file.unlink()
-        with self.assertRaisesRegex(BS.SourceError, "缺失"):
+        coverage = BS.validate_zotero_attachments(roots)
+        self.assertEqual((coverage["checked"], coverage["existing"], coverage["missing"]), (1, 0, 1))
+        self.assertEqual(coverage["missing_files"], [{"key": "ABCDEFGH", "relative_path": "storage/ABCDEFGH/test.pdf"}])
+
+    def test_external_attachment_recorded_without_accessing_or_adding_external_path(self):
+        roots = self._attachment_db(2)
+        con = sqlite3.connect(self.root / "zotero.sqlite")
+        con.execute("UPDATE itemAttachments SET path=?", (str(self.root.parent / "never-read/secret.pdf"),))
+        con.commit(); con.close()
+        original_stat, stat_paths = Path.stat, []
+        def track(path, *args, **kwargs):
+            stat_paths.append(str(path))
+            return original_stat(path, *args, **kwargs)
+        with patch.object(Path, "stat", track):
+            coverage = BS.validate_zotero_attachments(roots)
+        self.assertEqual((coverage["linked"], coverage["checked"]), (1, 0))
+        self.assertTrue(coverage["linked_files"][0]["not_added"])
+        self.assertFalse(any("never-read" in path for path in stat_paths))
+
+    def test_linked_url_has_no_local_file_requirement(self):
+        roots = self._attachment_db(3)
+        coverage = BS.validate_zotero_attachments(roots)
+        self.assertEqual((coverage["records_total"], coverage["linked_url"], coverage["checked"], coverage["missing"]), (1, 1, 0, 0))
+
+    def test_unreadable_attachment_is_not_reported_as_preexisting_missing(self):
+        roots = self._attachment_db()
+        original_stat = Path.stat
+        def denied(path, *args, **kwargs):
+            if path.name == "test.pdf":
+                raise PermissionError("fixture unreadable attachment")
+            return original_stat(path, *args, **kwargs)
+        with patch.object(Path, "stat", denied):
+            with self.assertRaisesRegex(PermissionError, "unreadable"):
+                BS.validate_zotero_attachments(roots)
+
+    def test_storage_path_escape_is_still_rejected(self):
+        roots = self._attachment_db()
+        con = sqlite3.connect(self.root / "zotero.sqlite")
+        con.execute("UPDATE itemAttachments SET path='storage:../../outside.pdf'")
+        con.commit(); con.close()
+        with self.assertRaisesRegex(BS.SourceError, "越过"):
             BS.validate_zotero_attachments(roots)
 
-    def test_external_attachment_not_silently_omitted(self):
-        roots = self._attachment_db(2)
-        with self.assertRaisesRegex(BS.SourceError, "外部链接"):
-            BS.validate_zotero_attachments(roots)
+    def test_regular_hardlinked_attachment_counts_as_existing_without_mutation(self):
+        roots = self._attachment_db()
+        source = self.root / "original.pdf"; source.write_bytes(b"same source bytes")
+        folder = self.root / "storage/ABCDEFGH"; folder.mkdir(parents=True)
+        os.link(source, folder / "test.pdf")
+        before = (self.root / "zotero.sqlite").read_bytes()
+        coverage = BS.validate_zotero_attachments(roots)
+        self.assertEqual((coverage["existing"], coverage["missing"]), (1, 0))
+        self.assertEqual(source.read_bytes(), b"same source bytes")
+        self.assertEqual((self.root / "zotero.sqlite").read_bytes(), before)
+
+    def test_corrupt_static_database_is_not_silently_accepted(self):
+        (self.root / "zotero.sqlite").write_bytes(b"corrupt fixture")
+        with self.assertRaises(sqlite3.DatabaseError):
+            BS.validate_zotero_attachments([{"id": "zotero_data", "source": str(self.root)}])
 
     def test_missing_browser_association_never_guesses_daily_profile(self):
         self.root.mkdir(exist_ok=True)

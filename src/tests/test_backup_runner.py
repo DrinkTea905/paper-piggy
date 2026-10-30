@@ -178,6 +178,96 @@ class RunnerTests(unittest.TestCase):
         snapshot.assert_not_called()
         self.assertFalse(self.current.ledger(job["job_id"]))
 
+    def _source_as_is_fixture(self):
+        suffix = uuid.uuid4().hex
+        library, profile = self.root / ("library-" + suffix), self.root / ("profile-" + suffix)
+        frozen, frozen_profile = self.root / ("frozen-" + suffix), self.root / ("frozen-profile-" + suffix)
+        outside = self.root / ("outside-" + suffix) / "secret.pdf"
+        outside.parent.mkdir(); outside.write_bytes(b"external payload must not be added")
+        for directory in (library, profile, frozen, frozen_profile):
+            directory.mkdir()
+        prefs = 'user_pref("extensions.zotero.dataDir", ' + json.dumps(str(library)) + ');'
+        for directory in (profile, frozen_profile):
+            (directory / "prefs.js").write_text(prefs, encoding="utf-8")
+        for directory in (library, frozen):
+            conn = sqlite3.connect(directory / "zotero.sqlite")
+            try:
+                conn.executescript("CREATE TABLE items(itemID INTEGER,key TEXT); "
+                                   "CREATE TABLE itemAttachments(itemID INTEGER,linkMode INTEGER,path TEXT);")
+                conn.executemany("INSERT INTO items VALUES(?,?)", [(1, "ABCDEFGH"), (2, "IJKLMNOP"),
+                                  (3, "QRSTUVWX"), (4, "YZ012345")])
+                conn.executemany("INSERT INTO itemAttachments VALUES(?,?,?)", [
+                    (1, 0, "storage:existing.pdf"), (2, 1, "storage:missing.html"),
+                    (3, 2, str(outside)), (4, 3, None)])
+                conn.commit()
+            finally:
+                conn.close()
+        attachment = frozen / "storage/ABCDEFGH/existing.pdf"
+        attachment.parent.mkdir(parents=True); attachment.write_bytes(b"existing source bytes")
+        cache = frozen / "storage/IJKLMNOP/.zotero-ft-cache"
+        cache.parent.mkdir(parents=True); cache.write_bytes(b"keep cache even without original html")
+        job = self.current.save({**R.get_job(self.current, "zotero"),
+            "destination": str(self.root / ("source-packages-" + suffix)),
+            "sources": {"data_dir": str(library), "profile_dir": str(profile)}})
+        factory, flags = self._static_snapshot_factory({str(library): frozen, str(profile): frozen_profile})
+        return job, factory, flags, library, frozen, frozen_profile, outside
+
+    def test_preexisting_missing_and_linked_records_allow_complete_source_as_is_archive(self):
+        job, factory, flags, library, frozen, profile, outside = self._source_as_is_fixture()
+        db_before = (frozen / "zotero.sqlite").read_bytes()
+        live_before = (library / "zotero.sqlite").read_bytes()
+        with patch("backup_sources._registry_root", return_value=self.root / "no-registry"):
+            result = R.run_backup(self.current, job, snapshot_factory=factory)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["warnings"], [])
+        coverage = result["manifest"]["metadata"]["source_coverage"]
+        self.assertEqual({k: coverage[k] for k in ("records_total", "checked", "existing", "missing", "linked", "linked_url")},
+                         {"records_total": 4, "checked": 2, "existing": 1, "missing": 1, "linked": 1, "linked_url": 1})
+        self.assertEqual(coverage["missing_files"], [{"key": "IJKLMNOP", "relative_path": "storage/IJKLMNOP/missing.html"}])
+        with zipfile.ZipFile(result["path"]) as package:
+            self.assertEqual(package.read("roots/zotero_data/zotero.sqlite"), db_before)
+            self.assertEqual(package.read("roots/zotero_data/storage/ABCDEFGH/existing.pdf"), b"existing source bytes")
+            self.assertEqual(package.read("roots/zotero_data/storage/IJKLMNOP/.zotero-ft-cache"), b"keep cache even without original html")
+            self.assertFalse(any(name.endswith(("missing.html", "secret.pdf")) for name in package.namelist()))
+        self.assertFalse((frozen / "storage/IJKLMNOP/missing.html").exists())
+        self.assertEqual((library / "zotero.sqlite").read_bytes(), live_before)
+        self.assertEqual((frozen / "zotero.sqlite").read_bytes(), db_before)
+        self.assertEqual(outside.read_bytes(), b"external payload must not be added")
+        self.assertTrue(flags["exited"])
+        state = self.current.status(job["job_id"])
+        self.assertEqual(state["state"], "success")
+        self.assertEqual(state["source_coverage"]["missing"], 1)
+        self.assertNotIn("missing_files", state["source_coverage"])
+        self.assertEqual(len(self.current.ledger(job["job_id"])), 1)
+        self.assertEqual(A.inspect(result["path"])["manifest"]["metadata"]["source_coverage"], coverage)
+
+    def test_source_as_is_does_not_hide_real_attachment_permission_error(self):
+        job, factory, flags, library, frozen, profile, outside = self._source_as_is_fixture()
+        original_stat = Path.stat
+        def denied(path, *args, **kwargs):
+            if path.name == "existing.pdf":
+                raise PermissionError("fixture actual read failure")
+            return original_stat(path, *args, **kwargs)
+        with patch("backup_sources._registry_root", return_value=self.root / "no-registry"), patch.object(Path, "stat", denied):
+            with self.assertRaisesRegex(PermissionError, "actual read failure"):
+                R.run_backup(self.current, job, snapshot_factory=factory)
+        self.assertTrue(flags["exited"])
+        self.assertEqual(self.current.status(job["job_id"])["state"], "failed")
+        self.assertFalse(self.current.ledger(job["job_id"]))
+
+    def test_source_as_is_still_fails_corrupt_main_or_nested_plugin_database(self):
+        for kind in ("main", "plugin"):
+            with self.subTest(kind=kind):
+                job, factory, flags, library, frozen, profile, outside = self._source_as_is_fixture()
+                broken = frozen / "zotero.sqlite" if kind == "main" else profile / "extensions/plugin/settings.sqlite"
+                broken.parent.mkdir(parents=True, exist_ok=True); broken.write_bytes(b"not a SQLite database")
+                with patch("backup_sources._registry_root", return_value=self.root / "no-registry"):
+                    with self.assertRaises((sqlite3.DatabaseError, BackupError)):
+                        R.run_backup(self.current, job, snapshot_factory=factory)
+                self.assertTrue(flags["exited"])
+                self.assertEqual(self.current.status(job["job_id"])["state"], "failed")
+                self.assertFalse(self.current.ledger(job["job_id"]))
+
     def test_vss_failure_never_falls_back_or_deletes_success(self):
         job = self.job("paperpiggy")
         old = self.archive(job, rid="paperpiggy_data", content={"wiki/page.md": "old"})

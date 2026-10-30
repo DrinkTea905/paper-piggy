@@ -125,8 +125,10 @@ def _walk_roots(roots, cancel=None):
                     continue
                 safe_name(rel)
                 st = p.lstat()
-                if is_reparse(p) or not stat.S_ISREG(st.st_mode) or st.st_nlink > 1:
-                    raise BackupError(f"来源包含链接、硬链接或特殊文件，未读取：{p}")
+                if is_reparse(p) or not stat.S_ISREG(st.st_mode):
+                    raise BackupError(f"来源包含重解析链接或特殊文件，未读取：{p}")
+                # 普通硬链接是来源内的有效文件名。每个名字都完整写入归档，
+                # 恢复为独立文件，不依赖其他链接；仍拒绝可重定向目录的重解析点。
                 files[rel] = (p, st)
         for rel in overlays:
             if not _selected(rel, root):

@@ -4398,6 +4398,16 @@
   const bk2Current = () => BK2.jobs[BK2.kind] || {};
   const bk2Warnings = value => Array.isArray(value) ? value.map(String).join("；") : value ? String(value) : "";
   const bk2When = value => typeof value === "number" ? new Date(value * (value < 1e12 ? 1000 : 1)).toLocaleString("zh-CN") : String(value || "");
+  function bk2CoverageSummary(value) {
+    const m = value && (value.manifest || value), metadata = m && m.metadata;
+    const coverage = value && value.source_coverage || metadata && metadata.source_coverage;
+    if (!coverage || coverage.schema !== 1 || coverage.kind !== "zotero"
+      || !Number.isInteger(coverage.existing) || coverage.existing < 0
+      || !Number.isInteger(coverage.missing) || coverage.missing < 0) return "";
+    return "按来源原样备份；现存附件 " + num(coverage.existing) + "，原未在来源中 " + num(coverage.missing)
+      + (Number.isInteger(coverage.linked) && coverage.linked > 0 ? "，目录外链接 " + num(coverage.linked) + "（未额外纳入）" : "")
+      + "。恢复不会补出原本不存在的文件。";
+  }
   function bk2Ready() {
     const s = (BK2.config && BK2.config.service) || {};
     return !!s.installed && s.ready !== false && !s.pending && !s.installing && !s.needs_update && !s.error;
@@ -4447,7 +4457,7 @@
     $("#bk2-zotero-sources").hidden = BK2.kind !== "zotero";
     $("#bk2-paperpiggy-options").hidden = BK2.kind !== "paperpiggy";
     $("#bk2-scope").textContent = BK2.kind === "zotero"
-      ? "完整保存数据目录、全部用户配置、插件与配置关联。每份可独立恢复；运行期间也能备份，不会强制退出 Zotero。"
+      ? "按所选目录现状保存全部现有数据、用户配置、插件与关联。原本缺失的附件记入摘要但不阻止备份，恢复不补出不存在的文件；运行期间也能备份，不会强制退出 Zotero。"
       : "保存知识库、综述、Agent 资料和成果；可包含索引、API 密钥及已关联专用浏览器资料。不会顺带收集其他日常浏览器。";
     $("#bk2-browser-source").textContent = browser.user_data_dir
       ? "专用浏览器来源：" + browser.user_data_dir
@@ -4493,6 +4503,9 @@
       || (running ? (s.pending || s.queued ? "任务已登记，等待后台执行。" : "正在处理" + progress)
       : (s.next_at || job.next_at ? "下次：" + bk2When(s.next_at || job.next_at) + " · " : "")
         + (last ? "上次成功：" + bk2When(last) : "还没有成功备份。"));
+    const coverage = bk2CoverageSummary(s);
+    if (coverage && !running && !s.error && s.operation === "backup"
+      && (s.state === "success" || s.state === "success_with_warning")) detail.textContent += "\n" + coverage;
     $("#bk2-create").disabled = running || BK2.legacyBusy || BK2.installing || BK2.saving || BK2.waitingExit;
     $("#bk2-save").disabled = running || BK2.saving || BK2.waitingExit;
     $("#bk2-cancel").hidden = !running || s.cancellable === false || s.operation === "restore";
@@ -4641,6 +4654,7 @@
       const result = await waitBk2(kind, r, baseline);
       if (result && kind === BK2.kind) bk2Message(result.cancelled ? "备份已停止，已有成功版本保持不变。"
         : "备份已完成并通过校验。" + (result.path ? " 文件：" + result.path : "")
+        + (bk2CoverageSummary(BK2.states[kind]) ? "\n" + bk2CoverageSummary(BK2.states[kind]) : "")
         + ((result.warning || bk2Warnings(result.warnings)) ? " 注意：" + (result.warning || bk2Warnings(result.warnings)) : ""));
     } catch (e) { bk2Message("备份未完成：" + bk2Error(e)); }
     finally { const s = BK2.states[BK2.kind] || {}; $("#bk2-create").disabled = !!(s.running || s.pending || s.queued); }
@@ -4653,7 +4667,8 @@
       if (info.legacy || Number((info.manifest || {}).format) === 1) { await restoreLegacyBackup(path); return; }
       const m = info.manifest || info;
       BK2.restore = { path, info, kind: m.kind || info.kind || BK2.kind };
-      $("#bk2-restore-info").textContent = bk2Name(BK2.restore.kind) + " · " + bk2When(m.created_at || m.created || "") + "\n" + path;
+      $("#bk2-restore-info").textContent = bk2Name(BK2.restore.kind) + " · " + bk2When(m.created_at || m.created || "") + "\n" + path
+        + (bk2CoverageSummary(info) ? "\n" + bk2CoverageSummary(info) : "");
       $("#bk2-restore-warnings").textContent = bk2Warnings(info.warnings || m.warnings);
       $("#bk2-restore-mode").value = "new";
       $("#bk2-restore-destination").value = "";

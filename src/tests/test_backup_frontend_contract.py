@@ -106,6 +106,14 @@ vm.runInContext(source.slice(start,end) +
   ];
   const cancelled=await t.waitBk2("paperpiggy",{queued:true,request_id:"cancel-request"},"before");
   assert.equal(cancelled.cancelled,true);
+  t.bk2StatusView({state:"success",operation:"backup",running:false,result:{},
+    source_coverage:{schema:1,kind:"zotero",existing:100,missing:93,linked:2},history:[]},"paperpiggy");
+  assert.match(el("#bk-runtime-detail").textContent,/现存附件 100，原未在来源中 93/);
+  assert.match(el("#bk-runtime-detail").textContent,/目录外链接 2/);
+  assert.equal(el("#bk-runtime").className,"bk-runtime ok");
+  assert.doesNotMatch(el("#bk-runtime-title").textContent,/失败|未完成|需处理/);
+  t.bk2StatusView({state:"success",operation:"backup",running:false,result:{},history:[]},"paperpiggy");
+  assert.doesNotMatch(el("#bk-runtime-detail").textContent,/按来源原样备份/);
   let closed=0;
   ctx.window.pywebview.api.close_for_backup_restore=async()=>{ closed++; return {ok:true}; };
   assert.equal(await t.bk2HandleRestoreExit({requires_exit:true}),true);
