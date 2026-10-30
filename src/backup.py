@@ -49,6 +49,7 @@ _KEY_FIELDS = (("api", "key"), ("sac", "key"), ("folder_meta", "key"))
 #    和 summaries/ 的（两个都是花过 API 钱的东西，而清单里却写了一个根本不存在的
 #    journal_tiers.json）。是实机跑了一次备份、去数产物才发现的。
 CORE_IN_DATA = [
+    "dedicated_browser.json", # 专用浏览器关联；独立于恢复默认设置，升级持续保留
     "wiki",                  # 综述页 + index.json + WIKI.md + .history/.git 版本历史
     "categories",            # 收藏夹 / AI 主题
     "meta",                  # papers.jsonl：全库文献元数据
@@ -82,6 +83,8 @@ INDEX_IN_DATA = ["lancedb", "bm25", "bm25_meta", "chunks", "extracted", "state"]
 #    （这条护栏不是多余的：第一版清单是凭印象列的，漏了 grading_memo.json、summaries/、
 #      tier_overrides.json 三样 —— 前两个花过 API 钱，第三个是用户手动改的。全是这么发现的。）
 NEVER_IN_DATA = [
+    "browser_profile",       # 浏览器登录资料不进入普通数据备份（含 Cookie / 密码）
+    "dedicated_browser.lock", # 跨进程启动锁，运行时临时状态
     "logs",                  # 日志
     "backups",               # 备份自己（别套娃）
     "stats_cache.json",      # 仪表盘预聚合缓存，可重算

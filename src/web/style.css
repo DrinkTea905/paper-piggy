@@ -1764,3 +1764,11 @@ input:focus, select:focus, textarea:focus, #q:focus, #chat-q:focus,
 .wv-disc b { color: #b45309; }
 :root[data-theme="dark"] .wv-disc { background: rgba(252,211,77,.10); color: #fbbf24; border-color: rgba(252,211,77,.35); }
 :root[data-theme="dark"] .wv-disc b { color: #fcd34d; }
+
+/* 专用浏览器始终保留文字入口，窄窗口允许顶栏换行。 */
+#btn-browser { white-space: nowrap; flex: 0 0 auto; }
+#btn-browser:disabled { opacity: .6; cursor: wait; }
+@media (max-width: 1400px) {
+  .topbar { flex-wrap: wrap; }
+  .topbar > .actions { flex-wrap: wrap; justify-content: flex-end; }
+}

@@ -874,6 +874,20 @@ def agent_mcp_config():
     mcp_json = json.dumps(
         {"mcpServers": {name: entry}},
         ensure_ascii=False, indent=2)
+    browser_py = Path(py).with_name("pythonw.exe") if sys.platform == "win32" else Path(py)
+    browser_entry = {
+        "command": str(browser_py if browser_py.is_file() else Path(py)),
+        "args": [],
+        "env": {"LOCALKB_DATA": str(C.DATA.resolve())},
+    }
+    browser_tool_error = ""
+    try:
+        import browser_devtools_mcp as BDM
+        browser_entry["args"] = [str(C.APP / "browser_devtools_mcp.py"), "--", *BDM.default_command()]
+        browser_mcp_json = json.dumps({"mcpServers": {"paperpiggy-browser": browser_entry}}, ensure_ascii=False, indent=2)
+    except Exception as e:
+        browser_mcp_json = ""
+        browser_tool_error = str(e)
     # ensure_ascii=False：路径含中文时，默认会转义成一串 uXXXX 码点。TOML 认这种
     # 转义，但用户读不出那是哪个目录，手改必错。上面的 mcp_json 一直是 False，
     # 这里漏了——两处本该同一口径。
@@ -909,6 +923,8 @@ def agent_mcp_config():
         "claude_cmd_user": add_core.replace(f"claude mcp add {name} ",
                                             f"claude mcp add {name} --scope user "),
         "mcp_json": mcp_json, "codex_toml": codex_toml,
+        "browser_mcp_json": browser_mcp_json,
+        "browser_tool_error": browser_tool_error,
         # 0_Agent交付物 / 0_Agent资料库 落点（前端「打开文件夹」用）
         # 注：曾有个 skill_src_dir 字段指向 app/skills/localkb-paper，是历史遗留——
         # 技能/工作流现在由 agent_ws 统一写到「0_Agent资料库/技能」，不再有独立技能包，前端也从不读它。
@@ -5162,6 +5178,31 @@ def backup_open_dir():
         return {"ok": True, "dir": str(d)}
     except Exception as e:
         return {"ok": False, "error": str(e), "dir": str(d)}
+
+
+@app.get("/browser/config")
+def browser_config():
+    """只读发现专用浏览器连接；不启动、不显示窗口。"""
+    import dedicated_browser as DB
+    try:
+        return DB.discovery()
+    except DB.BrowserError as e:
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=409)
+
+
+@app.post("/browser/open")
+def browser_open(request: Request):
+    """用户点击顶栏按钮：显示正常专用浏览器窗口。"""
+    origin = request.headers.get("origin")
+    if ((origin and origin.rstrip("/") != str(request.base_url).rstrip("/"))
+            or request.headers.get("sec-fetch-site") == "cross-site"
+            or request.headers.get("content-type", "").split(";")[0] != "application/json"):
+        return JSONResponse({"ok": False, "detail": "请从 PaperPiggy 顶栏打开专用浏览器。"}, status_code=403)
+    import dedicated_browser as DB
+    try:
+        return DB.open_browser(foreground=True)
+    except DB.BrowserError as e:
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=409)
 
 
 # ── 应用内更新（版本升级）────────────────────────────────

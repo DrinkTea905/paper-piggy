@@ -491,6 +491,14 @@ Agent 批量提交采用整批原子校验，一篇异常则整批不写。质�
 
 ## 10. 关键模块速查表
 
+专用浏览器由 `dedicated_browser.py` 独立管理，顶栏按钮通过 `POST /browser/open` 显示正常外部窗口。
+`data/dedicated_browser.json` 是程序、资料目录和调试端口的唯一关联源，`GET /browser/config`、
+MCP `localkb://browser` 与 `dedicated_browser.py --config` 都从该模块只读发现，不启动或聚焦。
+`browser_devtools_mcp.py` 在外部浏览器工具启动前读取并核对实际 endpoint，再传给工具，避免固定端口。
+开发资料和端口独立，正式模式才核对明确旧连接；不按“唯一浏览器进程”猜测关联。
+配置只有在启动成功并核对进程、目录归属后才保存；已保存端口冲突或旧目录丢失时停止，不换号、不重建资料。
+关联属于核心备份，默认 `data/browser_profile` 含登录资料，明确排除普通备份；两者均不参与恢复默认设置或应用代码替换。
+
 ### 运行时必需（server / MCP / 检索链路）
 
 | 文件 | 一行说明 |

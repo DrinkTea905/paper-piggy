@@ -98,6 +98,7 @@
 | `localkb://index` | 所有 wiki 页的清单 |
 | `localkb://lint` | 当前的体检报告（孤儿页/过时页/断链/缺失概念页） |
 | `localkb://memory` | 项目记忆的 **core 视图**：项目记忆.md（用户是谁 / 偏好 / 已定决策 / 当前在做）+ 工具经验.md 全文 + 主题档案清单（不含主题正文）——换任何 AI 助手都先读这份接上之前的工作 |
+| `localkb://browser` | 专用浏览器实际连接配置（JSON）；只读发现，不启动、不聚焦，工具与自动化不得写死端口 |
 | `localkb://page/<id>` | 某一页的 markdown 正文 |
 
 ## Prompts（斜杠命令，把 gist 三大操作变成一句话）

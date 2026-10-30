@@ -4862,6 +4862,23 @@
     } catch (e) { flashToast("恢复默认失败：" + (e.message || e)); }
   });
 
+  // 只有手动点击才显示浏览器；后台发现连接不会调用此入口。
+  $("#btn-browser").addEventListener("click", async () => {
+    const btn = $("#btn-browser");
+    if (btn.disabled) return;
+    btn.disabled = true;
+    btn.setAttribute("aria-busy", "true");
+    try {
+      const result = await jpost("/browser/open", {});
+      if (!result.ok) throw new Error(result.detail || result.error || "浏览器未能打开");
+    } catch (e) {
+      await uiNotice(e.message || String(e), { title: "专用浏览器未能打开" });
+    } finally {
+      btn.disabled = false;
+      btn.removeAttribute("aria-busy");
+    }
+  });
+
   // ── 检索引擎（嵌入/重排）：设置里随时切换本地/API、改 key，不必重跑首启向导 ──
   function engApiVisible(be) { const box = $("#eng-api"); if (box) box.hidden = (be !== "api"); }
   async function loadEngine() {

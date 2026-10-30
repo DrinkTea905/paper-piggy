@@ -95,6 +95,11 @@ _INSTRUCTIONS_HEAD = """你连接的是用户的**本地文献知识库**（Pape
 它不只是搜索引擎。它有一个**综合层（wiki）**：把对文献的理解持久化成带引用、可累积、互链的页面。
 你的角色是这个 wiki 的**维护者**。
 
+浏览器连接：
+- 使用浏览器工具或运行后台周报前，先读取 localkb://browser，按返回的 endpoint 连接；不得写死端口或接管其他浏览器。未配置或未运行时请用户点击顶栏“打开专用浏览器”。
+- 后台任务只读发现连接，不调用 /browser/open，不聚焦、不还原窗口；按钮仅由用户手动点击显示窗口，绝不自动执行投稿或周报。
+- 浏览器工具需要动态跟随关联时，从 /agent/mcp-config 的 browser_mcp_json 取得本机启动桥配置，并在用户授权配置工具后重连。桥读取同一配置传入实际地址，不安装工具；现有外部静态配置不会自动被改写。
+
 工作纪律：
 1. 动手综合前，先 list_wiki / get_wiki_page 看有没有现成的页，别重复造轮子。
 2. 每个论断后带 [n] 引用，n 对应 sources 里的论文 key。不臆造、不给无出处的断言。
@@ -1178,6 +1183,9 @@ def _validate_json_value(value, schema, path="arguments"):
 
 # ══ MCP resources：把 schema / 索引 / 页面暴露成资源，agent 可直接读 ══
 RESOURCES = [
+    {"uri": "localkb://browser", "name": "专用浏览器连接配置",
+     "description": "只读发现实际 endpoint、浏览器程序、资料目录和端口；不启动或聚焦。浏览器工具与后台自动化必须读取此处，不得写死端口。",
+     "mimeType": "application/json"},
     {"uri": "localkb://schema", "name": "WIKI.md — 综合层结构约定",
      "description": "gist 第 3 层 schema：页种、每页结构、写回纪律、检索表现。写回前请读。",
      "mimeType": "text/markdown"},
@@ -2293,6 +2301,9 @@ def do_tool(name, args):
 
 # ══ resources / prompts 的读取实现 ══
 def read_resource(uri):
+    if uri == "localkb://browser":
+        import dedicated_browser as DB
+        return json.dumps(DB.discovery(), ensure_ascii=False, indent=2), "application/json"
     if uri == "localkb://schema":
         return _wiki_schema_text() or "（WIKI.md 尚未生成）", "text/markdown"
     if uri == "localkb://memory":

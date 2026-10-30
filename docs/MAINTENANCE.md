@@ -75,6 +75,11 @@
 
 ### 1.5 其它
 
+专用浏览器的关联唯一源为 `dedicated_browser.CONFIG_FILE`，窗口打开、HTTP/MCP/CLI 发现和
+`browser_devtools_mcp.py` 启动桥必须保持同源。修改时覆盖首次校验后保存、明确旧关联沿用、
+端口/资料目录冲突、并发与窗口标签复用、开发隔离、后台不聚焦、设置重置保留和敏感资料备份排除。
+不得把用户的浏览器路径或调试端口写入出厂配置，也不得在升级安装时写用户关联。
+
 | 你改了 | 必须同步 | 校验 |
 |---|---|---|
 | 全类型文献评价、客观标签或四档映射 | `source_rules.py` + `grading_svc.py` + `journal_grading/`；同步检索/浏览/单篇详情/wiki 来源/MCP 契约与库总览，跑 `test_source_grading*.py` 和 `journal_grading/selftest.py`。新增目录还要登记 `catalog_registry.py` 的来源、上游版本、检查日期 | ✅ 单测 + selftest；UI 文案人肉 |
