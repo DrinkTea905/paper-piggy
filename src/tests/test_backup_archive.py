@@ -150,7 +150,8 @@ class BackupArchiveTests(unittest.TestCase):
             A.create(self.job, self.roots)
 
     def test_archive_kind_cannot_hide_another_app_root(self):
-        result = self.make()
+        (self.source / "paper.pdf").write_text("original")
+        result = A._create_v2(self.job, self.roots)
         path = self.rewrite(result, change_manifest=lambda manifest: manifest.update(kind="paperpiggy"))
         with self.assertRaisesRegex(BackupError, "类型与来源"):
             A.inspect(path)

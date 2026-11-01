@@ -36,7 +36,7 @@ const ctx = {
 };
 vm.createContext(ctx);
 vm.runInContext(source.slice(start,end) +
-  "\nthis.t={BK2,bk2Ready,bk2ServiceView,bk2RenderForm,bk2StatusView,saveBk2,createBk2,installBk2Service,startBk2Restore,bk2HandleRestoreExit,waitBk2};", ctx);
+  "\nthis.t={BK2,bk2Ready,bk2ServiceView,bk2RenderForm,bk2StatusView,saveBk2,createBk2,installBk2Service,startBk2Restore,bk2HandleRestoreExit,waitBk2,bk2PackageSummary,bk2PackageFiles,renderBk2List,inspectBk2};", ctx);
 (async()=>{
   const t=ctx.t;
   t.BK2.jobs={paperpiggy:{},zotero:{}};
@@ -141,6 +141,67 @@ vm.runInContext(source.slice(start,end) +
   assert.equal(el("#bk2-create").disabled,true);
   assert.equal(el("#bk2-save").disabled,true);
   assert.match(notices.pop(),/MCP[\s\S]*退出小猪[\s\S]*不要重新打开/);
+  const waitingParts={...ready,can_run:true,multipart_update_required:true,needs_update:true,
+    auto_update:{state:"pending",pending:true,component_version:1001019000}};
+  t.BK2.config={service:waitingParts};
+  assert.equal(t.bk2Ready(),false);
+  t.bk2ServiceView();
+  assert.match(el("#bk2-service-title").textContent,/分包支持更新/);
+  assert.match(el("#bk2-service-detail").textContent,/无需管理员/);
+  t.bk2StatusView({state:"idle",operation:"backup",history:[]},t.BK2.kind);
+  assert.equal(el("#bk2-create").disabled,true);
+  const gateCalls=calls;
+  await t.createBk2();
+  const waitingNotice=notices.pop();
+  assert.match(waitingNotice,/自动更新分包支持/);
+  assert.doesNotMatch(waitingNotice,/请先配置后台/);
+  el("#bk2-enabled").checked=true;el("#bk2-destination").value="D:/fixture-only";
+  el("#bk2-days").value="7";el("#bk2-time").value="07:00";el("#bk2-keep").value="2";
+  assert.equal(await t.saveBk2(),false);
+  assert.match(el("#bk2-msg").textContent,/无需管理员/);
+  assert.equal(calls,gateCalls);
+  t.BK2.config={service:{...waitingParts,auto_update:{state:"failed",error:"signature rejected",component_version:1001019000}}};
+  t.bk2ServiceView();
+  assert.equal(el("#bk2-install").textContent,"重试后台更新");
+  assert.match(el("#bk2-service-detail").textContent,/重试后台更新.*无需管理员/);
+  t.BK2.config={service:{...ready,multipart_update_required:false,auto_update:{state:"success",component_version:1001020000}}};
+  assert.equal(t.bk2Ready(),true);
+  const split={archive_format:3,part_count:2,size:6000000000,total_size:6000000000,
+    path:"D:/fixture/set-001.zip",index_path:"D:/fixture/set.json",index_size:512,
+    parts:[{path:"D:/fixture/set-001.zip",name:"set-001.zip",size:4000000000,available:true},
+      {path:"D:/fixture/set-002.zip",name:"set-002.zip",size:2000000000,available:false,problem:"文件缺失"}],
+    index:{path:"D:/fixture/set.json",size:512,available:true},available:false,missing_files:["set-002.zip"]};
+  assert.match(t.bk2PackageSummary(split),/6\.00 GB.*2 个 ZIP.*每包不超过5GB/);
+  assert.match(t.bk2PackageFiles(split,false),/总清单[\s\S]*set\.json/);
+  assert.match(t.bk2PackageFiles({...split,parts:[{path:"<unsafe>.zip",available:false}]},false),/&lt;unsafe>/);
+  t.BK2.kind="zotero";
+  configReplies=[{ok:true,items:[split]}];
+  await t.renderBk2List("zotero");
+  const splitHtml=el("#bk2-list").innerHTML;
+  assert.equal((splitHtml.match(/class="bk-item"/g)||[]).length,1);
+  assert.match(splitHtml,/整套不完整.*不能恢复/);
+  assert.match(splitHtml,/缺少：set-002\.zip/);
+  assert.match(splitHtml,/disabled.*data-path/);
+  configReplies=[{ok:true,items:[{path:"old.zip",archive_format:2,size:10,available:true}]}];
+  await t.renderBk2List("zotero");
+  assert.match(el("#bk2-list").innerHTML,/旧格式单 ZIP/);
+  assert.doesNotMatch(el("#bk2-list").innerHTML,/查看整套文件/);
+  ctx.jpost=async(path,body)=>{calls++;assert.equal(path,"/backup2/inspect");assert.equal(body.path,"D:/fixture/set-002.zip");
+    return {...split,ok:true,available:true,manifest:{format:2,kind:"zotero",roots:[]},
+      parts:split.parts.map(part=>({...part,available:true})),warnings:[]};};
+  await t.inspectBk2("D:/fixture/set-002.zip");
+  assert.equal(t.BK2.restore.path,"D:/fixture/set-002.zip");
+  assert.match(el("#bk2-restore-info").textContent,/2 个 ZIP[\s\S]*自动合并/);
+  assert.match(el("#bk2-restore-files").innerHTML,/总清单/);
+  assert.equal(el("#bk2-restore").hidden,false);
+  ctx.jpost=async()=>{calls++;return {ok:false,error:"缺少分包：set-002.zip"};};
+  await t.inspectBk2("D:/fixture/set-001.zip");
+  assert.equal(t.BK2.restore,null);
+  assert.equal(el("#bk2-restore").hidden,true);
+  assert.match(notices.pop(),/set-002\.zip/);
+  const noRestoreCalls=calls;
+  await t.startBk2Restore();
+  assert.equal(calls,noRestoreCalls);
   console.log("PASS native installer, needs_update, empty sources, sensitive confirmation and history");
 })().catch(error=>{ console.error(error);process.exitCode=1; });
 """

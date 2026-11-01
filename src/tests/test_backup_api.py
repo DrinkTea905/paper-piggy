@@ -219,6 +219,241 @@ class BackupApiTests(unittest.TestCase):
         self.assertFalse(listing['items'][0]['available'])
         self.assertTrue(listing['items'][0]['include_browser'])
 
+    def test_listing_keeps_parts_and_index_as_one_lightweight_recovery_point(self):
+        current = api.RUN.store(self.data)
+        job = api.RUN.get_job(current, 'zotero')
+        folder = Path(self.temp.name) / 'packages'
+        folder.mkdir()
+        first, second, index = [folder / name for name in ('set-001.zip', 'set-002.zip', 'set.json')]
+        for file, value in ((first, b'zip1'), (second, b'zip2'), (index, b'{}')):
+            file.write_bytes(value)
+        entry = {'path': str(first), 'archive_format': 3, 'part_count': 2,
+                 'parts': [{'path': str(first), 'size': 4, 'sha256': 'a' * 64},
+                           {'path': str(second), 'size': 4, 'sha256': 'b' * 64}],
+                 'index_path': str(index), 'index_size': 2, 'total_size': 10, 'size': 10}
+        with mock.patch.object(current, 'ledger', return_value=[entry]), \
+                mock.patch.object(api, '_context', return_value=(current, job)), \
+                mock.patch('backup_archive.inspect', side_effect=AssertionError('Listing must not inspect archives')), \
+                mock.patch('backup_archive.file_sha256', side_effect=AssertionError('Listing must not hash archives')):
+            result = self.client.get('/backup2/list?kind=zotero').json()
+            self.assertTrue(result['ok'])
+            self.assertEqual(1, len(result['items']))
+            row = result['items'][0]
+            self.assertTrue(row['available'])
+            self.assertEqual(2, row['part_count'])
+            self.assertEqual(10, row['total_size'])
+            self.assertEqual(['set-001.zip', 'set-002.zip'], [x['name'] for x in row['parts']])
+            self.assertTrue(row['index']['available'])
+            for removed in (second, index):
+                with self.subTest(missing=removed.name):
+                    value = removed.read_bytes()
+                    removed.unlink()
+                    row = self.client.get('/backup2/list?kind=zotero').json()['items'][0]
+                    self.assertFalse(row['available'])
+                    self.assertIn(removed.name, row['missing_files'])
+                    self.assertTrue(first.is_file())
+                    self.assertFalse(removed.exists())
+                    removed.write_bytes(value)
+            second.write_bytes(b'changed-size')
+            row = self.client.get('/backup2/list?kind=zotero').json()['items'][0]
+            self.assertFalse(row['available'])
+            self.assertIn('文件大小已变化', row['parts'][1]['problem'])
+
+    def test_listing_old_zip_and_cleanup_pending_are_not_misrepresented(self):
+        file = Path(self.temp.name) / 'old-format.zip'
+        file.write_bytes(b'old data')
+        row = api._listing_entry({'path': str(file), 'size': file.stat().st_size}, 'paperpiggy')
+        self.assertTrue(row['available'])
+        self.assertEqual(2, row['archive_format'])
+        self.assertEqual(1, row['part_count'])
+        self.assertIsNone(row['index'])
+        pending = api._listing_entry({'path': str(file), 'size': file.stat().st_size,
+                                      'cleanup_pending': True}, 'paperpiggy')
+        self.assertFalse(pending['available'])
+        self.assertTrue(pending['cleanup_pending'])
+        self.assertIn('不作为可恢复版本', pending['availability_errors'][0])
+
+    def test_listing_hides_retired_records_without_changing_task_state(self):
+        current = api.RUN.store(self.data)
+        job = api.RUN.get_job(current, 'zotero')
+        current.set_status(job['job_id'], state='success', operation='backup', running=False,
+                           result={'path': 'latest.zip'})
+        before = current.status(job['job_id'])
+        present = Path(self.temp.name) / 'latest.zip'
+        present.write_bytes(b'keep')
+        rows = [{'path': str(Path(self.temp.name) / 'deleted.zip'), 'size': 10,
+                 'retired': True, 'retired_reason': 'all_files_removed'},
+                {'path': str(present), 'size': 4}]
+        with mock.patch.object(current, 'ledger', return_value=rows), \
+                mock.patch.object(api, '_context', return_value=(current, job)):
+            result = self.client.get('/backup2/list?kind=zotero').json()
+        self.assertTrue(result['ok'])
+        self.assertEqual([str(present)], [item['path'] for item in result['items']])
+        self.assertTrue(result['items'][0]['available'])
+        self.assertEqual(before, current.status(job['job_id']))
+        self.assertEqual(b'keep', present.read_bytes())
+        self.assertEqual(2, len(rows))
+
+    def test_listing_refuses_duplicate_or_out_of_directory_members(self):
+        folder = Path(self.temp.name) / 'packages'
+        folder.mkdir()
+        first = folder / 'first.zip'
+        index = folder / 'set.json'
+        outside = Path(self.temp.name) / 'unrelated.zip'
+        for file in (first, index, outside):
+            file.write_bytes(b'data')
+        for other in (first, outside):
+            with self.subTest(other=str(other)):
+                row = api._listing_entry({'path': str(first), 'archive_format': 3, 'part_count': 2,
+                    'parts': [{'path': str(first), 'size': 4}, {'path': str(other), 'size': 4}],
+                    'index_path': str(index), 'index_size': 4}, 'zotero')
+                self.assertFalse(row['available'])
+
+    def test_new_parts_inspection_failure_does_not_enqueue_restore(self):
+        with mock.patch.object(api, '_service_ready'), \
+                mock.patch.object(api, '_inspect', side_effect=ValueError('缺少分包：set-002.zip')), \
+                mock.patch.object(api.RUN, 'enqueue') as enqueue:
+            result = self.client.post('/backup2/restore', json={
+                'kind': 'zotero', 'path': 'set-001.zip', 'mode': 'new',
+                'destination': str(Path(self.temp.name) / 'restore'), 'confirm': True}).json()
+        self.assertFalse(result['ok'])
+        self.assertIn('set-002.zip', result['error'])
+        enqueue.assert_not_called()
+
+    def test_multipart_inspection_preserves_package_fields(self):
+        import backup_archive
+        import backup_legacy
+        info = {'manifest': {'format': 2, 'kind': 'zotero', 'include_browser': False},
+                'archive_format': 3, 'part_count': 2, 'total_size': 9,
+                'index_path': 'set.json', 'parts': [{'path': 'set-001.zip', 'size': 4},
+                                                  {'path': 'set-002.zip', 'size': 3}]}
+        with mock.patch.object(backup_legacy, 'format_of', return_value=3), \
+                mock.patch.object(backup_archive, 'inspect', return_value=info) as inspected:
+            result = self.client.post('/backup2/inspect', json={'path': 'set-002.zip'}).json()
+        self.assertTrue(result['ok'])
+        self.assertFalse(result['legacy'])
+        self.assertEqual(2, result['part_count'])
+        self.assertEqual(9, result['total_size'])
+        self.assertEqual('set.json', result['index_path'])
+        inspected.assert_called_once_with('set-002.zip')
+
+    def test_header_summary_accepts_lightweight_multipart_success(self):
+        from backup_jobs import atomic_json
+        current = api.RUN.store(self.data)
+        job = api.RUN.get_job(current, 'zotero')
+        state = {'job_id': job['job_id'], 'operation': 'backup', 'state': 'success',
+                 'running': False, 'finished_at': '2026-11-01T10:00:00+08:00',
+                 'result': {'path': 'D:/fixture/first.zip', 'index_path': 'D:/fixture/set.json',
+                            'archive_format': 3, 'part_count': 2, 'total_size': 8, 'index_size': 2}}
+        status_path = current.base / 'status' / (job['job_id'] + '.json')
+        atomic_json(status_path, state)
+        response = self.client.get('/backup2/summary').json()
+        self.assertTrue(response['ok'])
+        item = next(row for row in response['jobs'] if row['kind'] == 'zotero')
+        self.assertFalse(item['running'])
+        self.assertIsNone(item['issue'])
+        state['result']['part_count'] = 'two'
+        atomic_json(status_path, state)
+        response = self.client.get('/backup2/summary').json()
+        self.assertFalse(response['ok'])
+
+    def test_real_multipart_api_queue_listing_inspection_and_restore(self):
+        """Exercise real packing/ledger/restore through HTTP using a static fixture snapshot."""
+        import backup_archive as archive
+        import backup_vss
+        current = api.RUN.store(self.data)
+        original = api.RUN.get_job(current, 'zotero')
+        fixture = Path(self.temp.name) / 'static'
+        library, profile = fixture / 'library', fixture / 'profile'
+        library.mkdir(parents=True)
+        profile.mkdir()
+        payload = os.urandom(145000)
+        (library / 'large.bin').write_bytes(payload)
+        (profile / 'prefs.js').write_text('user_pref("sync.autoSync", true);', encoding='utf-8')
+        with closing(sqlite3.connect(library / 'zotero.sqlite')) as db:
+            db.execute('CREATE TABLE notes(value TEXT)')
+            db.execute("INSERT INTO notes VALUES ('whole API restore')")
+            db.commit()
+        job = current.save(original['job_id'], {'destination': str(fixture / 'packages'),
+                           'sources': {'data_dir': str(library), 'profile_dir': str(profile)}, 'keep': 2})
+        roots = [{'id': 'zotero_data', 'source': str(library)},
+                 {'id': 'zotero_profile', 'source': str(profile)}]
+        old = archive._create_v2(job, roots)
+        current.record_success(job['job_id'], old)
+        old_row = self.client.get('/backup2/list?kind=zotero').json()['items'][0]
+        self.assertTrue(old_row['available'])
+        self.assertEqual(2, old_row['archive_format'])
+        self.assertEqual(1, old_row['part_count'])
+
+        class StaticSnapshot:
+            set_id, snapshots = 'api-static-fixture', []
+            def __init__(self, paths, cancel=None):
+                self.paths = paths
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                return False
+            def map_path(self, path):
+                return Path(path)
+
+        create = archive.create
+        with mock.patch.object(api, '_service_ready'), \
+                mock.patch.object(api.SERVICE, 'trigger_task'), \
+                mock.patch.object(api.SOURCES, 'validate_sources', return_value=(roots, {})), \
+                mock.patch.object(api.SOURCES, 'validate_zotero_attachments', return_value=None), \
+                mock.patch.object(backup_vss, 'snapshot', StaticSnapshot), \
+                mock.patch.object(archive, 'create', side_effect=lambda *args, **kw: create(
+                    *args, **kw, max_part_size=65536)):
+            queued = self.client.post('/backup2/create', json={'kind': 'zotero'}).json()
+            self.assertTrue(queued['ok'], queued)
+            api.RUN.process_requests(current)
+        state = current.status(job['job_id'])
+        self.assertEqual('success', state['state'], state)
+        listing = self.client.get('/backup2/list?kind=zotero').json()
+        self.assertTrue(listing['ok'], listing)
+        self.assertEqual(2, len(listing['items']))
+        row = listing['items'][0]
+        self.assertTrue(row['available'], row)
+        self.assertEqual(3, row['archive_format'])
+        self.assertGreater(row['part_count'], 1)
+        self.assertTrue(row['index']['available'])
+        self.assertTrue(all(p['size'] <= 65536 for p in row['parts']))
+        self.assertGreater(row['total_size'], row['parts'][0]['size'])
+        selected = row['parts'][-1]['path']
+        checked = self.client.post('/backup2/inspect', json={'path': selected}).json()
+        self.assertTrue(checked['ok'], checked)
+        self.assertEqual(row['part_count'], checked['part_count'])
+        self.assertEqual(row['index_path'], checked['index_path'])
+        self.assertTrue(self.client.get('/backup2/summary').json()['ok'])
+
+        target = fixture / 'restored'
+        with mock.patch.object(api, '_service_ready'), mock.patch.object(api.SERVICE, 'trigger_task'):
+            queued = self.client.post('/backup2/restore', json={'kind': 'zotero', 'path': selected,
+                'mode': 'new', 'destination': str(target), 'confirm': True}).json()
+        self.assertTrue(queued['ok'], queued)
+        api.RUN.process_requests(current)
+        self.assertEqual('success', current.status(job['job_id'])['state'])
+        self.assertEqual(payload, (target / 'zotero_data/large.bin').read_bytes())
+        with closing(sqlite3.connect(target / 'zotero_data/zotero.sqlite')) as db:
+            self.assertEqual('whole API restore', db.execute('SELECT value FROM notes').fetchone()[0])
+        self.assertIn('sync.autoSync", true', (target / 'zotero_profile/prefs.js').read_text())
+
+        missing = Path(row['parts'][0]['path'])
+        missing.unlink()
+        listed = self.client.get('/backup2/list?kind=zotero').json()['items'][0]
+        self.assertFalse(listed['available'])
+        self.assertIn(missing.name, listed['missing_files'])
+        broken = self.client.post('/backup2/inspect', json={'path': selected}).json()
+        self.assertFalse(broken['ok'])
+        self.assertIn(missing.name, broken['error'])
+        untouched = fixture / 'must-not-restore'
+        with mock.patch.object(api, '_service_ready'), mock.patch.object(api.RUN, 'enqueue') as enqueue:
+            rejected = self.client.post('/backup2/restore', json={'kind': 'zotero', 'path': selected,
+                'mode': 'new', 'destination': str(untouched), 'confirm': True}).json()
+        self.assertFalse(rejected['ok'])
+        enqueue.assert_not_called()
+        self.assertFalse(untouched.exists())
+
     def test_new_restore_covers_all_zotero_roots_and_keeps_sync_settings(self):
         import backup_archive
         current = api.RUN.store(self.data)
@@ -356,6 +591,78 @@ class BackupApiTests(unittest.TestCase):
         admin.assert_not_called()
         self.assertTrue(result['can_run'])
         self.assertEqual('pending', result['auto_update']['state'])
+
+    def test_pre_multipart_component_blocks_new_backup_and_enable_without_admin(self):
+        old = {'installed': True, 'needs_update': False, 'auto_update_supported': True,
+               'migration_required': False, 'can_run': True,
+               'auto_update': {'state': 'pending', 'pending': True, 'component_version': 1001019000}}
+        with mock.patch.object(api.SERVICE, 'install_status', return_value=old), \
+                mock.patch.object(api.SERVICE, 'request_component_update', return_value={'ok': True}) as update, \
+                mock.patch.object(api.SERVICE, 'request_install') as admin, \
+                mock.patch.object(api.RUN, 'enqueue') as enqueue, \
+                mock.patch.object(api.SOURCES, 'validate_sources') as validate:
+            service = api._service_info()
+            created = self.client.post('/backup2/create', json={'kind': 'zotero'}).json()
+            enabled = self.client.post('/backup2/config', json={
+                'kind': 'zotero', 'patch': {'enabled': True}}).json()
+        self.assertTrue(service['multipart_update_required'])
+        self.assertFalse(service['can_run'])
+        self.assertTrue(service['needs_update'])
+        for reply in (created, enabled):
+            self.assertFalse(reply['ok'], reply)
+            self.assertIn('自动更新分包支持', reply['error'])
+            self.assertIn('无需管理员', reply['error'])
+            self.assertNotIn('重新授权', reply['error'])
+        self.assertEqual(2, update.call_count)
+        enqueue.assert_not_called()
+        validate.assert_not_called()
+        admin.assert_not_called()
+
+    def test_multipart_capable_component_allows_backup(self):
+        for version in (api.MULTIPART_MIN_COMPONENT_VERSION, api.MULTIPART_MIN_COMPONENT_VERSION + 1):
+            with self.subTest(version=version):
+                ready = {'installed': True, 'needs_update': False, 'can_run': True,
+                         'auto_update_supported': True,
+                         'auto_update': {'state': 'idle', 'component_version': version}}
+                with mock.patch.object(api.SERVICE, 'install_status', return_value=ready), \
+                        mock.patch.object(api.SERVICE, 'request_component_update') as update, \
+                        mock.patch.object(api.SERVICE, 'request_install') as admin, \
+                        mock.patch.object(api.SOURCES, 'validate_sources'), \
+                        mock.patch.object(api.RUN, 'enqueue', return_value={'request_id': 'a' * 32}) as enqueue, \
+                        mock.patch.object(api.SERVICE, 'trigger_task'):
+                    service = api._service_info()
+                    result = self.client.post('/backup2/create', json={'kind': 'zotero'}).json()
+                self.assertFalse(service['multipart_update_required'])
+                self.assertTrue(service['can_run'])
+                self.assertTrue(result['ok'], result)
+                enqueue.assert_called_once()
+                update.assert_not_called()
+                admin.assert_not_called()
+
+    def test_pre_multipart_update_failure_offers_only_ordinary_retry(self):
+        old = {'installed': True, 'needs_update': True, 'can_run': True,
+               'auto_update_supported': True, 'migration_required': False,
+               'auto_update': {'state': 'failed', 'error': 'signature rejected',
+                               'component_version': 1001019000}}
+        def request(data, retry=False):
+            if not retry:
+                raise ValueError('signature rejected')
+            return {'ok': True, 'pending': True}
+        with mock.patch.object(api.SERVICE, 'install_status', return_value=old), \
+                mock.patch.object(api.SERVICE, 'request_component_update', side_effect=request) as update, \
+                mock.patch.object(api.SERVICE, 'request_install') as admin, \
+                mock.patch.object(api.RUN, 'enqueue') as enqueue:
+            result = self.client.post('/backup2/create', json={'kind': 'zotero'}).json()
+            retry = self.client.post('/backup2/component/update', json={}).json()
+        self.assertFalse(result['ok'])
+        self.assertIn('重试后台更新', result['error'])
+        self.assertIn('无需管理员', result['error'])
+        self.assertNotIn('重新授权', result['error'])
+        self.assertTrue(retry['ok'])
+        self.assertFalse(retry['service']['can_run'])
+        self.assertEqual(mock.call(self.data, retry=True), update.call_args_list[-1])
+        enqueue.assert_not_called()
+        admin.assert_not_called()
 
     def test_old_mode_config_never_triggers_admin_or_auto_migration(self):
         old = {'installed': True, 'needs_update': True, 'migration_required': True,

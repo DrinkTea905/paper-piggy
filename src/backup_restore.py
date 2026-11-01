@@ -1,4 +1,4 @@
-"""格式 2 备份的安全展开与可回滚原位恢复。"""
+"""单包及成套分包备份的安全展开与可回滚原位恢复。"""
 from __future__ import annotations
 
 import hashlib
@@ -41,7 +41,7 @@ def _extract_checked(path, destination, info, cancel=None, progress=None):
     root = check_path(destination)
     _fs(root).mkdir(parents=True, exist_ok=False)
     try:
-        with zipfile.ZipFile(io_path(path)) as z:
+        with A.open_archive(path, cancel=cancel) as z:
             for rel in info["manifest"].get("directories", []):
                 _fs(check_path(root / Path(*PurePosixPath(A.safe_name(rel)).parts))).mkdir(parents=True, exist_ok=True)
             for index, item in enumerate(info["manifest"]["files"]):
@@ -50,14 +50,16 @@ def _extract_checked(path, destination, info, cancel=None, progress=None):
                 target.relative_to(root)
                 _fs(target.parent).mkdir(parents=True, exist_ok=True)
                 digest = hashlib.sha256()
+                written = 0
                 with z.open(item["path"]) as src, _fs(target).open("xb") as dst:
                     while chunk := src.read(1024 * 1024):
                         _cancel(cancel)
                         dst.write(chunk)
                         digest.update(chunk)
+                        written += len(chunk)
                     dst.flush()
                     os.fsync(dst.fileno())
-                if digest.hexdigest() != item["sha256"]:
+                if digest.hexdigest() != item["sha256"] or written != item["size"]:
                     raise BackupError("恢复展开期间校验失败，原目录未改动。")
                 if item.get("mtime_ns"):
                     os.utime(io_path(target), ns=(item["mtime_ns"], item["mtime_ns"]))
@@ -238,12 +240,16 @@ def restore_in_place(path, root_targets, confirm=False, ensure_stopped=None,
         if prepare:
             prepare(extracted, manifest, root_targets)
         operations = _operations(manifest, extracted, root_targets, oid)
-        archive_path = _logical(Path(path).absolute())
+        archive_paths = [_logical(Path(part["path"]).absolute()) for part in info.get("parts", [])]
+        if info.get("index_path"):
+            archive_paths.append(_logical(Path(info["index_path"]).absolute()))
+        if not archive_paths:
+            archive_paths.append(_logical(Path(path).absolute()))
         for op in operations:
             live = Path(op["live"])
             logical_live = _logical(live)
-            if archive_path == logical_live or logical_live in archive_path.parents:
-                raise BackupError("原位恢复目标不能包含正在使用的备份包。")
+            if any(p == logical_live or logical_live in p.parents for p in archive_paths):
+                raise BackupError("原位恢复目标不能包含正在使用的任何分包或总清单。")
             if temp_root == logical_live or logical_live in temp_root.parents:
                 raise BackupError("恢复工作目录不能位于被替换的目录中。")
             _fs(live.parent).mkdir(parents=True, exist_ok=True)

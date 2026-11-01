@@ -1,7 +1,7 @@
 """独立备份任务、成功登记、调度与清理。此模块不启动用户程序。"""
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack
 from datetime import datetime, timedelta
 import hashlib
 import json
@@ -266,7 +266,9 @@ def result_summary(result):
     summary = {k: result[k] for k in ("ok", "path", "size", "warnings", "destination",
                                      "journal", "rollback_dirs", "state", "backup_id", "kind",
                                      "created_at", "file_count", "roots", "include_index",
-                                     "include_key", "include_browser", "database_count") if k in result}
+                                     "include_key", "include_browser", "database_count",
+                                     "archive_format", "part_count", "total_size", "index_path",
+                                     "index_size", "index_sha256") if k in result}
     manifest = result.get("manifest") or {}
     for key in ("backup_id", "kind", "created_at", "include_index", "include_key", "include_browser"):
         if key in manifest:
@@ -308,6 +310,106 @@ def validate_job(job):
         if job["kind"] == "zotero" and not all(job["sources"].get(x) for x in ("data_dir", "profile_dir")):
             raise BackupError("请先选择 Zotero 数据目录和用户配置目录。")
     return job
+
+
+def _set_members(record):
+    """A ledger row owns one complete recovery point, including its sidecar."""
+    archive_format = record.get("archive_format", 2)
+    if archive_format not in (2, 3):
+        raise BackupError("备份登记格式无效，未操作任何文件。")
+    parts = record.get("parts")
+    if parts is None and archive_format == 2:
+        parts = [{"path": record["path"], "size": record["size"], "sha256": record["sha256"]}]
+    if not isinstance(parts, list) or not parts or len(parts) > 500000:
+        raise BackupError("备份分包登记不完整。")
+    members = [dict(part) for part in parts if isinstance(part, dict)]
+    if len(members) != len(parts):
+        raise BackupError("备份分包登记无效。")
+    if archive_format == 3:
+        if type(record.get("part_count")) is not int or record["part_count"] != len(parts):
+            raise BackupError("备份分包数量登记不匹配。")
+        members.append({"path": record.get("index_path"), "size": record.get("index_size"),
+                        "sha256": record.get("index_sha256")})
+    seen = set()
+    for member in members:
+        name = member.get("path")
+        if (not isinstance(name, str) or not Path(name).is_absolute()
+                or type(member.get("size")) is not int or member["size"] < 0
+                or not re.fullmatch(r"[a-f0-9]{64}", str(member.get("sha256", "")))):
+            raise BackupError("备份文件登记的路径、大小或哈希无效。")
+        canonical = os.path.normcase(os.path.abspath(name))
+        if canonical in seen:
+            raise BackupError("备份登记含重复组成文件。")
+        seen.add(canonical)
+    if os.path.normcase(os.path.abspath(record["path"])) != os.path.normcase(os.path.abspath(parts[0]["path"])):
+        raise BackupError("备份入口与首个分包登记不匹配。")
+    if "sha256" in record and record["sha256"] != parts[0]["sha256"]:
+        raise BackupError("备份入口哈希与首个分包登记不匹配。")
+    for key in ("size", "total_size"):
+        if key in record and (type(record[key]) is not int or record[key] != sum(m["size"] for m in members)):
+            raise BackupError("备份整套大小登记不匹配。")
+    return members
+
+
+def _file_identity(path):
+    st = os.stat(io_path(path))
+    if not stat.S_ISREG(st.st_mode):
+        raise BackupError("备份成员不是普通文件。")
+    return st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns
+
+
+@contextmanager
+def _retained_files_guard(records):
+    """Hold stable read leases and verify content before expiring another set.
+
+    On Windows FILE_SHARE_READ denies writes/deletion for the full irreversible
+    cleanup window. Metadata alone cannot detect same-size writes with restored
+    timestamps. The content digest is checked while these leases are held.
+    """
+    with ExitStack() as resources:
+        for record in records:
+            for member in _set_members(record):
+                path = check_path(member["path"], allow_missing=False)
+                if os.name == "nt":
+                    import ctypes
+                    import msvcrt
+                    from ctypes import wintypes
+                    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+                    kernel.CreateFileW.argtypes = (wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                        ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE)
+                    kernel.CreateFileW.restype = wintypes.HANDLE
+                    kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
+                    handle = kernel.CreateFileW(io_path(path), 0x80000000, 1, None, 3, 0x08200000, None)
+                    if handle == ctypes.c_void_p(-1).value:
+                        raise BackupError("无法稳定保护准备保留的完整版本，暂停旧版清理：" + str(ctypes.WinError(ctypes.get_last_error())))
+                    try:
+                        fd = msvcrt.open_osfhandle(handle, os.O_RDONLY | os.O_BINARY)
+                    except BaseException:
+                        kernel.CloseHandle(handle)
+                        raise
+                    try:
+                        stream = resources.enter_context(os.fdopen(fd, "rb"))
+                    except BaseException:
+                        os.close(fd)
+                        raise
+                else:
+                    stream = resources.enter_context(Path(io_path(path)).open("rb"))
+                    import fcntl
+                    fcntl.flock(stream.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
+                before = os.fstat(stream.fileno())
+                digest = hashlib.sha256()
+                size = 0
+                while block := stream.read(1024 * 1024):
+                    digest.update(block)
+                    size += len(block)
+                after = os.fstat(stream.fileno())
+                current = _file_identity(check_path(path, allow_missing=False))
+                if (not stat.S_ISREG(before.st_mode) or size != member["size"] or digest.hexdigest() != member["sha256"]
+                        or (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+                        != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+                        or current != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)):
+                    raise BackupError("准备保留的完整版本内容已变化，暂停旧版清理。")
+        yield
 
 
 class JobStore:
@@ -507,16 +609,26 @@ class JobStore:
                 or manifest.get("kind") != job["kind"]):
             raise BackupError("备份包任务归属不匹配，未登记成功。")
         path = check_path(result["path"], allow_missing=False)
-        if path.parent != Path(job["destination"]).absolute():
-            raise BackupError("备份文件不在本任务目的地，未登记或清理。")
         from backup_archive import inspect as inspect_archive, file_sha256
         checked = inspect_archive(path)
         if checked["manifest"] != manifest:
             raise BackupError("备份包校验结果与待登记内容不同。")
+        parts = checked.get("parts") or [{"path": str(path), "size": path.stat().st_size,
+                                          "sha256": file_sha256(path)}]
         record = {"backup_id": manifest["backup_id"], "job_id": job_id,
                   "machine_id": self.machine_id, "source_fingerprint": manifest["source_fingerprint"],
-                  "created_at": manifest["created_at"], "path": str(path),
-                  "sha256": file_sha256(path), "size": path.stat().st_size}
+                  "created_at": manifest["created_at"], "path": parts[0]["path"],
+                  "sha256": parts[0]["sha256"], "size": checked.get("total_size", sum(p["size"] for p in parts)),
+                  "archive_format": checked.get("archive_format", 2), "parts": parts,
+                  "part_count": len(parts), "total_size": checked.get("total_size", sum(p["size"] for p in parts))}
+        if record["archive_format"] == 3:
+            record.update({key: checked[key] for key in ("index_path", "index_size", "index_sha256")})
+        for member in _set_members(record):
+            owned = check_path(member["path"], allow_missing=False)
+            if "过时备份" in owned.parts or owned.parent != Path(job["destination"]).absolute():
+                raise BackupError("备份组成文件不在本任务目的地，未登记或清理。")
+            if os.stat(io_path(owned)).st_size != member["size"] or file_sha256(owned) != member["sha256"]:
+                raise BackupError("备份在成功登记前发生变化，未清理已有版本。")
         record.update({key: bool(manifest.get(key)) for key in
                        ("include_browser", "include_index", "include_key")})
         with self._lock():
@@ -530,56 +642,302 @@ class JobStore:
         self.finish(job_id, "success_with_warning" if final["warnings"] else "success", result=final)
         return final
 
+    def _cleanup_path(self, job_id, backup_id):
+        if not re.fullmatch(r"[a-f0-9]{32}", str(backup_id)):
+            raise BackupError("清理记录身份无效。")
+        return self.base / "prune_journals" / (_job_id(job_id) + "-" + backup_id + ".json")
+
+    def _cleanup_mark(self, job_id, backup_id, pending):
+        with self._lock():
+            rows = self.ledger(job_id)
+            row = next((x for x in rows if x.get("backup_id") == backup_id), None)
+            if row is None:
+                raise BackupError("清理前恢复点登记已改变。")
+            if pending:
+                row["cleanup_pending"] = True
+            else:
+                row.pop("cleanup_pending", None)
+            atomic_json(self.base / "ledger" / (job_id + ".json"), rows)
+
+    def _retire_removed_record(self, item, job):
+        """Record a user's complete removal; never delete or reclaim any file."""
+        journal_path = self._cleanup_path(job["job_id"], item["backup_id"])
+        if item.get("cleanup_pending") or os.path.lexists(io_path(journal_path)):
+            return False
+        destination = check_path(job["destination"], allow_missing=False)
+        members = _set_members(item)
+        for member in members:
+            path = check_path(member["path"])
+            if path.parent != destination or "过时备份" in path.parts:
+                return False
+
+        def all_explicitly_absent():
+            # A detached/offline/inaccessible destination is not a manual removal.
+            if not stat.S_ISDIR(os.stat(io_path(destination)).st_mode):
+                return False
+            with os.scandir(io_path(destination)) as listing:
+                next(listing, None)
+            for member in members:
+                path = check_path(member["path"])
+                try:
+                    os.lstat(io_path(path))
+                except FileNotFoundError as exc:
+                    if os.name == "nt" and getattr(exc, "winerror", None) != 2:
+                        return False
+                else:
+                    return False
+            # Confirm the directory stayed available throughout the checks.
+            with os.scandir(io_path(check_path(destination, allow_missing=False))) as listing:
+                next(listing, None)
+            return True
+
+        if not all_explicitly_absent():
+            return False
+        with self._lock():
+            if self.get(job["job_id"])["destination"] != job["destination"]:
+                return False
+            rows = self.ledger(job["job_id"])
+            row = next((r for r in rows if r.get("backup_id") == item["backup_id"]), None)
+            if (row is None or row.get("cleanup_pending") or row.get("retired")
+                    or _set_members(row) != members or os.path.lexists(io_path(journal_path))
+                    or not all_explicitly_absent()):
+                return False
+            row.update(retired=True, retired_reason="all_files_removed", retired_at=now_text())
+            atomic_json(self.base / "ledger" / (job["job_id"] + ".json"), rows)
+        return True
+
+    def _checked_set(self, item, job):
+        """Verify every original ZIP and sidecar against the durable success record."""
+        import backup_archive as archive
+        members = _set_members(item)
+        snapshots = {}
+        for member in members:
+            path = check_path(member["path"], allow_missing=False)
+            if "过时备份" in path.parts or path.parent != Path(job["destination"]).absolute():
+                raise BackupError("目录归属改变，未清理")
+            snapshots[str(path)] = _file_identity(path)
+            if snapshots[str(path)][2] != member["size"]:
+                raise BackupError("组成文件大小已改变，未清理")
+        info = archive.archive_files(item["path"])
+        manifest = info["manifest"]
+        if any(manifest.get(k) != item.get(k) for k in
+               ("backup_id", "job_id", "machine_id", "source_fingerprint")):
+            raise BackupError("清单归属不匹配，未清理")
+        if manifest.get("kind") != job["kind"]:
+            raise BackupError("备份任务类型不同，未清理")
+        actual = {os.path.normcase(os.path.abspath(m["path"])): (m["size"], m["sha256"])
+                  for m in _set_members({"path": info["parts"][0]["path"],
+                                        "archive_format": info["archive_format"],
+                                        "parts": info["parts"], "part_count": info["part_count"],
+                                        "index_path": info.get("index_path"), "index_size": info.get("index_size"),
+                                        "index_sha256": info.get("index_sha256")})}
+        expected = {os.path.normcase(os.path.abspath(m["path"])): (m["size"], m["sha256"]) for m in members}
+        if actual != expected or item.get("archive_format", 2) != info["archive_format"]:
+            raise BackupError("整套文件与成功登记不同，未清理")
+        for member in members:
+            path = check_path(member["path"], allow_missing=False)
+            if _file_identity(path) != snapshots[str(path)]:
+                raise BackupError("校验期间组成文件变化，未清理")
+        return members, snapshots
+
+    def _cleanup_journal(self, item, job):
+        path = self._cleanup_path(job["job_id"], item["backup_id"])
+        journal = read_json(path, None)
+        if journal is None:
+            return path, None
+        members = _set_members(item)
+        if (not isinstance(journal, dict) or journal.get("schema") != 1
+                or journal.get("job_id") != job["job_id"] or journal.get("backup_id") != item["backup_id"]
+                or journal.get("machine_id") != self.machine_id
+                or journal.get("destination") != job["destination"]
+                or journal.get("kind") != job["kind"]
+                or journal.get("source_fingerprint") != item.get("source_fingerprint")
+                or journal.get("phase") not in ("moving", "deleting")
+                or not re.fullmatch(r"[a-f0-9]{32}", str(journal.get("transaction_id", "")))
+                or not isinstance(journal.get("members"), list) or len(journal["members"]) != len(members)):
+            raise BackupError("旧版清理事务归属无效，保留现场。")
+        for stored, expected in zip(journal["members"], members):
+            if not isinstance(stored, dict) or any(stored.get(k) != expected[k] for k in ("path", "size", "sha256")):
+                raise BackupError("旧版清理事务成员与登记不同，保留现场。")
+            original = check_path(expected["path"])
+            staged = check_path(stored.get("staged", ""))
+            if (original.parent != Path(job["destination"]).absolute() or "过时备份" in original.parts
+                    or staged != original.with_name(original.name + ".pruning-" + journal["transaction_id"])):
+                raise BackupError("旧版清理暂存路径越界，保留现场。")
+        return path, journal
+
+    def _rollback_cleanup_moves(self, item, job, path, journal):
+        from backup_archive import file_sha256
+        for member in reversed(journal["members"]):
+            original, staged = check_path(member["path"]), check_path(member["staged"])
+            if os.path.exists(io_path(staged)):
+                if (os.path.exists(io_path(original)) or _file_identity(staged)[2] != member["size"]
+                        or file_sha256(staged) != member["sha256"]):
+                    raise BackupError("清理暂存发生变化或原位置被占用，未覆盖，保留恢复现场。")
+                os.rename(io_path(staged), io_path(original))
+            elif (not os.path.exists(io_path(original)) or _file_identity(original)[2] != member["size"]
+                  or file_sha256(original) != member["sha256"]):
+                raise BackupError("清理中断后组成文件不完整，保留恢复现场。")
+        self._cleanup_mark(job["job_id"], item["backup_id"], False)
+        Path(io_path(path)).unlink()
+
+    def _restore_hidden_set(self, item, job, path, journal):
+        if not all(os.path.exists(io_path(member["staged"])) for member in journal["members"]):
+            return False  # An already partly deleted expired set cannot be rolled back.
+        journal["phase"] = "moving"
+        atomic_json(path, journal)
+        self._rollback_cleanup_moves(item, job, path, journal)
+        return True
+
+    def _delete_set(self, item, job, checked=None):
+        """Hide a whole expired set before deleting, and durably resume failures."""
+        import backup_archive as archive
+        journal_path, journal = self._cleanup_journal(item, job)
+        latest = self.get(job["job_id"])
+        if latest["destination"] != job["destination"] or latest["keep"] > job["keep"]:
+            if journal is not None:
+                self._restore_hidden_set(item, job, journal_path, journal)
+            raise BackupError("任务目的地或保留数量已改变，未隐藏或清理旧版。")
+        if journal is None:
+            if checked is None:
+                checked = self._checked_set(item, job)
+            members, snapshots = checked
+            transaction = uuid.uuid4().hex
+            journal = {"schema": 1, "job_id": job["job_id"], "backup_id": item["backup_id"],
+                       "machine_id": self.machine_id, "destination": job["destination"],
+                       "kind": job["kind"], "source_fingerprint": item["source_fingerprint"],
+                       "retention_keep": job["keep"],
+                       "transaction_id": transaction, "phase": "moving", "created_at": now_text(),
+                       "members": [{**member, "staged": str(Path(member["path"]).with_name(
+                           Path(member["path"]).name + ".pruning-" + transaction))} for member in members]}
+            atomic_json(journal_path, journal)
+            self._cleanup_mark(job["job_id"], item["backup_id"], True)
+            try:
+                # Hide the completion sidecar before moving any multipart data.
+                order = list(reversed(journal["members"]))
+                for member in order:
+                    original, staged = check_path(member["path"], allow_missing=False), check_path(member["staged"])
+                    if _file_identity(original) != snapshots[str(original)] or os.path.exists(io_path(staged)):
+                        raise BackupError("暂存前组成文件发生变化，未清理")
+                    latest = self.get(job["job_id"])
+                    if latest["destination"] != job["destination"] or latest["keep"] > job["keep"]:
+                        raise BackupError("任务目的地或保留数量已改变，停止清理。")
+                    os.rename(io_path(original), io_path(staged))
+                latest = self.get(job["job_id"])
+                if latest["destination"] != job["destination"] or latest["keep"] > job["keep"]:
+                    raise BackupError("任务目的地或保留数量已改变，恢复完整旧版。")
+                journal["phase"] = "deleting"
+                atomic_json(journal_path, journal)
+            except Exception:
+                self._rollback_cleanup_moves(item, job, journal_path, journal)
+                raise
+        if journal["phase"] != "deleting":
+            raise BackupError("旧版清理事务尚未完成暂存，保留现场。")
+        # Check every remaining staged member before the first irreversible unlink.
+        for member in journal["members"]:
+            original, staged = check_path(member["path"]), check_path(member["staged"])
+            if os.path.exists(io_path(original)):
+                raise BackupError("清理原位置出现文件，未删除或接管，保留现场。")
+            if os.path.exists(io_path(staged)) and (
+                    _file_identity(staged)[2] != member["size"] or archive.file_sha256(staged) != member["sha256"]):
+                raise BackupError("清理暂存文件已被修改，未删除，保留现场。")
+        latest = self.get(job["job_id"])
+        if latest["destination"] != job["destination"] or latest["keep"] > job["keep"]:
+            self._restore_hidden_set(item, job, journal_path, journal)
+            raise BackupError("清理前设置已改变，完整旧版已恢复或剩余暂存资料已保留。")
+        for member in journal["members"]:
+            staged = check_path(member["staged"])
+            if os.path.exists(io_path(staged)):
+                latest = self.get(job["job_id"])
+                if latest["destination"] != job["destination"] or latest["keep"] > job["keep"]:
+                    self._restore_hidden_set(item, job, journal_path, journal)
+                    raise BackupError("任务目的地或保留数量已改变，暂停清理剩余暂存文件。")
+                before = _file_identity(staged)
+                if archive.file_sha256(staged) != member["sha256"] or before != _file_identity(staged):
+                    raise BackupError("清理暂存校验后变化，未删除，保留现场。")
+                latest = self.get(job["job_id"])
+                if latest["destination"] != job["destination"] or latest["keep"] > job["keep"]:
+                    self._restore_hidden_set(item, job, journal_path, journal)
+                    raise BackupError("不可逆清理前设置已改变，完整旧版已恢复或剩余暂存资料已保留。")
+                Path(io_path(staged)).unlink()
+        return journal_path
+
     def prune(self, job_id, source=None):
-        from backup_archive import file_sha256, _validate_structure
-        import zipfile
         job = self._require_owned(job_id)
         warnings = []
         with self._lock():
             rows = self.ledger(job_id)
         if source is None:
             owned = [x for x in rows if x.get("machine_id") == self.machine_id
-                     and x.get("job_id") == job_id]
+                     and x.get("job_id") == job_id and not x.get("retired")]
             if not owned:
                 return []
             source = owned[-1]["source_fingerprint"]
         candidates = [x for x in rows if x.get("machine_id") == self.machine_id
-                      and x.get("job_id") == job_id and x.get("source_fingerprint") == source]
+                      and x.get("job_id") == job_id and x.get("source_fingerprint") == source and not x.get("retired")]
         # 哈希大量备份包时不持全局配置锁，其他任务仍可写入进度及失败记录。
         candidates.reverse()
         removed = set()
+        finished_journals = []
+        pending_deletions = []
         retained_valid = 0
+        retained_records = []
         for item in candidates:
             try:
-                path = check_path(item["path"], allow_missing=False)
-                if "过时备份" in path.parts or path.parent != Path(job["destination"]).absolute():
-                    raise BackupError("目录归属改变，未清理")
-                before = path.stat()
-                if before.st_size != item["size"] or file_sha256(path) != item["sha256"]:
-                    raise BackupError("文件已被修改，未清理")
-                with zipfile.ZipFile(path) as archive:
-                    m = _validate_structure(archive)
-                if any(m.get(k) != item.get(k) for k in
-                       ("backup_id", "job_id", "machine_id", "source_fingerprint")):
-                    raise BackupError("清单归属不匹配，未清理")
+                journal_path, journal = self._cleanup_journal(item, job)
+                if journal and journal["phase"] == "moving":
+                    self._rollback_cleanup_moves(item, job, journal_path, journal)
+                elif journal and journal["phase"] == "deleting":
+                    pending_deletions.append(item)
+                    continue
+                elif item.get("cleanup_pending"):
+                    raise BackupError("旧版清理标记缺少对应事务，未当作完整恢复点或删除。")
+                elif self._retire_removed_record(item, job):
+                    continue
+                checked = self._checked_set(item, job)
                 if retained_valid < job["keep"]:
                     retained_valid += 1
+                    retained_records.append(item)
                     continue
-                after = path.stat()
-                if (before.st_ino, before.st_size, before.st_mtime_ns) != (
-                        after.st_ino, after.st_size, after.st_mtime_ns):
-                    raise BackupError("校验后文件变化，未清理")
-                if self.get(job_id)["destination"] != job["destination"]:
-                    raise BackupError("任务目的地发生变化，未清理")
-                path.unlink()
+                with _retained_files_guard(retained_records):
+                    journal_path = self._delete_set(item, job, checked)
                 removed.add(item["backup_id"])
+                finished_journals.append(journal_path)
+            except Exception as exc:
+                warnings.append(f"备份成功，旧版清理失败：{item.get('path')}：{exc}")
+        for item in pending_deletions:
+            try:
+                if retained_valid < job["keep"]:
+                    journal_path, journal = self._cleanup_journal(item, job)
+                    if journal and all(os.path.exists(io_path(m["staged"])) for m in journal["members"]):
+                        journal["phase"] = "moving"
+                        atomic_json(journal_path, journal)
+                        self._rollback_cleanup_moves(item, job, journal_path, journal)
+                        self._checked_set(item, job)
+                        retained_records.append(item)
+                        retained_valid += 1
+                        continue
+                    raise BackupError("当前完整可恢复版本不足保留数，暂停清理剩余暂存文件。")
+                with _retained_files_guard(retained_records):
+                    journal_path = self._delete_set(item, job)
+                removed.add(item["backup_id"])
+                finished_journals.append(journal_path)
             except Exception as exc:
                 warnings.append(f"备份成功，旧版清理失败：{item.get('path')}：{exc}")
         if removed:
-            with self._lock():
-                current_rows = self.ledger(job_id)
-                atomic_json(self.base / "ledger" / (job_id + ".json"),
-                            [x for x in current_rows if x["backup_id"] not in removed])
+            try:
+                with self._lock():
+                    current_rows = self.ledger(job_id)
+                    atomic_json(self.base / "ledger" / (job_id + ".json"),
+                                [x for x in current_rows if x["backup_id"] not in removed])
+            except Exception as exc:
+                warnings.append(f"备份成功，旧版清理登记未完成，已保留续清记录：{exc}")
+            else:
+                for path in finished_journals:
+                    try:
+                        Path(io_path(check_path(path))).unlink(missing_ok=True)
+                    except OSError as exc:
+                        warnings.append(f"旧版文件已清理，清理记录保留：{exc}")
         return warnings
 
     def note_login(self, login_id, now=None):

@@ -1,4 +1,4 @@
-"""格式 2 完整备份包：静态来源、逐文件哈希及离线数据库校验。"""
+"""完整备份：格式 3 普通 ZIP 分包及格式 2 历史包的原文件视图与数据库校验。"""
 from __future__ import annotations
 
 import fnmatch
@@ -25,6 +25,18 @@ ROOT_IDS = {"paperpiggy_data", "paperpiggy_home", "browser", "zotero_data",
 MAX_ENTRIES = 500000
 MAX_MANIFEST = 64 * 1024 * 1024
 _CHUNK = 1024 * 1024
+
+
+def open_archive(path, cancel=None):
+    """读取历史单包或任意新分包，向恢复端提供同一个原文件视图。"""
+    from backup_parts import open_archive as open_parts
+    return open_parts(path, cancel)
+
+
+def archive_files(path, cancel=None):
+    """只核对整套物理文件与归属，不展开数据库，用于安全清理。"""
+    from backup_parts import archive_files as package_files
+    return package_files(path, cancel)
 
 
 def _cancel(cancel):
@@ -280,6 +292,7 @@ def _sqlite_check(z, entries, cancel=None, work_dir=None):
 
 def _validate_structure(z):
     infos = z.infolist()
+    by_name = {info.filename: info for info in infos}
     if len(infos) > MAX_ENTRIES:
         raise BackupError("备份包文件数超过单次安全校验上限。")
     seen = set()
@@ -297,9 +310,9 @@ def _validate_structure(z):
             parts = PurePosixPath(name).parts
             if len(parts) < 3 or parts[0] != "roots" or parts[1] not in ROOT_IDS:
                 raise BackupError("备份包包含未声明的恢复来源。")
-    if "manifest.json" not in z.namelist():
+    if "manifest.json" not in by_name:
         raise BackupError("缺少备份清单。")
-    if z.getinfo("manifest.json").file_size > MAX_MANIFEST:
+    if by_name["manifest.json"].file_size > MAX_MANIFEST:
         raise BackupError("备份清单过大。")
     try:
         m = json.loads(z.read("manifest.json"))
@@ -335,9 +348,9 @@ def _validate_structure(z):
         if (type(item.get("size")) is not int or item["size"] < 0
                 or not re.fullmatch(r"[a-f0-9]{64}", str(item.get("sha256", "")))):
             raise BackupError("备份文件大小或哈希无效。")
-        if name not in z.namelist() or z.getinfo(name).file_size != item["size"]:
+        if name not in by_name or by_name[name].file_size != item["size"]:
             raise BackupError(f"备份清单与实际文件不一致：{name}")
-    if declared != {x.casefold() for x in z.namelist() if x != "manifest.json"}:
+    if declared != seen - {"manifest.json"}:
         raise BackupError("备份包存在漏项或清单外文件。")
     for name in declared:
         parts = PurePosixPath(name).parts
@@ -353,39 +366,49 @@ def _validate_structure(z):
     return m
 
 
+def _inspect_open(z, cancel=None, progress=None, work_dir=None, verify_databases=True):
+    m = _validate_structure(z)
+    for index, item in enumerate(m["files"]):
+        _cancel(cancel)
+        digest = hashlib.sha256()
+        size = 0
+        with z.open(item["path"]) as f:
+            while chunk := f.read(_CHUNK):
+                _cancel(cancel)
+                digest.update(chunk)
+                size += len(chunk)
+        if digest.hexdigest() != item["sha256"] or size != item["size"]:
+            raise BackupError(f"文件内容哈希不匹配：{item['path']}")
+        if progress:
+            progress(index + 1, len(m["files"]))
+    db_checks = _sqlite_check(z, m["files"], cancel, work_dir) if verify_databases else []
+    return {"ok": True, "manifest": m, "database_checks": db_checks,
+            "n_entries": len(m["files"]),
+            "uncompressed_size": sum(x["size"] for x in m["files"]),
+            "warnings": list(m.get("warnings", [])), **getattr(z, "package_info", {})}
+
+
 def inspect(path, cancel=None, progress=None, work_dir=None, verify_databases=True):
     """完整读取校验；失败抛 BackupError，绝不修改归档或原来源。"""
     path = check_path(path, allow_missing=False)
     work_dir = ensure_work_dir(work_dir)
     try:
-        with zipfile.ZipFile(io_path(path)) as z:
-            m = _validate_structure(z)
-            for index, item in enumerate(m["files"]):
-                _cancel(cancel)
-                digest = hashlib.sha256()
-                size = 0
-                with z.open(item["path"]) as f:
-                    while chunk := f.read(_CHUNK):
-                        _cancel(cancel)
-                        digest.update(chunk)
-                        size += len(chunk)
-                if digest.hexdigest() != item["sha256"] or size != item["size"]:
-                    raise BackupError(f"文件内容哈希不匹配：{item['path']}")
-                if progress:
-                    progress(index + 1, len(m["files"]))
-            db_checks = _sqlite_check(z, m["files"], cancel, work_dir) if verify_databases else []
-            return {"ok": True, "manifest": m, "database_checks": db_checks,
-                    "n_entries": len(m["files"]),
-                    "uncompressed_size": sum(x["size"] for x in m["files"]),
-                    "warnings": list(m.get("warnings", []))}
+        with open_archive(path, cancel) as z:
+            info = _inspect_open(z, cancel, progress, work_dir, verify_databases)
+            if "archive_format" not in info:
+                size = path.stat().st_size
+                info.update(archive_format=2, parts=[{"path": str(path), "size": size,
+                    "sha256": file_sha256(path, cancel)}], index_path="", index_size=0,
+                    index_sha256="", part_count=1, total_size=size)
+            return info
     except (zipfile.BadZipFile, OSError, RuntimeError, EOFError) as exc:
         if isinstance(exc, (BackupError, BackupCancelled)):
             raise
         raise BackupError(f"备份包无法完整校验：{exc}") from exc
 
 
-def create(job, roots, metadata=None, progress=None, cancel=None, work_dir=None):
-    """来源必须已由调用者固定为 VSS 快照；此模块没有活动文件复制降级。"""
+def _create_v2(job, roots, metadata=None, progress=None, cancel=None, work_dir=None):
+    """历史兼容性夹具专用；正常任务只调用 create 生成受5GB限制的新格式。"""
     _cancel(cancel)
     work_dir = ensure_work_dir(work_dir)
     destination = check_path(job.get("destination") or "")
@@ -474,3 +497,48 @@ def create(job, roots, metadata=None, progress=None, cancel=None, work_dir=None)
         # 只处理本次独占创建的临时包，不触碰任何成功版本。
         partial.unlink(missing_ok=True)
         raise
+
+
+def create(job, roots, metadata=None, progress=None, cancel=None, work_dir=None,
+           *, max_part_size=None):
+    """来源由调用者固定为 VSS 快照，按普通 ZIP 分包创建一套完整恢复点。"""
+    from backup_parts import MAX_PART_SIZE, write_set
+    _cancel(cancel)
+    work_dir = ensure_work_dir(work_dir)
+    destination = check_path(job.get("destination") or "")
+    if not job.get("destination") or not Path(job["destination"]).is_absolute():
+        raise BackupError("请先选择绝对路径的备份目的地。")
+    if "过时备份" in destination.parts:
+        raise BackupError("现有过时备份目录受保护。")
+    for root in roots:
+        original = Path(root.get("original_source") or root["source"]).absolute()
+        try:
+            relative = destination.relative_to(original).as_posix()
+        except ValueError:
+            continue
+        excluded = _matches(relative, root.get("exclude"))
+        include = root.get("include")
+        uncertain = include is None or _matches(relative, include) or any(
+            any(c in str(pattern) for c in "*?[") for pattern in include or [])
+        if not excluded and uncertain:
+            raise BackupError("备份目的地不能位于已选备份来源内部。")
+    items, directories = _walk_roots(roots, cancel)
+    destination.mkdir(parents=True, exist_ok=True)
+    total_bytes = sum(x["size"] for x in items)
+    # Includes deflate's conservative expansion bound and per-entry/index costs;
+    # database verification still uses its own isolated temporary work directory.
+    needed = total_bytes + (total_bytes >> 3) + (total_bytes >> 6) + len(items) * 2048 + 64 * 1024 * 1024
+    if shutil.disk_usage(destination).free < needed:
+        raise BackupError("空间不足，无法先创建并校验新备份；已有版本未删除。")
+    root_meta = [{"id": r["id"], "original_source": str(r.get("original_source") or r["source"]),
+                  "include": r.get("include"), "exclude": r.get("exclude", [])} for r in roots]
+    manifest = {"format": FORMAT, "backup_id": uuid.uuid4().hex, "job_id": job["job_id"],
+                "machine_id": job.get("machine_id") or machine_identity(), "kind": job["kind"],
+                "created_at": now_text(), "source_fingerprint": source_fingerprint(roots),
+                "roots": root_meta, "files": [], "directories": directories,
+                "metadata": metadata or {}, "warnings": [],
+                "include_index": bool(job.get("include_index")),
+                "include_key": bool(job.get("include_key")),
+                "include_browser": any(r["id"] == "browser" for r in roots)}
+    return write_set(destination, items, manifest, progress, cancel, work_dir,
+                     MAX_PART_SIZE if max_part_size is None else max_part_size)

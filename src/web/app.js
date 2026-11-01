@@ -4410,12 +4410,19 @@
   }
   function bk2Ready() {
     const s = (BK2.config && BK2.config.service) || {};
+    if (s.multipart_update_required) return false;
     if (typeof s.can_run === "boolean") return s.can_run;
     return !!s.installed && s.ready !== false && !s.pending && !s.installing && !s.needs_update && !s.error;
   }
   function bk2UpdatePending(service) {
     const s = service || {}, update = s.auto_update || {};
     return !!(s.pending || s.installing || update.pending || ["pending", "deferred", "updating"].includes(update.state));
+  }
+  function bk2MultipartUpdateMessage(service) {
+    const s = service || {}, update = s.auto_update || {};
+    return update.error || update.state === "failed"
+      ? "后台分包支持更新未完成：" + (update.error || "更新失败。") + " 请点击“重试后台更新”，无需管理员确认。"
+      : s.multipart_update_message || "后台正在自动更新分包支持，完成后再开始备份，无需管理员确认。";
   }
   function bk2Native() {
     const api = window.pywebview && window.pywebview.api;
@@ -4456,6 +4463,10 @@
         : ready ? "当前后台可用。后续需要时完成一次性迁移，再由受保护通道自动更新。"
         : "首次配置需要你手动确认一次 Windows 管理员授权；后台检查不会自动弹出 UAC，普通应用不整体提权。");
     }
+    if (automatic && s.multipart_update_required) {
+      title = updateError ? "后台分包支持更新未完成" : "等待后台分包支持更新";
+      detail = bk2MultipartUpdateMessage(s) + (update.state === "deferred" ? " 正在等待已有任务完成。" : "");
+    }
     $("#bk2-service-title").textContent = title;
     $("#bk2-service-detail").textContent = detail;
     const button = $("#bk2-install");
@@ -4463,6 +4474,8 @@
     button.textContent = button.disabled ? (automatic ? "正在更新…" : "正在配置…")
       : automatic ? (updateError ? "重试后台更新" : "检查后台更新")
       : migration ? "完成一次性迁移（管理员确认）" : ready ? "检查后台备份配置" : "首次配置后台备份（管理员确认）";
+    if (s.multipart_update_required) $("#bk2-create").disabled = true;
+    $("#bk2-create").title = s.multipart_update_required ? bk2MultipartUpdateMessage(s) : "";
   }
   function bk2RenderForm() {
     const j = bk2Current(), discovered = (BK2.config && BK2.config.discovered) || {};
@@ -4527,7 +4540,8 @@
     const coverage = bk2CoverageSummary(s);
     if (coverage && !running && !s.error && s.operation === "backup"
       && (s.state === "success" || s.state === "success_with_warning")) detail.textContent += "\n" + coverage;
-    $("#bk2-create").disabled = running || BK2.legacyBusy || (BK2.installing && !bk2Ready()) || BK2.saving || BK2.waitingExit;
+    $("#bk2-create").disabled = running || BK2.legacyBusy || (BK2.installing && !bk2Ready()) || BK2.saving || BK2.waitingExit
+      || !!(BK2.config && BK2.config.service && BK2.config.service.multipart_update_required);
     $("#bk2-save").disabled = running || BK2.saving || BK2.waitingExit;
     $("#bk2-cancel").hidden = !running || s.cancellable === false || s.operation === "restore";
     $("#bk2-cancel").disabled = !!s.cancel_requested;
@@ -4572,7 +4586,9 @@
       bk2Message("请填写有效的间隔天数、时刻和保留份数。"); return false;
     }
     if (enabled && (!destination || !bk2Ready())) {
-      bk2Message(!destination ? "请先选择备份位置，再开启自动备份。" : "请先完成后台备份配置，再开启自动备份。"); return false;
+      const service = (BK2.config && BK2.config.service) || {};
+      bk2Message(!destination ? "请先选择备份位置，再开启自动备份。" : service.multipart_update_required
+        ? bk2MultipartUpdateMessage(service) : "请先完成后台备份配置，再开启自动备份。"); return false;
     }
     const patch = { destination, enabled, every_days: days, at_time: at, catch_up: $("#bk2-catch-up").checked, keep };
     if (kind === "zotero") {
@@ -4605,17 +4621,44 @@
       if (BK2.states[BK2.kind]) bk2StatusView(BK2.states[BK2.kind], BK2.kind);
     }
   }
+  const bk2FileName = value => String(value || "").split(/[\\/]/).pop();
+  const bk2Multipart = value => !!(value && (Number(value.archive_format) === 3 || value.index_path));
+  function bk2PackageSummary(value) {
+    const size = value.total_size != null ? value.total_size : value.size;
+    const total = typeof size === "number" && Number.isFinite(size) && size >= 0 ? "总计 " + _bkSize(size) : "";
+    return bk2Multipart(value) ? [total, (value.part_count || (value.parts || []).length) + " 个 ZIP", "每包不超过5GB"].filter(Boolean).join(" · ")
+      : [total, "旧格式单 ZIP"].filter(Boolean).join(" · ");
+  }
+  function bk2PackageFiles(value, verified) {
+    if (!bk2Multipart(value)) return "";
+    const parts = Array.isArray(value.parts) ? value.parts : [];
+    const index = value.index || (value.index_path ? { path: value.index_path, size: value.index_size } : null);
+    const rows = parts.map((part, i) => ({ ...part, label: "第" + (i + 1) + "包" }));
+    if (index) rows.push({ ...index, label: "总清单" });
+    return "<details class=\"bk2-package-files\"><summary>查看整套文件（搬移时请全部带上）</summary><ul>"
+      + rows.map(part => "<li><b>" + esc(part.label) + "</b> <span>" + esc(part.name || bk2FileName(part.path)) + "</span>"
+        + (typeof part.size === "number" ? " <span>" + esc(_bkSize(part.size)) + "</span>" : "")
+        + " <span class=\"" + (part.available === false ? "danger-text" : "hint") + "\">"
+        + esc(part.available === false ? part.problem || "无法读取" : verified ? "已校验" : "在原位置，待校验") + "</span></li>").join("")
+      + "</ul></details>";
+  }
   async function renderBk2List(kind) {
     const r = await jget("/backup2/list?kind=" + kind);
     if (kind !== BK2.kind) return;
+    if (r.ok === false) throw new Error(r.error || r.detail || "无法读取备份记录");
     const items = r.items || [];
     $("#bk2-list").innerHTML = items.length ? items.map(it => {
       const m = it.manifest || it, browser = it.has_browser != null ? it.has_browser : m.has_browser || m.includes_browser || m.include_browser;
       const title = it.created_at || it.created || m.created_at || m.created || it.mtime || it.name || "备份";
       const tags = kind === "zotero" ? ["Zotero 完整资料"] : [m.includes_index || m.include_index ? "含索引" : "知识库资产", browser ? "含专用浏览器资料" : "不含浏览器资料"];
       if (m.has_api_key || m.include_key) tags.push("含 API 密钥");
-      return "<div class=\"bk-item\"><div><b>" + esc(bk2When(title)) + "</b> · " + esc(_bkSize(it.size || 0))
-        + "<p class=\"hint\">" + tags.map(esc).join(" · ") + (it.available === false ? " · 文件不在原位置，不能恢复" : it.broken ? " · 无法校验，不能恢复" : "") + "</p></div>"
+      const unavailable = it.cleanup_pending ? "旧版清理未完成，不作为可恢复版本"
+        : it.available === false ? (bk2Multipart(it) ? "整套不完整或文件已变化，不能恢复" : "文件不在原位置或已变化，不能恢复")
+        : it.broken ? "无法校验，不能恢复" : "";
+      return "<div class=\"bk-item\"><div><b>" + esc(bk2When(title)) + "</b> · " + esc(bk2PackageSummary(it))
+        + "<p class=\"hint\">" + tags.map(esc).join(" · ") + (unavailable ? " · " + esc(unavailable) : "") + "</p>"
+        + (it.missing_files && it.missing_files.length ? "<p class=\"danger-text\">缺少：" + it.missing_files.map(esc).join("、") + "</p>" : "")
+        + bk2PackageFiles(it, false) + "</div>"
         + (it.broken ? "" : "<button class=\"ghost bk2-inspect\" type=\"button\"" + (it.available === false ? " disabled" : "") + " data-path=\"" + esc(String(it.path || "")) + "\">校验与恢复…</button>") + "</div>";
     }).join("") : "<p class=\"hint\">本任务还没有成功备份。其他任务和历史目录不会被自动纳入清理。</p>";
     $("#bk2-list").querySelectorAll(".bk2-inspect").forEach(b => b.addEventListener("click", () => inspectBk2(b.dataset.path)));
@@ -4661,7 +4704,12 @@
   }
   async function createBk2() {
     const kind = BK2.kind;
-    if (!bk2Ready()) { await uiNotice("请先配置后台备份，待状态显示“已就绪”后再开始。", { title: "后台备份尚未就绪" }); return; }
+    if (!bk2Ready()) {
+      const service = (BK2.config && BK2.config.service) || {};
+      await uiNotice(service.multipart_update_required ? bk2MultipartUpdateMessage(service)
+        : "请先配置后台备份，待状态显示“已就绪”后再开始。", {
+        title: service.multipart_update_required ? "等待后台分包支持更新" : "后台备份尚未就绪" }); return;
+    }
     if (BK2.dirty && !(await saveBk2())) return;
     if (!bk2Current().destination) { bk2Message("请先选择备份位置并保存设置。"); return; }
     if (kind === "paperpiggy" && $("#bk2-with-key").checked && !(await uiConfirm("这份备份将包含 API 密钥。备份文件不加密，请保护保存位置。", { title: "包含 API 密钥？", okText: "包含并备份", danger: true }))) return;
@@ -4674,7 +4722,8 @@
       bk2Message("备份任务已登记，正在等待后台执行与校验。");
       const result = await waitBk2(kind, r, baseline);
       if (result && kind === BK2.kind) bk2Message(result.cancelled ? "备份已停止，已有成功版本保持不变。"
-        : "备份已完成并通过校验。" + (result.path ? " 文件：" + result.path : "")
+        : "整套备份已完成并通过校验。" + (bk2Multipart(result) ? " " + bk2PackageSummary(result) + "。请保留全部分包与总清单。" : "")
+        + (result.path ? " 位置：" + result.path : "")
         + (bk2CoverageSummary(BK2.states[kind]) ? "\n" + bk2CoverageSummary(BK2.states[kind]) : "")
         + ((result.warning || bk2Warnings(result.warnings)) ? " 注意：" + (result.warning || bk2Warnings(result.warnings)) : ""));
     } catch (e) { bk2Message("备份未完成：" + bk2Error(e)); }
@@ -4682,6 +4731,8 @@
   }
   async function inspectBk2(path) {
     if (!path) { bk2Message("请填写备份文件的完整路径。"); return; }
+    BK2.restore = null;
+    $("#bk2-restore").hidden = true;
     try {
       const info = await jpost("/backup2/inspect", { path });
       if (!info || info.ok === false) throw new Error((info && (info.error || info.detail)) || "备份不可用");
@@ -4689,7 +4740,9 @@
       const m = info.manifest || info;
       BK2.restore = { path, info, kind: m.kind || info.kind || BK2.kind };
       $("#bk2-restore-info").textContent = bk2Name(BK2.restore.kind) + " · " + bk2When(m.created_at || m.created || "") + "\n" + path
+        + (bk2Multipart(info) ? "\n" + bk2PackageSummary(info) + "。已校验同一套的全部文件；恢复时会自动合并大文件片段。" : "")
         + (bk2CoverageSummary(info) ? "\n" + bk2CoverageSummary(info) : "");
+      $("#bk2-restore-files").innerHTML = bk2PackageFiles(info, true);
       $("#bk2-restore-warnings").textContent = bk2Warnings(info.warnings || m.warnings);
       $("#bk2-restore-mode").value = "new";
       $("#bk2-restore-destination").value = "";

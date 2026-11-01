@@ -17,6 +17,9 @@ import backup_runner as RUN
 import backup_sources as SOURCES
 import backup_service as SERVICE
 
+# First protected component generation capable of producing bounded multipart ZIPs.
+MULTIPART_MIN_COMPONENT_VERSION = 1001020000
+
 
 class Configure(BaseModel):
     kind: str
@@ -103,13 +106,16 @@ def _summary_validate(state, history):
         result = record.get("result", {})
         if not isinstance(result, dict):
             raise ValueError("备份任务结果格式无效。")
-        for key in ("path", "destination", "journal", "warning", "cleanup_warning"):
+        for key in ("path", "destination", "journal", "warning", "cleanup_warning", "index_path"):
             if key in result and not isinstance(result[key], str):
                 raise ValueError("备份任务结果文字格式无效。")
         for key in ("warnings", "cleanup_errors", "rollback_dirs"):
             if key in result and (not isinstance(result[key], list)
                                   or any(not isinstance(item, str) for item in result[key])):
                 raise ValueError("备份任务提醒列表格式无效。")
+        for key in ("part_count", "total_size", "archive_format", "index_size"):
+            if key in result and (type(result[key]) is not int or result[key] < 0):
+                raise ValueError("备份整套记录格式无效。")
 
 
 def _summary_warning(result):
@@ -257,9 +263,16 @@ def _service_info():
         if (type(pending_at) in (int, float) and type(installed_at) in (int, float)
                 and math.isfinite(pending_at) and math.isfinite(installed_at)
                 and 0 < pending_at <= installed_at):
-            return {**info, "pending": False, "error": ""}
+            info = {**info, "pending": False, "error": ""}
     except Exception:
         pass  # 缺失、损坏或无法确认归属时保留原状态，不隐藏真正错误。
+    version = (info.get("auto_update") or {}).get("component_version")
+    if info.get("auto_update_supported") and type(version) is int and version > 0:
+        required = version < MULTIPART_MIN_COMPONENT_VERSION
+        info = {**info, "multipart_update_required": required}
+        if required:
+            info.update(can_run=False, needs_update=True,
+                        multipart_update_message="后台正在自动更新分包支持，完成后再开始备份，无需管理员确认。")
     return info
 
 
@@ -283,6 +296,13 @@ def _service_ready():
     can_run = info.get("can_run", bool(info.get("installed")) and not info.get("needs_update")
                        and not info.get("pending") and not info.get("error"))
     if not can_run:
+        if info.get("multipart_update_required"):
+            update = info.get("auto_update") or {}
+            if update.get("error") or update.get("state") == "failed":
+                raise ValueError("后台分包支持更新未完成：" + str(update.get("error") or "更新失败。")
+                                 + " 请在备份页面重试后台更新，无需管理员确认。")
+            raise ValueError(info.get("multipart_update_message") or
+                             "后台正在自动更新分包支持，完成后再开始备份，无需管理员确认。")
         raise ValueError(info.get("error") or
                          "请先在原生小猪窗口完成首次配置或一次性迁移；之后后台更新无需重复管理员确认。")
     return info
@@ -296,6 +316,74 @@ def _inspect(path):
     value = backup_archive.inspect(path)
     return {"ok": True, **value, "legacy": False,
             "has_browser": value["manifest"].get("include_browser", False)}
+
+
+def _listing_entry(entry, kind):
+    """List one recovery point without opening archives or hashing large files."""
+    from backup_jobs import check_path
+
+    path = Path(entry.get("path") or "")
+    archive_format = entry.get("archive_format")
+    multipart = archive_format == 3 or (archive_format not in (1, 2)
+                                       and (bool(entry.get("index_path")) or "parts" in entry))
+    parts = entry.get("parts") if multipart else [{"path": str(path), "size": entry.get("size")}]
+    problems = []
+    components = []
+    seen = set()
+    if entry.get("cleanup_pending"):
+        problems.append("旧版清理未完成，不作为可恢复版本")
+
+    def component(value, role):
+        if not isinstance(value, dict):
+            problems.append("整套文件记录无效")
+            return {"name": "记录无效", "path": "", "role": role, "available": False, "problem": "记录无效"}
+        raw = value.get("path")
+        item_path = Path(raw) if isinstance(raw, str) and raw else None
+        result = {**value, "path": str(item_path) if item_path else "",
+                  "name": item_path.name if item_path else "缺少文件记录", "role": role, "available": False}
+        try:
+            if item_path is None or not item_path.is_absolute() or item_path.parent != path.parent:
+                raise ValueError("文件位置记录无效")
+            identity = os.path.normcase(str(item_path.absolute()))
+            if identity in seen:
+                raise ValueError("整套文件记录重复")
+            seen.add(identity)
+            checked = check_path(item_path)
+            if not checked.is_file():
+                result["problem"] = "文件缺失"
+            else:
+                expected = value.get("size")
+                actual = checked.stat().st_size
+                if expected is not None and (type(expected) is not int or expected < 0 or actual != expected):
+                    result["problem"] = "文件大小已变化"
+                else:
+                    result["available"] = True
+                result["actual_size"] = actual
+        except Exception as exc:
+            result["problem"] = str(exc)
+        if not result["available"]:
+            problems.append(result["name"] + "：" + result.get("problem", "无法读取"))
+        components.append(result)
+        return result
+
+    if not isinstance(parts, list) or not parts:
+        parts = []
+        problems.append("缺少整套分包记录")
+    listed_parts = [component(value, "zip") for value in parts]
+    index = None
+    if multipart:
+        if type(entry.get("part_count")) is not int or entry["part_count"] != len(parts):
+            problems.append("分包数量记录不一致")
+        if not any(value.get("path") == str(path) for value in listed_parts):
+            problems.append("恢复入口不在本套分包记录中")
+        index = component({"path": entry.get("index_path"), "size": entry.get("index_size")}, "index")
+    return {**entry, "path": str(path), "name": path.name,
+            "created": entry.get("created_at", ""), "kind": kind,
+            "archive_format": 3 if multipart else 2, "part_count": len(listed_parts),
+            "total_size": entry.get("total_size", entry.get("size", 0)),
+            "parts": listed_parts, "index": index, "available": not problems,
+            "missing_files": [item["name"] for item in components if item.get("problem") == "文件缺失"],
+            "availability_errors": problems}
 
 
 def _queued(request):
@@ -469,10 +557,9 @@ def register(app, server):
             current, job = _context(kind)
             items = []
             for entry in reversed(current.ledger(job["job_id"])):
-                path = Path(entry["path"])
-                items.append({**entry, "path": str(path), "name": path.name,
-                              "created": entry.get("created_at", ""), "kind": kind,
-                              "available": path.is_file()})
+                if entry.get("retired") is True:
+                    continue
+                items.append(_listing_entry(entry, kind))
             return {"ok": True, "items": items, "dir": job["destination"]}
         except Exception as exc:
             return {"ok": False, "error": str(exc), "items": []}

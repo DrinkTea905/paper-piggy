@@ -115,6 +115,16 @@ class CngTests(unittest.TestCase):
         self.assertEqual(A.public_from_private(self.private), self.public)
         self.assertEqual(len(base64.b64decode(A.strict_json(first)["signature"])), 384)
 
+    def test_signed_component_can_add_multipart_module_without_new_trust_root(self):
+        value = manifest()
+        value["source_hashes"]["backup_parts.py"] = "f" * 64
+        signed = A.sign_manifest(value, self.private)
+        self.assertEqual(A.verify_envelope(signed, self.public), value)
+        changed = A.strict_json(signed)
+        changed["manifest"]["source_hashes"].pop("backup_parts.py")
+        with self.assertRaises(A.ComponentAuthError):
+            A.verify_envelope(A.canonical_json(changed), self.public)
+
     def test_fixed_pin_default_no_request_public_key(self):
         with patch.object(T, "PUBLIC_KEY_B64", base64.b64encode(self.public).decode()), \
                 patch.object(T, "KEY_ID", A.key_id(self.public)):

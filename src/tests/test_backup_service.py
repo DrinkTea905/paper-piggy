@@ -474,7 +474,7 @@ def acceptance_prepare():
     Path(plan["plan_path"]).write_text(json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8")
     instructions = ("# 隔离 VSS / UAC 验收\n\n"
         "此目录仅含人工夹具。准备动作没有提权、启动数据库 writer、注册任务或创建快照。\n\n"
-        "1. 先执行 payload 命令生成最新 12 模块与最小运行时清单，审阅 payload-review.json 及其 manifest_path。"
+        f"1. 先执行 payload 命令生成最新 {len(S.MODULES)} 模块与最小运行时清单，审阅 payload-review.json 及其 manifest_path。"
         "再普通权限执行 request 命令。它核对源码仍与审阅载荷一致，启动独立普通权限 WAL writer，再显示一次 Windows UAC。\n"
         "2. 安装到由隔离 data 家派生的独立 Program Files instance。验收任务初始 Disabled；"
         "同次提升中显式启用并运行，try/finally 再禁用，失败同样禁用。保留文件和 Disabled 任务供检查。\n"

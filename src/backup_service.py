@@ -28,7 +28,7 @@ SCHEMA = 1
 MODULES = frozenset({"backup_runner.py", "backup_sources.py", "backup_jobs.py",
     "backup_archive.py", "backup_restore.py", "backup_legacy.py", "backup_vss.py", "backup_service.py",
     "backup.py", "config.py", "settings.py", "dedicated_browser.py",
-    "backup_component_auth.py", "backup_component_trust.py", "backup_component_update.py"})
+    "backup_component_auth.py", "backup_component_trust.py", "backup_component_update.py", "backup_parts.py"})
 NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 _INSTALL_PROCESSES = {}
 
