@@ -57,6 +57,8 @@ Codex 配置仍应保留 `APPDATA` 与 `LOCALAPPDATA`，否则 GitHub CLI 也会
 
 发布私钥仅以当前 Windows 用户的 DPAPI 密文保存于仓库外 `%LOCALAPPDATA%\PaperPiggyRelease\component-key.dpapi`。发布脚本是 `installer/sign_backup_component.py`，公钥固定在 `src/backup_component_trust.py`。首次建立发布信任根须显式运行 `--init-key --public-output <公开资料文件>`，审核公开指纹后写入公钥；已有密钥禁止覆盖或自动重建。日常构建自动签名并验签，已有有效同清单签名直接复用。换发布机前需安排密钥迁移或受旧密钥认证的轮换，不能假定复制 DPAPI 密文后仍能签名。此密钥不是用户 API 密钥，也不进入知识库备份。
 
+⚠️ **私钥“找不到”时先别慌，更别新建（2026-11-21 踩过）**：商店（MSIX）版桌面应用（实测 Codex 桌面版）写 `%LOCALAPPDATA%` 时，Windows 会把文件**重定向**到 `%LOCALAPPDATA%\Packages\<包名>\LocalCache\Local\`。原私钥就是在 Codex 里生成的，实际落在 `…\Packages\OpenAI.Codex_2p2nqsd0c76g0\LocalCache\Local\PaperPiggyRelease\component-key.dpapi`，在 Codex 里看路径一切正常，换到其他工具出包就报“发布私钥文件无效”。现在 `backup_component_auth.find_key_path()` 会依次查环境变量 `PAPERPIGGY_RELEASE_KEY`、标准位置和所有 `Packages\*\LocalCache\Local\` 重定向位置，同一账户的 DPAPI 在这些位置都能解密；`build_bundle.py --key-file` 和签名脚本 `--key-file` 可以显式指定。用 `python installer\sign_backup_component.py --where` 可列出全部查找位置（只看是否存在，不读内容）。`--init-key` 在任何已知位置已有私钥时都会拒绝执行：**新建私钥 = 更换信任根**，已装后台的用户会永久收不到自动更新（已有更新通道固定着旧公钥，`ensure_channel` 不会替换它）。
+
 ### 0.2 重建 `build/py312`（唯一不可自动重建的环节）
 
 `build_bundle.py` 完整构建时会把 `build/py312/` 复制为 bundle 的 `python/`，但它**不会下载或重建**

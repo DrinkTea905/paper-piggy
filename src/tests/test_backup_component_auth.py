@@ -223,6 +223,39 @@ class CngTests(unittest.TestCase):
             with self.assertRaises(A.ComponentAuthError):
                 A.sign_with_key_file(manifest(), alias)
 
+    def test_key_found_in_store_app_redirect_and_init_refuses_it(self):
+        # 商店版桌面应用把 %LOCALAPPDATA% 写入重定向到 Packages\<包名>\LocalCache\Local（2026-11-21）。
+        with tempfile.TemporaryDirectory() as tmp:
+            local = Path(tmp) / "Local"
+            redirected = local / "Packages/Vendor.App_abc/LocalCache/Local/PaperPiggyRelease/component-key.dpapi"
+            redirected.parent.mkdir(parents=True)
+            redirected.write_bytes(A._KEY_MAGIC + b"fixture")
+            with patch.dict(A.os.environ, {"LOCALAPPDATA": str(local)}, clear=False):
+                A.os.environ.pop(A.KEY_ENV, None)
+                self.assertEqual(redirected, A.find_key_path())
+                with self.assertRaisesRegex(A.ComponentAuthError, "禁止新建"):
+                    A.initialize_key()
+                self.assertFalse((local / "PaperPiggyRelease").exists())
+                standard = local / "PaperPiggyRelease/component-key.dpapi"
+                standard.parent.mkdir(parents=True)
+                standard.write_bytes(A._KEY_MAGIC + b"different")
+                with self.assertRaisesRegex(A.ComponentAuthError, "多份内容不同"):
+                    A.find_key_path()
+                standard.write_bytes(redirected.read_bytes())
+                self.assertEqual(standard, A.find_key_path())
+                explicit = Path(tmp) / "explicit.dpapi"
+                with patch.dict(A.os.environ, {A.KEY_ENV: str(explicit)}):
+                    self.assertEqual(explicit, A.find_key_path())
+
+    def test_missing_key_lists_every_searched_location(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            local = Path(tmp) / "Local"
+            local.mkdir()
+            with patch.dict(A.os.environ, {"LOCALAPPDATA": str(local)}, clear=False):
+                A.os.environ.pop(A.KEY_ENV, None)
+                with self.assertRaisesRegex(A.ComponentAuthError, "找不到发布私钥.*PaperPiggyRelease.*禁止为此新建"):
+                    A.sign_with_key_file(manifest())
+
 
 class SignerCliTests(unittest.TestCase):
     def test_init_only_explicit_and_outputs_public_data(self):

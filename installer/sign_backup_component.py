@@ -15,7 +15,12 @@ def main(argv=None):
     parser.add_argument("--public-output", type=Path)
     parser.add_argument("--manifest", type=Path)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--where", action="store_true", help="只列出私钥查找位置及是否存在，不读取内容")
     args = parser.parse_args(argv)
+    if args.where:
+        for path in A.key_candidates():
+            print(("存在  " if path.is_file() else "无    ") + str(path))
+        return 0
     if args.init_key:
         if not args.public_output or args.manifest or args.output:
             parser.error("--init-key 只与 --public-output、可选 --key-file 一起使用")

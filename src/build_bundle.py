@@ -72,7 +72,7 @@ def backup_component_files():
     return {executable.name: executable, metadata.name: metadata, signature.name: signature}
 
 
-def prepare_backup_component(runtime=None):
+def prepare_backup_component(runtime=None, key_file=None):
     import importlib.util
     script = SRC.parent / "installer" / "build_backup_component.py"
     spec = importlib.util.spec_from_file_location("paperpiggy_component_builder", script)
@@ -89,7 +89,8 @@ def prepare_backup_component(runtime=None):
     except (OSError, ValueError):
         pass
     if not reusable:
-        signed = auth.sign_with_key_file(manifest)
+        # 不传 key_file 时按 backup_component_auth.find_key_path() 查找（含商店应用重定向位置）。
+        signed = auth.sign_with_key_file(manifest, Path(key_file) if key_file else None)
         temporary = signature.with_name(signature.name + ".new")
         temporary.write_bytes(signed)
         os.replace(temporary, signature)
@@ -490,6 +491,8 @@ def main():
                     help="只同步 app/ 源码（不碰 python/ 与 models/）——改代码后快速刷新已构建的 bundle")
     ap.add_argument("--skip-checks", action="store_true",
                     help="跳过 check_guides.py 指引一致性校验（仅本地自测用；正式发版别跳）")
+    ap.add_argument("--key-file", default=None,
+                    help="后台组件发布私钥（DPAPI 文件）；默认自动查找，也可用环境变量 PAPERPIGGY_RELEASE_KEY")
     ap.add_argument("--allow-missing-vcrt", action="store_true",
                     help="允许缺 msvcp140*.dll（只出 API 模式可用的包；本地嵌入/重排会在干净机上崩）")
     args = ap.parse_args()
@@ -499,7 +502,7 @@ def main():
         pass
     if not args.skip_checks:
         verify_guides()     # 指引漂移 → 直接中止，别发出一个"说明书对不上代码"的包
-    prepare_backup_component(args.python_src or os.environ.get("LOCALKB_PY_SRC"))
+    prepare_backup_component(args.python_src or os.environ.get("LOCALKB_PY_SRC"), args.key_file)
     if args.sync_only:
         if not BUNDLE.exists():
             print(f"[bundle] ✗ 找不到已构建的 bundle：{BUNDLE}（先完整构建/解压一次）"); return

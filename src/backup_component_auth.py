@@ -298,11 +298,51 @@ def verify_envelope(raw, public_key=None, minimum_version=None):
     return manifest
 
 
+KEY_ENV = "PAPERPIGGY_RELEASE_KEY"
+_KEY_RELATIVE = Path("PaperPiggyRelease/component-key.dpapi")
+
+
 def default_key_path():
     directory = os.environ.get("LOCALAPPDATA")
     if not directory or not Path(directory).is_absolute():
         _fail("无法确定发布者本地密钥目录。")
-    return Path(directory) / "PaperPiggyRelease/component-key.dpapi"
+    return Path(directory) / _KEY_RELATIVE
+
+
+def key_candidates():
+    """发布私钥可能的落点，按优先级排列。
+
+    商店（MSIX）打包的桌面应用（实测 Codex 桌面版）写 %LOCALAPPDATA% 时，Windows 会把文件
+    重定向到 %LOCALAPPDATA%\\Packages\\<包名>\\LocalCache\\Local\\。在那个应用里看路径一切正常，
+    换到普通终端或其他工具就“找不到私钥”（2026-11-21 实际踩过）。所以这里把重定向位置也列进来。
+    同一 Windows 账户的 DPAPI 在两处都能解密。
+    """
+    standard = default_key_path()
+    found = [Path(os.environ[KEY_ENV])] if os.environ.get(KEY_ENV) else []
+    found.append(standard)
+    packages = standard.parent.parent / "Packages"
+    try:
+        found += sorted(packages.glob("*/LocalCache/Local/" + _KEY_RELATIVE.as_posix()))
+    except OSError:
+        pass
+    unique = []
+    for path in found:
+        if path not in unique:
+            unique.append(path)
+    return unique
+
+
+def find_key_path():
+    """返回唯一可用的发布私钥文件；多份内容不同或一份都没有时，列出全部查找位置后中止。"""
+    if os.environ.get(KEY_ENV):
+        return Path(os.environ[KEY_ENV])
+    existing = [p for p in key_candidates() if p.is_file()]
+    if not existing:
+        _fail("找不到发布私钥。已查找：" + "；".join(str(p) for p in key_candidates())
+              + f"。可用 --key-file 或环境变量 {KEY_ENV} 显式指定；禁止为此新建密钥或更换固定公钥。")
+    if len({p.read_bytes() for p in existing}) > 1:
+        _fail("找到多份内容不同的发布私钥，请用 --key-file 明确指定：" + "；".join(map(str, existing)))
+    return existing[0]
 
 
 class _Blob(ctypes.Structure):
@@ -404,6 +444,12 @@ def _protect_path(path, directory=False):
 
 
 def initialize_key(key_file=None):
+    if key_file is None:
+        # 任何已知落点（含商店应用重定向位置）已有私钥就拒绝：新建等于更换信任根，
+        # 已装后台的用户会永久收不到自动更新。
+        existing = [p for p in key_candidates() if p.is_file()]
+        if existing:
+            _fail("已存在发布私钥，禁止新建：" + "；".join(map(str, existing)))
     path = _safe_key_path(key_file or default_key_path())
     if path.exists():
         _fail("发布私钥已存在，禁止覆盖。")
@@ -428,7 +474,7 @@ def initialize_key(key_file=None):
 
 
 def sign_with_key_file(manifest, key_file=None, public_key=None):
-    path = _safe_key_path(key_file or default_key_path())
+    path = _safe_key_path(key_file or find_key_path())
     if not path.is_file() or path.stat().st_size > 16384:
         _fail("发布私钥文件无效。")
     encrypted = path.read_bytes()
