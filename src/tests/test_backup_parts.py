@@ -292,6 +292,36 @@ class BackupPartsTests(unittest.TestCase):
         with self.assertRaisesRegex(BackupError, "重复字段"):
             A.inspect(result["path"])
 
+    def test_index_is_not_on_disk_during_long_verification(self):
+        # 云同步盘会在长时间核验期间上传 .part 总清单，再把改名回滚（2026-11-21 实机）。
+        (self.source / "paper.pdf").write_bytes(b"data")
+        seen = []
+        original = A._inspect_open
+
+        def spy(*args, **kwargs):
+            seen.append(sorted(p.name for p in self.out.iterdir() if ".backup.json" in p.name))
+            return original(*args, **kwargs)
+
+        with mock.patch.object(A, "_inspect_open", side_effect=spy):
+            result = self.create()
+        self.assertEqual([[]], seen)
+        self.assertTrue(Path(result["index_path"]).is_file())
+        self.assertFalse(list(self.out.glob("*.part")))
+        self.assertTrue(A.inspect(result["path"])["ok"])
+
+    def test_index_moved_away_after_commit_is_reported_and_set_removed(self):
+        (self.source / "paper.pdf").write_bytes(b"data")
+        rename = P.os.rename
+
+        def sync_client_reverts(src, dst):
+            rename(src, dst)
+            rename(dst, src)  # 模拟同步客户端把改名改回 .part
+
+        with mock.patch.object(P.os, "rename", side_effect=sync_client_reverts):
+            with self.assertRaisesRegex(BackupError, "云同步"):
+                self.create()
+        self.assertFalse(list(self.out.iterdir()))
+
     def test_format_two_archive_still_has_the_same_reader_interface(self):
         (self.source / "paper.pdf").write_bytes(b"old data")
         result = A._create_v2(self.job, self.roots)

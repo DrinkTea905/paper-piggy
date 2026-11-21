@@ -4397,7 +4397,8 @@
   const bk2Message = (value) => { const el = $("#bk2-msg"); if (el) el.textContent = value || ""; };
   const bk2Current = () => BK2.jobs[BK2.kind] || {};
   const bk2Warnings = value => Array.isArray(value) ? value.map(String).join("；") : value ? String(value) : "";
-  const bk2When = value => typeof value === "number" ? new Date(value * (value < 1e12 ? 1000 : 1)).toLocaleString("zh-CN") : String(value || "");
+  const bk2When = value => typeof value === "number" ? new Date(value * (value < 1e12 ? 1000 : 1)).toLocaleString("zh-CN")
+    : String(value || "").replace(/^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?$/, "$1 $2");
   function bk2CoverageSummary(value) {
     const m = value && (value.manifest || value), metadata = m && m.metadata;
     const coverage = value && value.source_coverage || metadata && metadata.source_coverage;
@@ -4545,14 +4546,45 @@
     $("#bk2-save").disabled = running || BK2.saving || BK2.waitingExit;
     $("#bk2-cancel").hidden = !running || s.cancellable === false || s.operation === "restore";
     $("#bk2-cancel").disabled = !!s.cancel_requested;
-    const history = s.history || s.attempts || job.history || [];
-    $("#bk2-history").innerHTML = history.length ? history.slice(-20).reverse().map(h => {
+    const history = bk2HistoryRows(s.history || s.attempts || job.history || []);
+    $("#bk2-history").innerHTML = history.length ? history.map(h => {
       const when = h.finished_at || h.created_at || h.created || h.at || h.started_at || "";
       const label = ({ success: "成功", success_with_warning: "成功，有需处理事项", failed: "失败", cancelled: "已停止", running: "进行中",
         queued: "等待执行", started: "已开始", interrupted: "意外中断", cleanup_failed: "备份成功，清理失败" })[h.status || h.state] || h.message || h.reason || "任务记录";
       return "<div class=\"bk2-history-item\"><b>" + esc(bk2When(when)) + " · " + esc(label)
-        + "</b><span>" + esc(String(h.error || h.reason || h.warning || bk2Warnings(h.warnings) || (h.result && (h.result.cleanup_warning || bk2Warnings(h.result.cleanup_errors) || bk2Warnings(h.result.warnings) || h.result.path)) || h.path || "")) + "</span></div>";
+        + "</b><span>" + esc(bk2HistoryDetail(h)) + "</span></div>";
     }).join("") : "暂无任务记录。";
+  }
+  // 任务记录只讲「上次成功以来」的事：成功之前的失败已被后来的成功盖过，不再展示；
+  // 「已开始」只是过程标记（进度在上方状态框），同一次失败被登记两遍的也合并。原始记录不删。
+  const BK2_OK = new Set(["success", "success_with_warning", "cleanup_failed"]);
+  function bk2HistoryRows(history) {
+    const rows = [];
+    for (const h of [...(Array.isArray(history) ? history : [])].reverse()) {
+      const state = h && (h.status || h.state);
+      if (!h || state === "started") continue;
+      const prev = rows[rows.length - 1];
+      if (prev && (prev.status || prev.state) === state && (prev.error || "") === (h.error || "")
+        && (prev.at || prev.finished_at || "") === (h.at || h.finished_at || "")) continue;
+      rows.push(h);
+      if (BK2_OK.has(state) || rows.length >= 20) break;
+    }
+    return rows;
+  }
+  // Python 把 OSError 路径以 repr 形式拼进错误（'\\\\?\\D:\\…'）；只在引号内还原成人能读的路径。
+  const bk2CleanText = (value) => String(value || "").replace(/'([^'\n]*\\\\[^'\n]*)'/g, (_, p) => "'"
+    + p.replace(/\\\\/g, "\\").replace(/^\\\\\?\\UNC\\/, "\\\\").replace(/^\\\\\?\\/, "") + "'");
+  function bk2HistoryDetail(h) {
+    const r = h.result || {};
+    const issue = h.error || h.reason || h.warning || bk2Warnings(h.warnings)
+      || r.cleanup_warning || bk2Warnings(r.cleanup_errors) || bk2Warnings(r.warnings);
+    if (issue) return bk2CleanText(issue);
+    const size = r.total_size || r.size;
+    if (BK2_OK.has(h.status || h.state) && (size || r.part_count)) {
+      return (r.part_count > 1 ? r.part_count + " 个 ZIP，" : "") + (size ? "共 " + _bkSize(size) : "")
+        + (r.file_count ? "，" + num(r.file_count) + " 个文件" : "");
+    }
+    return String(r.path || h.path || "");
   }
   // /health 仍可能报告旧版备份恢复；只用来防止并发，不覆盖新任务状态。
   function renderBackupRuntime(state) {

@@ -192,14 +192,17 @@ class _SegmentStream(io.RawIOBase):
 
 
 class MultipartReader:
-    """Validated physical set exposing the original logical ZipFile interface."""
-    def __init__(self, path, cancel=None, *, pending=False):
+    """Validated physical set exposing the original logical ZipFile interface.
+
+    ``index_bytes`` 用于写入流程：总清单尚未落盘时，按其最终路径在内存中核验整套分包。
+    """
+    def __init__(self, path, cancel=None, *, index_bytes=None):
         self.cancel = cancel
         self.stack = ExitStack()
         self.archives = []
         self._closed = False
         try:
-            self._load(path, pending)
+            self._load(path, index_bytes)
         except Exception:
             self.close()
             raise
@@ -207,26 +210,37 @@ class MultipartReader:
     def _cancel(self):
         _A()._cancel(self.cancel)
 
-    def _load(self, path, pending):
-        selected = check_path(path, allow_missing=False)
+    def _load(self, path, index_bytes=None):
         selected_marker = None
-        if selected.name.lower().endswith(".zip"):
-            with zipfile.ZipFile(io_path(selected)) as z:
-                selected_marker = read_marker(z)
-            index_name = _basename(selected_marker["index_name"])
-            index_path = check_path(selected.parent / index_name)
-            if not Path(io_path(index_path)).is_file():
-                raise BackupError(f"缺少整套备份总清单：{index_name}；请将总清单与全部分包放在同一目录。")
-        elif selected.name.endswith(".backup.json") or pending and selected.name.endswith(".backup.json.part"):
-            index_path = selected
-            index_name = selected.name[:-5] if pending else selected.name
+        index_before = None
+        if index_bytes is not None:
+            # 尚未落盘的总清单：只信任调用方刚生成的字节，分包仍按最终目录逐个读取校验。
+            index_path = check_path(path)
+            index_name = _basename(index_path.name)
+            _stem(index_name)
+            if len(index_bytes) > MAX_INDEX_SIZE:
+                raise BackupError("整套备份总清单过大。")
+            selected = index_path
+            raw = bytes(index_bytes)
         else:
-            raise BackupError("请选择一个分包 ZIP 或完整备份总清单。")
+            selected = check_path(path, allow_missing=False)
+            if selected.name.lower().endswith(".zip"):
+                with zipfile.ZipFile(io_path(selected)) as z:
+                    selected_marker = read_marker(z)
+                index_name = _basename(selected_marker["index_name"])
+                index_path = check_path(selected.parent / index_name)
+                if not Path(io_path(index_path)).is_file():
+                    raise BackupError(f"缺少整套备份总清单：{index_name}；请将总清单与全部分包放在同一目录。")
+            elif selected.name.endswith(".backup.json"):
+                index_path = selected
+                index_name = selected.name
+            else:
+                raise BackupError("请选择一个分包 ZIP 或完整备份总清单。")
+            if Path(io_path(index_path)).stat().st_size > MAX_INDEX_SIZE:
+                raise BackupError("整套备份总清单过大。")
+            index_before = _snapshot(index_path)
+            raw = Path(io_path(index_path)).read_bytes()
         self.index_path = index_path
-        if Path(io_path(index_path)).stat().st_size > MAX_INDEX_SIZE:
-            raise BackupError("整套备份总清单过大。")
-        index_before = _snapshot(index_path)
-        raw = Path(io_path(index_path)).read_bytes()
         index = _read_json(raw, "整套备份总清单")
         if index.get("format") != 3 or index.get("index_name") != index_name:
             raise BackupError("整套备份总清单格式或名称不匹配。")
@@ -338,7 +352,7 @@ class MultipartReader:
         if selected_marker is not None and (selected_number is None
                 or selected_marker != _marker(self.manifest, selected_number, index_name)):
             raise BackupError("所选 ZIP 不属于该套备份。")
-        if _snapshot(index_path) != index_before:
+        if index_before is not None and _snapshot(index_path) != index_before:
             raise BackupError("校验期间总清单发生变化。")
         self.package_info = {"archive_format": 3, "parts": self.parts,
                              "index_path": str(index_path), "index_size": len(raw),
@@ -560,14 +574,17 @@ def write_set(destination, items, manifest, progress=None, cancel=None, work_dir
         payload = _json(index)
         if len(payload) > MAX_INDEX_SIZE:
             raise BackupError("整套备份总清单超过安全上限。")
+        # 先在内存中按最终名称核验整套分包，再落盘总清单。核验动辄十几分钟，
+        # 若期间让 .part 总清单躺在目的地，云同步盘（实测 WPS 云文档）会先把它
+        # 上传，随后把本地改名判成冲突并改回 .part，导致最终总清单「凭空消失」。
+        with MultipartReader(index_path, cancel, index_bytes=payload) as reader:
+            checked = A._inspect_open(reader, cancel=cancel, work_dir=work_dir)
+        A._cancel(cancel)
         with Path(io_path(pending_index)).open("xb") as output:
             own(pending_index)
             output.write(payload)
             output.flush()
             os.fsync(output.fileno())
-        with MultipartReader(pending_index, cancel, pending=True) as reader:
-            checked = A._inspect_open(reader, cancel=cancel, work_dir=work_dir)
-        A._cancel(cancel)
         # Windows rename is exclusive. POSIX link creates the final completion
         # marker atomically and never overwrites another file created meanwhile.
         if os.name == "nt":
@@ -575,7 +592,15 @@ def write_set(destination, items, manifest, progress=None, cancel=None, work_dir
         else:
             os.link(io_path(pending_index), io_path(index_path))
             Path(io_path(pending_index)).unlink()
-        own(index_path)
+        try:
+            own(index_path)
+            unchanged = Path(io_path(index_path)).read_bytes() == payload
+        except OSError:
+            unchanged = False
+        if not unchanged:
+            # 保留 pending_index 的归属：同步客户端若把它改回 .part，失败清理时一并收回。
+            raise BackupError("整套备份总清单写入后被外部程序移走或改动，未登记本次备份。"
+                              "若备份位置在云同步文件夹内，请暂停同步或换到不同步的目录。")
         owned.pop(pending_index, None)
         files = [{"path": str(destination / x["name"]), "size": x["size"], "sha256": x["sha256"]} for x in parts]
         total_size = len(payload) + sum(x["size"] for x in parts)

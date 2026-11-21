@@ -119,6 +119,24 @@ vm.runInContext(source.slice(start,end) +
   assert.match(el("#bk-runtime-detail").textContent,/fixture failure/);
   t.bk2StatusView({state:"cancelled",error:"已在排队阶段取消",operation:"backup",history:[]},"paperpiggy");
   assert.match(el("#bk-runtime-title").textContent,/已停止/);
+  t.bk2StatusView({state:"failed",error:"x",operation:"backup",history:[
+    {at:"2026-11-01T16:01:41+08:00",state:"started"},
+    {at:"2026-11-01T16:20:30+08:00",state:"failed",error:"old failure before success"},
+    {at:"2026-11-11T12:04:04+08:00",state:"success",result:{path:"D:/x/set.part0001.zip",part_count:2,total_size:6369126553,file_count:8717}},
+    {at:"2026-11-21T10:18:29+08:00",state:"started"},
+    {at:"2026-11-21T14:39:15+08:00",state:"failed",error:"读取失败：: '\\\\\\\\?\\\\D:\\\\备份\\\\a.backup.json'"},
+    {at:"2026-11-21T14:39:15+08:00",state:"failed",error:"读取失败：: '\\\\\\\\?\\\\D:\\\\备份\\\\a.backup.json'"}]},"paperpiggy");
+  const recent=el("#bk2-history").innerHTML;
+  assert.equal((recent.match(/bk2-history-item/g)||[]).length,2);
+  assert.doesNotMatch(recent,/old failure|已开始|\+08:00/);
+  assert.match(recent,/2026-11-21 14:39 · 失败/);
+  assert.match(recent,/'D:\\备份\\a\.backup\.json'/);
+  assert.match(recent,/2026-11-11 12:04 · 成功<\/b><span>2 个 ZIP，共 6\.37 GB，8717 个文件/);
+  t.bk2StatusView({state:"success",operation:"backup",history:[
+    {at:"2026-11-21T14:39:15+08:00",state:"failed",error:"old"},
+    {at:"2026-11-22T10:00:00+08:00",state:"started"},
+    {at:"2026-11-22T10:20:00+08:00",state:"success",result:{size:10}}]},"paperpiggy");
+  assert.equal((el("#bk2-history").innerHTML.match(/bk2-history-item/g)||[]).length,1);
   configReplies=[
     {state:"cancelled",error:"已在排队阶段取消",request_id:"cancel-request",finished_at:"now",result:{},history:[]},
     {items:[]}

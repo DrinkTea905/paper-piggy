@@ -431,6 +431,18 @@ class RunnerTests(unittest.TestCase):
             R.process_requests(self.current)
         run.assert_called_once()
 
+    def test_failed_backup_request_is_recorded_once(self):
+        from backup_jobs import BackupError
+        job = self.job("paperpiggy")
+        with patch.object(R, "store", return_value=self.current):
+            R.enqueue("paperpiggy", "backup", {}, self.current.base.parent)
+        with patch("backup_sources.validate_sources", side_effect=BackupError("fixture failure")):
+            R.process_requests(self.current)
+        failed = [x for x in self.current.history(job["job_id"]) if x.get("state") == "failed"]
+        self.assertEqual(1, len(failed))
+        self.assertEqual("fixture failure", failed[0]["error"])
+        self.assertEqual("任务失败", self.current.status(job["job_id"])["stage"])
+
     def test_cancelled_request_does_not_cancel_new_queue(self):
         job = self.job("paperpiggy")
         with patch.object(R, "store", return_value=self.current):

@@ -512,7 +512,11 @@ def process_requests(current):
         except Exception as exc:
             if request and request.get("job_id"):
                 try:
-                    current.finish(request["job_id"], "failed", str(exc))
+                    # claim() 内已把同一异常登记为失败时不再重复写一条历史。
+                    last = (current.history(request["job_id"], 1) or [{}])[-1]
+                    if not (last.get("state") == "failed" and last.get("error") == str(exc)
+                            and not current.status(request["job_id"]).get("running")):
+                        current.finish(request["job_id"], "failed", str(exc))
                     current.set_status(request["job_id"], pending=False, stage="任务失败")
                 except Exception:
                     pass
