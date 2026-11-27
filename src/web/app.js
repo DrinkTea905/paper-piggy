@@ -704,8 +704,9 @@
   // loaded 标志只在「加载成功」后由 loadDashboard/loadBrowse 自己置位；
   // 加载失败则保持 false，切走再切回会自动重试（旧版加载前就置 true，失败后只能刷新整页）。
   let dashLoaded = false, browseLoaded = false, wikiLoaded = false, agentLoaded = false;
+  const AGENT_OUTPUT_COLLAPSED_COUNT = 5;
   let agentOutputs = [];
-  let agentOutputsExpanded = false;
+  let agentOutputsExpanded = null;
   let agentSkills = [];
   let agentSkillsExpanded = true;
   let agentTasks = [];
@@ -3336,7 +3337,7 @@
     return isExp;
   }
   // C4：交付物——读 /agent/outputs（扫「交付物/*」子文件夹），保持最近修改在前。
-  //     默认折叠成标题栏，点「展开 ⌄」显示全部。
+  //     超过五项默认显示第一排（五项），可点「展开 ⌄」显示全部；不超过五项可点「收起 ⌃ / 展开 ⌄」折叠整区。
   async function openAgentFolder(which, btn) {
     const lbl = btn && btn.textContent;
     try {
@@ -3364,12 +3365,23 @@
     const box = $("#ag-outputs"); if (!box) return;
     const toggle = $("#ag-outputs-toggle");
     const empty = (msg) => { box.innerHTML = `<div class="ag-outputs-empty">${msg}</div>`; };
-    syncAgentExpandSection(toggle, box, agentOutputsExpanded);
+    if (agentOutputsExpanded === null) {
+      agentOutputsExpanded = agentOutputs.length <= AGENT_OUTPUT_COLLAPSED_COUNT;
+    }
+    if (toggle) {
+      toggle.hidden = agentOutputs.length === 0;
+      toggle.setAttribute("aria-expanded", String(agentOutputs.length > 0 && !!agentOutputsExpanded));
+      toggle.textContent = agentOutputsExpanded ? "收起 ⌃" : "展开 ⌄";
+    }
+    box.hidden = agentOutputs.length > 0 && agentOutputs.length <= AGENT_OUTPUT_COLLAPSED_COUNT && !agentOutputsExpanded;
     if (!agentOutputs.length) {
       empty(`还没有交付物。让 AI 助手把成品（论文 / 资料汇编 / 周报）写进「交付物」后，点右上角 <b>🔄 刷新</b> 即可看到。`);
       return;
     }
-    box.innerHTML = agentOutputs.map((o) => {
+    const items = agentOutputsExpanded
+      ? agentOutputs
+      : agentOutputs.slice(0, AGENT_OUTPUT_COLLAPSED_COUNT);
+    box.innerHTML = items.map((o) => {
       const fileCount = o.file_count != null ? o.file_count : (o.n_files || 0);
       const subdirCount = o.subdir_count || 0;
       const counts = o.name === "定时任务"
@@ -3400,7 +3412,8 @@
       renderAgentOutputs();
     } catch (e) {
       agentOutputs = [];
-      syncAgentExpandSection($("#ag-outputs-toggle"), box, agentOutputsExpanded);
+      const toggle = $("#ag-outputs-toggle"); if (toggle) toggle.hidden = true;
+      box.hidden = false;
       empty(`暂时读不到交付物列表（可能是后端未就绪）。稍后点 <b>🔄 刷新</b> 再试。`);
     }
   }
@@ -3585,6 +3598,7 @@
     if (osk) osk.addEventListener("click", () => openAgentFolder("skills", null));
     const outputToggle = $("#ag-outputs-toggle");
     if (outputToggle) outputToggle.addEventListener("click", () => {
+      if (!agentOutputs.length) return;
       agentOutputsExpanded = !agentOutputsExpanded;
       renderAgentOutputs();
     });
