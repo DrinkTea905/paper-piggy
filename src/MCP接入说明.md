@@ -28,7 +28,7 @@
 ## 提供的工具
 
 <!-- TOOLS:BEGIN 由 gen_mcp_doc.py 生成，勿手改 -->
-共 **43 个工具**（27 读 / 16 写）。工具清单与读写分类由 `gen_mcp_doc.py` 从代码生成。
+共 **48 个工具**（28 读 / 20 写）。工具清单与读写分类由 `gen_mcp_doc.py` 从代码生成。
 
 | 工具 | 类型 | 作用 |
 |---|---|---|
@@ -58,7 +58,7 @@
 | `list_sources(deep=all, category?, source_type?, limit=50, offset=0)` | 读 | 列出知识库里的文献题录。可用 deep='no' 筛出**尚未深索**的篇目——那些是还没被读过、值得 ingest 的源。用于驱动「逐篇读入并维护 wiki」的循环。 |
 | `mark_stale(page_id, stale=True, reason?)` | 写 | 把某综合页标记为「已过时」（或清除标记）。当新文献推翻了旧综合、或页内断言不再成立时用。标记后该页在检索里显著降权、界面显示 ⚠ 徽标。这是健康检查(lint)的核心动作：**不要**直接覆盖别人的结论页，而应标脏并写清理由。 |
 | `get_backlinks(key?, page_id?)` | 读 | 反查关联。给 key（论文）→ 哪些综合页引用了这篇（新增或更新这篇后，据此判断哪些页要标脏/重生）；给 page_id（综合页）→ 它引用了哪些论文、与哪些页互链、是不是孤儿页。这是 ingest 后「一篇源触及多个 wiki 页」和 lint 的起点。 |
-| `update_wiki_page(page_id, kind?, title?, content, sources?, mode=replace, links?)` | 写 | 建立或修改一个 wiki 综合页。这是维护 wiki 的主要动作。 kind 可选：answer(问答沉淀) / concept(概念) / topic(主题) / digest(资料汇编) / outline(选题框架) / **entity(实体页：作者、机构、案件、制度)** / **overview(总论页：随全库演进的核心论点)**。 mode='append' 把新内容与来源并入既有页；'replace' 整体重写，显式传 sources 时会替换旧来源，可用于修正失效 key；replace 不传 sources 则保留旧来源。 护栏：更新用户人工核验过的页时，只生成待审修改；核验版与检索结果保持不变，由用户在应用里比较后接受或放弃。每个论断带 [n] 引用，sources 填论文 key。 |
+| `update_wiki_page(page_id, kind?, title?, content, sources?, mode=replace, section?, if_revision?, request_id?, links?)` | 写 | 建立或修改一个 wiki 综合页。这是维护 wiki 的主要动作。 kind 可选：answer(问答沉淀) / concept(概念) / topic(主题) / digest(资料汇编) / outline(选题框架) / **entity(实体页：作者、机构、案件、制度)** / **overview(总论页：随全库演进的核心论点)**。 mode='append' 把新内容与来源并入既有页；'replace_section' 只替换指定小节标题（section）下的正文并保留其余小节；'replace' 整体重写，显式传 sources 时会替换旧来源，replace 不传 sources 则保留旧来源。 可选 if_revision（来自 get_wiki_page）做并发保护，可选 request_id 防重试重复写入。 护栏：已冻结（locked）页拒绝 Agent 写入；更新人工核验页时只生成待审修改，核验版和检索结果不变。每个论断带 [n] 引用，sources 填论文 key。 |
 | `set_wiki_theme(page_id, theme)` | 写 | 把一个 wiki 综合页固定到指定研究主题。只修改整理元数据，不改正文、引用或人工核验状态；theme 传空串时恢复按来源自动归类。适合把中英文重复标签收束到用户确认的研究主线。 |
 | `set_wiki_links(page_id, links, mode=replace)` | 写 | 维护某页的交叉链接（wiki 页之间的边）。**这是把一堆孤立页面变成一张知识图的唯一途径**——没有 links，每一页都是孤儿，lint 会一直报警。只接受已存在的页 id，自动拒绝自链与断链。已核验页的互链修改同样只进入待审稿。 |
 | `lint_wiki(min_mentions=2)` | 读 | 综合层健康体检（gist 三大操作之一）。查：孤儿页、已过时页、断链、无来源论文的页、未配 AI 模型时生成的降级页、被反复提及却没有独立页的概念、无效来源 key、重复标题/研究问题。返回问题清单 + 建议动作。定期跑一次，wiki 才不会烂掉。纯读，不改任何东西。 |
@@ -73,8 +73,13 @@
 | `add_statute(title, short_title?, issuing_authority, passed_date?, revision_dates?, effective_date?, legal_level?, document_number?, source_url, fetched_at?, version_label?, validity_status=现行有效, body_markdown, summary?, confirm=False, confirmation_token?, confirm_unofficial=False)` | 写 | 把 Agent 从官方网页取得并核对的法律法规/司法解释原文写入独立本地法规库，不修改 Zotero。必须先 confirm=false 预览校验；向用户展示版本、域名、条文范围与哈希并获确认后，再携 confirmation_token 调 confirm=true。非 gov.cn/court.gov.cn/spp.gov.cn 官方域名还必须显式 confirm_unofficial=true。正文必须是保留第X条结构的完整 Markdown，不得提交网页 HTML。可同时提交约150字中文 summary；它会在预检阶段经过与 submit_agent_summaries 相同的质量检查，并在确认入库后随条文一并嵌入。未提交时不会自动生成，入库结果会提示后续补写。 |
 | `pending_wiki_updates(offset=0, limit=30)` | 读 | 拉取服务器已算好的「待处理综合页更新」清单——最近深索/新增的文献可能影响哪些既有 wiki 页。深索一批文献后、或想主动维护 wiki 时**先调它**，直接拿到受影响页清单（无需自己对每篇跑 propose_wiki_updates），再逐页处理；有 next_offset 时必须继续翻页，直到全部清零。 |
 | `read_project_memory(scope=core, part=1)` | 读 | 读用户的**项目记忆**。它是换任何 AI 助手都共享的本地文件，按四类分区存放：项目记忆.md（长期偏好/固定规则/当前在做/各主题一行状态）、工具经验/<子域>.md（与研究题目无关的作业经验，一子域一文件）、主题档案/<主题名>.md（某一个研究主题的结论与待核项）、变更日志.md（流水账）。**每次任务开工前必须先调用一次本工具**（默认 scope="core"）；在此之前，服务器会拒绝其他 PaperPiggy 工具调用。调用一次 scope="core" 即视为已读、立即放行——**主题档案不读也能开工**，这是刻意的：用户要求「旧结论作废、从头重来」时，不取旧主题档案，它就物理上进不了你的上下文。initialize 只内联启动快照，不能替代本次读取。 |
-| `append_project_memory(text?, target=core, status?)` | 写 | 把一条长期信息追加进项目记忆。**先想清楚写哪一区**——写错地方会被拒绝，不是提醒： · target="core"（默认）：长期偏好、固定规则、已定决策、各主题一行状态。单条 ≤600 字、全文 ≤3 万字，超了写不进去。 · target="tools:<子域>"：与研究题目无关的作业经验（DOCX 生成链、检索方法、某工具的坑）。判据=换个题目还用得上。**一个作业子域一份文件**，子域名照抄 core 视图里的工具经验索引；新子域会查重。光写 target="tools" 也收，但会落进「未归类」等着维护时分流。 · target="topic:<主题名>"：**某一个研究主题**的结论、材料判断、待核项。一个研究主题只有一个档案——新建时会查重，撞了会被退回既有那份。档案不存在则自动新建并写入状态行。 · target="log"：历史流水账（变更日志.md）。 任务产生新的长期信息时结束前必须调用；若也写入了 Agent 自己的 auto memory，必须把同一实质内容同步到这里。纯追加、不覆盖已有内容。 |
+| `append_project_memory(text?, target=core, status?, request_id?)` | 写 | 把一条长期信息追加进项目记忆。**先想清楚写哪一区**——写错地方会被拒绝，不是提醒： · target="core"（默认）：长期偏好、固定规则、已定决策、各主题一行状态。单条 ≤600 字、全文 ≤3 万字，超了写不进去。 · target="tools:<子域>"：与研究题目无关的作业经验（DOCX 生成链、检索方法、某工具的坑）。判据=换个题目还用得上。**一个作业子域一份文件**，子域名照抄 core 视图里的工具经验索引；新子域会查重。光写 target="tools" 也收，但会落进「未归类」等着维护时分流。 · target="topic:<主题名>"：**某一个研究主题**的结论、材料判断、待核项。一个研究主题只有一个档案——新建时会查重，撞了会被退回既有那份。档案不存在则自动新建并写入状态行。 · target="log"：历史流水账（变更日志.md）。 任务产生新的长期信息时结束前必须调用；若也写入了 Agent 自己的 auto memory，必须把同一实质内容同步到这里。纯追加、不覆盖已有内容。 |
 | `set_memory_topic_status(topic, status, reason?)` | 写 | 只改某份**主题档案**首部的状态行，不追加正文（改一行不必重发全文）。状态只能是 进行中 / 已完成 / 已作废；建议一并写 reason，日后回看才知道为什么作废。档案不存在时不会顺手新建——建档案请走 append_project_memory(target="topic:<主题名>")，那条路上有查重闸。 |
+| `table_create(path, title?, description?, columns, if_revision?, request_id?)` | 写 | 新建或演进一张结构化研究矩阵表（存为 `0_Agent交付物/` 或 `0_Agent资料库/研究表格/` 下的 `*.table.json`）。适合裁判文书编码、跨国制度对比、修法沿革或文献—证据大表，避免大 Markdown 表格反复整表重写。 |
+| `table_query(path?, filters?, sort_by?, desc=False, offset=0, limit=100)` | 读 | 查询研究矩阵表：不传 path 时列出当前全部 `.table.json` 清单与行数/revision；传 path 时返回列定义、当前 revision 与筛选排序后的行。 |
+| `table_upsert(path, rows, key_column?, if_revision?, allow_external_keys=False, request_id?)` | 写 | 向研究矩阵表批量新增或按主键列更新若干行（只修改涉及行并自动递增 revision，支持 paper_key 库内文献校验与乐观并发锁）。 |
+| `table_patch(path, patches, if_revision?, allow_external_keys=False, request_id?)` | 写 | 按 row_id 精确修补研究矩阵表中的局部单元格（如补全待核样本的少数列）。 |
+| `table_export(path, format=csv, out_path?)` | 写 | 把结构化研究矩阵表导出为成品文件：csv（带 UTF-8 BOM 方便 Excel 打开）、docx（自动把 paper_key 展开为作者/题名并生成 Word 标准三线表）或 md。 |
 <!-- TOOLS:END -->
 
 > **信任模型（读—综合—写回闭环）**：agent 能**写**（建页、改页、建互链、标过时），**不能删**。

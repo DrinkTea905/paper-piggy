@@ -11,6 +11,7 @@ import config as C
 import document_formats as DF
 
 EXTRA_META_FIELDS = (
+    "doi", "issn", "volume", "issue",
     "url", "website_title", "access_date", "publisher", "place", "isbn", "edition", "series",
     "book_title", "university", "thesis_type", "institution", "report_type", "report_number",
     "conference_name", "proceedings_title", "court", "docket_number", "decision_date",

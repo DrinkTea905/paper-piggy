@@ -217,7 +217,11 @@ def load_papers(data_dir=None, library_id=1):
             else:
                 resolved = att_path  # 链接附件：绝对路径
             if resolved:
-                attachments.setdefault(pid, []).append({"format": fmt, "path": resolved})
+                attachments.setdefault(pid, []).append({
+                    "format": fmt,
+                    "path": resolved,
+                    "att_key": _clean(akey),
+                })
         # 收藏夹
         colname = dict(q("SELECT collectionID, collectionName FROM collections"))
         itemcol = {}

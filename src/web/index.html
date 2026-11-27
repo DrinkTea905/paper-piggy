@@ -161,6 +161,7 @@
           <div class="ag-ch-c">
             <h3>布置第一项研究任务</h3>
             <p class="ag-note">把四件事说清楚：<b>研究问题、资料范围、交付物、证据标准</b>。Agent 会先按<b>任务类型</b>区分论文初稿与综述，再按<b>领域</b>区分少年司法与其他领域，读取对应工作流。少年司法论文初稿<b>会先读本题的核心文献再谈结构</b>：读的是完整原文（逐页正文与印刷页码），检索片段和摘要都不算读过——骨架是从读到的东西里长出来的，不是从题目里想出来的。骨架搭好后，它会把<b>逐字标题树连同每章准备写什么</b>（回答哪个问题、用什么材料、得出什么判断）先贴给你看一眼；你没有异议它就接着写全文，<b>不会停下来干等</b>。读取主工作流时会自动附带《三大刊结构》——12 篇《中国法学》《法学研究》《中外法学》的逐字标题树与各章实测字数，骨架照真实期刊论文的样子搭。批量精读文献、引证核验和定稿前的独立校核<b>默认派子代理</b>并行做（起草正文各章不派，那是跨章约束）；你说“你自己做”就全程不派，标准一条不减。正文只划禁区、不设配额：破折号、对冲词、“值得注意的是”这类划重点词、“前引／同前注”、正文里出现他人姓名，一概不用。最终论文固定交付可打开并检查过的 <b>DOCX</b>，Markdown 只作中间稿或核验记录。其他领域的论文初稿使用“通用暂用版”，它<b>尚未经过其他部门法训练验证</b>。</p>
+            <p class="ag-note">在日常提问、检索、核对引文或论文写作对话中，AI 回复提及库内文献和页码时会自动附上可点击的<b>Zotero 跳页链接</b>（并在内置对话的来源标签提供直达按钮），点击即可在 Zotero 中打开对应 PDF 页面；这些本地跳转链接绝不会写入正式论文 DOCX 或导出表格。做补文献或实证整理时，还可以让 AI 从已有论文页底的法学脚注中挖掘缺失文献，或维护轻量结构化研究表格并导出为 CSV 或 Word 标准三线表。</p>
           </div>
         </section>
 
@@ -177,7 +178,7 @@
           <div class="ag-ch-n">6</div>
           <div class="ag-ch-c">
             <h3>让成果进入交付物和综述库</h3>
-            <p class="ag-note">论文初稿、资料汇编、报告等成品保存在<b>交付物</b>；研究方法、项目记忆与各研究主题的档案、参考格式和定时任务保存在<b>资料库</b>；需要长期复用和更新的结论进入<b>综述库</b>。你核验一页后，Agent 再修改它只会提交<b>待审稿</b>：原核验版继续显示和检索，你可以查看正文、来源与互链的具体差异，再接受并核验、先编辑或放弃。标题、参考来源和版本历史由 PaperPiggy 维护。</p>
+            <p class="ag-note">论文初稿、资料汇编、报告等成品保存在<b>交付物</b>；研究方法、项目记忆与各研究主题的档案、参考格式和定时任务保存在<b>资料库</b>；需要长期复用和更新的结论进入<b>综述库</b>。在「🤖 Agent」页可以直接查看并展开/收起<b>交付物</b>、现有<b>技能（工作流）</b>与<b>定时任务</b>，也可以随时点右上角<b>环境自检</b>做只读健康检查。在综述库里核验一页后，Agent 再修改它只会提交<b>待审稿</b>（原核验版继续生效），你可以比较正文、来源与互链差异后再决定接受或放弃；重要页面还可以开启<b>冻结保护</b>，禁止 AI 助手改动。</p>
           </div>
         </section>
 
@@ -425,7 +426,10 @@
             <p>成品、专属资料库、定时任务都在你本机、人类可读；换任何 AI 助手都能接着用。</p>
           </div>
         </div>
-        <div class="ag-run" id="ag-run"><span class="ag-dot"></span><span id="ag-run-txt">检查服务状态…</span></div>
+        <div class="ag-hero-tools">
+          <div class="ag-run" id="ag-run"><span class="ag-dot"></span><span id="ag-run-txt">检查服务状态…</span></div>
+          <button class="ag-doctor-btn" id="ag-doctor-btn" type="button" title="只读检查服务、模型、文献源、MCP 配置与综述健康状态">🩺 环境自检</button>
+        </div>
         <button class="ag-guide-open ag-hero-guide" id="ag-guide-open" type="button">
           <span class="ag-guide-ic">🧭</span>
           <span class="ag-guide-txt">
@@ -435,6 +439,8 @@
           <span class="ag-guide-cta">查看 →</span>
         </button>
       </section>
+
+      <section class="ag-doctor-panel ag-full" id="ag-doctor-panel" hidden></section>
 
       <!-- 应用更新不会覆盖用户改过的工作流/规约：有集中待合并版本时在这里显式要求处理。 -->
       <section class="ag-upgrade ag-full" id="ag-upgrade" hidden>
@@ -463,15 +469,21 @@
         <div class="ag-folder-path" id="ag-rely-path"></div>
       </section>
 
-      <!-- 📦 交付物主题（跨满一行，独立于上面两卡）——默认五项，可展开全部；新增交付物可直接刷新 -->
+      <!-- 📦 交付物（跨满一行，独立于上面两卡）——超过五项默认展示前五项，可展开/收起；新增交付物可直接刷新 -->
       <section class="ag-card ag-full ag-recent" id="ag-outputs-card">
-        <h3><span>📦 交付物主题</span><button class="ag-output-toggle" id="ag-outputs-toggle" type="button" aria-expanded="false" aria-controls="ag-outputs" hidden>展开全部</button><button class="ag-refresh" id="ag-outputs-refresh" type="button" title="重新扫描交付物文件夹（新写的交付物点这里就能看到，不用重启）">🔄 刷新</button></h3>
+        <h3><span>📦 交付物</span><button class="ag-output-toggle" id="ag-outputs-toggle" type="button" aria-expanded="false" aria-controls="ag-outputs" hidden>展开</button><button class="ag-refresh" id="ag-outputs-refresh" type="button" title="重新扫描交付物文件夹（新写的交付物点这里就能看到，不用重启）">🔄 刷新</button></h3>
         <div class="ag-outputs" id="ag-outputs"></div>
       </section>
 
+      <!-- 🛠️ 技能（工作流）（跨满一行）——扫本地「资料库/技能/*.md」展示可用工作流，默认五项可展开/收起 -->
+      <section class="ag-card ag-full ag-skills-card" id="ag-skills-card">
+        <h3><span>🛠️ 技能（工作流）</span><span class="ag-tasks-sub">AI 助手按任务自动选用的研究规程，也可在对话中直接点名使用</span><button class="ag-output-toggle" id="ag-skills-toggle" type="button" aria-expanded="false" aria-controls="ag-skills" hidden>展开</button><button class="ag-refresh" id="ag-skills-refresh" type="button" title="重新扫描技能文件夹（新建或修改的工作流点这里就能看到，不用重启）">🔄 刷新</button></h3>
+        <div class="ag-skills-list" id="ag-skills">读取技能工作流…</div>
+      </section>
+
       <!-- ⏰ 定时任务（跨满一行）——读本地「资料库/定时任务」展示；执行由用户的 AI 助手负责 -->
-      <section class="ag-tasks-card ag-full">
-        <div class="ag-tasks-h">⏰ 定时任务 <span class="ag-tasks-sub">让 AI 助手定期帮你搜集 / 综述（如少年司法周报）</span><button class="ag-refresh" id="ag-tasks-refresh" type="button" title="重新扫描定时任务文件夹（新建的任务点这里就能看到，不用重启）">🔄 刷新</button></div>
+      <section class="ag-tasks-card ag-full" id="ag-tasks-card">
+        <div class="ag-tasks-h"><span>⏰ 定时任务</span><span class="ag-tasks-sub">让 AI 助手定期帮你搜集 / 综述（如少年司法周报）</span><button class="ag-output-toggle" id="ag-tasks-toggle" type="button" aria-expanded="false" aria-controls="ag-tasks" hidden>展开</button><button class="ag-refresh" id="ag-tasks-refresh" type="button" title="重新扫描定时任务文件夹（新建的任务点这里就能看到，不用重启）">🔄 刷新</button></div>
         <div id="ag-tasks" class="ag-tasks-list">读取定时任务…</div>
         <p class="ag-note ag-tasks-note">任务定义存在「资料库 › 定时任务」（换 AI 助手也能读、照着重建）；成果落「交付物 › 定时任务」；每跑完一次，AI 会依时效内容更新综述库。<br><small>说明：定时触发由你的 AI 助手在它自己的日程里执行，PaperPiggy 只登记、展示并把成果入库；云端检索和 AI 助手是否联网，取决于你的检索引擎与助手配置。</small></p>
       </section>
@@ -552,7 +564,7 @@
               <div class="ag-trio-i"><b>📖 维护综述库</b><span>完整检查内容、来源、互链和主题归类；优先充实现有主题页，避免按单篇文献散建页面。说「维护我的知识库和综述主题归类」。</span></div>
               <div class="ag-trio-i"><b>🔭 跨学科发散与补文献</b><span>写作前打开理论视野：把窄题接到邻近学科、政治学 / 心理学等，理出该补的（尤其外文）文献。说「帮我把…这个题发散一下、看该补哪些文献」。</span></div>
             </div>
-            <p class="ag-note">这六条就是「📚 专属资料库 › 技能」里的顶层 .md 文件——<b>一个工作流一个文件、人类可读</b>。少年司法初稿的《三大刊结构》台账放在 <code>技能/参考手册/</code>，读取主工作流时自动附带，不会变成第七条工作流。你随时能和 AI 助手一起<b>把工作流和参考材料改成自己的习惯，或新建一条属于你的工作流</b>。应用更新时，没改过的出厂文件会自动升级；你改过的会原样保留，新版集中放进 <code>升级与备份/待合并/</code>，旧版恢复件进入 <code>升级与备份/历史备份/</code>。唯一例外是已经停用的旧《成文技艺手册》：它不再分发，升级时会删除应用管理的现存副本。Agent 页仍可查看其余模板的差异或复制任务给 Agent 合并。<button class="ag-link ag-linkbtn" id="ag-open-skills" type="button">打开技能文件夹</button></p>
+            <p class="ag-note">这六条就是「📚 专属资料库 › 技能」里的顶层 .md 文件——<b>一个工作流一个文件、人类可读</b>。少年司法初稿的《三大刊结构》台账放在 <code>技能/参考手册/</code>，读取主工作流时自动附带，不会变成第七条工作流。你随时能和 AI 助手一起<b>把工作流和参考材料改成自己的习惯，或新建一条属于你的工作流</b>。应用更新时，没改过的出厂文件会自动升级；你改过的会原样保留，新版集中放进 <code>升级与备份/待合并/</code>，旧版恢复件进入 <code>升级与备份/历史备份/</code>。唯一例外是已经停用的旧《成文技艺手册》：它不再分发，升级时会删除应用管理的现存副本。无需记住文件名——Agent 页中间新增的「<b>🛠️ 技能（工作流）</b>」面板会直接列出所有内置和自建工作流及其用途说明，点「打开文件」就能直达对应文件；Agent 页仍可查看模板差异或复制给 Agent 合并。<button class="ag-link ag-linkbtn" id="ag-open-skills" type="button">打开技能文件夹</button></p>
             <p class="ag-note">当然，直接说需求也行，比如：</p>
             <ul class="ag-prompts" id="ag-prompts"></ul>
           </div>
@@ -569,6 +581,7 @@
               <div class="ag-trio-i"><b>🧠 记忆</b><span>你的偏好、已定决策、当前进度，加上每个研究主题一份档案</span></div>
             </div>
             <p class="ag-note">前两个可从主页「📦 交付物 / 📚 专属资料库」一键打开查看；记忆是资料库里的 <code>记忆/</code> 文件夹，按四类分开存放：<code>项目记忆.md</code>（你的偏好、固定规则、已定决策、各主题一行状态）、<code>工具经验/</code>（<b>一个作业子域一份 .md</b>，装跟研究题目无关的作业经验，首行写着「何时该读」）、<code>主题档案/</code>（<b>一个研究主题一份 .md</b>，装该主题的结论与待核项，首行标着「进行中／已完成／已作废」）、<code>变更日志.md</code>（流水账）。每次任务开始，Agent 必须先完整读取 <code>项目记忆.md</code> 加上工具经验与主题档案的清单，未读时 PaperPiggy 会拒绝其他知识库工具；子域与主题的正文默认不读，用得上哪一份才单独取——攒了十几万字的经验也不会每次都灌进 Agent 的上下文。产生新的长期信息时，结束前必须写回对应那一份，写错地方会被拒绝。</p>
+            <p class="ag-note">如果遇到裁判文书样本编码、历次修法沿革、跨国制度对照或超过十行的文献证据矩阵，可以让 AI 用<b>结构化研究表格</b>（<code>*.table.json</code>，保存在交付物或资料库的「研究表格」中）按行增量维护，避免反复整表重写造成遗漏；需要交稿时，让它直接导出带编码表头的 CSV（适配 Excel）或自动生成符合规范的 <b>Word 标准三线表 DOCX</b>。此外，只要是在对话中提及库内文献页码（无论是日常问答还是写作核对），AI 回复都会自动附上<b>Zotero 跳页链接</b>，方便你核对原文，同时严格隔离在正式成品之外。</p>
             <p class="ag-note"><b>为什么要分开：</b>主题档案的正文<b>默认不进 Agent 的上下文</b>，它要用哪个主题才单独去取。这样你说「这篇推倒重来、以我的新文件为准、旧结论作废」时，旧结论是<b>物理上读不到</b>，而不是靠嘱咐它「别用」——后者不可靠。项目记忆本身也有 3 万字上限，防止它被越写越长、每次开工都拖着一大堆陈年细节。Claude Code、Codex 等仍可保留自己的私有记忆，但私有记忆不能替代这里，写入其中的本项目长期信息也必须同步一份。<b>换任何助手都从这份记忆接着干</b>。</p>
           </div>
         </section>
@@ -578,7 +591,7 @@
           <div class="ag-ch-n">5</div>
           <div class="ag-ch-c">
             <h3>综述库（wiki）：把问答沉淀成越用越厚的知识</h3>
-            <p class="ag-note">AI 每答一个问题、读完一篇文献，可把结论写成一页<b>带引用的综述</b>，下次直接命中、不重复劳动。综述页会按来源与现有 AI 主题的重合度<b>自动归类</b>；你也能新建主题、手动固定、搜索和排序。新文献可能推翻旧结论时，Agent 会先标记「过时」并写明理由。AI 新写的页标 <b>🤖 未核验</b>，在检索里会被<b>降权</b>；你核验后，Agent 的后续修改只进入<b>待审稿</b>，原核验版继续显示和检索。打开页面可查看正文差异、来源与互链增删，再选择接受并核验、先编辑待审稿或放弃。每次核验和待审处理都会记入历史。删除自定义主题只会恢复自动归类，<b>不会删除综述</b>。</p>
+            <p class="ag-note">AI 每答一个问题、读完一篇文献，可把结论写成一页<b>带引用的综述</b>，下次直接命中、不重复劳动。综述页会按来源与现有 AI 主题的重合度<b>自动归类</b>；你也能新建主题、手动固定、搜索和排序。AI 更新既有页面时支持<b>按小节局部替换</b>并校验页面版本号，防止并发或重试覆盖；新文献可能推翻旧结论时，Agent 会先标记「过时」并写明理由。AI 新写的页标 <b>🤖 未核验</b>，在检索里会被<b>降权</b>；你核验后，Agent 的后续修改只进入<b>待审稿</b>，原核验版继续显示和检索。如果某页已经定稿、不希望 AI 再作任何修改（包括不提交待审稿、不改互链或过时状态），可以在阅读弹窗里开启<b>🔒 冻结保护</b>。当你替换了某篇来源的 PDF 附件并重新深索后，体检还会标出「来源原文附件已更换」，提示复核对应小节页码。</p>
           </div>
         </section>
 
@@ -590,6 +603,7 @@
             <p class="ag-note"><b>已深索</b>的文献 AI 能读到带原文位置的正文；<b>未深索</b>的只有题录 + 摘要。想某方向问答更扎实，先去「📚 文献」深索它（拆成可检索的小段，可后台慢慢跑，不影响使用）。PDF 没有文字层的页面会自动做<b>本地 OCR</b>；不上传文献、不修改原文件。附件丢失或无法读取会分开提示；文献页筛选器可按正文来源和深索状态查看，每项直接显示当前范围的篇数。</p>
             <p class="ag-note">独立法规库中的原文按条切分，Agent 可直接要求读取“第二十条”，引注也按法规版本和条号生成。法规入库时可一并提交检索摘要；摘要会在预检阶段完成质量检查并绑定确认令牌。未提交时仍照常入库，但会计入“摘要缺失”，Agent 会明确提示调用 <code>submit_agent_summaries</code> 补写。</p>
             <p class="ag-note">应用维护索引时依据的是稳定的<b>产物契约</b>，不是“某个实现文件改过”。兼容升级会自动登记，不要求重新深索；只有切块结构、向量输入配方或检索引擎确实不兼容时才会阻止混用并给出重建原因。Agent 看到普通升级提示时应先读取健康检查详情，不要直接建议清空索引。</p>
+            <p class="ag-note">📑 <b>从法学页底脚注补齐缺口文献</b>——使用「帮我建议补充文献」时，PaperPiggy 会从相关论文的正文与页底脚注（兼容《法学引注手册》带“载”字与不带“载”字刊名、专著及外文引注，自动过滤法条并去重）深挖库外高被引文献，并附带所在期刊等级及“在 Zotero 打开该页”核对链接，帮你精准发现真正遗漏的核心文献。</p>
             <p class="ag-note">💡 <b>可选增强：检索摘要</b>——深索完，可让 AI 给每篇写一段检索摘要（⚙ 设置 → 建库 → 检索摘要），<b>检索更容易命中这篇</b>；不生成也不影响读取和引用已深索全文。摘要必须通过质量检查才算完成；文献页可筛选“摘要有效 / 异常 / 缺失”。选择“交给 Agent 生成”后，让 Agent 维护知识库时，它会读取正文、修复可处理的缺失/异常摘要并重嵌入；不会改走 PaperPiggy 自动生成摘要的 API。</p>
             <p class="ag-note">🔎 Agent 做<b>发现型检索</b>时会优先铺开不同文献，每篇最多带回 2 段，避免一篇文献挤满结果；选定关键来源后，再做<b>定向深读 / 论断核验</b>，此时可以读取该篇更多证据。内置四条研究工作流和“跨学科发散与补文献”工作流已经按这个顺序执行。</p>
             <div id="ag-deep" class="ag-deep">读取深索进度…</div>
@@ -612,7 +626,7 @@
             <h3>它会怎么动你的库（权限与安全）</h3>
             <p class="ag-note">备份与恢复可从顶栏“备份”或“设置 → 数据与维护”进入。顶栏会持续显示未解决的任务失败，点击优先定位失败任务；入口只导航，不提交备份或触发管理员授权。新备份每个普通 ZIP 实际不超过5GB，整套包含全部分包与总清单；大文件片段须由小猪重组并校验。恢复前拒绝缺包、错套和损坏，不把一个分包当作完整恢复点，保留数按套计算。首次配置或旧组件迁移由用户手动确认一次管理员授权；之后官方组件通过受保护通道自动更新，不再反复授权，Agent 不得自动触发 UAC。更新错误与备份结果分别记录，仍可用的旧后台和原计划保留，可普通权限重试。小猪和 Zotero 分别建立独立恢复点，后台可在软件运行时读取同批卷快照；快照或校验失败会保留已有成功版本，不直接复制活动数据库。小猪备份可包含专用浏览器资料，Zotero 备份包含整个所选 profile 与插件配置，均可能含敏感信息且不加密。Zotero 按所选目录现状备份，原本缺失的附件只记入状态摘要，不阻止成功；保留数据库原记录，恢复不会补出原本不存在的文件。Agent 不得为此补下载或扩大备份来源。恢复先到新目录验证；原位恢复必须由你退出对应程序并确认；恢复小猪自身须先断开 MCP，再退出小猪，完成前不要重开。回退件手动清理。浏览器热备恢复后，首次打开可能提示“恢复上次会话”，由用户在专用窗口自行核对并确认。Agent 不得代为确认，也不得自行关闭程序、覆盖资料、删除历史备份或更改 Zotero 同步设置。</p>
             <p class="ag-note">法规入库有独立双重保护：Agent 必须提交官方 URL、完整正文和版本信息，PaperPiggy 先做结构与哈希预检、保持零写入，向你展示预览；可选检索摘要也在此时完成质量检查并绑定令牌。只有你确认后，原确认令牌才能把同一份内容写进独立法规库，后续不同正文和摘要都不能静默替换，既有摘要也不会被重复入库覆盖。法规快照保存在本机，不会写入或修改 Zotero。</p>
-            <p class="ag-note">默认<b>只读检索 + 另存综合</b>，不直接改动你的原始文献或 Zotero；只有你明确要求并通过工具安全闸时，Agent 才能添加来源、建库或深索，从而更新 PaperPiggy 索引。Agent 新写的综述标 🤖 未核验；它更新已核验页时只提交待审稿，不覆盖、不重新索引核验版，只有你接受或编辑保存后才发布为新的核验版。综述页可一键删，是否核验由你决定。原始文献与写回成果保存在本机；云端检索和 AI 助手会接收完成对应任务所需的文本。下面是 AI 必须遵守的写回规约文件（可打开查看它被约束成什么样）：</p>
+            <p class="ag-note">默认<b>只读检索 + 另存综合</b>，不直接改动你的原始文献或 Zotero；只有你明确要求并通过工具安全闸时，Agent 才能添加来源、建库或深索，从而更新 PaperPiggy 索引。Agent 新写的综述标 🤖 未核验；它更新已核验页时只提交待审稿，不覆盖、不重新索引核验版，只有你接受或编辑保存后才发布为新的核验版。开启「🔒 冻结保护」的综述页会直接拒绝 Agent 的正文修改、互链调整和过时标记。此外，Agent 页顶部的「🩺 环境自检」只做本地只读检查，绝不修改任何数据或配置文件。综述页可一键删，是否核验与冻结由你决定。原始文献与写回成果保存在本机；云端检索和 AI 助手会接收完成对应任务所需的文本。下面是 AI 必须遵守的写回规约文件（可打开查看它被约束成什么样）：</p>
             <div class="ag-code"><code id="ag-schema"></code><button class="ag-copy" data-copy="ag-schema">复制路径</button></div>
             <p class="ag-note">💡 想更快看懂？「📚 专属资料库」里有一份通俗摘要 <code>AI写综述遵守的规约.md</code>（五条核心 + 指向上面这份完整规约）。</p>
           </div>
@@ -1092,6 +1106,7 @@
       <div class="modal-actions">
         <button id="wiki-hist" class="ghost" title="查看这一页的修改历史，可回滚">🕘 历史</button>
         <button id="wiki-edit" class="ghost" title="直接修改这一页的正文；保存后视为已核验">✏️ 编辑正文</button>
+        <button id="wiki-lock" class="ghost" type="button" title="冻结后禁止 AI 助手修改本页正文、互链或过时状态">🔒 冻结保护</button>
         <button id="wiki-discard" class="ghost danger">🗑 删除此综述</button>
         <button id="wiki-close" class="ghost">关闭</button>
       </div>

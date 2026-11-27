@@ -63,6 +63,10 @@ import jieba
 jieba.setLogLevel(logging.CRITICAL)      # jieba import 时把自己的 logger 设成 DEBUG，必须在其后压掉
 import journal_tiers as JT
 import cite_format as CF
+try:
+    import jump_link as JL
+except Exception:
+    JL = None
 
 _CJK_RE = re.compile(r'[\u4e00-\u9fff]')
 
@@ -445,16 +449,19 @@ def do_search(a):
         body, page, heading = _body_of(cid, p)
         fmt = p.get("fulltext_format") or ""
         wr = wrs.get(cid) or {}
+        is_meta = cid.endswith("::meta")
+        jump_url = (JL.make_jump_url(p["key"], None if is_meta else page) if JL else "")
         out.append({
             "chunk_id": cid, "key": p["key"], "score": round(sc, 4),
             "title": p.get("title", ""), "author": p.get("author", ""),
             "year": p.get("year", ""), "journal": p.get("journal", ""),
             "tier": tier_of(p), "journal_weight": wr.get("weight"),
-            "row_type": "meta" if cid.endswith("::meta") else "chunk",
+            "row_type": "meta" if is_meta else "chunk",
             "page": page,
             "printed_page": printed_of(p["key"], page) if (page and fmt == "pdf") else "",
             "heading": heading,
             "itemtype": p.get("itemtype", ""),
+            "jump_url": jump_url,
             "text": snippet(body, toks),
         })
 
@@ -475,7 +482,8 @@ def do_search(a):
               % (h["author"], h["journal"], h["year"], h["tier"], w, loc, h["score"]))
         if h["heading"]:
             print("    « %s »" % h["heading"])
-        print("    «key:%s»  %s" % (h["key"], h["chunk_id"]))
+        jstr = ("  [在 Zotero 打开](%s)" % h["jump_url"]) if h.get("jump_url") else ""
+        print("    «key:%s»  %s%s" % (h["key"], h["chunk_id"], jstr))
         print(textwrap.indent(textwrap.fill(h["text"], 74), "    "))
         print()
 
@@ -547,6 +555,10 @@ def do_read(a):
     budget = max(500, a.max_chars)
     used, shown, nxt = 0, 0, None
     head = f"# {title}\n（{p.get('author','')}｜{p.get('journal','')}｜{p.get('year','')}｜{fmt}｜共 {last} 页｜«key:{key}»）"
+    if JL:
+        ju_doc = JL.make_jump_url(key, None)
+        if ju_doc:
+            head += f"\nZotero 跳转：[打开原文]({ju_doc})"
     print(head + "\n")
     for pg in pages:
         n = int(pg.get("page", 0) or 0)
@@ -561,7 +573,8 @@ def do_read(a):
         used += len(txt); shown += 1
         loc = DF.locator_label(fmt, n, pg.get("heading"), pg.get("locator_label"))
         pr = printed_of(key, n) if fmt == "pdf" else ""
-        print(f"───── {loc}" + (f"　印刷页 {pr}" if pr else "") + " ─────")
+        ju_pg = JL.make_jump_url(key, n if fmt == "pdf" else None) if JL else ""
+        print(f"───── {loc}" + (f"　印刷页 {pr}" if pr else "") + (f"　[在 Zotero 打开该页]({ju_pg})" if ju_pg else "") + " ─────")
         print(txt + "\n")
     if nxt:
         print(f"[截断：已返回 {shown} 页 {used} 字。续读：kb.py read {key} --from {nxt}]")
@@ -585,6 +598,10 @@ def do_meta(a):
         print(f"{k:18} {v}")
     print(f"{'tier(实时)':18} {tier_of(p)}")
     print(f"{'深索':18} {'是' if is_deep(p) else '否'}")
+    if JL:
+        ju = JL.make_jump_url(a.key)
+        if ju:
+            print(f"{'Zotero跳转':16} {ju}")
     idx = _wiki_index()
     cited = [w.get("title","") for w in idx.get("pages", [])
              if any(s.get("key") == a.key for s in w.get("sources", []))]
@@ -609,6 +626,9 @@ def do_page(a):
     r = PM.printed(a.key, a.pdf_page) or {}
     if not r:
         sys.exit("没有该篇的页码映射（未深索或非 PDF）。")
+    if JL:
+        r = dict(r)
+        r["jump_url"] = JL.make_jump_url(a.key, a.pdf_page)
     print(json.dumps(r, ensure_ascii=False))
 
 
@@ -624,9 +644,11 @@ def do_quote(a):
               + "。可能是转述、OCR 差异，或该篇未深索——换更短的原话再试。")
         return
     for m in ms:
+        ju = JL.make_jump_url(m.get("key", ""), m.get("pdf_page")) if JL else ""
         print(f"«key:{m.get('key','')}» {m.get('locator','')}"
               + (f"　印刷页 {m['printed_page']}" if m.get("printed_page") else "")
-              + f"　{'精确' if m.get('exact') else '模糊'}")
+              + f"　{'精确' if m.get('exact') else '模糊'}"
+              + (f"　[在 Zotero 打开该页]({ju})" if ju else ""))
         print("    " + re.sub(r"\s+", " ", m.get("context", ""))[:300])
 
 
@@ -766,80 +788,99 @@ def paged(head, body, cont_cmd, part=1):
     return out
 
 
-MEM = ROOT / "0_Agent资料库" / "记忆"
-MEM_FILES = {"core": MEM / "项目记忆.md", "tools": MEM / "工具经验.md", "log": MEM / "变更日志.md"}
+def _agent_ws():
+    import agent_ws as AW
+    return AW
 
 
 def do_memory(a):
+    """项目记忆读/写统一委托 agent_ws（单一事实源：tools:<子域>、3 万字 / 600 字上限、原子追加）。"""
+    AW = _agent_ws()
     if a.append:
-        tgt = a.target or a.scope
-        if tgt.startswith("topic:"):
-            name = tgt.split(":", 1)[1].strip()
-            f = MEM / "主题档案" / f"{name}.md"
-            if not f.exists():
-                sys.exit(f"主题档案《{name}》不存在。一个研究主题只有一个档案——"
-                         f"先跑 kb.py memory topics 看是不是已有同题的另一个名字；"
-                         f"确要新建请在应用里用 append_project_memory 建，桥不代建。")
-        else:
-            f = MEM_FILES.get(tgt)
-            if not f:
-                sys.exit("target 只能是 core / tools / log / topic:<主题名>")
+        tgt = (a.target or a.scope or "core").strip()
         text = a.append.strip()
-        if tgt == "core":
-            if len(text) > 600:
-                sys.exit(f"core 单条上限 600 字，这条 {len(text)} 字。压缩后再写，"
-                         f"或改写进 tools／topic:／log。")
-            cur = len(f.read_text(encoding="utf-8").splitlines())
-            after = cur + len(text.splitlines()) + 3
-            if after > 200:
-                sys.exit(f"项目记忆.md 现 {cur} 行，写完会到 {after} 行，超过 200 行上限（与应用同规）。"
-                         f"先按《core 的容量治理》搬家：整段移进 变更日志.md 或 主题档案/，一字不删只换位置；"
-                         f"或把这条压到 {200 - cur - 3} 行以内。")
-        from datetime import date
-        block = f"\n<!-- {date.today().isoformat()} 由 AI 助手追加 -->\n{text}\n"
-        with open(f, "a", encoding="utf-8") as fh:
-            fh.write(block)
-        print(f"已追加到 {f.relative_to(ROOT)}（{len(text)} 字）")
-        if tgt == "core":
-            n = len(f.read_text(encoding="utf-8").splitlines())
-            print(f"提醒：项目记忆.md 现 {n} 行，上限 200 行。")
+        kind, _name = AW.parse_memory_target(tgt)
+        if kind == "topic" and AW.find_memory_topic(_name) is None:
+            names = [x["name"] for x in AW.list_memory_topics()]
+            tip = ("现有主题：" + "、".join(names)) if names else "当前还没有主题档案"
+            sys.exit(f"主题档案《{_name}》不存在。一个研究主题只有一个档案——"
+                     f"先跑 kb.py memory topics 核对是否已有同题（{tip}）；"
+                     f"确要新建请在应用里用 append_project_memory 建，桥不代建。")
+        ok, msg = AW.append_memory(target=tgt, text=text, allow_new_topic=False)
+        if not ok:
+            sys.exit(f"写项目记忆被拒绝：{msg}")
+        print(msg)
         return
 
-    scope = a.target or a.scope
-    if scope == "topics":
-        for f in sorted((MEM / "主题档案").glob("*.md")):
-            head = f.read_text(encoding="utf-8").splitlines()
-            status = next((l for l in head[:12] if "状态" in l), "")
-            print(f"{f.stem}　{status.strip()}")
+    scope = (a.target or a.scope or "core").strip()
+    low = scope.casefold()
+    if low == "topics":
+        items = AW.list_memory_topics()
+        if not items:
+            print("当前还没有任何主题档案。")
+            return
+        for t in items:
+            print(f"{t['name']}　状态: {t['status']}　（{t['chars']} 字 · {t['modified']}）")
         return
-    if scope.startswith("topic:"):
-        f = MEM / "主题档案" / f"{scope.split(':',1)[1].strip()}.md"
-        if not f.exists():
-            sys.exit(f"没有这份主题档案。可用的：\n  " +
-                     "\n  ".join(p.stem for p in sorted((MEM / '主题档案').glob('*.md'))))
-        print(f.read_text(encoding="utf-8"))
+    if low == "tools":
+        doms = AW.list_memory_tooldoms()
+        if not doms:
+            exists, body = AW.read_memory_section("tools")
+            if exists and body.strip():
+                print(paged("# 工具经验", body, "python3 kb.py memory tools", a.part))
+            else:
+                print("工具经验还没有任何子域。")
+            return
+        print(f"工具经验索引（{len(doms)} 个子域，正文未读）：\n")
+        for d in doms:
+            print(f"- {d['name']} ｜ 何时该读: {d['when']} ｜ {d['chars']} 字 ｜ 改于 {d['modified']}")
+        print("\n取正文：python3 kb.py memory \"tools:<子域>\"")
         return
-    if scope == "core":
+    for pre in ("tools:", "工具:", "工具："):
+        if low.startswith(pre.casefold()):
+            sub = scope[len(pre):].strip()
+            if not sub:
+                for d in AW.list_memory_tooldoms():
+                    print(f"- {d['name']} ｜ 何时该读: {d['when']}")
+                return
+            found, disp, body = AW.read_memory_tooldom(sub)
+            if not found:
+                avail = "、".join(x["name"] for x in AW.list_memory_tooldoms()) or "（无）"
+                sys.exit(f"没有名为「{sub}」的工具经验子域；可用：{avail}")
+            print(paged(f"# 工具经验《{disp}》", body, f"python3 kb.py memory \"tools:{disp}\"", a.part))
+            return
+    for pre in ("topic:", "主题:", "主题："):
+        if low.startswith(pre.casefold()):
+            sub = scope[len(pre):].strip()
+            found, disp, body = AW.read_memory_topic(sub)
+            if not found:
+                avail = "\n  ".join(x["name"] for x in AW.list_memory_topics())
+                sys.exit("没有这份主题档案。可用的：\n  " + (avail or "（无）"))
+            print(paged(f"# 主题档案《{disp}》", body, f"python3 kb.py memory \"topic:{disp}\"", a.part))
+            return
+    if low == "core":
         print(core_view(a.part)); return
-    f = MEM_FILES.get(scope)
-    if not f:
-        sys.exit("scope 只能是 core / tools / log / topics / topic:<主题名>")
-    print(paged(f"# {f.stem}", f.read_text(encoding="utf-8"),
-                f"python3 kb.py memory {scope}", a.part))
+    if low == "log":
+        exists, body = AW.read_memory_section("log")
+        if not exists:
+            sys.exit("变更日志.md 尚未创建。")
+        print(paged("# 变更日志", body, "python3 kb.py memory log", a.part))
+        return
+    if low == "all":
+        import mcp_server as MCP
+        head, body = MCP._memory_view_text(AW, full=True)
+        print(paged(head, body, "python3 kb.py memory all", a.part))
+        return
+    sys.exit("scope 只能是 core / tools / tools:<子域> / log / topics / topic:<主题名> / all")
 
 
 def core_view(part=1):
-    body = ""
-    for k in ("core", "tools"):
-        body += f"\n{'='*22} {MEM_FILES[k].name} {'='*22}\n\n" + MEM_FILES[k].read_text(encoding="utf-8")
-    body += f"\n{'='*22} 主题档案清单（正文默认不读）{'='*22}\n\n"
-    for f in sorted((MEM / "主题档案").glob("*.md")):
-        head = f.read_text(encoding="utf-8").splitlines()
-        st = next((l.strip() for l in head[:12] if "状态" in l), "")
-        body += f"- {f.stem}　{st}\n"
-    body += ("\n取某一份正文：python3 kb.py memory \"topic:<主题名>\"　"
-             "（用户说旧结论作废时，一份都不许取）\n")
-    return paged("# 项目记忆 · core 视图（＝ read_project_memory(scope=\"core\")）",
+    AW = _agent_ws()
+    import mcp_server as MCP
+    head, body = MCP._memory_view_text(AW, full=False)
+    if not body.strip():
+        return "（项目记忆尚未创建）"
+    return paged(head or "# 项目记忆 · core 视图（＝ read_project_memory(scope=\"core\")）",
                  body, "python3 kb.py memory core", part)
 
 
@@ -967,9 +1008,9 @@ def main():
     p.add_argument("key", nargs="?", default=""); p.add_argument("--article", default="")
     p.set_defaults(fn=do_statutes)
 
-    p = sub.add_parser("memory", help="项目记忆：core / tools / log / topics / topic:<名>")
+    p = sub.add_parser("memory", help="项目记忆：core / tools / tools:<子域> / log / topics / topic:<名> / all")
     p.add_argument("scope", nargs="?", default="core",
-                   help="core / tools / log / topics / topic:<主题名>")
+                   help="core / tools / tools:<子域> / log / topics / topic:<主题名> / all")
     p.add_argument("--target", default="", help="写入分区（与位置参数等价，写时用它更醒目）")
     p.add_argument("--append", default="", help="追加一条（唯一的写操作）")
     p.add_argument("--part", type=int, default=1, help="分段读（每段 15000 字，与应用同口径）")

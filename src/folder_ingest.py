@@ -153,13 +153,38 @@ def _head_text(source_path, key):
     return "\n".join((p.get("text", "") if isinstance(p, dict) else str(p)) for p in pages[:2]).strip()
 
 
+def _wait_file_settled(path, min_age=2.0, checks=3, delay=0.25):
+    """刚落盘或同步中的新文件先确认字节大小连续稳定，避免截断读或假损坏。"""
+    p = Path(path)
+    try:
+        st = p.stat()
+    except OSError:
+        return
+    if time.time() - st.st_mtime >= min_age:
+        return
+    last_size = st.st_size
+    for _ in range(checks):
+        time.sleep(delay)
+        try:
+            cur_size = p.stat().st_size
+        except OSError:
+            return
+        if cur_size == last_size and cur_size > 0:
+            return
+        last_size = cur_size
+
+
 def ingest_one(folder, source_path, cache):
+    _wait_file_settled(source_path)
     key = FS.stable_key(folder, source_path)
     with _CACHE_LOCK:                                   # R4：持锁读，避免与其它 worker/存盘竞争
         _entry = cache.get(key) or {}
         _has_meta = bool(_entry.get("meta"))
         _old_sha = _entry.get("sha1", "")
         _no_text = _entry.get("note") == "no_text"
+        _is_manual = (_entry.get("meta_source") == "manual")
+    if _is_manual and _has_meta and (not _old_sha or _file_sha1(source_path) == _old_sha):
+        return "skip"
     if _has_meta and not _no_text:
         # BF10：skip 前比对 sha1——同路径文件被替换（key 不变、内容变）时，旧题录/旧索引
         # 全是别篇文章的，必须作废重抽。旧条目没存 sha1 维持原跳过行为（不强制重抽全部老库）。

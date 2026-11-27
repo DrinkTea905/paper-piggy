@@ -706,7 +706,12 @@
   let dashLoaded = false, browseLoaded = false, wikiLoaded = false, agentLoaded = false;
   const AGENT_OUTPUT_COLLAPSED_COUNT = 5;
   let agentOutputs = [];
-  let agentOutputsExpanded = false;
+  let agentOutputsExpanded = null;
+  let agentSkills = [];
+  let agentSkillsExpanded = null;
+  let agentTasks = [];
+  let agentTasksUnrecognized = [];
+  let agentTasksExpanded = null;
   $$(".tab").forEach((t) => t.addEventListener("click", () => switchTab(t.dataset.tab)));
   // 顶栏页签可拖动排序（用户自定义顺序，存 localStorage，跨会话保留）
   (function wireTabReorder() {
@@ -2402,15 +2407,18 @@
     setWikiEditMode(false);
     $("#wiki-title").textContent = p.title || "综述页";
     const stale = p.stale ? " · ⚠ 可能已过时" : "";
+    const lockMeta = p.locked ? " · 🔒 已冻结" : "";
     // 降级页不显示「模型 fallback(no-key)」这种黑话——它对读者毫无意义，还让人以为是正常综述
     const themeMeta = p.theme ? ` · ${p.theme_source === "manual" ? "◆" : "◇"} ${p.theme}` : "";
     $("#wiki-meta").textContent = p.degraded
-      ? `基于 ${(p.sources || []).length} 篇 · 生成于 ${(p.generated_at || "").slice(0, 10)}${themeMeta}${stale}`
-      : `本地综述 · 基于 ${(p.sources || []).length} 篇 · 生成于 ${(p.generated_at || "").slice(0, 10)}${themeMeta} · 模型 ${p.generated_by || "未知"}${stale}`;
+      ? `基于 ${(p.sources || []).length} 篇 · 生成于 ${(p.generated_at || "").slice(0, 10)}${themeMeta}${lockMeta}${stale}`
+      : `本地综述 · 基于 ${(p.sources || []).length} 篇 · 生成于 ${(p.generated_at || "").slice(0, 10)}${themeMeta} · 模型 ${p.generated_by || "未知"}${lockMeta}${stale}`;
     // 人工核验支持双向切换；人工正文编辑保存后也会落 verified_at。
     const flag = $("#wiki-flag");
+    const lockBadge = p.locked
+      ? `<span class="wk-flag locked" title="已冻结：禁止 AI 助手修改本页正文、互链或过时状态">🔒 已冻结</span>` : "";
     if (flag) {
-      flag.innerHTML = p.degraded
+      flag.innerHTML = (p.degraded
         ? `<span class="wk-flag degraded" title="${esc(p.degraded_reason || "")}">⚠ 证据清单（非 AI 综述）</span>`
         : p.pending_review
         ? `<span class="wk-flag pending" title="Agent 的修改尚未发布；当前仍是人工核验版"><span class="status-dot" aria-hidden="true"></span>有待审修改</span>` +
@@ -2419,7 +2427,8 @@
         ? `<span class="wk-flag ok" title="已于 ${esc(p.verified_at)} 人工核验"><span class="status-dot" aria-hidden="true"></span>已核验</span>` +
           `<button id="wiki-verify" class="ghost2b wiki-verify" data-verified="1" title="撤销这一页的人工核验状态">改回未核验</button>`
         : `<span class="wk-flag${p.by_agent ? " agent" : ""}" title="${p.by_agent ? "agent 写回、未经人工核验，请核对来源原文" : "尚未人工核验"}"><span class="status-dot" aria-hidden="true"></span>未核验</span>` +
-          `<button id="wiki-verify" class="ghost2b wiki-verify" data-verified="0" title="确认内容与来源无误后，把这一页标为已人工核验">标为已核验</button>`;
+          `<button id="wiki-verify" class="ghost2b wiki-verify" data-verified="0" title="确认内容与来源无误后，把这一页标为已人工核验">标为已核验</button>`)
+        + lockBadge;
       const verifyBtn = $("#wiki-verify");
       if (verifyBtn) verifyBtn.addEventListener("click", async () => {
         const nextVerified = verifyBtn.dataset.verified !== "1";
@@ -2663,6 +2672,19 @@
   }
   (function wireWikiModal() {
     const close = $("#wiki-close"); if (close) close.addEventListener("click", () => ($("#wiki-modal").hidden = true));
+    const lockBtn = $("#wiki-lock");
+    if (lockBtn) lockBtn.addEventListener("click", async () => {
+      const id = lockBtn.dataset.id; if (!id || lockBtn.disabled) return;
+      const nextLocked = lockBtn.dataset.locked !== "1";
+      lockBtn.disabled = true;
+      try {
+        await jpost("/wiki/lock/" + encodeURIComponent(id), { locked: nextLocked });
+        if (wikiLoaded) await loadWikiList("silent");
+        renderWiki(await jget("/wiki/page/" + encodeURIComponent(id)));
+        flashToast(nextLocked ? "已冻结保护，禁止 AI 助手改动本页。" : "已解除冻结保护。");
+      } catch (e) { flashToast("切换冻结状态失败：" + (e.message || e)); }
+      finally { lockBtn.disabled = false; }
+    });
     const reviewOpen = $("#wiki-review-open");
     if (reviewOpen) reviewOpen.addEventListener("click", () => openWikiReview(activeWikiPage && activeWikiPage.id));
     const reviewClose = $("#wiki-review-close");
@@ -2798,6 +2820,7 @@
       : p.verified_at
       ? `<span class="wk-flag ok" title="已于 ${esc(p.verified_at)} 人工核验"><span class="status-dot" aria-hidden="true"></span>已核验</span>`
       : `<span class="wk-flag${p.by_agent ? " agent" : ""}" title="${p.by_agent ? "agent 写回、未经人工核验" : "尚未人工核验"}"><span class="status-dot" aria-hidden="true"></span>未核验</span>`;
+    const locked = p.locked ? `<span class="wk-flag locked" title="已冻结：禁止 AI 助手修改正文、互链或过时状态">🔒 已冻结</span>` : "";
     const stale = p.stale ? `<span class="wk-flag stale" title="有新论文可能影响此综述，建议让 Agent 读取新增文献后更新">⚠ 可能已过时</span>` : "";
     // 整卡可点即打开；整理主题与删除收进「…」，让列表优先服务阅读。
     div.className += " wk-card-click";
@@ -2808,7 +2831,7 @@
         `<span class="wk-title">${esc(p.title || "(无标题)")}</span></div>` +
       `<div class="wk-card-meta"><span>${p.theme_source === "manual" ? "◆" : "◇"} ${esc(p.theme || "未分类")}</span>` +
         `<span>基于 ${num(p.n_sources)} 篇</span><span>${esc((p.generated_at || "").slice(0, 10) || "未知日期")}</span></div></div>` +
-      `<span class="wk-card-status">${prov}${stale}</span>` +
+      `<span class="wk-card-status">${prov}${locked}${stale}</span>` +
       `<button class="wk-card-more" title="整理或删除" aria-label="整理或删除">•••</button>` +
       `<div class="wk-card-pop" hidden><label>固定到主题<select class="wk-card-theme">${themeOptions}</select></label>` +
         `<button class="wk-card-del">删除这条综述</button></div>`;
@@ -2954,8 +2977,9 @@
                        no_sources: "没有来源论文", degraded: "降级页（未配 AI 模型时生成）",
                        missing_concept: "被反复提及、却没有独立页的概念",
                        invalid_source: "来源指向不存在的文献",
+                       source_replaced: "来源原文附件已更换",
                        duplicate_scaffold: "重复标题或研究问题" };
-  // 体检建议的大白话版（给法学用户看；后端 suggestions 带工具名是给 agent 的，这里不用）
+  // 体检建议的平实分析版（给法学研究者看；后端 suggestions 带工具名是给 agent 的，这里不用）
   const LINT_FIX = {
     orphan: (n) => `有 ${n} 页没跟其它综述连起来（成了"孤岛"）。可以让 AI 把它们和相关的页互相关联，以后顺着就能查到；或者确认它们本来就该单独放。`,
     stale: (n) => `有 ${n} 页被标了"可能过时"。找几篇新文献让 AI 重写更新，再把过时标记去掉就行。`,
@@ -2966,6 +2990,7 @@
     degraded: (n) => `有 ${n} 页是没配 AI 模型时生成的，其实只是原文片段的清单、不是真正的综述。请让 Agent 读取原始文献后重写。`,
     missing_concept: (n, items) => `有些概念被好几页反复提到、却没有自己的独立页（比如${(items || []).slice(0, 3).map((x) => "「" + x.concept + "」").join("、")}）。可以让 AI 各写一页，查起来更方便。`,
     invalid_source: (n) => `有 ${n} 个来源编号在当前文献库里不存在，通常是复制时错了一位。让 AI 按候选编号回查原文后修正，不能凭猜测替换。`,
+    source_replaced: (n) => `有 ${n} 条引用的底层原文文件在综述生成后被替换并重提过，页码或段落表述可能变化。建议先核对新版原文再局部更新对应小节。`,
     duplicate_scaffold: (n) => `有 ${n} 页把标题或研究问题重复写了两遍。让 AI 保留一份正文外壳后重写即可。`,
   };
   async function runLint() {
@@ -3147,6 +3172,8 @@
     ["“记住我偏好脚注 / 这个项目定了 XX”", "append_project_memory", "把你的偏好、已定决策记进项目记忆；研究主题的结论、跟题目无关的作业经验各自另存一份档案，换任何助手接入都从这接着干"],
     ["“这个题结论作废了 / 已经写完了”", "set_memory_topic_status", "把某个研究主题的档案标成进行中 / 已完成 / 已作废，作废的旧结论下次不会再被拿来用"],
     ["“看看有哪些综述该更新了”", "pending_wiki_updates", "拉新文献影响了哪些既有综述页，逐页判断标脏 / 重写"],
+    ["“从论文脚注里挖我缺了哪些核心文献”", "suggest_new_sources", "结合正文与法学页底脚注深挖库外高频引用文献，按期刊层级排序并附出处页码链接"],
+    ["“建一张实证样本/制度对照研究表格并导出”", "table_create", "增量维护多行研究矩阵表（样本编码/修法沿革/文献矩阵），并导出 CSV 或 Word 三线表"],
   ];
   const AG_PROMPTS = [
     "请用「论文初稿（少年司法版）」研究监督考察条件控制；先完整精读本题核心文献，再参照《三大刊结构》台账搭骨架。把逐字标题树连同每章要回答的问题、使用的材料和准备得出的判断给我看一眼，我没有异议就继续写全文。",
@@ -3293,11 +3320,28 @@
     renderAgentTools();     // 静态表，无需等网络
     renderAgentPrompts();
     loadAgentDeep();        // 复用 /index/status
+    loadAgentOutputs();     // 📦 交付物（默认五项，可展开/收起；读本地「交付物/*」）
+    loadAgentSkills();      // 🛠️ 技能（工作流）（读本地「资料库/技能/*.md」）
     loadAgentTasks();       // ⏰ 定时任务（读本地「资料库/定时任务」）
-    loadAgentOutputs();     // 📦 交付物主题（默认五项，可展开全部；读本地「交付物/*」）
   }
-  // C4：交付物主题——读 /agent/outputs（扫「交付物/*」子文件夹），保持最近修改在前。
-  //     默认显示五项；超过五项时可展开全部。空/失败也显示引导。
+  function syncAgentExpandSection(toggle, box, count, expanded, onInitExpanded) {
+    let isExp = expanded;
+    if (isExp === null) {
+      isExp = count <= AGENT_OUTPUT_COLLAPSED_COUNT;
+      if (onInitExpanded) onInitExpanded(isExp);
+    }
+    if (toggle) {
+      toggle.hidden = count === 0;
+      toggle.setAttribute("aria-expanded", String(count > 0 && !!isExp));
+      toggle.textContent = isExp ? "收起 ⌃" : "展开 ⌄";
+    }
+    if (box) {
+      box.hidden = count > 0 && count <= AGENT_OUTPUT_COLLAPSED_COUNT && !isExp;
+    }
+    return isExp;
+  }
+  // C4：交付物——读 /agent/outputs（扫「交付物/*」子文件夹），保持最近修改在前。
+  //     超过五项默认显示五项、可点「展开 ⌄」显示全部；不超过五项可点「收起 ⌃ / 展开 ⌄」折叠整区。
   async function openAgentFolder(which, btn) {
     const lbl = btn && btn.textContent;
     try {
@@ -3325,19 +3369,12 @@
     const box = $("#ag-outputs"); if (!box) return;
     const toggle = $("#ag-outputs-toggle");
     const empty = (msg) => { box.innerHTML = `<div class="ag-outputs-empty">${msg}</div>`; };
-    const canExpand = agentOutputs.length > AGENT_OUTPUT_COLLAPSED_COUNT;
-    if (toggle) {
-      toggle.hidden = !canExpand;
-      toggle.setAttribute("aria-expanded", String(canExpand && agentOutputsExpanded));
-      toggle.textContent = agentOutputsExpanded
-        ? "收起⌃"
-        : `展开全部（${agentOutputs.length}）⌄`;
-    }
+    const isExp = syncAgentExpandSection(toggle, box, agentOutputs.length, agentOutputsExpanded, (v) => { agentOutputsExpanded = v; });
     if (!agentOutputs.length) {
-      empty(`还没有交付物主题。让 AI 助手把成品（论文 / 资料汇编 / 周报）写进「交付物」后，点右上角 <b>🔄 刷新</b> 即可看到。`);
+      empty(`还没有交付物。让 AI 助手把成品（论文 / 资料汇编 / 周报）写进「交付物」后，点右上角 <b>🔄 刷新</b> 即可看到。`);
       return;
     }
-    const items = agentOutputsExpanded
+    const items = isExp
       ? agentOutputs
       : agentOutputs.slice(0, AGENT_OUTPUT_COLLAPSED_COUNT);
     box.innerHTML = items.map((o) => {
@@ -3349,7 +3386,7 @@
            subdirCount ? `${subdirCount} 个子文件夹` : null];
       const stats = [...counts, o.has_readme ? "含说明" : null]
         .filter(Boolean).map((x) => `<span>${x}</span>`).join(`<i class="ag-sep">·</i>`);
-      return `<div class="ag-output-item" role="button" tabindex="0" data-output="${esc(o.name)}" title="打开这个交付物主题">`
+      return `<div class="ag-output-item" role="button" tabindex="0" data-output="${esc(o.name)}" title="打开这个交付物">`
         + `<div class="ag-output-name"><span class="ag-output-ico">📁</span><span>${esc(o.name)}</span></div>`
         + `<div class="ag-output-meta"><span>${o.mtime ? esc(o.mtime) : "日期未知"}</span></div>`
         + `<div class="ag-output-stats">${stats}</div></div>`;
@@ -3375,55 +3412,149 @@
       empty(`暂时读不到交付物列表（可能是后端未就绪）。稍后点 <b>🔄 刷新</b> 再试。`);
     }
   }
+  // 🛠️ 技能（工作流）：读 /agent/workflows（扫「资料库/技能/*.md」），展示可用研究工作流。
+  async function openAgentWorkflow(filename, btn) {
+    if (!filename) return;
+    const old = btn && btn.textContent;
+    if (btn) btn.disabled = true;
+    try {
+      const r = await jpost("/agent/open_workflow", { filename });
+      if (r && r.ok === false) throw new Error(r.detail || r.msg || "打开失败");
+      if (btn) { btn.textContent = "已定位 ✓"; setTimeout(() => { btn.textContent = old; }, 1400); }
+    } catch (e) {
+      flashToast("打开工作流文件失败：" + (e.message || e));
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+  function renderAgentSkills() {
+    const box = $("#ag-skills"); if (!box) return;
+    const toggle = $("#ag-skills-toggle");
+    const isExp = syncAgentExpandSection(toggle, box, agentSkills.length, agentSkillsExpanded, (v) => { agentSkillsExpanded = v; });
+    if (!agentSkills.length) {
+      box.innerHTML = `<div class="ag-tasks-empty">还没有检测到工作流文件。连接 AI 助手或点右上角 <b>🔄 刷新</b> 初始化 <code>0_Agent资料库/技能/</code> 即可看到。</div>`;
+      return;
+    }
+    const items = isExp ? agentSkills : agentSkills.slice(0, AGENT_OUTPUT_COLLAPSED_COUNT);
+    box.innerHTML = items.map((s) => {
+      const roleClass = s.role === "自建" ? " custom" : (s.role === "辅助" ? " aux" : "");
+      const badges = [
+        `<span class="ag-skill-badge${roleClass}">${esc(s.role || (s.builtin ? "内置" : "自建"))}</span>`,
+        s.builtin && s.customized ? `<span class="ag-skill-badge edited">已定制</span>` : "",
+        (s.companions || []).length ? `<span class="ag-skill-badge companion">附带参考手册</span>` : "",
+      ].filter(Boolean).join("");
+      return `<div class="ag-skill-item">`
+        + `<div class="ag-skill-main">`
+        + `<div class="ag-skill-title-row"><span class="ag-skill-name">${esc(s.name || s.filename)}</span>${badges}</div>`
+        + (s.summary ? `<div class="ag-skill-summary">${esc(s.summary)}</div>` : "")
+        + `<div class="ag-skill-meta"><span>${esc(s.filename)}</span><span>更新于 ${esc(s.mtime || "未知")}</span></div>`
+        + `</div>`
+        + `<button class="ghost sm ag-skill-open" type="button" data-wf="${esc(s.filename)}" title="在文件管理器中定位该工作流">打开文件</button>`
+        + `</div>`;
+    }).join("");
+    box.querySelectorAll(".ag-skill-open").forEach((b) => {
+      b.addEventListener("click", () => openAgentWorkflow(b.dataset.wf, b));
+    });
+  }
+  async function loadAgentSkills() {
+    const box = $("#ag-skills"); if (!box) return;
+    try {
+      const d = await jget("/agent/workflows");
+      agentSkills = (d && d.workflows) || [];
+      renderAgentSkills();
+    } catch (e) {
+      agentSkills = [];
+      const toggle = $("#ag-skills-toggle"); if (toggle) toggle.hidden = true;
+      box.innerHTML = `<div class="ag-tasks-empty">暂时读不到工作流列表（可能是后端未就绪）。稍后点 <b>🔄 刷新</b> 再试。</div>`;
+    }
+  }
+  function renderAgentTasks() {
+    const box = $("#ag-tasks"); if (!box) return;
+    const toggle = $("#ag-tasks-toggle");
+    const diagnostic = () => {
+      if (!agentTasksUnrecognized.length) return "";
+      const missing = agentTasksUnrecognized.filter((x) => x.reason === "missing_task_file").length;
+      const failed = agentTasksUnrecognized.filter((x) => x.reason === "read_error").length;
+      const names = agentTasksUnrecognized.map((x) => esc(x.name || "未命名目录")).join("、");
+      const reasons = [missing ? `${missing} 个缺少「任务.md」` : "", failed ? `${failed} 个读取失败` : ""]
+        .filter(Boolean).join("，");
+      return `<div class="ag-task-diagnostic"><span>发现 ${agentTasksUnrecognized.length} 个未识别任务目录（${reasons}）：${names}</span>`
+        + `<button class="ag-open-taskdir" type="button">打开定时任务文件夹</button></div>`;
+    };
+    const wireDiagnostic = () => {
+      const b = box.querySelector(".ag-open-taskdir");
+      if (b) b.addEventListener("click", () => openAgentFolder("tasks", b));
+    };
+    const isExp = syncAgentExpandSection(toggle, box, agentTasks.length, agentTasksExpanded, (v) => { agentTasksExpanded = v; });
+    if (!agentTasks.length) {
+      box.innerHTML = agentTasksUnrecognized.length
+        ? diagnostic()
+        : `<div class="ag-tasks-empty">还没有定时任务。想让 AI 助手定期帮你搜集/综述（如每周少年司法动态），`
+          + `对它说「<b>帮我建一个每周一早上的少年司法周报定时任务</b>」，它会把任务定义写进 `
+          + `<code>资料库/定时任务/</code>，并在它自己的日程里排期。</div>`;
+      wireDiagnostic();
+      return;
+    }
+    const items = isExp ? agentTasks : agentTasks.slice(0, AGENT_OUTPUT_COLLAPSED_COUNT);
+    box.innerHTML = items.map((t) => {
+      const isDraft = t.has_enabled === false;
+      const off = (t.enabled === false || isDraft) ? " off" : "";
+      const b = [];
+      if (t.freq) b.push(`<span class="ag-task-freq">${esc(t.freq)}</span>`);
+      if (isDraft) b.push(`<span class="ag-task-freq" style="color:#a16207;background:rgba(161,98,7,.14)">草稿·未确认启用</span>`);
+      else if (t.enabled === false) b.push(`<span class="ag-task-freq" style="color:#94a3b8;background:rgba(148,163,184,.12)">已暂停</span>`);
+      if (t.last_run) b.push(`<span class="ag-task-freq" style="color:#0f766e;background:rgba(15,118,110,.10)" title="AI 上次跑这个任务的时间">上次执行 ${esc(t.last_run)}</span>`);
+      else if (!isDraft && t.enabled !== false) b.push(`<span class="ag-task-freq" style="color:#b45309;background:rgba(180,83,9,.10)" title="任务显示启用，但还没有执行记录——确认你的 AI 助手真的在它自己的日程里排期了">尚无执行记录</span>`);
+      return `<div class="ag-task-item${off}"><span class="ag-task-name">${esc(t.name || "未命名任务")}</span>`
+        + b.join("")
+        + `<span class="ag-task-desc">${esc(t.desc || "")}</span></div>`;
+    }).join("") + diagnostic();
+    wireDiagnostic();
+  }
   // ⏰ 定时任务：读后端 /agent/tasks（扫「资料库/定时任务/*/任务.md」）。端点缺失/空时优雅降级。
   async function loadAgentTasks() {
     const box = $("#ag-tasks"); if (!box) return;
     try {
       const d = await jget("/agent/tasks");
-      const items = (d && d.tasks) || [];
-      const unrecognized = (d && d.unrecognized) || [];
-      const diagnostic = () => {
-        if (!unrecognized.length) return "";
-        const missing = unrecognized.filter((x) => x.reason === "missing_task_file").length;
-        const failed = unrecognized.filter((x) => x.reason === "read_error").length;
-        const names = unrecognized.map((x) => esc(x.name || "未命名目录")).join("、");
-        const reasons = [missing ? `${missing} 个缺少「任务.md」` : "", failed ? `${failed} 个读取失败` : ""]
-          .filter(Boolean).join("，");
-        return `<div class="ag-task-diagnostic"><span>发现 ${unrecognized.length} 个未识别任务目录（${reasons}）：${names}</span>`
-          + `<button class="ag-open-taskdir" type="button">打开定时任务文件夹</button></div>`;
-      };
-      const wireDiagnostic = () => {
-        const b = box.querySelector(".ag-open-taskdir");
-        if (b) b.addEventListener("click", () => openAgentFolder("tasks", b));
-      };
-      if (!items.length) {
-        box.innerHTML = unrecognized.length
-          ? diagnostic()
-          : `<div class="ag-tasks-empty">还没有定时任务。想让 AI 助手定期帮你搜集/综述（如每周少年司法动态），`
-            + `对它说「<b>帮我建一个每周一早上的少年司法周报定时任务</b>」，它会把任务定义写进 `
-            + `<code>资料库/定时任务/</code>，并在它自己的日程里排期。</div>`;
-        wireDiagnostic();
-        return;
-      }
-      box.innerHTML = items.map((t) => {
-        const isDraft = t.has_enabled === false;   // 没写「启用」字段=草稿，不显示成绿灯
-        const off = (t.enabled === false || isDraft) ? " off" : "";
-        const b = [];
-        if (t.freq) b.push(`<span class="ag-task-freq">${esc(t.freq)}</span>`);
-        if (isDraft) b.push(`<span class="ag-task-freq" style="color:#a16207;background:rgba(161,98,7,.14)">草稿·未确认启用</span>`);
-        else if (t.enabled === false) b.push(`<span class="ag-task-freq" style="color:#94a3b8;background:rgba(148,163,184,.12)">已暂停</span>`);
-        // C1：可观测——有「上次执行」就显示；启用但从无执行记录 → 中性提示，戳破「显示启用≠真在跑」
-        if (t.last_run) b.push(`<span class="ag-task-freq" style="color:#0f766e;background:rgba(15,118,110,.10)" title="AI 上次跑这个任务的时间">上次执行 ${esc(t.last_run)}</span>`);
-        else if (!isDraft && t.enabled !== false) b.push(`<span class="ag-task-freq" style="color:#b45309;background:rgba(180,83,9,.10)" title="任务显示启用，但还没有执行记录——确认你的 AI 助手真的在它自己的日程里排期了">尚无执行记录</span>`);
-        return `<div class="ag-task-item${off}"><span class="ag-task-name">${esc(t.name || "未命名任务")}</span>`
-          + b.join("")
-          + `<span class="ag-task-desc">${esc(t.desc || "")}</span></div>`;
-      }).join("") + diagnostic();
-      wireDiagnostic();
+      agentTasks = (d && d.tasks) || [];
+      agentTasksUnrecognized = (d && d.unrecognized) || [];
+      renderAgentTasks();
     } catch (e) {
+      agentTasks = [];
+      agentTasksUnrecognized = [];
+      const toggle = $("#ag-tasks-toggle"); if (toggle) toggle.hidden = true;
       // 端点尚未就绪（旧后端）或读失败：显示引导而非报错
       box.innerHTML = `<div class="ag-tasks-empty">还没有定时任务。对 AI 助手说「帮我建一个每周定时任务」即可，`
         + `任务定义会存进 <code>资料库/定时任务/</code>。</div>`;
+    }
+  }
+  async function loadAgentDoctor() {
+    const panel = $("#ag-doctor-panel"), btn = $("#ag-doctor-btn");
+    if (!panel || !btn) return;
+    if (!panel.hidden) { panel.hidden = true; return; }
+    btn.disabled = true;
+    const old = btn.textContent;
+    btn.textContent = "自检中…";
+    try {
+      const d = await jget("/agent/doctor");
+      const badge = { ok: "正常", warn: "留意", error: "异常" };
+      const rows = (d.checks || []).map((c) =>
+        `<div class="ag-doc-row ${esc(c.status || "warn")}">`
+        + `<span class="ag-doc-pill">${esc(badge[c.status] || "状态")}</span>`
+        + `<span class="ag-doc-lbl">${esc(c.label || "")}</span>`
+        + `<span class="ag-doc-det">${esc(c.detail || "")}</span>`
+        + `</div>`).join("");
+      panel.innerHTML = `<div class="ag-doc-head"><b>🩺 运行环境只读自检</b>`
+        + `<span>检查时间 ${esc(d.checked_at || "")} · 不修改任何文件与配置</span>`
+        + `<button class="ghost sm ag-doc-close" type="button">收起</button></div>`
+        + `<div class="ag-doc-rows">${rows}</div>`;
+      panel.querySelector(".ag-doc-close").addEventListener("click", () => { panel.hidden = true; });
+      panel.hidden = false;
+    } catch (e) {
+      flashToast("环境自检失败：" + (e.message || e));
+    } finally {
+      btn.disabled = false;
+      btn.textContent = old;
     }
   }
   (function wireAgentPage() {
@@ -3457,12 +3588,26 @@
     if (osk) osk.addEventListener("click", () => openAgentFolder("skills", null));
     const outputToggle = $("#ag-outputs-toggle");
     if (outputToggle) outputToggle.addEventListener("click", () => {
-      if (agentOutputs.length <= AGENT_OUTPUT_COLLAPSED_COUNT) return;
+      if (!agentOutputs.length) return;
       agentOutputsExpanded = !agentOutputsExpanded;
       renderAgentOutputs();
     });
-    // 🔄 刷新：定时任务 / 交付物主题首次加载后被 agentLoaded 门控锁住，切页不再重拉；
-    //   这两个按钮直接重新扫盘，让「新建的任务 / 新写的交付物」不必重启应用即可看到。
+    const skillsToggle = $("#ag-skills-toggle");
+    if (skillsToggle) skillsToggle.addEventListener("click", () => {
+      if (!agentSkills.length) return;
+      agentSkillsExpanded = !agentSkillsExpanded;
+      renderAgentSkills();
+    });
+    const tasksToggle = $("#ag-tasks-toggle");
+    if (tasksToggle) tasksToggle.addEventListener("click", () => {
+      if (!agentTasks.length) return;
+      agentTasksExpanded = !agentTasksExpanded;
+      renderAgentTasks();
+    });
+    const doctorBtn = $("#ag-doctor-btn");
+    if (doctorBtn) doctorBtn.addEventListener("click", loadAgentDoctor);
+    // 🔄 刷新：技能 / 定时任务 / 交付物首次加载后被 agentLoaded 门控锁住，切页不再重拉；
+    //   这几个按钮直接重新扫盘，让「新建工作流 / 新建任务 / 新写交付物」不必重启应用即可看到。
     function wireRefresh(id, loader) {
       const b = $("#" + id); if (!b) return;
       b.addEventListener("click", async () => {
@@ -3475,6 +3620,7 @@
       });
     }
     wireRefresh("ag-tasks-refresh", loadAgentTasks);
+    wireRefresh("ag-skills-refresh", loadAgentSkills);
     wireRefresh("ag-outputs-refresh", loadAgentOutputs);
     wireRefresh("ag-upgrade-refresh", refreshUpgradeHealth);
     const upbox = $("#ag-upgrade");
@@ -3871,7 +4017,26 @@
     const det = document.createElement("details");
     det.className = "sources";
     det.innerHTML = `<summary>📎 ${hits.length} 条来源（点击展开）</summary>` +
-      hits.map((h, i) => `<div class="src-item"><div class="cite">[${i + 1}] ${esc(h.citation || h.title || "")}</div><div class="snippet">${esc((h.text || "").trim())}</div></div>`).join("");
+      hits.map((h, i) => {
+        const key = String(h.key || "");
+        const canJump = key && !h.is_wiki;
+        const pageNum = (h.page != null && Number(h.page) > 0 && (h.fulltext_format || (h.has_pdf ? "pdf" : "")) === "pdf")
+          ? Number(h.page) : 0;
+        const jumpBtn = canJump
+          ? `<button type="button" class="src-jump" data-key="${esc(key)}" data-page="${pageNum || ""}" title="在 Zotero 中打开对应文献${pageNum ? `第 ${pageNum} 页` : ""}">↗ 在 Zotero 打开${pageNum ? `（p.${pageNum}）` : ""}</button>`
+          : "";
+        return `<div class="src-item"><div class="cite"><span>[${i + 1}] ${esc(h.citation || h.title || "")}</span>${jumpBtn}</div><div class="snippet">${esc((h.text || "").trim())}</div></div>`;
+      }).join("");
+    det.querySelectorAll(".src-jump").forEach((btn) => btn.addEventListener("click", async () => {
+      const k = btn.dataset.key || "";
+      const pg = btn.dataset.page || "";
+      try {
+        const r = await jget("/jump?key=" + encodeURIComponent(k) + (pg ? "&page=" + encodeURIComponent(pg) : "") + "&json=1");
+        if (!r || r.ok === false) throw new Error((r && r.msg) || "打开失败");
+      } catch (e) {
+        flashToast("打开原文失败：" + (e.message || e));
+      }
+    }));
     $("#chat-log").appendChild(det); $("#chat-log").scrollTop = 1e9;
   }
   // 「保存此答案」——把这次问答沉淀成带引用的综合页（Phase 0，opt-in）

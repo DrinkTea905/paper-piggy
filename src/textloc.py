@@ -32,6 +32,12 @@ _FW[0x3000] = 0x20
 _QUOTES = set(map(ord, "“”‘’「」『』〝〞\"'"))
 # fuzzy 档追加剥除的标点（中英对照差异的主要来源）。绝不剥文字/数字。
 _PUNCT = set(map(ord, "，。、；：？！（）【】《》〈〉—－…·,.;:?!()[]<>~～/\\|＿_*＊%％#＃&＆+＋=＝^`"))
+# PDF 常见连字（ligature）：拆回等价 ASCII 字符，逐字映射回原索引 i，既能对齐又能精确切取 context。
+_LIGATURES = {
+    "ﬀ": "ff", "ﬁ": "fi", "ﬂ": "fl",
+    "ﬃ": "ffi", "ﬄ": "ffl", "ﬅ": "ft", "ﬆ": "st",
+}
+_FUZZY_SKIP = {0x2D, 0xFFFD, 0xFFFE}   # 跨行断词连字符 '-' 与解码替换符
 
 
 def _norm_map(text, fuzzy=False):
@@ -39,6 +45,11 @@ def _norm_map(text, fuzzy=False):
        有了这张映射，归一化串上的命中区间才能换回原文坐标去取 context。"""
     out, pos = [], []
     for i, ch in enumerate(text or ""):
+        if ch in _LIGATURES:
+            for sub in _LIGATURES[ch]:
+                out.append(sub)
+                pos.append(i)
+            continue
         o = ord(ch)
         o = _FW.get(o, o)
         c = chr(o)
@@ -46,7 +57,7 @@ def _norm_map(text, fuzzy=False):
             continue
         if o in _QUOTES:
             continue
-        if fuzzy and o in _PUNCT:
+        if fuzzy and (o in _PUNCT or o in _FUZZY_SKIP):
             continue
         out.append(c.lower())
         pos.append(i)
@@ -145,7 +156,7 @@ def locate(quote, key=None, fuzzy=True, max_matches=20, cap_files=CAP_FILES):
             i0, i1, exact = found
             ctx = text[max(0, i0 - 60): i1 + 60].replace("\n", " ").strip()
             try:
-                pn = int(pg.get("page") or 0)
+                pn = int(pg.get("page") or pg.get("pdf_page") or 0)
             except Exception:
                 pn = 0
             # 印刷页：pagemap sidecar 按 stem 存，用 f.stem 查最稳（key≠stem 的个别篇也不落空）

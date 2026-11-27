@@ -87,6 +87,9 @@ _AUDITED_IMPLEMENTATIONS = {
             "错误行为——① 空 folder_dir 会被 Path('') 解析成当前工作目录、把 cwd 整个扫进库（实测扫出"
             "430 个无关文件）；② 整个数据文件夹被搬到别的盘后库变空，与 portable 版「一个文件夹搬走」的"
             "承诺相悖。回落只读不写回配置，外置盘接回来仍走原路径",
+        "d4d96ffb962706c7484d1c1960e42ed04c7df24eb91c0014e3ad58e3937d436c":
+            "folder_meta.py / folder_source.py 新增 doi / issn / volume / issue 字段与可选 Crossref 补全，"
+            "zotero_source.py 记录附件 att_key（供 Zotero 页码跳转链接）；既有文献 key 与轻量索引契约兼容不变",
         },
     },
     "deep": {CURRENT_INDEX_CONTRACTS["deep"]: {
@@ -96,6 +99,9 @@ _AUDITED_IMPLEMENTATIONS = {
             "新增 LOCALKB_DEEP_OCR 开关，供批量预建索引时跳过扫描件的本地 OCR（个别几十 MB 的"
             "扫描版专著单篇可耗时几十分钟，把整批构建拖住）；**默认值 empty_pages 与原行为逐字一致**，"
             "提取、定位与切块算法均未改动，同一输入在默认配置下产出同一份 extracted/chunks",
+        "8f747b216222d0ef4f2903769ce00ff2bf3a5bc6d7934d80f5c746a95d345dd9":
+            "extract.py 新增按内存读取 PDF 避免文件占用锁与记录 source_rev 文件指纹；"
+            "全文提取、页码映射与切块结构兼容不变，既有 extracted/chunks 无需重建",
     }},
     "semantic": {CURRENT_INDEX_CONTRACTS["semantic"]: {
         "689ad2d1e5277af32eeb24682427ed8103f60d3cc74e41b557b66ff7828278b7":

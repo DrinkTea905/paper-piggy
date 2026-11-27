@@ -204,7 +204,9 @@ button:disabled { opacity: .6; cursor: default; }
 .sources { align-self: flex-start; max-width: 78%; font-size: 12px; }
 .sources summary { cursor: pointer; color: var(--muted); }
 .src-item { border-top: 1px dashed var(--line); padding: 6px 0; }
-.src-item .cite { font-size: 12.5px; margin: 0 0 3px; }
+.src-item .cite { font-size: 12.5px; margin: 0 0 3px; display: flex; align-items: baseline; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.src-jump { border: 1px solid var(--line); background: transparent; color: var(--accent); border-radius: 6px; padding: 1px 7px; font-size: 11px; cursor: pointer; white-space: nowrap; }
+.src-jump:hover { background: rgba(216,91,124,.09); border-color: var(--accent); }
 .src-item .snippet { font-size: 12px; }
 .chat-actions { align-self: flex-start; display: flex; align-items: center; gap: 8px; margin-top: -6px; }
 .chat-actions .save-answer { padding: 4px 12px; border: 1px solid var(--line); border-radius: 7px; background: transparent; color: var(--muted); cursor: pointer; font-size: 12px; }
@@ -1039,6 +1041,48 @@ button:disabled { opacity: .6; cursor: default; }
   min-height: 1.4em; font-size: 11.5px; color: var(--muted); line-height: 1.4; }
 .ag-output-item .ag-sep { color: var(--line); font-style: normal; }
 .ag-outputs-empty { font-size: 12.5px; color: var(--muted); line-height: 1.7; }
+/* 🛠️ 技能（工作流）卡（跨满）与只读环境自检 */
+.ag-skills-card h3 { margin-bottom: 12px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.ag-skills-list { display: flex; flex-direction: column; gap: 8px; }
+.ag-skill-item { display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 10px 13px; }
+.ag-skill-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.ag-skill-title-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.ag-skill-name { font-size: 13.5px; font-weight: 650; color: var(--fg); }
+.ag-skill-badge { font-size: 11px; font-weight: 600; border-radius: 999px; padding: 1px 8px;
+  background: rgba(99,102,241,.10); color: #4f46e5; }
+.ag-skill-badge.custom { background: rgba(16,185,129,.12); color: #047857; }
+.ag-skill-badge.aux { background: rgba(148,163,184,.14); color: var(--muted); }
+.ag-skill-badge.edited { background: rgba(245,158,11,.13); color: #b45309; }
+.ag-skill-badge.companion { background: rgba(216,91,124,.11); color: var(--accent); }
+:root[data-theme="dark"] .ag-skill-badge { color: #a5b4fc; background: rgba(99,102,241,.18); }
+:root[data-theme="dark"] .ag-skill-badge.custom { color: #6ee7b7; background: rgba(16,185,129,.16); }
+:root[data-theme="dark"] .ag-skill-badge.edited { color: #fbbf24; background: rgba(245,158,11,.16); }
+.ag-skill-summary { font-size: 12.5px; color: var(--fg); opacity: .88; line-height: 1.5; }
+.ag-skill-meta { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; font-size: 11.5px; color: var(--muted); }
+.ag-skill-open { flex: 0 0 auto; font-size: 12px; padding: 5px 10px; white-space: nowrap; }
+.ag-hero-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.ag-doctor-btn { background: rgba(255,255,255,.10); color: #e2e8f0; border: 1px solid rgba(255,255,255,.20);
+  border-radius: 10px; padding: 8px 12px; font-size: 12px; cursor: pointer; white-space: nowrap; }
+.ag-doctor-btn:hover { border-color: rgba(255,255,255,.42); color: #fff; background: rgba(255,255,255,.16); }
+.ag-doctor-panel { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 13px 18px; }
+.ag-doc-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; font-size: 13.5px; }
+.ag-doc-head span { font-size: 12px; color: var(--muted); }
+.ag-doc-head .ag-doc-close { margin-left: auto; font-size: 12px; padding: 3px 9px; }
+.ag-doc-rows { display: flex; flex-direction: column; gap: 6px; }
+.ag-doc-row { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; font-size: 12.5px;
+  padding: 7px 10px; border-radius: 8px; background: rgba(148,163,184,.06); border: 1px solid var(--line); }
+.ag-doc-pill { font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 999px; }
+.ag-doc-row.ok .ag-doc-pill { background: var(--ok-bg); color: var(--ok-fg); }
+.ag-doc-row.warn .ag-doc-pill { background: rgba(245,158,11,.15); color: #b45309; }
+.ag-doc-row.error .ag-doc-pill { background: rgba(220,38,38,.14); color: #b91c1c; }
+.ag-doc-lbl { font-weight: 600; color: var(--fg); }
+.ag-doc-det { color: var(--muted); flex: 1 1 240px; min-width: 0; }
+:root[data-theme="dark"] .ag-doc-row.warn .ag-doc-pill { color: #fbbf24; }
+:root[data-theme="dark"] .ag-doc-row.error .ag-doc-pill { color: #fca5a5; }
+.wk-flag.locked { background: rgba(99,102,241,.12); color: #4338ca; }
+:root[data-theme="dark"] .wk-flag.locked { background: rgba(129,140,248,.18); color: #c7d2fe; }
+#wiki-lock.is-locked { border-color: var(--accent); color: var(--accent); }
 /* A3：建议横幅里「新主题·建议新建页」标记 */
 .wk-suggest .wsg-newpage { font-size: 12px; color: #b45309; background: rgba(180,83,9,.10); padding: 2px 8px; border-radius: 999px; }
 :root[data-theme="dark"] .wk-suggest .wsg-newpage { color: #fbbf24; background: rgba(251,191,36,.12); }

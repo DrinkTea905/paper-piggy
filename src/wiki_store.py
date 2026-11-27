@@ -29,9 +29,9 @@ _INDEX_LOCK = threading.RLock()
 # v3 → v4：人工核验页采用“核验版 + Agent 待审修改”双轨；
 # Agent 不再覆盖核验版，待审稿不入检索，只有人接受/编辑后才发布为新的核验版。
 # 升级机制沿 v0→v1 先例（见 ensure_scaffold / _FACTORY_HASHES）：仅当用户没手改过才自动升级。
-SCHEMA_VERSION = "v4"
+SCHEMA_VERSION = "v5"
 
-WIKI_MD_SEED = """# 本地知识库 · 综合层（Wiki）约定 — schema v4
+WIKI_MD_SEED = """# 本地知识库 · 综合层（Wiki）约定 — schema v5
 
 > 本目录（data/wiki/）是"综合层"：把 LLM 对文献的理解**持久化**成可累积、带引用、互链的页面。
 > 它是文献库之上的**附加缓存**，不是替代——删除本目录不影响文献库/Zotero/索引。
@@ -52,6 +52,8 @@ YAML frontmatter（id/kind/title/subject/theme/sources/generated_at/generated_by
 - generated_at / generated_by：生成时间与模型（可信度审计）。
 - stale：该页已被新文献推翻或不再成立。用 `mark_stale` 置位，检索中乘性重罚。
 - by_agent：agent 写回、未经人工核验（界面标 🤖）。
+- locked：人工冻结保护开关；为 true 时禁止 agent 修改正文、互链或标脏（也不生成待审稿）。
+- source_revs：来源论文全文文件指纹快照；来源原文被替换并重提后，体检可标出 `source_replaced`。
 - links：交叉链接到其它 wiki 页 id。用 `set_wiki_links` 维护——**这是把一堆孤岛补成一张图的唯一途径**。
 frontmatter 自足：删掉 index.json 也能从各 .md 完整重建。
 正文中也可以用 `[[page-id]]` 或 `[[page-id|显示文字]]` 互链到其它 wiki 页；
@@ -61,8 +63,9 @@ frontmatter 自足：删掉 index.json 也能从各 .md 完整重建。
 每次要写回时先做这道判断（经验上这条启发式约 90% 情况给出正确选择，靠的就是把规则写死在本 schema 里）：
 - **新建页**：内容是一个可独立成链接目标的**新概念 / 新实体**（人物、机构、案件、制度、学说）——
   它值得被其它页 [[互链]] 指到，就为它建新页（选对 kind：概念用 concept、实体用 entity）。
-- **原地编辑**：内容是**既有页**的属性、进展、修正或补充证据——用 update_wiki_page 原地改，
-  **保留原页结构**（标题层级、小节顺序），只动需要动的段落，别整页推倒重写。
+- **原地编辑**：内容是**既有页**的属性、进展、修正或补充证据——用 update_wiki_page 原地改。
+  只改局部小节时优先使用 `mode="replace_section"` 并传 `section`（小节标题），**保留原页其余小节与结构**，
+  别整页推倒重写；可传 `if_revision`（并发版本校验）和 `request_id`（防重试重复写入）。
 - **拿不准**：原地 append 到最相关的既有页末尾，并在追加内容开头注明「（新增，待归置：…）」，
   留给人工后续决定要不要拆成独立页。
 
@@ -183,12 +186,14 @@ _FACTORY_HASHES = {
     "ae231356c6227b1fa88b02982a29611b1ae3f52b",   # schema v2（升 v3 时放行自动升级）
     "53d369cf71b4583d60a44084e702f23d8873f672",   # schema v3（未来升级时不得删除）
     "e2f9cc229104ba93b4e2deef799016c310d0daf6",   # schema v4（核验版 + Agent 待审稿）
+    "2126cbf9be0c984f0f4a2fb46b46884488cd426e",   # schema v5（小节替换 / 冻结保护 / 版本并发 / 来源替换告警）
 }
 # 一个 schema 版本只能对应一份出厂正文。只改 seed 却忘记 bump 版本时，check_guides 必须挡住发布。
 _SCHEMA_HASHES = {
     "v2": "ae231356c6227b1fa88b02982a29611b1ae3f52b",
     "v3": "53d369cf71b4583d60a44084e702f23d8873f672",
     "v4": "e2f9cc229104ba93b4e2deef799016c310d0daf6",
+    "v5": "2126cbf9be0c984f0f4a2fb46b46884488cd426e",
 }
 
 
@@ -368,6 +373,8 @@ def _rebuild_index_from_disk():
                 "generated_by": fm.get("generated_by", ""),
                 "verified_at": fm.get("verified_at", "") or "",   # W3：核验章随 .md 重建，不因 index 损坏而丢
                 "stale": bool(fm.get("stale")), "by_agent": bool(fm.get("by_agent")),
+                "locked": bool(fm.get("locked")),
+                "source_revs": fm.get("source_revs") if isinstance(fm.get("source_revs"), dict) else {},
                 "links": fm.get("links") or [],
             })
     print(f"[wiki] index.json 已从 {len(pages)} 个 .md 重建", file=sys.stderr, flush=True)
@@ -430,7 +437,7 @@ def _upsert_index(meta):
         # W3：verified_at 一并入表；正文被重写(_persist_page)时 meta 无此键 → 置空=核验自然失效
         entry = {k: meta.get(k) for k in
                  ("id", "kind", "title", "subject", "sources", "generated_at", "generated_by",
-                  "verified_at", "stale", "by_agent", "links", "theme")}
+                  "verified_at", "stale", "by_agent", "locked", "links", "theme", "source_revs")}
         pages.append(entry)
         idx["pages"] = pages
         idx["by_source"] = _build_by_source(pages)
@@ -520,6 +527,147 @@ def _read_pending(page_id, meta=None):
     return {"path": path, "markdown": text, "meta": fm}
 
 
+
+def _page_revision(page_id, kind="answer"):
+    """返回页文件内容的 16 位乐观锁版本戳；不存在时返回空串。"""
+    p = page_path(page_id, kind or "answer")
+    if not p.exists():
+        return ""
+    try:
+        return hashlib.sha256(p.read_bytes()).hexdigest()[:16]
+    except Exception:
+        return ""
+
+
+def _requests_log_path():
+    return C.WIKI_DIR / ".wiki_requests.json"
+
+
+def _get_wiki_request(request_id):
+    rid = str(request_id or "").strip()
+    if not rid:
+        return None
+    p = _requests_log_path()
+    if not p.exists():
+        return None
+    try:
+        d = json.loads(p.read_text(encoding="utf-8"))
+        ent = d.get(rid) if isinstance(d, dict) else None
+        return dict(ent.get("result") or {}) if isinstance(ent, dict) else None
+    except Exception:
+        return None
+
+
+def _save_wiki_request(request_id, result):
+    rid = str(request_id or "").strip()
+    if not rid or not isinstance(result, dict):
+        return
+    p = _requests_log_path()
+    try:
+        d = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+        if not isinstance(d, dict):
+            d = {}
+    except Exception:
+        d = {}
+    d[rid] = {"ts": _now(), "result": dict(result)}
+    if len(d) > 300:
+        keep = list(d.items())[-300:]
+        d = dict(keep)
+    try:
+        _atomic_write(p, json.dumps(d, ensure_ascii=False, indent=2))
+    except Exception:
+        pass
+
+
+def _current_source_rev(key):
+    """读取文献深索提取产物里记录的文件指纹（source_rev）；未深索或无指纹时返回空串。"""
+    k = str(key or "").strip()
+    if not k:
+        return ""
+    try:
+        p = C.EXTRACTED / f"{k}.json"
+        if not p.exists():
+            try:
+                import retriever as R
+                st = str(((R.M.get("papers") or {}).get(k) or {}).get("stem") or "").strip()
+                if st:
+                    p = C.EXTRACTED / f"{st}.json"
+            except Exception:
+                pass
+        if not p.exists():
+            return ""
+        data = json.loads(p.read_text(encoding="utf-8"))
+        return str((data or {}).get("source_rev") or "").strip()
+    except Exception:
+        return ""
+
+
+def _collect_source_revs(norm_sources, existing=None):
+    old_revs = (existing or {}).get("source_revs") if isinstance((existing or {}).get("source_revs"), dict) else {}
+    revs = {}
+    for s in norm_sources or []:
+        k = (s.get("key") if isinstance(s, dict) else s) or ""
+        k = str(k).strip()
+        if not k:
+            continue
+        rev = _current_source_rev(k) or str(old_revs.get(k) or "").strip()
+        if rev:
+            revs[k] = rev
+    return revs
+
+
+def _replace_markdown_section(old_body, section, replacement_body):
+    """按 Markdown 标题替换指定小节正文，保留同级或更高级别的后续小节。"""
+    target = re.sub(r"^#+\s*", "", str(section or "").strip()).strip()
+    if not target:
+        raise ValueError("mode='replace_section' 需要提供 section（目标小节标题）")
+    lines = (old_body or "").splitlines()
+    in_fence = False
+    start_idx = None
+    start_level = None
+    norm = lambda s: re.sub(r"[\s`*_：:]+", "", s).lower()
+    target_norm = norm(target)
+    for idx, ln in enumerate(lines):
+        s = ln.strip()
+        if s.startswith("```") or s.startswith("~~~"):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        m = re.match(r"^(#{1,6})\s+(.+?)\s*$", ln)
+        if not m:
+            continue
+        hd = m.group(2).strip()
+        if hd == target or hd.lower() == target.lower() or norm(hd) == target_norm:
+            start_idx = idx
+            start_level = len(m.group(1))
+            break
+    if start_idx is None:
+        raise ValueError(f"未找到小节「{target}」，请先用 get_wiki_page 核对小节标题")
+    end_idx = len(lines)
+    in_fence = False
+    for idx in range(start_idx + 1, len(lines)):
+        s = lines[idx].strip()
+        if s.startswith("```") or s.startswith("~~~"):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        m = re.match(r"^(#{1,6})\s+(.+?)\s*$", lines[idx])
+        if m and len(m.group(1)) <= start_level:
+            end_idx = idx
+            break
+    rep_lines = (replacement_body or "").strip().splitlines()
+    has_head = bool(rep_lines and re.match(r"^#{1,6}\s+", rep_lines[0]))
+    if has_head:
+        new_slice = rep_lines
+    else:
+        new_slice = [lines[start_idx], ""] + rep_lines
+    tail = lines[end_idx:]
+    out = lines[:start_idx] + new_slice + ([""] + tail if tail else [])
+    return "\n".join(out).strip()
+
+
 # ═══ 页面渲染（frontmatter + markdown；不依赖 pyyaml）═══════════════
 def _frontmatter(meta):
     def jl(items):
@@ -538,6 +686,8 @@ def _frontmatter(meta):
         f"generated_by: {meta.get('generated_by', '')}",
         f"stale: {'true' if meta.get('stale') else 'false'}",
         f"by_agent: {'true' if meta.get('by_agent') else 'false'}",
+        f"locked: {'true' if meta.get('locked') else 'false'}",
+        *([f"source_revs: {json.dumps(meta.get('source_revs'), ensure_ascii=False)}"] if meta.get("source_revs") else []),
         f"links: {jl(meta.get('links', []))}",
         "---",
     ])
@@ -854,6 +1004,8 @@ def _persist_pending(page_id, kind, title, subject, body, norm_sources, generate
         "links": list(pending_links if pending_links is not None
                       else (pending_fm.get("links") or existing.get("links") or [])),
         "theme": existing.get("theme", "") or "",
+        "locked": bool(existing.get("locked")),
+        "source_revs": _collect_source_revs(norm_sources, existing),
         "query": subject,
     }
     path = pending_page_path(page_id, kind)
@@ -877,6 +1029,9 @@ def _persist_page(page_id, kind, title, subject, body, norm_sources, generated_b
     人工创建但尚未标记核验的页面仍不允许 Agent 静默覆盖。"""
     with _INDEX_LOCK:
         existing = index_map().get(page_id)
+        if existing and by_agent and not human_edit and existing.get("locked"):
+            raise WikiWriteDenied(
+                f"「{existing.get('title') or page_id}」已被用户冻结保护，禁止 Agent 修改（也不生成待审稿）。")
         if existing and by_agent and not human_edit and existing.get("verified_at"):
             return _persist_pending(page_id, kind, title, subject, body, norm_sources,
                                     generated_by, existing, pending_links=pending_links)
@@ -899,8 +1054,10 @@ def _persist_page(page_id, kind, title, subject, body, norm_sources, generated_b
             # 重生/覆盖时保留既有互链；人工接受待审稿时一次性发布待审互链。
             "links": list(pending_links if human_edit and pending_links is not None
                           else ((existing or {}).get("links") or [])),
-            # 主题是人的整理结果；重新生成正文不能把它移回自动分类。
+            # 主题与冻结态是人的整理结果；重新生成正文不撤销。
             "theme": (existing or {}).get("theme", "") or "",
+            "locked": bool((existing or {}).get("locked")),
+            "source_revs": _collect_source_revs(norm_sources, existing),
             "query": subject,
         }
         if verified_at:
@@ -921,6 +1078,7 @@ def _persist_page(page_id, kind, title, subject, body, norm_sources, generated_b
             print(f"[wiki] 入表失败（仅存盘，重建索引后可检索）：{e}", file=sys.stderr, flush=True)
     meta["indexed"] = bool(indexed)
     meta["degraded"] = degraded
+    meta["revision"] = _page_revision(page_id, kind)
     action = history_message or (
         "人修订并核验正文" if human_edit and verified_at
         else "人修订正文" if human_edit
@@ -1159,6 +1317,8 @@ def list_pages():
                     "verified_at": p.get("verified_at") or "",   # W3：人工核验时间（无则空串）
                     "pending_review": pending,
                     "stale": bool(p.get("stale")), "by_agent": bool(p.get("by_agent")),
+                    "locked": bool(p.get("locked")),
+                    "revision": _page_revision(p["id"], p.get("kind", "answer")),
                     "degraded": is_degraded(p.get("generated_by", "")),
                     "degraded_reason": degraded_reason(p.get("generated_by", "")),
                     "theme": theme["name"], "theme_source": theme["source"],
@@ -1326,6 +1486,8 @@ def get_page(page_id):
             "pending_generated_at": pending_meta.get("generated_at", "") if pending else "",
             "pending_generated_by": pending_meta.get("generated_by", "") if pending else "",
             "stale": bool(meta.get("stale")), "by_agent": bool(meta.get("by_agent")),
+            "locked": bool(meta.get("locked")),
+            "revision": _page_revision(page_id, meta.get("kind", "answer")),
             "degraded": is_degraded(meta.get("generated_by", "")),
             "degraded_reason": degraded_reason(meta.get("generated_by", "")),
             "links": meta.get("links", []), "sources": src_cites, "markdown": md,
@@ -1367,7 +1529,7 @@ def reindex_missing_pages():
 
 # ═══ 对外：stale 写侧（此前只有消费端：检索降权 / UI 徽章 / config 惩罚值，
 #     却没有任何代码把 stale 置 True——一台永不触发的死机关）═══════════════
-def set_stale(page_id, stale=True, reason=""):
+def set_stale(page_id, stale=True, reason="", by_agent=False):
     """标记/清除某页「已过时」。三处同步：index.json + .md frontmatter + 检索期内存 M["wiki"]。
        不改内存的话，降权要等下次重启才生效。"""
     with _INDEX_LOCK:
@@ -1375,6 +1537,8 @@ def set_stale(page_id, stale=True, reason=""):
         meta = next((p for p in idx.get("pages", []) if p.get("id") == page_id), None)
         if not meta:
             raise ValueError(f"无此综合页 {page_id}")
+        if by_agent and meta.get("locked"):
+            raise WikiWriteDenied(f"「{meta.get('title') or page_id}」已被用户冻结保护，Agent 不得更改过时状态。")
         meta["stale"] = bool(stale)
         if reason:
             meta["stale_reason"] = reason
@@ -1403,6 +1567,47 @@ def set_stale(page_id, stale=True, reason=""):
         pass
     return {"id": page_id, "stale": bool(stale), "reason": reason,
             "title": meta.get("title", ""), "kind": meta.get("kind")}
+
+def set_locked(page_id, locked=True):
+    """人工冻结/解冻某综合页；冻结后禁止 Agent 修改正文、互链或标脏（仅 UI 人工可用）。"""
+    flag = bool(locked)
+    with _INDEX_LOCK:
+        idx = load_index()
+        meta = next((p for p in idx.get("pages", []) if p.get("id") == page_id), None)
+        if not meta:
+            raise ValueError(f"无此综合页 {page_id}")
+        meta["locked"] = flag
+        _save_index(idx)
+        path = page_path(page_id, meta.get("kind", "answer"))
+        if path.exists():
+            try:
+                txt = path.read_text(encoding="utf-8")
+                end = txt.find("\n---", 3) if txt.startswith("---") else -1
+                if end > 0:
+                    head = txt[:end]
+                    if re.search(r"(?m)^locked:", head):
+                        head = re.sub(r"(?m)^locked:.*$", f"locked: {'true' if flag else 'false'}", head, count=1)
+                    else:
+                        head = head + f"\nlocked: {'true' if flag else 'false'}"
+                    new = head + txt[end:]
+                    if new != txt:
+                        _atomic_write(path, new)
+            except Exception as e:
+                print(f"[wiki] 同步 .md locked 失败 {page_id}：{e}", file=sys.stderr, flush=True)
+    try:
+        import retriever as R
+        if page_id in (R.M.get("wiki") or {}):
+            R.M["wiki"][page_id]["locked"] = flag
+    except Exception:
+        pass
+    _snapshot(page_id, "人冻结页面（禁止Agent修改）" if flag else "人解除页面冻结")
+    return {
+        "id": page_id,
+        "locked": flag,
+        "title": meta.get("title", ""),
+        "kind": meta.get("kind"),
+        "revision": _page_revision(page_id, meta.get("kind", "answer")),
+    }
 
 
 def editable_content(page_id):
@@ -1604,6 +1809,8 @@ def set_links(page_id, links, mode="replace", by_agent=False):
         meta = by_id.get(page_id)
         if not meta:
             raise ValueError(f"无此综合页 {page_id}")
+        if by_agent and meta.get("locked"):
+            raise WikiWriteDenied(f"「{meta.get('title') or page_id}」已被用户冻结保护，Agent 不得修改互链。")
 
         skipped = [x for x in want if x == page_id or x not in by_id]
         valid = [x for x in want if x != page_id and x in by_id]
@@ -1673,44 +1880,64 @@ def set_links(page_id, links, mode="replace", by_agent=False):
 
 
 def update_page(page_id, kind=None, title=None, content=None, sources=None,
-                mode="replace", links=None, generated_by="", by_agent=False):
-    """建 / 覆盖 / 追加任意 kind 的 wiki 页 —— gist 里 LLM「creates pages, updates them」的动词。
+                mode="replace", links=None, generated_by="", by_agent=False,
+                section=None, if_revision=None, request_id=None):
+    """建 / 覆盖 / 追加 / 按小节局部替换任意 kind 的 wiki 页。
 
     - 页不存在：按给定 kind 新建（kind 必填）。
-    - 页已存在：mode=replace 覆盖正文；mode=append 追加到正文末尾（保留原有内容与来源）。
-    - Agent 更新人工核验页时只生成待审稿；核验版和检索结果保持不变。
-    - mode=append 时 sources 与旧来源合并；mode=replace 且显式传 sources 时，以新列表替换旧来源。
-      replace 未传 sources 时保留旧来源。这样既不会无意丢失 provenance，也允许修正历史失效 key。
-    - links 可一并写入。
+    - 页已存在：mode=replace 覆盖正文；mode=append 追加；mode=replace_section 只替换指定小节标题下正文。
+    - 已被用户冻结（locked）的页，Agent（by_agent=True）不可写入、互链或标脏。
+    - if_revision 非空时做乐观并发校验；request_id 非空时支持重试幂等重放。
     """
     page_id = validate_page_id(page_id)
     ensure_scaffold()
+    if mode not in ("replace", "append", "replace_section"):
+        raise ValueError(f"未知 mode={mode}，可选 replace / append / replace_section")
     body = (content or "").strip()
     if not body:
         raise ValueError("空正文，拒绝写入")
 
     with _INDEX_LOCK:
+        cached = _get_wiki_request(request_id)
+        if cached is not None:
+            cached["idempotent_replay"] = True
+            return cached
         existing = index_map().get(page_id)
+        if existing and by_agent and existing.get("locked"):
+            raise WikiWriteDenied(
+                f"「{existing.get('title') or page_id}」已被用户冻结保护，禁止 Agent 修改（也不生成待审稿）。")
+        if if_revision is not None and str(if_revision).strip():
+            want_rev = str(if_revision).strip()
+            cur_rev = _page_revision(page_id, existing.get("kind", "answer")) if existing else ""
+            if cur_rev != want_rev:
+                raise WikiWriteDenied(
+                    f"页面版本冲突（当前 revision={cur_rev or '空'}，传入 if_revision={want_rev}），"
+                    "请先用 get_wiki_page 读取最新版后再修改。")
         base_meta = existing or {}
         if existing:
             kind = kind or existing.get("kind")
             pending = _read_pending(page_id, existing) if by_agent and existing.get("verified_at") else None
             base_meta = (pending or {}).get("meta") or existing
-            if mode == "append":
+            if mode in ("append", "replace_section"):
                 if pending:
                     old_body = _editable_body(pending["markdown"], pending["meta"])
                 else:
                     old = get_page(page_id) or {}
                     old_body = _editable_body(old.get("markdown", ""), old)
-                body = (old_body + "\n\n" + body).strip()
+                if mode == "append":
+                    body = (old_body + "\n\n" + body).strip()
+                else:
+                    body = _replace_markdown_section(old_body, section, body)
             old_sources = list(base_meta.get("sources") or [])
-            if mode == "append":
-                merged = old_sources + list(sources or [])
+            if mode in ("append", "replace_section"):
+                merged = old_sources if sources is None else (old_sources + list(sources or []))
             elif sources is None:
                 merged = old_sources
             else:
                 merged = list(sources)
         else:
+            if mode == "replace_section":
+                raise ValueError("mode='replace_section' 只能用于已存在的综合页")
             if not kind:
                 raise ValueError("新建页必须指定 kind：" + "/".join(KINDS))
             merged = list(sources or [])
@@ -1718,15 +1945,17 @@ def update_page(page_id, kind=None, title=None, content=None, sources=None,
             raise ValueError(f"未知 kind={kind}，可选：{'/'.join(KINDS)}")
         subject = base_meta.get("subject") or title or page_id
 
-    meta = _persist_page(page_id, kind, title or base_meta.get("title", ""),
-                         subject, body, _norm_sources(merged), generated_by, by_agent,
-                         pending_links=links)
-    if links is not None and not meta.get("pending_review"):
-        try:
-            meta["links"] = set_links(page_id, links, mode="replace", by_agent=by_agent)["links"]
-        except Exception as e:
-            print(f"[wiki] 写 links 失败 {page_id}：{e}", file=sys.stderr, flush=True)
-    return meta
+        meta = _persist_page(page_id, kind, title or base_meta.get("title", ""),
+                             subject, body, _norm_sources(merged), generated_by, by_agent,
+                             pending_links=links)
+        if links is not None and not meta.get("pending_review"):
+            try:
+                meta["links"] = set_links(page_id, links, mode="replace", by_agent=by_agent)["links"]
+            except Exception as e:
+                print(f"[wiki] 写 links 失败 {page_id}：{e}", file=sys.stderr, flush=True)
+        meta["revision"] = _page_revision(page_id, kind)
+        _save_wiki_request(request_id, meta)
+        return meta
 
 
 def backlinks(key=None, page_id=None):
@@ -1885,7 +2114,7 @@ def lint(min_mentions=2):
             else:
                 broken.append({"page_id": p["id"], "title": p.get("title", ""), "dangling": t})
 
-    orphan, stale_pages, no_src, degraded_pages, invalid_sources = [], [], [], [], []
+    orphan, stale_pages, no_src, degraded_pages, invalid_sources, source_replaced = [], [], [], [], [], []
     known_keys = _paper_keys()
     for p in pages:
         pid, brief = p["id"], {"id": p["id"], "title": p.get("title", ""), "kind": p.get("kind", "")}
@@ -1903,6 +2132,14 @@ def lint(min_mentions=2):
                 if key and key not in known_keys:
                     invalid_sources.append({**brief, "key": key,
                                             "suggestions": _source_suggestions(key, known_keys)})
+        saved_revs = p.get("source_revs") or {}
+        if isinstance(saved_revs, dict):
+            for skey, srev in saved_revs.items():
+                cur_rev = _current_source_rev(skey)
+                if srev and cur_rev and cur_rev != srev:
+                    source_replaced.append({**brief, "key": skey,
+                                            "saved_rev": srev[:8], "current_rev": cur_rev[:8],
+                                            "reason": f"来源 {skey} 的底层全文文件已变更"})
 
     # 被多页标题提及、却无独立页的概念：用已有 concept 页的 slug 反查
     have = {p.get("subject") or p.get("title", "") for p in pages if p.get("kind") == "concept"}
@@ -1944,7 +2181,8 @@ def lint(min_mentions=2):
     issues = {"orphan": orphan, "stale": stale_pages, "broken_link": broken,
               "body_broken_link": body_broken,
               "no_sources": no_src, "degraded": degraded_pages, "missing_concept": missing_concept,
-              "invalid_source": invalid_sources, "duplicate_scaffold": duplicate_scaffold}
+              "invalid_source": invalid_sources, "duplicate_scaffold": duplicate_scaffold,
+              "source_replaced": source_replaced}
     total = sum(len(v) for v in issues.values())
     return {
         "n_pages": len(pages), "n_issues": total,
@@ -1982,6 +2220,9 @@ def _lint_suggestions(issues):
     if issues.get("duplicate_scaffold"):
         s.append(f"{len(issues['duplicate_scaffold'])} 个页重复写了标题或研究问题："
                  f"用 update_wiki_page(mode='replace') 保留一份正文外壳后重写。")
+    if issues.get("source_replaced"):
+        s.append(f"{len(issues['source_replaced'])} 条引用的底层原文文件已更换（source_replaced）："
+                 f"用 read_source 核对新版页码与表述后，视情况更新对应小节。")
     if not s:
         s.append("综合层健康：无孤儿页、无过时页、无断链、无缺失/无效来源、无重复标题或研究问题。")
     return s

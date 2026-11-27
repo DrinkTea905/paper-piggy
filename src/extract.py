@@ -9,7 +9,7 @@ F 档 · 提取：从 papers.jsonl 中【有可读全文】的篇提取定位单
 断点续跑：已提取的跳过。ThreadPool（避开本机多进程 spawn 坑）。
 用法: python extract.py [--scope all] [--workers 4] [--limit N]
 """
-import sys, os, json, argparse, time, threading, re, zipfile, posixpath
+import sys, os, json, argparse, time, threading, re, zipfile, posixpath, hashlib
 from html.parser import HTMLParser
 from urllib.parse import unquote
 import xml.etree.ElementTree as ET
@@ -154,6 +154,30 @@ def _read_page(doc, index, render_empty=False):
             page.close()
 
 
+def _pdf_source_and_rev(pdf):
+    """读取 PDF 内存字节并返回 (PdfDocument入参, source_rev)。
+    真实文件一律读入内存后再交给 PDFium，避免持有磁盘句柄锁；单测传虚拟路径时原样回退。"""
+    if isinstance(pdf, (bytes, bytearray)):
+        raw = bytes(pdf)
+        return raw, f"{len(raw)}:{hashlib.sha1(raw).hexdigest()[:16]}"
+    try:
+        p = Path(str(pdf))
+        if p.is_file():
+            raw = p.read_bytes()
+            return raw, f"{len(raw)}:{hashlib.sha1(raw).hexdigest()[:16]}"
+    except Exception:
+        pass
+    return pdf, ""
+
+
+def _file_source_rev(path):
+    try:
+        raw = Path(str(path)).read_bytes()
+        return f"{len(raw)}:{hashlib.sha1(raw).hexdigest()[:16]}"
+    except Exception:
+        return ""
+
+
 def _extract_document(pdf, _tries=3, max_pages=None, ocr_mode="off",
                       ocr_engine=None, on_ocr_pending=None):
     """提取整篇并返回 pages + 统计。
@@ -163,12 +187,13 @@ def _extract_document(pdf, _tries=3, max_pages=None, ocr_mode="off",
     """
     if ocr_mode not in ("off", "empty_pages"):
         raise ValueError(f"未知 ocr_mode：{ocr_mode}")
+    pdf_input, source_rev = _pdf_source_and_rev(pdf)
     last = None
     for attempt in range(_tries):
         doc = None
         try:
             with _PDFIUM_LOCK:
-                doc = _pdfium.PdfDocument(pdf)
+                doc = _pdfium.PdfDocument(pdf_input)
                 total = len(doc)
             limit = total if not max_pages else min(total, max(0, int(max_pages)))
             pages, native_n, ocr_n = [], 0, 0
@@ -212,6 +237,7 @@ def _extract_document(pdf, _tries=3, max_pages=None, ocr_mode="off",
                 "ocr_confidence": (sum(confidences) / len(confidences)
                                    if confidences else None),
                 "ocr_errors": errors,
+                "source_rev": source_rev,
             }
         except Exception as e:
             last = e
@@ -487,7 +513,7 @@ def _extract_source_document(source_path, source_format="", max_units=None,
     pages = extractors[fmt](source_path, max_units=max_units)
     return {"pages": pages, "total_pages": len(pages), "native_pages": len(pages),
             "ocr_pages": 0, "empty_pages": 0, "ocr_confidence": None,
-            "ocr_errors": [], "document_format": fmt}
+            "ocr_errors": [], "document_format": fmt, "source_rev": _file_source_rev(source_path)}
 
 def load_papers():
     if not C.PAPERS_JSONL.exists():
@@ -556,6 +582,8 @@ def extract_one(p):
         result = _extract_source_document(source_path, source_format=source_format,
                                           ocr_mode=_deep_ocr_mode(), on_ocr_pending=_pending)
         rec["pages"] = result["pages"]
+        if result.get("source_rev"):
+            rec["source_rev"] = result["source_rev"]
         for fld in ("total_pages", "native_pages", "ocr_pages", "empty_pages",
                     "ocr_confidence"):
             rec[fld] = result[fld]

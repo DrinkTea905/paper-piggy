@@ -261,13 +261,21 @@ def verify(claim, keys=None, topk=8):
                 "note": "库内没有主题相关命中。" + FIXED_NOTE}
 
     # ── ③ top 命中的支撑句回原文精确定位页位（引注落到页，才对得起"核验"二字）──
+    # 同句若在首页摘要和正文页各出现一次，优先选命中的 chunk 所在页或正文页（>1），
+    # 避免误将正文论证落成第 1 页摘要页码。
     top = evidence[0]
     if top["quote"] and top["key"]:
         try:
-            m = (TL.locate(top["quote"], key=top["key"], fuzzy=True, max_matches=1)
-                 .get("matches") or [])
-            if m:
-                top["pdf_page"], top["printed_page"] = m[0]["pdf_page"], m[0]["printed_page"]
+            ms = (TL.locate(top["quote"], key=top["key"], fuzzy=True, max_matches=5)
+                  .get("matches") or [])
+            if ms:
+                chunk_pg = top.get("pdf_page")
+                preferred = (
+                    next((x for x in ms if chunk_pg and x.get("pdf_page") == chunk_pg), None)
+                    or next((x for x in ms if (x.get("pdf_page") or 0) > 1), None)
+                    or ms[0]
+                )
+                top["pdf_page"], top["printed_page"] = preferred["pdf_page"], preferred["printed_page"]
         except Exception:
             pass                            # 定位不到就保留 chunk 自带页位，不因锦上添花失败而炸
 

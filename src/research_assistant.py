@@ -417,9 +417,11 @@ def _citation_segments(text):
 
 
 def _mine_citations(hits, limit_pdfs=20):
-    """从命中文献全文反向追踪中英文参考文献，并保留可核对的 provenance。"""
+    """从命中文献全文（优先页底脚注分离）反向追踪中英文参考文献，并保留可核对的 provenance。"""
     import json
     from textutil import safe_name
+    import footnote_miner as FM
+
     found = {}
     title_keys = {}
     doi_keys = {}
@@ -430,41 +432,141 @@ def _mine_citations(hits, limit_pdfs=20):
         if k and k not in keys:
             keys.append(k)
             source_titles[k] = h.get("title", "")
+
+    papers_map = {}
+    try:
+        import retriever as R
+        papers_map = R.M.get("papers") or {}
+    except Exception:
+        papers_map = {}
+
     for k in keys[:limit_pdfs]:
         ex = C.EXTRACTED / f"{safe_name(k)}.json"
-        if not ex.exists():
+        d = {}
+        if ex.exists():
+            try:
+                d = json.loads(ex.read_text(encoding="utf-8"))
+            except Exception:
+                d = {}
+        pages = d.get("pages") or []
+        p_rec = dict(papers_map.get(k) or {})
+        if not p_rec.get("key"):
+            p_rec["key"] = k
+        if not p_rec.get("stem"):
+            p_rec["stem"] = safe_name(k)
+        src_title = source_titles.get(k) or d.get("title", "") or p_rec.get("title", "")
+
+        # 优先尝试真实 PDF 的页底脚注几何分离 + 跨行展开；若当前环境无真实 PDF（仅提取 JSON / 单测），
+        # 回退文本侧页底脚注/行内正则扫描，确保两路都能抽出标准《法学引注手册》与英文引文。
+        mined_cites = []
+        pdf_path = str(p_rec.get("pdf_path") or p_rec.get("fulltext_path") or "").strip()
+        if pdf_path and Path(pdf_path).is_file() and str(p_rec.get("fulltext_format") or "pdf").lower() == "pdf":
+            try:
+                res_fn = FM.mine_paper_footnotes(p_rec, extracted_pages=pages)
+                mined_cites = res_fn.get("citations") or []
+            except Exception:
+                mined_cites = []
+
+        if mined_cites:
+            for c in mined_cites:
+                pdf_page = c.get("pdf_page")
+                printed_pg = ""
+                if pdf_page:
+                    try:
+                        import page_map as PM
+                        printed_pg = (PM.printed(k, pdf_page) or {}).get("display") or ""
+                    except Exception:
+                        printed_pg = ""
+                item = {
+                    "author": c.get("author", ""),
+                    "title": c.get("title", ""),
+                    "year": c.get("year", ""),
+                    "doi": c.get("doi", ""),
+                    "journal": c.get("journal", ""),
+                    "issue": c.get("issue", ""),
+                    "kind": c.get("kind", "article"),
+                }
+                prov = {
+                    "source_key": k,
+                    "source_title": src_title,
+                    "pdf_page": pdf_page,
+                    "printed_page": printed_pg,
+                    "marker": c.get("marker", ""),
+                    "ref_index": _ref_index_of(c.get("raw", "")),
+                    "raw": c.get("raw", ""),
+                }
+                _merge_candidate(found, title_keys, doi_keys, item, prov)
             continue
-        try:
-            d = json.loads(ex.read_text(encoding="utf-8"))
-        except Exception:
+
+        if not pages:
             continue
-        for page in (d.get("pages") or []):
+
+        for page in pages:
             pdf_page = page.get("page", page.get("pdf_page"))
+            printed_pg = ""
+            if pdf_page:
+                try:
+                    import page_map as PM
+                    printed_pg = (PM.printed(k, pdf_page) or {}).get("display") or ""
+                except Exception:
+                    printed_pg = ""
             for raw in _citation_segments(page.get("text", "")):
+                parsed = FM.parse_citation_segment(raw)
+                if parsed:
+                    item = {
+                        "author": parsed.get("author", ""),
+                        "title": parsed.get("title", ""),
+                        "year": parsed.get("year", ""),
+                        "doi": parsed.get("doi", ""),
+                        "journal": parsed.get("journal", ""),
+                        "issue": parsed.get("issue", ""),
+                        "kind": parsed.get("kind", "article"),
+                    }
+                    prov = {
+                        "source_key": k,
+                        "source_title": src_title,
+                        "pdf_page": pdf_page,
+                        "printed_page": printed_pg,
+                        "ref_index": _ref_index_of(raw),
+                        "raw": raw,
+                    }
+                    _merge_candidate(found, title_keys, doi_keys, item, prov)
+                    continue
                 matched_zh = False
                 for m in _RE_CITE_ZH.finditer(raw):
                     matched_zh = True
-                    # 年份/DOI 通常位于题名之后；raw 保留下来供后续人工核验。
+                    title_str = m.group("title").strip()
+                    author_str = _clean_author(m.group("author"))
+                    if FM.is_statute_or_official(author_str, title_str):
+                        continue
                     ym = _RE_YEAR.search(raw[m.end():]) or _RE_YEAR.search(raw)
-                    item = {"author": _clean_author(m.group("author")),
-                            "title": m.group("title").strip(),
-                            "year": ym.group(1) if ym else "",
-                            "doi": _doi_of(raw),
-                            "journal": (m.group("journal") or "").strip()}
-                    prov = {"source_key": k,
-                            "source_title": source_titles.get(k) or d.get("title", ""),
-                            "pdf_page": pdf_page,
-                            "ref_index": _ref_index_of(raw),
-                            "raw": raw}
+                    item = {
+                        "author": author_str,
+                        "title": title_str,
+                        "year": ym.group(1) if ym else "",
+                        "doi": _doi_of(raw),
+                        "journal": (m.group("journal") or "").strip(),
+                    }
+                    prov = {
+                        "source_key": k,
+                        "source_title": src_title,
+                        "pdf_page": pdf_page,
+                        "printed_page": printed_pg,
+                        "ref_index": _ref_index_of(raw),
+                        "raw": raw,
+                    }
                     _merge_candidate(found, title_keys, doi_keys, item, prov)
                 if not matched_zh:
                     item = _parse_en_reference(raw)
                     if item:
-                        prov = {"source_key": k,
-                                "source_title": source_titles.get(k) or d.get("title", ""),
-                                "pdf_page": pdf_page,
-                                "ref_index": _ref_index_of(raw),
-                                "raw": raw}
+                        prov = {
+                            "source_key": k,
+                            "source_title": src_title,
+                            "pdf_page": pdf_page,
+                            "printed_page": printed_pg,
+                            "ref_index": _ref_index_of(raw),
+                            "raw": raw,
+                        }
                         _merge_candidate(found, title_keys, doi_keys, item, prov)
     items = list(found.values())
     items.sort(key=lambda x: (-x["freq"], x.get("title", "").casefold()))
@@ -472,19 +574,24 @@ def _mine_citations(hits, limit_pdfs=20):
 
 
 def suggest_sources(topic, topk=20, llm=None):
-    """能力三：覆盖评估 + 脚注引文挖掘缺失文献 + 库内错配。按被引频次排。不写库（读）。"""
+    """能力三：覆盖评估 + 脚注引文挖掘缺失文献 + 库内错配。按共同施引篇数、期刊权威层级与被引频次排序。只读。"""
     llm = llm or {}
     hits, err = _recall(topic, topk)
     if err:                            # 后端异常/未就绪：报错，别返回假的覆盖评级 ▽ 与「未检索到文献」缺口结论
         raise RuntimeError(err)
     sym, label, n, n_high = _coverage(hits)
     mined = _mine_citations(hits)
-    # 与库内 papers 比对：DOI 优先，缺 DOI 时按规范化题名；给全部候选标明是否已入库。
+
+    # 与库内 papers 比对：DOI 优先，再走 dedup_match（归一化与 Dice + 作者/年份旁证），确保查全查准。
     have_titles = {}
     have_dois = {}
+    all_papers = []
     try:
         import retriever as R
         for key, p in (R.M.get("papers") or {}).items():
+            row = dict(p)
+            row.setdefault("key", key)
+            all_papers.append(row)
             t = (p.get("title") or "").strip()
             if t:
                 have_titles.setdefault(_norm_title(t), key)
@@ -493,6 +600,20 @@ def suggest_sources(topic, topk=20, llm=None):
                 have_dois.setdefault(doi, key)
     except Exception:
         pass
+
+    dedup_idx = None
+    if all_papers:
+        try:
+            import dedup_match as DM
+            dedup_idx = DM.build_index(all_papers)
+        except Exception:
+            dedup_idx = None
+
+    try:
+        import journal_tiers as JT
+    except Exception:
+        JT = None
+
     missing = []
     for it in mined:
         doi = _norm_doi(it.get("doi"))
@@ -500,10 +621,45 @@ def suggest_sources(topic, topk=20, llm=None):
         library_key = have_dois.get(doi) if doi else None
         if not library_key:
             library_key = have_titles.get(norm_t)
+        probable_match = None
+        if not library_key and dedup_idx is not None and it.get("title"):
+            try:
+                import dedup_match as DM
+                dm_res = DM.match_one(
+                    dedup_idx,
+                    it.get("title", ""),
+                    authors=it.get("author", ""),
+                    year=it.get("year", ""),
+                )
+                if dm_res.get("verdict") == "exists" and dm_res.get("matches"):
+                    library_key = dm_res["matches"][0].get("key")
+                elif dm_res.get("verdict") == "probable" and dm_res.get("matches"):
+                    probable_match = dm_res["matches"][0]
+            except Exception:
+                pass
         it["in_library"] = bool(library_key)
         it["library_key"] = library_key or ""
+        if probable_match:
+            it["probable_library_match"] = probable_match
+
+        jname = (it.get("journal") or "").strip()
+        jtier = JT.tier_of(jname) if (JT and jname) else ""
+        jrank = JT.rank_of(jtier) if (JT and jtier) else 9
+        it["journal_tier"] = jtier
+        it["tier_rank"] = jrank
+        citing_keys = {p.get("source_key") for p in (it.get("provenance") or []) if p.get("source_key")}
+        it["citing_source_count"] = len(citing_keys)
         if not library_key:
             missing.append(it)
+
+    # 优先排序：被越多检索命中文献共同引用 × 期刊层级越高（rank 越小） × 累计被引次数越多
+    missing.sort(key=lambda x: (
+        -int(x.get("citing_source_count") or (1 if x.get("freq") else 0)),
+        int(x.get("tier_rank", 9)),
+        -int(x.get("freq") or 0),
+        (x.get("title") or "").casefold(),
+    ))
+
     # 库内错配：有全文附件但未深索的相关篇
     mismatch = []
     try:
@@ -521,7 +677,7 @@ def suggest_sources(topic, topk=20, llm=None):
     return {
         "topic": topic,
         "coverage": {"symbol": sym, "label": label, "n": n, "n_high": n_high},
-        "missing_cited": missing[:20],       # 被库内引用但库中缺失的文献（按被引频次）
+        "missing_cited": missing[:20],       # 被库内引用但库中缺失的文献（按共引×权威层级×频次）
         "reference_chain_candidates": mined[:20],  # 库内真实参考链候选（含已入库标记与 provenance）
         "candidate_sections": {
             "library_reference_chain": mined[:20],

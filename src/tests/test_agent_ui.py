@@ -229,11 +229,18 @@ class AgentOutputTests(unittest.TestCase):
     def test_output_topics_default_to_five_and_can_expand_all(self):
         app_js = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
         index_html = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
-        self.assertIn("<span>📦 交付物主题</span>", index_html)
+        self.assertIn("<span>📦 交付物</span>", index_html)
         self.assertIn('id="ag-outputs-toggle"', index_html)
+        self.assertIn('id="ag-skills-card"', index_html)
+        self.assertIn('id="ag-skills-toggle"', index_html)
+        self.assertIn('id="ag-tasks-toggle"', index_html)
+        self.assertIn('id="ag-doctor-btn"', index_html)
         self.assertIn('aria-expanded="false"', index_html)
         self.assertIn("const AGENT_OUTPUT_COLLAPSED_COUNT = 5;", app_js)
         self.assertIn('jget("/agent/outputs?limit=0")', app_js)
+        self.assertIn('jget("/agent/workflows")', app_js)
+        self.assertIn("展开 ⌄", app_js)
+        self.assertIn("收起 ⌃", app_js)
         self.assertIn("agentOutputs.slice(0, AGENT_OUTPUT_COLLAPSED_COUNT)", app_js)
 
     def test_scaffold_creates_codex_and_claude_workflow_entry_files(self):

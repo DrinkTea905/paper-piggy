@@ -441,9 +441,54 @@ def _atomic_write_text(path, text):
     raise last
 
 
-def append_memory(target="core", text="", status=None, allow_new_topic=True):
+def _memory_req_path():
+    return C.STATE / "agent-memory-requests.json"
+
+
+def _load_mem_req(request_id):
+    rid = str(request_id or "").strip()
+    if not rid:
+        return None
+    p = _memory_req_path()
+    if not p.exists():
+        return None
+    try:
+        d = json.loads(p.read_text(encoding="utf-8"))
+        ent = d.get(rid) if isinstance(d, dict) else None
+        return dict(ent) if isinstance(ent, dict) else None
+    except Exception:
+        return None
+
+
+def _save_mem_req(request_id, msg):
+    rid = str(request_id or "").strip()
+    if not rid:
+        return
+    p = _memory_req_path()
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        d = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+        if not isinstance(d, dict):
+            d = {}
+    except Exception:
+        d = {}
+    d[rid] = {"msg": msg, "ts": time.strftime("%Y-%m-%dT%H:%M:%S")}
+    if len(d) > 300:
+        d = dict(list(d.items())[-300:])
+    try:
+        p.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def append_memory(target="core", text="", status=None, allow_new_topic=True, request_id=""):
     """记忆写入的唯一入口。→ (ok, 人话消息)。
     这里的每一条拒绝都是**硬约束**，因为散文劝告已经被证伪过一次（单文件涨到 669 行）。"""
+    rid = str(request_id or "").strip()
+    if rid:
+        hit = _load_mem_req(rid)
+        if hit and hit.get("msg"):
+            return True, hit["msg"] + "（幂等重放，未重复写入）"
     kind, name = parse_memory_target(target)
     if kind is None:
         return False, (f"target 只能是 core / tools:<子域> / log / topic:<主题名>，收到「{name}」。"
@@ -451,7 +496,10 @@ def append_memory(target="core", text="", status=None, allow_new_topic=True):
                        "topic:<名>=某个研究主题的结论；log=历史流水账。")
     body = str(text or "").strip()
     if kind == "topic":
-        return _append_topic(name, body, status, allow_new_topic)
+        ok, msg = _append_topic(name, body, status, allow_new_topic)
+        if ok and rid:
+            _save_mem_req(rid, msg)
+        return ok, msg
     if status is not None:
         return False, "status 只在 target=\"topic:<主题名>\" 时有意义。"
     if not body:
@@ -460,7 +508,10 @@ def append_memory(target="core", text="", status=None, allow_new_topic=True):
         if len(body) > MEMORY_TOOLS_MAX_ENTRY:
             return False, (f"这条 {len(body)} 字，超过工具经验单条上限 {MEMORY_TOOLS_MAX_ENTRY} 字。"
                            "工具经验记「怎么操作」；某个研究主题的实质结论请写 target=\"topic:<主题名>\"。")
-        return _append_tooldom(name, body, allow_new=allow_new_topic)
+        ok, msg = _append_tooldom(name, body, allow_new=allow_new_topic)
+        if ok and rid:
+            _save_mem_req(rid, msg)
+        return ok, msg
     if kind == "core":
         if len(body) > MEMORY_CORE_MAX_ENTRY:
             return False, (f"这条 {len(body)} 字，超过项目记忆单条上限 {MEMORY_CORE_MAX_ENTRY} 字。"
@@ -485,6 +536,8 @@ def append_memory(target="core", text="", status=None, allow_new_topic=True):
         if warn:
             msg += (f"⚠ 项目记忆已 {n} 字（上限 {MEMORY_CORE_MAX_CHARS}）——"
                     "请顺手精简，把主题结论移进 主题档案/。")
+    if rid:
+        _save_mem_req(rid, msg)
     return True, msg
 
 
@@ -592,7 +645,7 @@ _README_RELY = """# 0_Agent资料库 —— 你的 AI 助手的专属资料库
 ## 里面有什么
 
 - **记忆/** —— 项目记忆，按四类分开存放（刻意分开，别让记忆膨胀成一锅流水账）：
-  - `项目记忆.md` —— 「当前定了什么」：长期偏好、固定规则、已定决策、各研究主题一行状态。**上限 200 行**，超了写不进去。
+  - `项目记忆.md` —— 「当前定了什么」：长期偏好、固定规则、已定决策、各研究主题一行状态。**单条上限 600 字、全文上限 3 万字**，超了写不进去。
   - `工具经验/<子域>.md` —— 与研究题目无关的作业经验（DOCX 生成、检索方法、某工具的坑），**一个作业子域一份文件**，首行写明「何时该读」。换个题目还用得上的才写这。
   - `主题档案/` —— **一个研究主题一个 .md**，装该主题的结论、材料判断、待核项，首部带「状态: 进行中／已完成／已作废」。
   - `变更日志.md` —— 历史流水账（只增不改）。
@@ -979,6 +1032,11 @@ python3 ~/mnt/PaperPiggy/0_Agent资料库/工具/kb.py boot
 - 用户只要提到“维护”，一律读取 `维护综述库.md` 并执行全量审查：简单、可逆、无需取舍的事项直接处理；需要付费、删除/重建、外部修复或真实内容取舍时再询问用户。
 - 工作结束必须按工作流的“完成标准”复核，并给出全面总结；看到待办却只解释原因，不算完成。
 - PaperPiggy 的实时数据与写入一律走 `localkb` MCP；不要凭文件名或模型记忆猜测状态。
+
+## 聊天回复附带 Zotero 原文跳页链接（全场景适用）
+
+- 在**一切与用户的 AI 对话回复**中（不仅限写作与大纲讨论，**日常在项目里提问、查文献、核对引文与论断同样适用**），只要提及知识库内某篇具体文献或某页原文，都必须随句附上检索/读取/核验工具返回的跳转链接（如 `[《题名》第X页](http://127.0.0.1:.../jump?key=...&page=...)`），方便用户在对话里一点直接在 Zotero 打开对应页。
+- **绝不出现的位置**：最终交付的论文 `.docx`、wiki 综述正文、交付物成稿与导出研究表格中**只保留规范学术引注**，绝不写入 `http://127.0.0.1:...` 跳转链接或内部文献 `key`。
 """
 
 _ROOT_CLAUDE = _ROOT_AGENTS.replace("# PaperPiggy Agent 工作入口", "# PaperPiggy Claude 工作入口")
@@ -1605,7 +1663,7 @@ _WF_JJ_REVIEW = """# 工作流：综述（少年司法版）
    **制度名与概念词必须分开跑。**本国特有的制度名（如「附条件不起诉」「专门矫治教育」）在域外没有对应术语，用它检索只会召回本国文献；要接上域外证据，必须换成该制度背后的**概念与机制词**（分流、转处、再犯、标签化、控制网扩大…），并用其**原文术语**再跑一轮。2026-08-29 实测：查「附条件不起诉制度的实施状况」外文 0 篇，改查「分流转处为什么可能降低再犯」立刻返回域外 meta 分析——同一个库，换个词族就是两个世界。开工时先用 `list_kb_categories` / `localkb_status` 看库的语种与学科构成，据此定词表，别凭印象。
    每轮台账必须记录：轮次、精确检索式、范围/排序/Top-k、命中数、去重后新增数、纳入/排除/待核数、新词及来源、下一轮理由。零命中只写未检出，不写“学界没有”。
    **台账必须逐条落到文献级**，落盘 `0_Agent交付物/<主题>/检索发现日志.md`，表头逐字照抄、不改列名与顺序：`| 轮次 | 查询词（逐字） | 名次 | key | 题名 | 处置 | 理由 |`。名次＝该条在本次返回中的位置；处置只用 `采用`／`弃用`／`待核`；**弃用理由比采用理由值钱**（它是负例），写清为什么不要，不要只写“不相关”。另起一节记**漏召回**：靠脚注追踪或人工翻找才补上、检索从未返回过的文献，注明本该由哪条查询词找到。应用本身不记录检索历史，这份日志是唯一真实记录；不得事后凭记忆补写，当轮没记就写“本轮未记录”。
-3. **逐页精读**：进入实体评价的来源必须 `read_source` 读到终页并记录印刷页；摘要、引言或结论不能替代全文。保存文献—问题—证据—反例—不能证明事项矩阵。
+3. **逐页精读**：进入实体评价的来源必须 `read_source` 读到终页并记录印刷页；摘要、引言或结论不能替代全文。保存文献—问题—证据—反例—不能证明事项矩阵；行数较多（如超过 10 行或需要逐步补录样本编码/法条对照/观点矩阵）时，优先用 `table_create` / `table_upsert` / `table_patch` 增量维护结构化研究表格，交付前用 `table_export` 导出 CSV、Markdown 或 Word 标准三线表。
 4. **按争点组织**：依问题重建理论前提、概念拆分、竞争模式、制度功能、证据基础、内部风险和未决争议，不用作者/年份排队。核心概念逐项制作“对象—时点—主体—标准—效果”卡；能力议题必须分开法定年龄线、行为时责任能力、当前受审能力、具体决定理解、参与偏好、处遇需要和国家支持义务；参与要素只作过程检查，不直接改写为正式能力测验。
 5. **归属三分法**：逐段标明“作者原说”“同作者纵向重构”“跨作者综合”。没有跨年精确页证时，只写并列、承接、扩展或张力，不写作者转向。
 6. **规范—实证分层**：规范材料回答应当，理论材料回答评价/设计理由，实证材料回答实际发生什么。经验结论按研究设计、样本、测量、描述、关联、因果、外推和限制书写；分母、小计、类别数和表格必须回原文复算。现行法、历史法、地方试点、作者倡议与技术能力分别核定时点和证明能力。每个核心命题同时通过“规范资格—法律效果”与“来源结构—事实可靠性”双阈值；另分列规范上应否、实践中如何、效果上是否，实施诊断不得自动升级为合法性或效果证明；用规范链、实施链和信息链标明连接与断点。
@@ -1661,7 +1719,7 @@ _WF_GENERAL_DRAFT = """# 工作流：论文初稿（通用暂用版）
 0. **先做小规模摸底再谈路线**：候选池题录 20—40 条，从中挑 6—10 篇核心——完整精读 2—3 篇，其余只读标题树＋引言结论；另核清现行法与关键解释的版本时点（不计入篇数）。目的只是把下一步的路线判断变成有据可查，**不是提前做综述**；读满 10 篇仍定不下路线就停下来问用户。这一步读到的局部内容**不得直接落成引注**，正文引用一律走第 3 步的完整精读。
 1. 在教义学与理论—制度建构两种方法之间诊断：前者优先处理现行规范对象、法源位阶、解释、权限、效果与救济；后者优先处理理论前提、概念拆分、竞争模式、机构程序和实施条件。诊断结论须挂上第 0 步读到的具体文献或法源。
 2. 两种方法都真实可行时，给出比较方案并推荐；用户确认写作路线后再展开检索和拟提纲。实证、比较法和制度史只作叠加模块。
-3. 分轮检索概念、规范、理论、争点、反方与实证；核心来源必须 `read_source` 完整阅读并核到精确位置。分别建立规范、理论、事实材料表。
+3. 分轮检索概念、规范、理论、争点、反方与实证；核心来源必须 `read_source` 完整阅读并核到精确位置。分别建立规范、理论、事实材料表；条目超过 10 行或需多轮补录时，用 `table_create` / `table_upsert` / `table_patch` 增量维护研究表格，可用 `table_export` 导出 Word 标准三线表或 CSV。
    **每次检索留一行台账**，落盘 `0_Agent交付物/<主题>/检索发现日志.md`，表头逐字照抄：`| 轮次 | 查询词（逐字） | 名次 | key | 题名 | 处置 | 理由 |`。名次＝该条在本次返回中的位置；处置只用 `采用`／`弃用`／`待核`；**弃用理由比采用理由值钱**（它是负例）。另起一节记漏召回（检索从未返回、靠脚注或人工翻找才补上的文献，注明本该由哪条查询词找到）。第 0 步摸底阶段同样要记。应用不记录检索历史，这份日志是唯一真实记录；不得事后凭记忆补写。
 4. 教义学写作闭合“机构—权限—程序—法律效果—例外—救济”，分开解释论与立法论；理论—制度建构写作闭合“理论—中层命题—制度—实施/信息链”。
 5. 提出可反驳的中心观点和章—节—目三级提纲，使标题、问题、观点、提纲、各部分内容与所需材料一致；列最强反方、实施条件和不适用边界。
@@ -1714,7 +1772,7 @@ _WF_REVIEW = """# 工作流：综述
 2. 用概念、规范/历史名称、理论/模式、机构/阶段、法律效果/救济、实证/批评等词族迭代检索，**每类至少各跑一轮**；保存每轮检索式、范围、命中、去重、新词和候选流转。
    **制度名与概念词必须分开跑。**本国特有的制度名（如「附条件不起诉」「专门矫治教育」）在域外没有对应术语，用它检索只会召回本国文献；要接上域外证据，必须换成该制度背后的**概念与机制词**（分流、转处、再犯、标签化、控制网扩大…），并用其**原文术语**再跑一轮。2026-08-29 实测：查「附条件不起诉制度的实施状况」外文 0 篇，改查「分流转处为什么可能降低再犯」立刻返回域外 meta 分析——同一个库，换个词族就是两个世界。开工时先用 `list_kb_categories` / `localkb_status` 看库的语种与学科构成，据此定词表，别凭印象。
    **台账要落到文献级**，落盘 `0_Agent交付物/<主题>/检索发现日志.md`，表头逐字照抄：`| 轮次 | 查询词（逐字） | 名次 | key | 题名 | 处置 | 理由 |`。名次＝该条在本次返回中的位置；处置只用 `采用`／`弃用`／`待核`；**弃用理由比采用理由值钱**（它是负例）。另起一节记漏召回（检索从未返回、靠脚注或人工翻找才补上的文献，注明本该由哪条查询词找到）。应用不记录检索历史，这份日志是唯一真实记录；不得事后凭记忆补写。
-3. 进入实体评价的来源必须完整 `read_source`，保存精确位置；建立文献—问题—证据—反例—不能证明事项矩阵。
+3. 进入实体评价的来源必须完整 `read_source`，保存精确位置；建立文献—问题—证据—反例—不能证明事项矩阵；多行矩阵优先用 `table_create` / `table_upsert` / `table_patch` 增量维护并用 `table_export` 导出 Word 三线表或 CSV，避免长表格反复整表重写。
 4. 按争点组织理论前提、概念演进、竞争观点、制度机制、证据基础和未决问题，不按作者或年份流水账。
 5. 分开作者原说、同作者纵向重构和跨作者综合；没有精确跨年页证不写“作者转向”。
 6. 分开规范、理论和经验材料；经验结论报告设计、样本、分母、测量、比较、因果、外推和限制，回原文复算分母、小计与类别数。
@@ -1977,7 +2035,8 @@ def _exact_hash(text, mask=None):
 _FACTORY_HASHES = {
     "rely/技能/远程会话直读桥（无MCP时）.md": {"a4fab7f59c51c159aec9b88d32cdaebe344814fe"},   # 2026-09-08 首版
     "rely/工具/kb.py":                    {"3219fa5fb854ccfbc9115d8437571da2852727e8",   # 2026-09-08 词法召回+API 精排
-                                           "021e3ba3df14e11b62a6322c86f7dc0214da3abd"},
+                                           "021e3ba3df14e11b62a6322c86f7dc0214da3abd",
+                                           "fa0d72611ca17b78fb1bff622fa1ae502e2f0d20"},
     "home/AGENTS.md":                     {"b0d3287a85db180a4095849223d2bf4ce19517f3",   # 2026-09-08 远程会话闸门
                                             "903219e637563515cc0b85eb50229352784c4e66",   # 2026-08-20 v6 工作流上线
                                             "4484e95570ece0386e0734797a7ccd487fc464cc",
@@ -1987,6 +2046,7 @@ _FACTORY_HASHES = {
                                             "c6fbc5f1bca2f5ba6ea1ac11e80389e70980c834",   # 2026-08-10 自建骨架＋子代理分工
                                             "35ff785250b8963550ca03dad5580e2c80146abb",   # 2026-08-13 记忆分区闸门
                                             "9377e9e53fb9885e15681bfac8bd64dd2d1b56cb",   # 2026-09-02 工具经验按子域分区
+                                            "8535232ce0b01f60c5decd64770ea001cb41c188",
     },
     "home/CLAUDE.md":                     {"59f57afc8b801a6b286597ce1434fd3e38f39b7a",   # 2026-09-08 远程会话闸门
                                             "959ea188788c2fd5ea974fa8ff0b581b8d2811c6",   # 2026-08-20 v6 工作流上线
@@ -1997,6 +2057,7 @@ _FACTORY_HASHES = {
                                             "1a48521824986471499c18f320515ddc76129974",   # 2026-08-10 自建骨架＋子代理分工
                                             "a7f290f76c89d465b434152322491cb66394acdf",   # 2026-08-13 记忆分区闸门
                                             "3ca15a86d1268e79823e2f5cb2c643feb2e58611",   # 2026-09-02 工具经验按子域分区
+                                            "fa7073e390d7cddda417b20bb24f602e575bc757",
     },
     "output/README.md":                 {"0e59bde65651fba0a5bd3a54f45484ea1864ed5e",
                                              "58902f982ad4222627b011e0ee0dc3bc9c82537d"},   # v2 成品禁止裸 key
@@ -2009,7 +2070,8 @@ _FACTORY_HASHES = {
                                               "a554e6c0d7244c2701ce0c83076029541fdf7152",
                                               "2201243125fbc85c144b42e3d7886b742dc9f1ce",   # v7 项目记忆强制闸门
                                               "a9a0fbf625e8e8d92b390d2f9944cd2dee9d8fb2",   # v8 记忆四分区
-                                              "0edc373dfa74961ea7f66e17ecf15c276bb29ac7"},   # 2026-09-02 工具经验按子域分区
+                                              "0edc373dfa74961ea7f66e17ecf15c276bb29ac7",   # 2026-09-02 工具经验按子域分区
+                                             "2f8fca78b06dbc9b8776ef47541083ebf198c052"},
     "rely/升级与备份/说明.md":          {"69aa1b951cf1993a55b473dd2c3b71b8a31ace12", "56c186648af5f4313a052ac2ed2ba1c1f8ea0d0e", "c4d654d3e8700ec19525d0067fd85205a04340ee", "8649594957720e75a0565269ca93d640e647dda1", "cc966d2d9fd4dc098cc64ebf044308f349b71807", "efc52a1336613c0c481b5628ab14dd16a5e99885", "67fccf854e72f8029bbf24fe7c831c51aa030121", "a2c6dd7d34fe37f6d12bb769501417fd8dd77591"},
     "rely/记忆/项目记忆.md":            {"3c8387860ad95913a602b87b9447bc80bf5a7403",
                                              "1777cb6d1c2e0d764d138cf8dc51ea02a4ad75d8",   # v2 项目记忆强制闸门
@@ -2068,7 +2130,8 @@ _FACTORY_HASHES = {
                                              "179bba9478bdef5b3cf49d2230058430b173784a",
                                              "1238ce0b8978fb058ea2febc08a2165707e84435",
                                              "b6bc79bd22213d6a13e7a1c5bbf8ad61bb9228ff",   # v7 未答复也不派
-                                             "50addedae1216391f9af1e12b1008f4170ed0bf2"},   # v8 记忆分区：按主题取档案
+                                             "50addedae1216391f9af1e12b1008f4170ed0bf2",   # v8 记忆分区：按主题取档案
+                                             "83301c8ff8df57d595d8085e6332435a85bd8b95"},
     "rely/技能/论文初稿（通用暂用版）.md": {"0470c2dce26aeb631786c2c4b49d278b093b918d", "acce553594c4fe91963856b5a838b3cfbb5e1289",
                                              "0530522f7424fd5319f31ae47f6e796eb2b81b4c",
                                              "394e745f16d50345d99951325ad246a68305fdac",
@@ -2076,13 +2139,15 @@ _FACTORY_HASHES = {
                                              "7e41f47414f6ee73c121be9c1f3debdff5a78430",
                                              "e97b549bde099424db3955fd0ad1b01b0f5e4c10",
         "1058f411420ad8342f13f02e3b48aaefcadd458e",   # 2026-08-13 记忆分区：按主题取档案
-                                             "b3b1c19f33e612ae905b6f6b0af65229a92a09de"},   # v7 未答复也不派
+                                             "b3b1c19f33e612ae905b6f6b0af65229a92a09de",   # v7 未答复也不派
+                                             "308cb243b8a49e05228ed99ffe7a9066bfd7d2d3"},
     "rely/技能/综述.md":                   {"34a620fa4dd852e8fd6f44144603f781ac1270e8", "5b9a828cdf7ed37087d236615d6f486194610ed1",
                                              "5df136580f83f5840a7c5d24cb9e45793963d70d",
                                              "a1c20dd73d0f71a65167f0544937050d1d9d746a",
         "fa5902cc2adc0a7e4f142353cf13f928b6646690",   # 2026-08-13 记忆分区：按主题取档案
                                              "99eb1068c9b65cc9bd6937fbad7dbbec808105e6",
-                                             "2673d0aac1437069bc6e195cbd48a77283824339"},   # v5 未答复也不派
+                                             "2673d0aac1437069bc6e195cbd48a77283824339",   # v5 未答复也不派
+                                             "a08f8cd1115f5f8c0d80b4e3e8f940b67ca8f55b"},
     "rely/技能/维护综述库.md":          {"ada886d3bf34277de35f6530a02874efcffaac92",
                                              "25646a2433e3a913d32803e3bf895f062424bba2",
                                              "8fd036b38a135c0a7e4e930e3a6b3a3cc74c22b8",
@@ -2119,7 +2184,8 @@ _WORKFLOW_FACTORY_EXACT_HASHES = {
     # kb.py 也登记在这张表里：它是 **Python 代码**，缩进与空行都有语义，
     # 用「去掉所有空白」的 normalized 指纹会让「只改了缩进」的新版被判成「已是最新」而静默不升级。
     "rely/工具/kb.py": {"574098ef7779da96465a400bfccafb6908fbf7d0",                        # 2026-09-08
-                       "109dccf385639bcbce050028ce14d19518b85a6b"},
+                       "109dccf385639bcbce050028ce14d19518b85a6b",
+                       "6907d8dae5603e89ad7a02b2dd062524305c74c3"},
     "rely/技能/远程会话直读桥（无MCP时）.md": {"26e1e8402fe448a86b73bda9d1fcb55f1ec6c67c"},  # 2026-09-08
     "rely/技能/论文初稿（少年司法版）.md": {
         "1c5e3856bdcf6929c022d88b63b5ae0eef397568",   # 2026-08-21 引号规则去掉台湾地区例外 + 示例改真全角
@@ -2146,6 +2212,7 @@ _WORKFLOW_FACTORY_EXACT_HASHES = {
         "cff7d7df9bf8dcbc78174b24345d859aff545be0",
         "34e7b89d9a45088712c1cab150d86053b008a43e",
         "086b6dc05039c88f757ae51d21362751e1230aa4",   # 2026-08-13 记忆分区：按主题取档案
+        "e2d6a6eb5c76ca0a07dbe8148a7984f4f8c986ea",
     },
     "rely/技能/论文初稿（通用暂用版）.md": {"a37a7d04502635ea974bea5d0baf463d82ef7670", 
         "05c18647c0a711310ef8f62078c5a36f7c2fab34",
@@ -2155,6 +2222,7 @@ _WORKFLOW_FACTORY_EXACT_HASHES = {
         "285c2fb598822f72364f9728a0c8805102eb8a9f",
         "d7550fa18a8a1307e25395cc611a99dc9e129686",
         "6bd8305c4b8a145a36070cfb62025034bebfaf80",   # 2026-08-13 记忆分区：按主题取档案
+        "0c5d78be4c705ff6ca2b4bdbbbd4a24274454783",
     },
     "rely/技能/综述.md": {"135d4a6b5195ee88c0af501c8151389994b0ad13", 
         "19d8d07b6822e5920ecd73a9c34e4c8913947700",
@@ -2162,6 +2230,7 @@ _WORKFLOW_FACTORY_EXACT_HASHES = {
         "7effe1a12b0304a3272a99c0bdaedf04ce69a91b",
         "49b8f588f081da0e88cadff88999f21072e89066",
         "539ecd43c52ee54a8b0ca36325ff82c8d0e9d0b7",   # 2026-08-13 记忆分区：按主题取档案
+        "29ade9e6eb96462e41f75edd8491a4108b5d3476",
     },
     "rely/技能/维护综述库.md": {
         "06f8d02417c02b5ce885c0e76fc645a5b78fb8f4",

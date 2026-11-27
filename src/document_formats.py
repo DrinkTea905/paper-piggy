@@ -80,6 +80,28 @@ def primary_attachment(attachments):
     return ordered[0] if ordered else None
 
 
+_STORAGE_KEY_RE_STR = r"[/\\]storage[/\\]([A-Za-z0-9]{8})[/\\]"
+
+
+def _pdf_attachment_key_of(pdf, raw_attachments, existing=""):
+    import re
+    raw_key = str(existing or "").strip()
+    if pdf:
+        pdf_norm = str(Path(pdf["path"])).casefold()
+        for raw in (raw_attachments or []):
+            if not isinstance(raw, dict):
+                continue
+            rp = str(raw.get("path") or "").strip()
+            if rp and str(Path(rp)).casefold() == pdf_norm:
+                ak = str(raw.get("att_key") or "").strip()
+                if ak:
+                    return ak.upper()
+        m = re.search(_STORAGE_KEY_RE_STR, str(pdf["path"]))
+        if m:
+            return m.group(1).upper()
+    return raw_key.upper() if re.fullmatch(r"[A-Za-z0-9]{8}", raw_key) else ""
+
+
 def apply_attachment_fields(record, attachments):
     """把通用全文字段写入题录，并保留语义准确的 PDF 兼容字段。"""
     ordered = sort_attachments(attachments)
@@ -91,6 +113,9 @@ def apply_attachment_fields(record, attachments):
     record["fulltext_format"] = primary["format"] if primary else ""
     record["has_pdf"] = bool(pdf)
     record["pdf_path"] = pdf["path"] if pdf else ""
+    record["pdf_attachment_key"] = _pdf_attachment_key_of(
+        pdf, attachments, existing=record.get("pdf_attachment_key", "")
+    )
     return record
 
 
@@ -104,7 +129,11 @@ def normalize_record(record):
         attachments.append({"path": ft_path, "format": record.get("fulltext_format") or ""})
     pdf_path = str(record.get("pdf_path") or "").strip()
     if pdf_path:
-        attachments.append({"path": pdf_path, "format": "pdf"})
+        attachments.append({
+            "path": pdf_path,
+            "format": "pdf",
+            "att_key": str(record.get("pdf_attachment_key") or "").strip(),
+        })
     # 极旧记录可能只有 has_pdf=True 而没有路径。保留布尔真值，但无法深索。
     if attachments:
         return apply_attachment_fields(record, attachments)
@@ -114,6 +143,7 @@ def normalize_record(record):
     record.setdefault("fulltext_format", "pdf" if record.get("has_pdf") else "")
     record.setdefault("has_pdf", False)
     record.setdefault("pdf_path", "")
+    record.setdefault("pdf_attachment_key", "")
     return record
 
 

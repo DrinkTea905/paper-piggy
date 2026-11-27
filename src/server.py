@@ -14,11 +14,12 @@ import task_log as TL          # 结构化运行日志：检索/核验的耗时�
 import retriever as R
 import llm as L
 import wiki_store as W
-from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
+from fastapi import FastAPI, Request, HTTPException, Query
+from fastapi.responses import StreamingResponse, JSONResponse, FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-from typing import Optional, List, Union
+from typing import Optional, List, Union, Dict, Any
+import html as html_mod
 import uvicorn
 
 app = FastAPI(title="本地知识库")
@@ -1433,6 +1434,415 @@ def agent_outputs(limit: int = 8):
     except Exception as e:
         return {"outputs": out, "total": len(out), "error": str(e)}
     return {"outputs": out, "total": len(rows)}
+
+
+def _workflow_card_summary(txt: str) -> str:
+    """提取工作流正文首段核心说明（跳过 H1 标题），作 Agent 页一行摘要。"""
+    lines = txt.splitlines()
+    picked = []
+    started = False
+    for raw in lines:
+        s = raw.strip()
+        if not s:
+            if picked:
+                break
+            continue
+        if s.startswith("# ") and not started:
+            started = True
+            continue
+        if s.startswith("## "):
+            break
+        if s.startswith(">"):
+            body = s.lstrip(">").strip()
+            if body:
+                picked.append(body)
+                if len("".join(picked)) >= 95:
+                    break
+            continue
+        if not picked and not s.startswith(("-", "*", "|", "---")):
+            picked.append(s)
+            break
+    summary = re.sub(r"[`*]", "", " ".join(picked)).strip()
+    if len(summary) > 110:
+        summary = summary[:108].rstrip("，。；;,. ") + "…"
+    return summary
+
+
+@app.get("/agent/workflows")
+def agent_workflows():
+    """扫描 0_Agent资料库/技能/ 下的研究工作流，供 Agent 页展示现有技能（工作流）。"""
+    import agent_ws as AW
+    out = []
+    try:
+        AW.ensure_scaffold()
+        sdir = Path(AW.skills_dir())
+        builtins_main = [
+            ("论文初稿（少年司法版）.md", "rely/技能/论文初稿（少年司法版）.md", "内置"),
+            ("综述（少年司法版）.md",     "rely/技能/综述（少年司法版）.md",     "内置"),
+            ("论文初稿（通用暂用版）.md", "rely/技能/论文初稿（通用暂用版）.md", "内置"),
+            ("综述.md",                   "rely/技能/综述.md",                   "内置"),
+            ("维护综述库.md",             "rely/技能/维护综述库.md",             "内置"),
+            ("跨学科发散与补文献.md",     "rely/技能/跨学科发散与补文献.md",     "内置"),
+        ]
+        builtins_aux = [
+            ("远程会话直读桥（无MCP时）.md", "rely/技能/远程会话直读桥（无MCP时）.md", "辅助"),
+        ]
+        builtin_map = {fn: (tkey, role) for fn, tkey, role in builtins_main + builtins_aux}
+
+        def _entry(p: Path, tkey: Optional[str], role: str):
+            txt = p.read_text(encoding="utf-8", errors="replace")
+            st = p.stat()
+            m_h1 = re.search(r"(?m)^#\s+(?:工作流[：:]\s*)?(.+?)\s*$", txt)
+            title = (m_h1.group(1).strip() if m_h1 else p.stem)
+            customized = True
+            if tkey:
+                try:
+                    customized = AW._template_hash(tkey, txt) not in AW._factory_hashes_for(tkey)
+                except Exception:
+                    customized = False
+            companions = [Path(spec[1]).name for spec in AW.workflow_companion_specs(p.name)]
+            return {
+                "filename": p.name,
+                "name": title,
+                "builtin": bool(tkey),
+                "role": role,
+                "customized": bool(customized),
+                "companions": companions,
+                "summary": _workflow_card_summary(txt),
+                "mtime": time.strftime("%Y-%m-%d", time.localtime(st.st_mtime)),
+                "latest_mtime": st.st_mtime,
+                "size_kb": max(1, round(st.st_size / 1024)),
+            }
+
+        seen = set()
+        for fn, tkey, role in builtins_main:
+            p = sdir / fn
+            if p.exists() and not _is_link_or_junction(p) and p.is_file():
+                try:
+                    out.append(_entry(p, tkey, role))
+                    seen.add(fn)
+                except OSError:
+                    continue
+
+        custom_files = []
+        if sdir.exists():
+            for p in sdir.iterdir():
+                try:
+                    if p.name in seen or p.name in builtin_map or p.name == "说明.md":
+                        continue
+                    if _is_link_or_junction(p) or not p.is_file() or p.suffix.lower() != ".md":
+                        continue
+                    custom_files.append(p)
+                except OSError:
+                    continue
+        custom_files.sort(key=lambda fp: fp.stat().st_mtime, reverse=True)
+        for p in custom_files:
+            try:
+                out.append(_entry(p, None, "自建"))
+                seen.add(p.name)
+            except OSError:
+                continue
+
+        for fn, tkey, role in builtins_aux:
+            p = sdir / fn
+            if p.exists() and not _is_link_or_junction(p) and p.is_file():
+                try:
+                    out.append(_entry(p, tkey, role))
+                    seen.add(fn)
+                except OSError:
+                    continue
+        return {"ok": True, "workflows": out, "total": len(out), "dir": str(sdir)}
+    except Exception as e:
+        return {"ok": False, "workflows": out, "total": len(out), "error": str(e)}
+
+
+class AgentOpenWorkflowQ(BaseModel):
+    filename: str
+
+
+@app.post("/agent/open_workflow")
+def agent_open_workflow(q: AgentOpenWorkflowQ):
+    """在系统文件管理器中定位一个工作流 .md 文件；严格限定于 0_Agent资料库/技能/ 根目录直属文件。"""
+    import agent_ws as AW
+    fn = str(q.filename or "").strip()
+    if not fn or "/" in fn or "\\" in fn or not fn.lower().endswith(".md"):
+        raise HTTPException(status_code=400, detail="无效的工作流文件名")
+    try:
+        AW.ensure_scaffold()
+        base = Path(AW.skills_dir()).resolve(strict=True)
+        target = next((p for p in base.iterdir() if p.name == fn), None)
+        if target is None:
+            raise HTTPException(status_code=404, detail="工作流文件不存在")
+        if _is_link_or_junction(target) or not target.is_file():
+            raise HTTPException(status_code=400, detail="只能打开技能文件夹中的真实工作流文件")
+        resolved = target.resolve(strict=True)
+        if resolved.parent != base:
+            raise HTTPException(status_code=400, detail="工作流路径不在允许范围内")
+        if sys.platform == "win32":
+            subprocess.Popen(["explorer.exe", f"/select,{resolved}"],
+                             creationflags=getattr(C, "SUBPROC_NO_WINDOW", 0x08000000))
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", "-R", str(resolved)])
+        else:
+            subprocess.Popen(["xdg-open", str(resolved.parent)])
+        return {"ok": True, "path": str(resolved)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
+
+
+@app.get("/agent/doctor")
+def agent_doctor():
+    """只读环境自检：不写盘、不改配置，汇总后端状态、模型/API、文献源、MCP 客户端对齐与综述健康。"""
+    import settings as S
+    checks = []
+    # 1. 检索服务与已载入索引
+    try:
+        mode = "full" if "tbl" in R.M else ("light" if "papers" in R.M else "init")
+        n_papers = len(R.M.get("papers") or {})
+        n_chunks = int(R.M.get("n_chunks") or 0)
+        mode_zh = {"full": "全文语义 + 词法完整模式", "light": "题录词法轻量模式", "init": "初始化中"}.get(mode, mode)
+        checks.append({
+            "id": "service",
+            "label": "本地服务与索引载入",
+            "status": "ok" if n_papers > 0 else "warn",
+            "detail": f"{mode_zh}；当前已载入 {n_papers} 篇文献" + (f"、{n_chunks} 个正文片段" if n_chunks else "（尚无正文切块）"),
+        })
+    except Exception as e:
+        checks.append({"id": "service", "label": "本地服务与索引载入", "status": "error", "detail": str(e)})
+
+    # 2. 检索模型 / 云端凭据
+    try:
+        if S.is_api():
+            ac = S.api_conf() or {}
+            has_key = bool(str(ac.get("api_key") or "").strip())
+            checks.append({
+                "id": "models",
+                "label": "检索引擎与模型",
+                "status": "ok" if has_key else "error",
+                "detail": "SiliconFlow 云端检索已配置 Key" if has_key else "已设为云端检索模式，但尚未填写 SiliconFlow API Key",
+            })
+        else:
+            emb_ok = (C.MODELS / "bge-m3-onnx" / "model_quantized.onnx").is_file()
+            rr_ok = (C.MODELS / "bge-reranker-v2-m3-onnx" / "model_quantized.onnx").is_file()
+            checks.append({
+                "id": "models",
+                "label": "检索引擎与模型",
+                "status": "ok" if (emb_ok and rr_ok) else "warn",
+                "detail": f"本地 ONNX 模型（嵌入：{'就绪' if emb_ok else '缺失'}，重排：{'就绪' if rr_ok else '缺失'}）",
+            })
+    except Exception as e:
+        checks.append({"id": "models", "label": "检索引擎与模型", "status": "warn", "detail": str(e)})
+
+    # 3. 文献数据源可读性
+    try:
+        src = S.source()
+        if src == "folder":
+            fd = S.folder_dir()
+            ok_dir = bool(fd) and Path(fd).is_dir()
+            checks.append({
+                "id": "source",
+                "label": "文献数据源",
+                "status": "ok" if ok_dir else "error",
+                "detail": f"文件夹模式：{fd}" if ok_dir else f"文件夹路径不可读或不存在：{fd or '（未设置）'}",
+            })
+        else:
+            import zotero_source as ZS
+            cfg = S.load()
+            zdir_raw = str(cfg.get("zotero_dir") or ZS.detect_data_dir() or "").strip()
+            zdb = Path(zdir_raw) / "zotero.sqlite" if zdir_raw else None
+            ok_z = bool(zdb and zdb.is_file())
+            checks.append({
+                "id": "source",
+                "label": "文献数据源",
+                "status": "ok" if ok_z else "error",
+                "detail": f"Zotero 数据目录可读：{zdir_raw}" if ok_z else "未检测到可读的 zotero.sqlite，请在设置确认 Zotero 数据目录",
+            })
+    except Exception as e:
+        checks.append({"id": "source", "label": "文献数据源", "status": "warn", "detail": str(e)})
+
+    # 4. AI 助手接入路径对照（只读）
+    try:
+        expected_mcp = str((C.APP / "mcp_server.py").resolve()).lower()
+        found_clients = []
+        mismatch_clients = []
+        home = Path.home()
+        claude_cfg = home / ".claude.json"
+        if claude_cfg.is_file():
+            try:
+                cd = json.loads(claude_cfg.read_text(encoding="utf-8", errors="replace"))
+                srvs = cd.get("mcpServers") or {}
+                ent = srvs.get(C.MCP_NAME) or srvs.get("localkb")
+                if isinstance(ent, dict):
+                    args_str = " ".join(str(x) for x in (ent.get("args") or [])).lower()
+                    if expected_mcp in args_str:
+                        found_clients.append("Claude Code 已对齐当前实例")
+                    else:
+                        mismatch_clients.append("Claude Code 中的 localkb 指向了另一个目录或旧实例")
+            except Exception:
+                pass
+        codex_cfg = home / ".codex" / "config.toml"
+        if codex_cfg.is_file():
+            try:
+                txt = codex_cfg.read_text(encoding="utf-8", errors="replace")
+                if f"[mcp_servers.{C.MCP_NAME}]" in txt or "[mcp_servers.localkb]" in txt:
+                    if expected_mcp in txt.lower() or str((C.APP / "mcp_server.py")).replace("\\", "\\\\").lower() in txt.lower():
+                        found_clients.append("Codex 已对齐当前实例")
+                    else:
+                        mismatch_clients.append("Codex 中的 localkb 配置指向了另一个目录或旧实例")
+            except Exception:
+                pass
+        if mismatch_clients:
+            checks.append({"id": "mcp_clients", "label": "AI 助手接入路径", "status": "warn",
+                           "detail": "；".join(mismatch_clients)})
+        elif found_clients:
+            checks.append({"id": "mcp_clients", "label": "AI 助手接入路径", "status": "ok",
+                           "detail": "；".join(found_clients)})
+        else:
+            checks.append({"id": "mcp_clients", "label": "AI 助手接入路径", "status": "warn",
+                           "detail": "本机未检测到已登记的 Claude Code / Codex localkb 配置（如使用其他客户端请按下方命令接入）"})
+    except Exception as e:
+        checks.append({"id": "mcp_clients", "label": "AI 助手接入路径", "status": "warn", "detail": str(e)})
+
+    # 5. 模板升级与综述健康（纯读）
+    try:
+        import agent_ws as AW
+        a_up = AW.upgrade_status()
+        w_up = W.upgrade_status()
+        pending_tpl = sum(1 for x in (a_up.get("items") or []) + (w_up.get("items") or []) if x.get("status") == "pending")
+        lint_n = W.lint().get("n_issues", 0) if C.WIKI_INDEX.exists() else 0
+        checks.append({
+            "id": "workspace_and_wiki",
+            "label": "模板待合并与综述体检",
+            "status": "ok" if (pending_tpl == 0 and lint_n == 0) else "warn",
+            "detail": f"模板待合并 {pending_tpl} 项 · 综述库待清理问题 {lint_n} 项",
+        })
+    except Exception as e:
+        checks.append({"id": "workspace_and_wiki", "label": "模板待合并与综述体检", "status": "warn", "detail": str(e)})
+
+    overall = "error" if any(c["status"] == "error" for c in checks) else ("warn" if any(c["status"] == "warn" for c in checks) else "ok")
+    return {"ok": True, "status": overall, "checked_at": time.strftime("%Y-%m-%d %H:%M:%S"), "checks": checks}
+
+
+# ── 轻量结构化研究矩阵表（*.table.json）────────────────────────────────────
+class TableCreateQ(BaseModel):
+    path: str
+    title: str = ""
+    description: str = ""
+    columns: List[Dict[str, Any]] = []
+    if_revision: Optional[int] = None
+    request_id: str = ""
+
+
+class TableQueryQ(BaseModel):
+    path: Optional[str] = None
+    filters: Optional[List[Dict[str, Any]]] = None
+    sort_by: Optional[str] = None
+    desc: bool = False
+    offset: int = 0
+    limit: int = 100
+
+
+class TableUpsertQ(BaseModel):
+    path: str
+    rows: List[Dict[str, Any]] = []
+    key_column: Optional[str] = None
+    if_revision: Optional[int] = None
+    allow_external_keys: bool = False
+    request_id: str = ""
+
+
+class TablePatchQ(BaseModel):
+    path: str
+    patches: List[Dict[str, Any]] = []
+    if_revision: Optional[int] = None
+    allow_external_keys: bool = False
+    request_id: str = ""
+
+
+class TableExportQ(BaseModel):
+    path: str
+    format: str = "csv"
+    out_path: Optional[str] = None
+
+
+@app.post("/table/create")
+def table_create(q: TableCreateQ):
+    import table_store as TS
+    try:
+        return TS.create_or_evolve_table(
+            q.path, title=q.title, columns=q.columns, description=q.description,
+            if_revision=q.if_revision, request_id=q.request_id,
+        )
+    except TS.RevisionConflictError as e:
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=409)
+    except TS.TableError as e:
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
+    except Exception as e:
+        log_error("table/create", repr(e), traceback.format_exc())
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
+
+
+@app.post("/table/query")
+def table_query(q: TableQueryQ):
+    import table_store as TS
+    try:
+        return TS.query_table(
+            path=q.path, filters=q.filters, sort_by=q.sort_by, desc=q.desc,
+            offset=q.offset, limit=q.limit,
+        )
+    except TS.TableError as e:
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
+    except Exception as e:
+        log_error("table/query", repr(e), traceback.format_exc())
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
+
+
+@app.post("/table/upsert")
+def table_upsert(q: TableUpsertQ):
+    import table_store as TS
+    try:
+        return TS.upsert_rows(
+            q.path, q.rows, key_column=q.key_column, if_revision=q.if_revision,
+            actor="agent", request_id=q.request_id, allow_external_keys=q.allow_external_keys,
+        )
+    except TS.RevisionConflictError as e:
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=409)
+    except TS.TableError as e:
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
+    except Exception as e:
+        log_error("table/upsert", repr(e), traceback.format_exc())
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
+
+
+@app.post("/table/patch")
+def table_patch(q: TablePatchQ):
+    import table_store as TS
+    try:
+        return TS.patch_cells(
+            q.path, q.patches, if_revision=q.if_revision,
+            actor="agent", request_id=q.request_id, allow_external_keys=q.allow_external_keys,
+        )
+    except TS.RevisionConflictError as e:
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=409)
+    except TS.TableError as e:
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
+    except Exception as e:
+        log_error("table/patch", repr(e), traceback.format_exc())
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
+
+
+@app.post("/table/export")
+def table_export(q: TableExportQ):
+    import table_store as TS
+    try:
+        return TS.export_table(q.path, fmt=q.format, out_path=q.out_path)
+    except TS.TableError as e:
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
+    except Exception as e:
+        log_error("table/export", repr(e), traceback.format_exc())
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
 
 @app.post("/setup/pick_folder")
 def setup_pick_folder():
@@ -2979,16 +3389,35 @@ def wiki_delete(page_id: str):
 class WikiStaleQ(BaseModel):
     stale: bool = True
     reason: str = ""
+    by_agent: bool = False
 
 @app.post("/wiki/stale/{page_id}")
 def wiki_stale(page_id: str, q: WikiStaleQ):
     """标记/清除某综合页「已过时」。检索降权立即生效，无需重启。"""
     try:
-        return {"ok": True, **W.set_stale(page_id, q.stale, q.reason)}
+        return {"ok": True, **W.set_stale(page_id, q.stale, q.reason, by_agent=q.by_agent)}
+    except W.WikiWriteDenied as e:
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=409)
     except ValueError as e:
         return JSONResponse({"ok": False, "detail": str(e)}, status_code=404)
     except Exception as e:
         log_error("wiki/stale", repr(e), traceback.format_exc())
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
+
+
+class WikiLockQ(BaseModel):
+    locked: bool = True
+
+
+@app.post("/wiki/lock/{page_id}")
+def wiki_lock(page_id: str, q: WikiLockQ):
+    """人工冻结/解冻综合页；冻结后禁止 Agent 修改正文、互链或标脏（仅 UI 人工可用）。"""
+    try:
+        return {"ok": True, **W.set_locked(page_id, q.locked)}
+    except ValueError as e:
+        return JSONResponse({"ok": False, "detail": str(e)}, status_code=404)
+    except Exception as e:
+        log_error("wiki/lock", repr(e), traceback.format_exc())
         return JSONResponse({"ok": False, "detail": str(e)}, status_code=400)
 
 class WikiVerifyQ(BaseModel):
@@ -3102,23 +3531,34 @@ class WikiUpdateQ(BaseModel):
     title: Optional[str] = None
     content: str = ""
     sources: Optional[List[dict]] = None
-    mode: str = "replace"           # replace | append
+    mode: str = "replace"           # replace | append | replace_section
+    section: Optional[str] = None
+    if_revision: Optional[str] = None
+    request_id: Optional[str] = None
     links: Optional[List[str]] = None
     model: str = ""
     by_agent: bool = True              # 兼容旧客户端；此入口本身即 Agent 入口，服务端强制为 True
 
 @app.post("/wiki/page/{page_id}")
 def wiki_update_page(page_id: str, q: WikiUpdateQ):
-    """建 / 覆盖 / 追加任意 kind 的 wiki 页（含 entity / overview）。
-    replace 显式传 sources 时替换旧来源，允许用有效 key 修正历史失效 key；最终页面仍整页校验。"""
+    """建 / 覆盖 / 追加 / 按小节局部替换任意 kind 的 wiki 页（含 entity / overview）。"""
     try:
+        kwargs = {}
+        if q.section is not None:
+            kwargs["section"] = q.section
+        if q.if_revision is not None:
+            kwargs["if_revision"] = q.if_revision
+        if q.request_id is not None:
+            kwargs["request_id"] = q.request_id
         m = W.update_page(page_id, kind=q.kind, title=q.title, content=q.content,
                           sources=q.sources, mode=q.mode, links=q.links,
-                          generated_by=q.model, by_agent=True)
+                          generated_by=q.model, by_agent=True, **kwargs)
         return {"ok": True, "id": m["id"], "kind": m.get("kind"), "title": m.get("title"),
                 "indexed": m.get("indexed", False), "degraded": m.get("degraded", False),
                 "pending_review": bool(m.get("pending_review")),
                 "verified_at": m.get("verified_at", ""),
+                "revision": m.get("revision", ""),
+                "idempotent_replay": bool(m.get("idempotent_replay")),
                 "links": m.get("links", []), "n_sources": len(m.get("sources", []))}
     except W.WikiWriteDenied as e:
         return JSONResponse({"ok": False, "detail": str(e)}, status_code=409)
@@ -3881,6 +4321,58 @@ def open_pdf(q: OpenPdfQ):
         log_error("open_pdf", repr(e))
         return JSONResponse({"ok": False, "msg": f"打开失败：{e}"}, status_code=200)
 
+
+def _launch_jump_target(kind: str, target: str):
+    """调起 Zotero URI 或系统默认阅读器打开文件（Windows os.startfile 不弹终端黑窗）。"""
+    if not target:
+        raise ValueError("空打开目标")
+    if sys.platform == "win32":
+        os.startfile(target)  # noqa
+    elif sys.platform == "darwin":
+        subprocess.Popen(["open", target])
+    else:
+        subprocess.Popen(["xdg-open", target])
+
+
+@app.get("/jump")
+def jump_to_source(key: str, page: Optional[int] = None, json_mode: int = Query(0, alias="json")):
+    """供 AI 对话 Markdown 与前端点击后直达 Zotero 对应 PDF 页（或选中条目/打开本地文件）。"""
+    import jump_link as JL
+    p = _load_papers().get(key)
+    if not p:
+        msg = f"库内未找到文献 key={key}"
+        if json_mode:
+            return JSONResponse({"ok": False, "msg": msg}, status_code=404)
+        return HTMLResponse(f"<html><body><p>{html_mod.escape(msg)}</p></body></html>", status_code=404)
+    kind, target = JL.resolve_open_target(p, key=key, pdf_page=page)
+    if not target:
+        msg = "该条目没有可用的 Zotero 定位或本地全文附件"
+        if json_mode:
+            return JSONResponse({"ok": False, "msg": msg}, status_code=404)
+        return HTMLResponse(f"<html><body><p>{html_mod.escape(msg)}</p></body></html>", status_code=404)
+    try:
+        _launch_jump_target(kind, target)
+    except Exception as e:
+        log_error("jump_to_source", repr(e))
+        if json_mode:
+            return JSONResponse({"ok": False, "msg": f"唤起失败：{e}"}, status_code=500)
+        return HTMLResponse(
+            f"<html><body><p>唤起失败：{html_mod.escape(str(e))}</p></body></html>",
+            status_code=500,
+        )
+    if json_mode:
+        return {"ok": True, "key": key, "page": page, "kind": kind, "target": target}
+    page_tip = f"（第 {int(page)} 页）" if page and int(page) > 0 else ""
+    title = html_mod.escape(str(p.get("title") or key))
+    return HTMLResponse(
+        "<!doctype html><html><head><meta charset='utf-8'><title>已在 Zotero 打开</title></head>"
+        "<body style='font-family:system-ui,sans-serif;padding:24px;line-height:1.6'>"
+        f"<h3>已在 Zotero 打开《{title}》{page_tip}</h3>"
+        "<p>如果 Zotero 没有立刻切到对应页面，请确认 Zotero 客户端正在运行；此标签页可关闭。</p>"
+        "<script>setTimeout(function(){try{window.close();}catch(e){}},180);</script>"
+        "</body></html>"
+    )
+
 # ══════════════════════════════════════════════════════════════════
 #  读取论文全文（agent 的 ingest 地基）
 #  此前 agent 只能拿到 220 字检索片段；逐页正文一直躺在 config.EXTRACTED 里，
@@ -4303,6 +4795,42 @@ def index_folder_build_nokey():
     if S.source() != "folder":
         return JSONResponse({"ok": False, "msg": "当前非文件夹模式"}, status_code=400)
     return {"ok": _run_build("folder")}
+
+
+class FolderMetaUpdateQ(BaseModel):
+    key: str
+    meta: Dict[str, Any] = Field(default_factory=dict)
+    clear_needs_review: bool = True
+
+
+@app.post("/folder/meta")
+def update_folder_meta(q: FolderMetaUpdateQ):
+    """人工核对/编辑文件夹模式单篇题录，并写入 meta_source='manual' 锁定以防被自动重抽覆盖。"""
+    import folder_meta as FM
+    import folder_ingest as FI
+    import folder_source as FS
+    cache = FS._load_cache()
+    entry = dict(cache.get(q.key) or {})
+    cur_meta = dict(entry.get("meta") or {})
+    allowed = set(FM.META_FIELDS)
+    for k, v in (q.meta or {}).items():
+        if k in allowed:
+            cur_meta[k] = str(v or "").strip()
+    if not cur_meta.get("title"):
+        p = _load_papers().get(q.key) or {}
+        cur_meta["title"] = p.get("title") or q.key
+    entry["meta"] = cur_meta
+    entry["meta_source"] = "manual"
+    if q.clear_needs_review:
+        entry["needs_review"] = False
+    file_path = entry.get("file") or ((_load_papers().get(q.key) or {}).get("fulltext_path") or "")
+    if file_path and Path(file_path).exists() and not entry.get("sha1"):
+        entry["sha1"] = FI._file_sha1(file_path)
+    with FI._CACHE_LOCK:
+        cache[q.key] = entry
+    FI._save_cache(cache)
+    return {"ok": True, "key": q.key, "meta": cur_meta, "meta_source": "manual",
+            "needs_review": bool(entry.get("needs_review", False))}
 
 def _dedupe_name(dst):
     """同名不同容→加序号后缀，避免覆盖。"""
@@ -5312,6 +5840,10 @@ import backup_api
 backup_api.register(app, sys.modules[__name__])
 
 if __name__ == "__main__":
+    if sys.stdout is None:
+        sys.stdout = open(os.devnull, "w", encoding="utf-8", errors="replace")
+    if sys.stderr is None:
+        sys.stderr = open(os.devnull, "w", encoding="utf-8", errors="replace")
     import backup_runner
     if backup_runner.active_paperpiggy_restore(C.DATA):
         print("小猪正在原位恢复，暂不启动后端；完成后请重新打开。", flush=True)

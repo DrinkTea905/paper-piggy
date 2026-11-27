@@ -11,6 +11,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import config as C
 import document_formats as DF
+import jump_link as JL
 import task_log as TL          # 结构化运行日志：工具级耗时/成败/模型调用数，供离线复核
 import requests
 
@@ -113,6 +114,8 @@ _INSTRUCTIONS_HEAD = """你连接的是用户的**本地文献知识库**（Pape
    原核验版继续显示和检索。发现旧页被新文献推翻，先用 mark_stale 标脏并写清理由。
 7. 矛盾与争议只作「未核实」的只读提示，不要落成 wiki 断言。
 8. 新增/更新一篇文献后，用 get_backlinks(key=…) 查哪些综合页引用了它，逐一判断是否需要标脏或重生。
+9. **聊天回复附带 Zotero 原文跳页链接（全场景适用）**：在一切给用户看的 AI 对话回复中（不仅限写论文/大纲，**日常在项目里提问、检索讨论、核对引文与论断同样适用**），凡提及库内具体文献或页码，必须把检索/读取/核验工具返回的跳转链接拼进回复（如 `[《题名》第X页](http://127.0.0.1:.../jump?key=...&page=...)`），方便用户一点即在 Zotero 翻到该页。**绝不写入**最终交付的 `.docx` 论文、wiki 综述正文、交付物成稿或导出表格中（正式成果只保留规范学术引注）。
+10. **多行对比或编码使用结构化研究表格**：遇到超过约 10 行的实证编码表、裁判文书样本表、历次修法沿革表、跨国制度对比或文献—证据矩阵，优先使用 `table_create` / `table_upsert` / `table_patch` 增量维护 `*.table.json`，交付前用 `table_export` 导出为 CSV、Markdown 或 Word 标准三线表 `.docx`，不要反复整表重写大号 Markdown 表格。
 
 下面是这个 wiki 的结构约定（data/wiki/WIKI.md）：
 """
@@ -759,10 +762,11 @@ TOOLS = [
         "description": "建立或修改一个 wiki 综合页。这是维护 wiki 的主要动作。\n"
                        "kind 可选：answer(问答沉淀) / concept(概念) / topic(主题) / digest(资料汇编) / "
                        "outline(选题框架) / **entity(实体页：作者、机构、案件、制度)** / **overview(总论页：随全库演进的核心论点)**。\n"
-                       "mode='append' 把新内容与来源并入既有页；'replace' 整体重写，显式传 sources 时会替换旧来源，"
-                       "可用于修正失效 key；replace 不传 sources 则保留旧来源。\n"
-                       "护栏：更新用户人工核验过的页时，只生成待审修改；核验版与检索结果保持不变，"
-                       "由用户在应用里比较后接受或放弃。每个论断带 [n] 引用，sources 填论文 key。",
+                       "mode='append' 把新内容与来源并入既有页；'replace_section' 只替换指定小节标题（section）下的正文并保留其余小节；"
+                       "'replace' 整体重写，显式传 sources 时会替换旧来源，replace 不传 sources 则保留旧来源。\n"
+                       "可选 if_revision（来自 get_wiki_page）做并发保护，可选 request_id 防重试重复写入。\n"
+                       "护栏：已冻结（locked）页拒绝 Agent 写入；更新人工核验页时只生成待审修改，核验版和检索结果不变。"
+                       "每个论断带 [n] 引用，sources 填论文 key。",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -775,7 +779,10 @@ TOOLS = [
                 "content": {"type": "string", "description": "markdown 正文，每个论断后带 [n] 引用"},
                 "sources": {"type": "array", "items": {"type": "string"},
                             "description": "本页所依据论文的 key 列表（provenance 命脉，别留空）"},
-                "mode": {"type": "string", "enum": ["replace", "append"], "default": "replace"},
+                "mode": {"type": "string", "enum": ["replace", "append", "replace_section"], "default": "replace"},
+                "section": {"type": "string", "description": "仅 mode='replace_section' 时使用：要替换的目标 Markdown 小节标题"},
+                "if_revision": {"type": "string", "description": "可选乐观并发版本号（来自 get_wiki_page）；不匹配则拒绝覆盖"},
+                "request_id": {"type": "string", "description": "可选幂等请求 id；重试时防止重复写入"},
                 "links": {"type": "array", "items": {"type": "string"},
                           "description": "交叉链接到的其它 wiki 页 id（可选，也可事后用 set_wiki_links）"},
             },
@@ -999,7 +1006,9 @@ TOOLS = [
             "target": {"type": "string", "default": "core",
                        "description": "core（默认）/ tools:<子域> / topic:<主题名> / log。见上面的分区判据。"},
             "status": {"type": "string",
-                       "description": "只在 target=\"topic:<主题名>\" 时有效：顺带把该档案的状态行改成 进行中 / 已完成 / 已作废。"}}},
+                       "description": "只在 target=\"topic:<主题名>\" 时有效：顺带把该档案的状态行改成 进行中 / 已完成 / 已作废。"},
+            "request_id": {"type": "string",
+                           "description": "可选幂等请求 id；重试同一 request_id 不会重复追加。"}}},
     },
     {
         "name": "set_memory_topic_status",
@@ -1011,6 +1020,74 @@ TOOLS = [
             "status": {"type": "string", "enum": ["进行中", "已完成", "已作废"], "description": "新状态"},
             "reason": {"type": "string", "description": "改成该状态的理由，可选（作废时强烈建议写）"}},
             "required": ["topic", "status"]},
+    },
+    # ── 轻量结构化研究矩阵表（.table.json，支持局部增改与 Word 三线表/CSV 导出）──
+    {
+        "name": "table_create",
+        "description": "新建或演进一张结构化研究矩阵表（存为 `0_Agent交付物/` 或 `0_Agent资料库/研究表格/` 下的 `*.table.json`）。"
+                       "适合裁判文书编码、跨国制度对比、修法沿革或文献—证据大表，避免大 Markdown 表格反复整表重写。",
+        "inputSchema": {"type": "object", "properties": {
+            "path": {"type": "string", "description": "表格相对路径（如 `研究表格/附条件不起诉编码.table.json` 或 `<主题>/矩阵.table.json`）"},
+            "title": {"type": "string", "description": "表格标题（导出 Word/Markdown 时作表题）"},
+            "description": {"type": "string", "description": "编码口径或制表说明（可选）"},
+            "columns": {"type": "array", "description": "列定义数组", "items": {"type": "object", "properties": {
+                "id": {"type": "string", "description": "列标识（英文/中文简短键名）"},
+                "name": {"type": "string", "description": "展示列名"},
+                "type": {"type": "string", "enum": ["text", "select", "number", "date", "boolean", "paper_key", "printed_page"], "default": "text"},
+                "options": {"type": "array", "items": {"type": "string"}, "description": "type=select 时的合法枚举值"},
+                "unit": {"type": "string", "description": "单位（如 月 / 篇 / %）"},
+                "required": {"type": "boolean", "default": False},
+            }, "required": ["id"]}},
+            "if_revision": {"type": "integer", "description": "演进已有表格列定义时的乐观锁 revision"},
+            "request_id": {"type": "string", "description": "可选幂等请求 id"},
+        }, "required": ["path", "columns"]},
+    },
+    {
+        "name": "table_query",
+        "description": "查询研究矩阵表：不传 path 时列出当前全部 `.table.json` 清单与行数/revision；传 path 时返回列定义、当前 revision 与筛选排序后的行。",
+        "inputSchema": {"type": "object", "properties": {
+            "path": {"type": "string", "description": "表格路径（可选；省略时列出全部表格）"},
+            "filters": {"type": "array", "description": "条件列表：{column, equals, contains, in, gt, lt, is_empty}", "items": {"type": "object"}},
+            "sort_by": {"type": "string", "description": "按某列 id 排序"},
+            "desc": {"type": "boolean", "default": False},
+            "offset": {"type": "integer", "default": 0},
+            "limit": {"type": "integer", "default": 100},
+        }},
+    },
+    {
+        "name": "table_upsert",
+        "description": "向研究矩阵表批量新增或按主键列更新若干行（只修改涉及行并自动递增 revision，支持 paper_key 库内文献校验与乐观并发锁）。",
+        "inputSchema": {"type": "object", "properties": {
+            "path": {"type": "string", "description": "表格路径"},
+            "rows": {"type": "array", "description": "行对象数组；每行可直接写列名键，或写 {row_id?, cells: {...}}", "items": {"type": "object"}},
+            "key_column": {"type": "string", "description": "按该列值匹配已有行作更新；未命中则新增"},
+            "if_revision": {"type": "integer", "description": "可选乐观锁版本号；不匹配返回冲突"},
+            "allow_external_keys": {"type": "boolean", "default": False, "description": "paper_key 列是否允许填库外文献说明"},
+            "request_id": {"type": "string", "description": "可选幂等请求 id"},
+        }, "required": ["path", "rows"]},
+    },
+    {
+        "name": "table_patch",
+        "description": "按 row_id 精确修补研究矩阵表中的局部单元格（如补全待核样本的少数列）。",
+        "inputSchema": {"type": "object", "properties": {
+            "path": {"type": "string", "description": "表格路径"},
+            "patches": {"type": "array", "items": {"type": "object", "properties": {
+                "row_id": {"type": "string"},
+                "cells": {"type": "object"},
+            }, "required": ["row_id", "cells"]}},
+            "if_revision": {"type": "integer", "description": "可选乐观锁版本号"},
+            "allow_external_keys": {"type": "boolean", "default": False},
+            "request_id": {"type": "string"},
+        }, "required": ["path", "patches"]},
+    },
+    {
+        "name": "table_export",
+        "description": "把结构化研究矩阵表导出为成品文件：csv（带 UTF-8 BOM 方便 Excel 打开）、docx（自动把 paper_key 展开为作者/题名并生成 Word 标准三线表）或 md。",
+        "inputSchema": {"type": "object", "properties": {
+            "path": {"type": "string", "description": "源 `.table.json` 路径"},
+            "format": {"type": "string", "enum": ["csv", "docx", "md"], "default": "csv"},
+            "out_path": {"type": "string", "description": "可选导出目标路径；默认与源表同目录同名换扩展名"},
+        }, "required": ["path"]},
     },
 ]
 
@@ -1060,6 +1137,11 @@ _TOOL_TITLES = {
     "read_project_memory": "读取项目记忆",
     "append_project_memory": "追加项目记忆",
     "set_memory_topic_status": "设置主题档案状态",
+    "table_create": "新建或演进研究矩阵表",
+    "table_query": "查询结构化研究矩阵表",
+    "table_upsert": "增改研究矩阵表行数据",
+    "table_patch": "修补研究矩阵表单元格",
+    "table_export": "导出研究表格为CSV/三线表DOCX",
 }
 
 _WRITE_TOOLS = {
@@ -1067,7 +1149,7 @@ _WRITE_TOOLS = {
     "submit_agent_summaries", "resolve_wiki_suggestion", "deep_index", "localkb_build",
     "save_synthesis", "mark_stale", "update_wiki_page", "set_wiki_theme",
     "set_wiki_links", "add_source", "add_statute", "append_project_memory",
-    "set_memory_topic_status",
+    "set_memory_topic_status", "table_create", "table_upsert", "table_patch", "table_export",
 }
 _IDEMPOTENT_WRITE_TOOLS = {"mark_stale", "set_wiki_theme", "set_memory_topic_status"}
 
@@ -1307,7 +1389,14 @@ def do_tool(name, args):
             else:
                 tag = x.get("journal_tier")
             st = x.get("statute_status") or ""           # 契约11：法条时效徽标（已修订/已废止）
-            out.append(f"[{i}] ({tag}{'·' + st if st else ''}) {x.get('citation')}  «key:{x.get('key', '')}»")
+            ju = ""
+            if not x.get("is_wiki"):
+                pg_num = x.get("page") if x.get("fulltext_format") == "pdf" else None
+                jurl = JL.make_jump_url(x.get("key", ""), pg_num, base_url=URL)
+                if jurl:
+                    x["jump_url"] = jurl
+                    ju = f"  [在 Zotero 打开]({jurl})"
+            out.append(f"[{i}] ({tag}{'·' + st if st else ''}) {x.get('citation')}  «key:{x.get('key', '')}»{ju}")
             out.append(f"    {(x.get('text') or '').strip()[:220]}")
         # EN-M3：structuredContent——文本仍是主载体，结构化件供支持 MCP 2025-06 的客户端程序化取用
         return "\n".join(out) + _wiki_todo_note(), {"query": args.get("query"), "mode": r.get("mode"),
@@ -1335,7 +1424,9 @@ def do_tool(name, args):
             return f"该篇无 PDF 第 {pp} 页的映射（quality={r.get('quality')}）。"
         approx = e.get("method") in ("interp", "offset", "pdfseq") or e.get("conf", 0) < 0.7
         disp = f"{e['printed']}（页码推算）" if approx else str(e["printed"])
-        return f"PDF 第 {pp} 页 → 期刊印刷页码 第 {disp} 页（method={e.get('method')}, 刊期={r.get('issue') or '未解析'}）"
+        jurl = JL.make_jump_url(str(args.get("key", "")), args.get("pdf_page"), base_url=URL)
+        ju = f"  [在 Zotero 打开第 {pp} 页]({jurl})" if jurl else ""
+        return f"PDF 第 {pp} 页 → 期刊印刷页码 第 {disp} 页（method={e.get('method')}, 刊期={r.get('issue') or '未解析'}）{ju}"
     if name == "build_digest":
         if not ensure_up():
             return "错误：知识库服务启动失败。"
@@ -1386,9 +1477,27 @@ def do_tool(name, args):
                f"（命中 {cov.get('n')} 篇，高层级 {cov.get('n_high')} 篇）。", r.get("gap_note", "")]
         mc = r.get("missing_cited") or []
         if mc:
-            out.append("\n建议新增（被库内引用但库中缺失，按被引频次）：")
-            for it in mc[:12]:
-                out.append(f"- {it.get('author', '')}《{it.get('title', '')}》（被引 {it.get('freq')} 次）")
+            out.append("\n建议新增（从正文与法学页底脚注深挖、已过滤法规并与现有库去重，按期刊等级与被引频次排序）：")
+            for it in mc[:15]:
+                tier = str(it.get("journal_tier") or "").strip()
+                meta_bits = [x for x in (it.get("journal"), str(it.get("year") or "").strip()) if x]
+                tier_tag = f"[{tier}] " if tier else ""
+                meta_str = f"（{' · '.join(meta_bits)}）" if meta_bits else ""
+                line = f"- {tier_tag}{it.get('author', '')}《{it.get('title', '')}》{meta_str} — 被引 {it.get('freq', 1)} 次"
+                cites = it.get("citing_sources") or []
+                cite_parts = []
+                for cs in cites[:2]:
+                    ctitle = cs.get("title") or cs.get("source_key") or ""
+                    pno = cs.get("printed_page") or (f"pdf p.{cs.get('pdf_page')}" if cs.get("pdf_page") else "")
+                    skey = cs.get("source_key") or ""
+                    jurl = JL.make_jump_url(skey, cs.get("pdf_page"), base_url=URL) if skey and cs.get("pdf_page") else ""
+                    if jurl:
+                        cite_parts.append(f"见《{ctitle}》{pno}（[在 Zotero 打开]({jurl})）")
+                    else:
+                        cite_parts.append(f"见《{ctitle}》{pno}".strip())
+                if cite_parts:
+                    line += "\n  出处：" + "；".join(cite_parts)
+                out.append(line)
         mm = r.get("mismatch_undeep") or []
         if mm:
             out.append("\n库内已有但未深索（建议深索纳入本主题）：")
@@ -1714,14 +1823,20 @@ def do_tool(name, args):
         if not r.get("ok"):
             return f"读不到这篇的全文（{r.get('reason')}）：{r.get('detail', '')}"
         fmt = DF.format_label(r.get("fulltext_format") or "全文")
+        doc_jump = JL.make_jump_url(key, None, base_url=URL)
         head = (f"《{r.get('title', '')}》 {r.get('author', '')} {r.get('year', '')} {r.get('journal', '')}\n"
-                f"主全文格式：{fmt}；共 {r.get('n_pages_total')} 个位置单元；本次返回 {r.get('returned_pages')} 个 / {r.get('chars')} 字。")
+                f"主全文格式：{fmt}；共 {r.get('n_pages_total')} 个位置单元；本次返回 {r.get('returned_pages')} 个 / {r.get('chars')} 字。"
+                + (f"\nZotero 原文跳转：[打开原文]({doc_jump})" if doc_jump else ""))
         if r.get("truncated"):
             head += f"\n⚠ 已按 max_chars 截断——续读请传 from_page={r.get('next_page')}。"
         body = []
         for pg in r.get("pages", []):
             pp = pg.get("printed_page") or ""
-            mark = "—— " + (pg.get("locator") or (f"PDF 第 {pg.get('pdf_page')} 页" if pg.get("pdf_page") else f"位置 {pg.get('position')}")) + (f"（印刷页 {pp}）" if pp else "") + " ——"
+            pg_jump = JL.make_jump_url(key, pg.get("pdf_page"), base_url=URL) if pg.get("pdf_page") else ""
+            mark = ("—— " + (pg.get("locator") or (f"PDF 第 {pg.get('pdf_page')} 页" if pg.get("pdf_page") else f"位置 {pg.get('position')}"))
+                    + (f"（印刷页 {pp}）" if pp else "")
+                    + (f" · [在 Zotero 打开该页]({pg_jump})" if pg_jump else "")
+                    + " ——")
             body.append(f"\n{mark}\n{pg.get('text', '')}")
         # 原文只走 MCP 标准 content 文本通道。正文可达 2 万字；若再放进
         # structuredContent 会重复占用 token，若只放元数据又会被部分客户端误当成完整结果。
@@ -1776,9 +1891,11 @@ def do_tool(name, args):
             return "需要 page_id（来自 list_wiki）。"
         stale = args.get("stale", True)
         resp = requests.post(URL + "/wiki/stale/" + pid,
-                             json={"stale": bool(stale), "reason": args.get("reason", "")}, timeout=30)
+                             json={"stale": bool(stale), "reason": args.get("reason", ""), "by_agent": True}, timeout=30)
         if resp.status_code == 404:
             return f"无此综合页：{pid}（先用 list_wiki 查 id）。"
+        if resp.status_code == 409:
+            return "拒绝标记：" + _err_of(resp)
         if resp.status_code != 200:
             return f"标记失败：{_err_of(resp)}"
         r = resp.json()
@@ -1825,6 +1942,9 @@ def do_tool(name, args):
                 "content": args.get("content", ""),
                 "mode": args.get("mode", "replace"), "links": args.get("links"),
                 "by_agent": True, "model": "agent"}
+        for extra_k in ("section", "if_revision", "request_id"):
+            if args.get(extra_k) is not None:
+                body[extra_k] = args.get(extra_k)
         if "sources" in args:
             body["sources"] = [{"key": k} for k in (args.get("sources") or [])]
         resp = requests.post(URL + "/wiki/page/" + pid, json=body, timeout=120)
@@ -1839,8 +1959,11 @@ def do_tool(name, args):
                     "核验版和检索结果未被覆盖；请用户在应用里审阅差异。")
         state = "已入表可检索" if r.get("indexed") else "已存盘"
         tail = f"，互链 {len(r.get('links') or [])} 条" if r.get("links") else ""
-        return (f"已{'追加到' if args.get('mode') == 'append' else '写入'}「{r.get('title')}」"
-                f"（id={r.get('id')}，kind={r.get('kind')}，{state}，引用 {r.get('n_sources')} 篇{tail}）。")
+        rev_tail = f"，rev={r['revision']}" if r.get("revision") else ""
+        replay_tail = "（幂等重放）" if r.get("idempotent_replay") else ""
+        verb = "追加到" if args.get("mode") == "append" else ("替换小节于" if args.get("mode") == "replace_section" else "写入")
+        return (f"已{verb}「{r.get('title')}」"
+                f"（id={r.get('id')}，kind={r.get('kind')}，{state}，引用 {r.get('n_sources')} 篇{tail}{rev_tail}）{replay_tail}。")
 
     if name == "set_wiki_theme":
         if not ensure_up():
@@ -1902,6 +2025,7 @@ def do_tool(name, args):
                  "no_sources": "无来源论文", "degraded": "降级页（未配 AI 模型时生成）",
                  "missing_concept": "被反复提及却无独立页的概念",
                  "invalid_source": "来源 key 在文献目录中不存在",
+                 "source_replaced": "来源文献底层全文已替换",
                  "duplicate_scaffold": "重复标题或研究问题"}
         for k, items in iss.items():
             if not items:
@@ -2028,7 +2152,8 @@ def do_tool(name, args):
             AW.ensure_scaffold()
             ok, msg = AW.append_memory(target=str(args.get("target") or "core"),
                                        text=str(args.get("text") or ""),
-                                       status=(args.get("status") if args.get("status") is not None else None))
+                                       status=(args.get("status") if args.get("status") is not None else None),
+                                       request_id=str(args.get("request_id") or ""))
             return msg if ok else ("写项目记忆被拒绝：" + msg)
         except Exception as e:
             return "写项目记忆失败：" + str(e)
@@ -2100,7 +2225,10 @@ def do_tool(name, args):
         evaluation = " · ".join(x for x in (
             p.get("source_type_name"), p.get("objective_label"), p.get("band_name")
         ) if x)
-        out = [f"《{p.get('title', '')}》 «key:{key}»",
+        meta_jump = JL.make_jump_url(key, None, base_url=URL)
+        if meta_jump:
+            p["jump_url"] = meta_jump
+        out = [f"《{p.get('title', '')}》 «key:{key}»" + (f"  [在 Zotero 打开]({meta_jump})" if meta_jump else ""),
                f"{p.get('author') or ((p.get('editors') or '') + ('（编）' if p.get('editors') else ''))}，{p.get('journal', '')}，{p.get('year', '')}"
                f"（{evaluation or p.get('itemtype', '')}）",
                f"官方页码：{p.get('official_pages') or '未知'}　收藏夹：{'、'.join(p.get('collections') or []) or '（无）'}",
@@ -2190,8 +2318,12 @@ def do_tool(name, args):
             ex = "逐字一致" if m.get("exact") else "模糊命中（请人工比对）"
             pp = m.get("printed_page")
             loc = m.get("locator") or (f"PDF 第 {m.get('pdf_page')} 页" if m.get("pdf_page") else f"位置 {m.get('position')}")
+            jurl = JL.make_jump_url(m.get("key", ""), m.get("pdf_page"), base_url=URL)
+            if jurl:
+                m["jump_url"] = jurl
             out.append(f"[{i}] «key:{m.get('key')}» {loc}"
-                       + (f"（印刷页 {pp}）" if pp else "") + f" · {ex}")
+                       + (f"（印刷页 {pp}）" if pp else "") + f" · {ex}"
+                       + (f"  [在 Zotero 打开该页]({jurl})" if jurl else ""))
             ctx = (m.get("context") or "").strip().replace("\n", " ")
             if ctx:
                 out.append(f"    上下文：…{ctx[:200]}…")
@@ -2224,8 +2356,12 @@ def do_tool(name, args):
             for e in ev[:8]:
                 pp = e.get("printed_page")
                 loc = e.get("locator") or (f"PDF 第 {e.get('pdf_page')} 页" if e.get("pdf_page") else f"位置 {e.get('position')}")
+                jurl = JL.make_jump_url(e.get("key", ""), e.get("pdf_page"), base_url=URL)
+                if jurl:
+                    e["jump_url"] = jurl
                 out.append(f"- «key:{e.get('key')}» {loc}"
                            + (f"（印刷页 {pp}）" if pp else "")
+                           + (f" [在 Zotero 打开该页]({jurl})" if jurl else "")
                            + f"：「{(e.get('quote') or '').strip()[:160]}」")
         return "\n".join(out), r   # EN-M3：契约7 原样作 structuredContent
 
@@ -2295,6 +2431,56 @@ def do_tool(name, args):
         if r.get("summary_hint"):
             out.append(str(r["summary_hint"]))
         return "\n".join(out)
+
+    # ── 轻量结构化研究矩阵表（.table.json）──
+    if name in ("table_create", "table_query", "table_upsert", "table_patch", "table_export"):
+        if not ensure_up():
+            return "错误：知识库服务启动失败。"
+        ep_map = {
+            "table_create": "/table/create",
+            "table_query": "/table/query",
+            "table_upsert": "/table/upsert",
+            "table_patch": "/table/patch",
+            "table_export": "/table/export",
+        }
+        payload = {k: v for k, v in args.items() if v is not None}
+        resp = requests.post(URL + ep_map[name], json=payload, timeout=60)
+        if resp.status_code == 409:
+            return "表格版本冲突：" + _err_of(resp)
+        if resp.status_code != 200:
+            return f"{_TOOL_TITLES.get(name, name)}失败：{_err_of(resp)}"
+        r = resp.json()
+        if name == "table_create":
+            act = "新建" if r.get("created") else "更新表结构"
+            replay = "（幂等重放）" if r.get("idempotent_replay") else ""
+            return (f"已{act}研究表格「{r.get('title')}」（{r.get('n_columns')} 列，{r.get('n_rows')} 行，"
+                    f"revision={r.get('revision')}，路径：{r.get('path')}）{replay}。")
+        if name == "table_query":
+            if "tables" in r:
+                tabs = r.get("tables") or []
+                if not tabs:
+                    return "当前还没有任何 `.table.json` 研究表格；可用 table_create 新建。"
+                lines = [f"共有 {r.get('total', len(tabs))} 张研究表格："]
+                for t in tabs[:30]:
+                    lines.append(f"- 「{t.get('title')}」（{t.get('n_rows')} 行 · {t.get('n_columns')} 列 · rev={t.get('revision')}）{t.get('path')}")
+                return "\n".join(lines), r
+            cols = r.get("columns") or []
+            rows = r.get("rows") or []
+            lines = [f"研究表格「{r.get('title')}」（总 {r.get('total_rows')} 行，命中 {r.get('filtered_rows')} 行，本次返回 {len(rows)} 行，revision={r.get('revision')}）："]
+            lines.append("列定义：" + " | ".join(f"{c.get('id')}({c.get('type')})" for c in cols))
+            for rw in rows[:40]:
+                lines.append(f"- [{rw.get('row_id')}] " + json.dumps(rw.get("cells") or {}, ensure_ascii=False))
+            return "\n".join(lines), r
+        if name == "table_upsert":
+            replay = "（幂等重放）" if r.get("idempotent_replay") else ""
+            return (f"表格已更新：新增 {r.get('inserted', 0)} 行，覆盖更新 {r.get('updated', 0)} 行，"
+                    f"总计 {r.get('total_rows', 0)} 行，新 revision={r.get('revision')}{replay}。")
+        if name == "table_patch":
+            replay = "（幂等重放）" if r.get("idempotent_replay") else ""
+            return (f"表格已局部修补 {r.get('patched_rows', 0)} 行，总计 {r.get('total_rows', 0)} 行，"
+                    f"新 revision={r.get('revision')}{replay}。")
+        if name == "table_export":
+            return (f"已导出表格（{r.get('format')}，{r.get('n_rows', 0)} 行）到：{r.get('path') or r.get('out_path')}。")
 
     return f"未知工具：{name}"
 

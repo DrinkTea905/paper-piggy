@@ -379,6 +379,23 @@ def check_index_contract_audit():
     ok(name, f"{len(UH.CURRENT_INDEX_CONTRACTS)} 组契约均有当前实现审计记录")
 
 
+def check_kb_memory_ssot():
+    """十、直读桥 kb.py 的记忆读写与 agent_ws 单一事实源对齐（不含旧 200 行口径、支持 tools:<子域>）。"""
+    name = "⑩ kb.py 记忆口径与 agent_ws 一致"
+    kb_p = SRC / "kb.py"
+    if not kb_p.exists():
+        return skip(name, "kb.py 不存在")
+    txt = kb_p.read_text(encoding="utf-8", errors="ignore")
+    errs = []
+    if "上限 200 行" in txt or "MEM_FILES" in txt:
+        errs.append("仍含已废止的 200 行 / MEM_FILES 旧实现")
+    if "tools:" not in txt or "MEMORY_CORE_MAX_CHARS" not in txt and "_memory_view_text" not in txt:
+        errs.append("未复用 agent_ws/mcp_server 的 tools:<子域> 分区记忆口径")
+    if errs:
+        return bad(name, "；".join(errs))
+    ok(name, "已复用 agent_ws 四区记忆与 3 万字口径")
+
+
 def main():
     print("=== 指引 ↔ 代码 一致性校验（只读）===")
     doc = SRC / "MCP接入说明.md"
@@ -395,6 +412,7 @@ def main():
     check_native_browser_dialogs()
     check_no_top_pinned_guide_notes()
     check_index_contract_audit()
+    check_kb_memory_ssot()
     print("-" * 60)
     if FAILED:
         print(f"❌ {len(FAILED)} 项不一致——改了功能忘了同步指引。逐条修完再打包。")
