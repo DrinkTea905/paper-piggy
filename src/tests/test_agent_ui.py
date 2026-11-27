@@ -236,15 +236,20 @@ class AgentOutputTests(unittest.TestCase):
         self.assertIn('id="ag-skills-toggle"', index_html)
         self.assertIn('id="ag-tasks-toggle"', index_html)
         self.assertNotIn("ag-tasks-note", index_html)
+        self.assertNotIn("让 AI 助手定期帮你搜集 / 综述（如少年司法周报）", index_html)
         self.assertIn('id="ag-doctor-btn"', index_html)
         self.assertIn('aria-expanded="false"', index_html)
-        self.assertIn("const AGENT_OUTPUT_COLLAPSED_COUNT = 5;", app_js)
+        self.assertIn('aria-expanded="true"', index_html)
+        self.assertIn("let agentOutputsExpanded = false;", app_js)
+        self.assertIn("let agentSkillsExpanded = true;", app_js)
+        self.assertIn("let agentTasksExpanded = false;", app_js)
         self.assertIn('jget("/agent/outputs?limit=0")', app_js)
         self.assertIn('jget("/agent/workflows")', app_js)
         self.assertIn("ag-skill-tile", app_js)
+        self.assertIn("ag-skill-copy", app_js)
+        self.assertIn("e.stopPropagation()", app_js)
         self.assertIn("展开 ⌄", app_js)
         self.assertIn("收起 ⌃", app_js)
-        self.assertIn("agentOutputs.slice(0, AGENT_OUTPUT_COLLAPSED_COUNT)", app_js)
 
     def test_scaffold_creates_codex_and_claude_workflow_entry_files(self):
         with tempfile.TemporaryDirectory() as td, mock.patch.object(AW, "base_dir", return_value=Path(td)):

@@ -704,14 +704,13 @@
   // loaded 标志只在「加载成功」后由 loadDashboard/loadBrowse 自己置位；
   // 加载失败则保持 false，切走再切回会自动重试（旧版加载前就置 true，失败后只能刷新整页）。
   let dashLoaded = false, browseLoaded = false, wikiLoaded = false, agentLoaded = false;
-  const AGENT_OUTPUT_COLLAPSED_COUNT = 5;
   let agentOutputs = [];
-  let agentOutputsExpanded = null;
+  let agentOutputsExpanded = false;
   let agentSkills = [];
-  let agentSkillsExpanded = null;
+  let agentSkillsExpanded = true;
   let agentTasks = [];
   let agentTasksUnrecognized = [];
-  let agentTasksExpanded = null;
+  let agentTasksExpanded = false;
   $$(".tab").forEach((t) => t.addEventListener("click", () => switchTab(t.dataset.tab)));
   // 顶栏页签可拖动排序（用户自定义顺序，存 localStorage，跨会话保留）
   (function wireTabReorder() {
@@ -3324,24 +3323,20 @@
     loadAgentSkills();      // 🛠️ 技能（工作流）（读本地「资料库/技能/*.md」）
     loadAgentTasks();       // ⏰ 定时任务（读本地「资料库/定时任务」）
   }
-  function syncAgentExpandSection(toggle, box, count, expanded, onInitExpanded) {
-    let isExp = expanded;
-    if (isExp === null) {
-      isExp = count <= AGENT_OUTPUT_COLLAPSED_COUNT;
-      if (onInitExpanded) onInitExpanded(isExp);
-    }
+  function syncAgentExpandSection(toggle, box, expanded) {
+    const isExp = !!expanded;
     if (toggle) {
-      toggle.hidden = count === 0;
-      toggle.setAttribute("aria-expanded", String(count > 0 && !!isExp));
+      toggle.hidden = false;
+      toggle.setAttribute("aria-expanded", String(isExp));
       toggle.textContent = isExp ? "收起 ⌃" : "展开 ⌄";
     }
     if (box) {
-      box.hidden = count > 0 && count <= AGENT_OUTPUT_COLLAPSED_COUNT && !isExp;
+      box.hidden = !isExp;
     }
     return isExp;
   }
   // C4：交付物——读 /agent/outputs（扫「交付物/*」子文件夹），保持最近修改在前。
-  //     超过五项默认显示五项、可点「展开 ⌄」显示全部；不超过五项可点「收起 ⌃ / 展开 ⌄」折叠整区。
+  //     默认折叠成标题栏，点「展开 ⌄」显示全部。
   async function openAgentFolder(which, btn) {
     const lbl = btn && btn.textContent;
     try {
@@ -3369,15 +3364,12 @@
     const box = $("#ag-outputs"); if (!box) return;
     const toggle = $("#ag-outputs-toggle");
     const empty = (msg) => { box.innerHTML = `<div class="ag-outputs-empty">${msg}</div>`; };
-    const isExp = syncAgentExpandSection(toggle, box, agentOutputs.length, agentOutputsExpanded, (v) => { agentOutputsExpanded = v; });
+    syncAgentExpandSection(toggle, box, agentOutputsExpanded);
     if (!agentOutputs.length) {
       empty(`还没有交付物。让 AI 助手把成品（论文 / 资料汇编 / 周报）写进「交付物」后，点右上角 <b>🔄 刷新</b> 即可看到。`);
       return;
     }
-    const items = isExp
-      ? agentOutputs
-      : agentOutputs.slice(0, AGENT_OUTPUT_COLLAPSED_COUNT);
-    box.innerHTML = items.map((o) => {
+    box.innerHTML = agentOutputs.map((o) => {
       const fileCount = o.file_count != null ? o.file_count : (o.n_files || 0);
       const subdirCount = o.subdir_count || 0;
       const counts = o.name === "定时任务"
@@ -3408,11 +3400,11 @@
       renderAgentOutputs();
     } catch (e) {
       agentOutputs = [];
-      const toggle = $("#ag-outputs-toggle"); if (toggle) toggle.hidden = true;
+      syncAgentExpandSection($("#ag-outputs-toggle"), box, agentOutputsExpanded);
       empty(`暂时读不到交付物列表（可能是后端未就绪）。稍后点 <b>🔄 刷新</b> 再试。`);
     }
   }
-  // 🛠️ 技能（工作流）：读 /agent/workflows（扫「资料库/技能/*.md」），按分块展示名称，点击直接打开 .md 文件。
+  // 🛠️ 技能（工作流）：读 /agent/workflows（扫「资料库/技能/*.md」），默认展开，点分块打开 .md、点右侧复制名称。
   async function openAgentWorkflow(filename, card) {
     if (!filename || (card && card.getAttribute("aria-busy") === "true")) return;
     if (card) { card.setAttribute("aria-busy", "true"); card.classList.add("opening"); }
@@ -3428,23 +3420,36 @@
   function renderAgentSkills() {
     const box = $("#ag-skills"); if (!box) return;
     const toggle = $("#ag-skills-toggle");
-    const isExp = syncAgentExpandSection(toggle, box, agentSkills.length, agentSkillsExpanded, (v) => { agentSkillsExpanded = v; });
+    syncAgentExpandSection(toggle, box, agentSkillsExpanded);
     if (!agentSkills.length) {
       box.innerHTML = `<div class="ag-outputs-empty">还没有检测到工作流文件。连接 AI 助手或点右上角 <b>🔄 刷新</b> 初始化 <code>0_Agent资料库/技能/</code> 即可看到。</div>`;
       return;
     }
-    const items = isExp ? agentSkills : agentSkills.slice(0, AGENT_OUTPUT_COLLAPSED_COUNT);
-    box.innerHTML = items.map((s) => {
+    box.innerHTML = agentSkills.map((s) => {
       const label = s.stem || String(s.filename || "").replace(/\.md$/i, "") || s.name || "";
       const tip = [s.filename, s.summary].filter(Boolean).join(" — ") || "点击打开该工作流文件";
       return `<div class="ag-output-item ag-skill-tile" role="button" tabindex="0" data-wf="${esc(s.filename)}" title="${esc(tip)}">`
         + `<div class="ag-output-name"><span class="ag-output-ico">📄</span><span>${esc(label)}</span></div>`
+        + `<button class="ag-skill-copy" type="button" data-copy-name="${esc(label)}" title="复制工作流名称">复制</button>`
         + `</div>`;
     }).join("");
+    box.querySelectorAll(".ag-skill-copy").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        copyText(btn.dataset.copyName || "", btn);
+      });
+      btn.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") e.stopPropagation();
+      });
+    });
     box.querySelectorAll(".ag-skill-tile").forEach((card) => {
       const open = () => openAgentWorkflow(card.dataset.wf, card);
-      card.addEventListener("click", open);
+      card.addEventListener("click", (e) => {
+        if (e.target && e.target.closest(".ag-skill-copy")) return;
+        open();
+      });
       card.addEventListener("keydown", (e) => {
+        if (e.target && e.target.closest(".ag-skill-copy")) return;
         if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); }
       });
     });
@@ -3457,7 +3462,7 @@
       renderAgentSkills();
     } catch (e) {
       agentSkills = [];
-      const toggle = $("#ag-skills-toggle"); if (toggle) toggle.hidden = true;
+      syncAgentExpandSection($("#ag-skills-toggle"), box, agentSkillsExpanded);
       box.innerHTML = `<div class="ag-outputs-empty">暂时读不到工作流列表（可能是后端未就绪）。稍后点 <b>🔄 刷新</b> 再试。</div>`;
     }
   }
@@ -3478,7 +3483,7 @@
       const b = box.querySelector(".ag-open-taskdir");
       if (b) b.addEventListener("click", () => openAgentFolder("tasks", b));
     };
-    const isExp = syncAgentExpandSection(toggle, box, agentTasks.length, agentTasksExpanded, (v) => { agentTasksExpanded = v; });
+    syncAgentExpandSection(toggle, box, agentTasksExpanded);
     if (!agentTasks.length) {
       box.innerHTML = agentTasksUnrecognized.length
         ? diagnostic()
@@ -3488,8 +3493,7 @@
       wireDiagnostic();
       return;
     }
-    const items = isExp ? agentTasks : agentTasks.slice(0, AGENT_OUTPUT_COLLAPSED_COUNT);
-    box.innerHTML = items.map((t) => {
+    box.innerHTML = agentTasks.map((t) => {
       const isDraft = t.has_enabled === false;
       const off = (t.enabled === false || isDraft) ? " off" : "";
       const b = [];
@@ -3504,7 +3508,7 @@
     }).join("") + diagnostic();
     wireDiagnostic();
   }
-  // ⏰ 定时任务：读后端 /agent/tasks（扫「资料库/定时任务/*/任务.md」）。端点缺失/空时优雅降级。
+  // ⏰ 定时任务：读后端 /agent/tasks（扫「资料库/定时任务/*/任务.md」）。默认折叠成标题栏。
   async function loadAgentTasks() {
     const box = $("#ag-tasks"); if (!box) return;
     try {
@@ -3515,7 +3519,7 @@
     } catch (e) {
       agentTasks = [];
       agentTasksUnrecognized = [];
-      const toggle = $("#ag-tasks-toggle"); if (toggle) toggle.hidden = true;
+      syncAgentExpandSection($("#ag-tasks-toggle"), box, agentTasksExpanded);
       // 端点尚未就绪（旧后端）或读失败：显示引导而非报错
       box.innerHTML = `<div class="ag-tasks-empty">还没有定时任务。对 AI 助手说「帮我建一个每周定时任务」即可，`
         + `任务定义会存进 <code>资料库/定时任务/</code>。</div>`;
@@ -3581,19 +3585,16 @@
     if (osk) osk.addEventListener("click", () => openAgentFolder("skills", null));
     const outputToggle = $("#ag-outputs-toggle");
     if (outputToggle) outputToggle.addEventListener("click", () => {
-      if (!agentOutputs.length) return;
       agentOutputsExpanded = !agentOutputsExpanded;
       renderAgentOutputs();
     });
     const skillsToggle = $("#ag-skills-toggle");
     if (skillsToggle) skillsToggle.addEventListener("click", () => {
-      if (!agentSkills.length) return;
       agentSkillsExpanded = !agentSkillsExpanded;
       renderAgentSkills();
     });
     const tasksToggle = $("#ag-tasks-toggle");
     if (tasksToggle) tasksToggle.addEventListener("click", () => {
-      if (!agentTasks.length) return;
       agentTasksExpanded = !agentTasksExpanded;
       renderAgentTasks();
     });
