@@ -475,17 +475,17 @@
         <div class="ag-outputs" id="ag-outputs"></div>
       </section>
 
-      <!-- 🛠️ 技能（工作流）（跨满一行）——扫本地「资料库/技能/*.md」展示可用工作流，默认五项可展开/收起 -->
+      <!-- 🛠️ 技能（工作流）（跨满一行）——扫本地「资料库/技能/*.md」按分块展示名称，默认一排五项可展开/收起，点分块直接打开文件 -->
       <section class="ag-card ag-full ag-skills-card" id="ag-skills-card">
         <h3><span>🛠️ 技能（工作流）</span><span class="ag-tasks-sub">AI 助手按任务自动选用的研究规程，也可在对话中直接点名使用</span><button class="ag-output-toggle" id="ag-skills-toggle" type="button" aria-expanded="false" aria-controls="ag-skills" hidden>展开</button><button class="ag-refresh" id="ag-skills-refresh" type="button" title="重新扫描技能文件夹（新建或修改的工作流点这里就能看到，不用重启）">🔄 刷新</button></h3>
-        <div class="ag-skills-list" id="ag-skills">读取技能工作流…</div>
+        <div class="ag-outputs ag-skills-grid" id="ag-skills"></div>
       </section>
 
       <!-- ⏰ 定时任务（跨满一行）——读本地「资料库/定时任务」展示；执行由用户的 AI 助手负责 -->
       <section class="ag-tasks-card ag-full" id="ag-tasks-card">
         <div class="ag-tasks-h"><span>⏰ 定时任务</span><span class="ag-tasks-sub">让 AI 助手定期帮你搜集 / 综述（如少年司法周报）</span><button class="ag-output-toggle" id="ag-tasks-toggle" type="button" aria-expanded="false" aria-controls="ag-tasks" hidden>展开</button><button class="ag-refresh" id="ag-tasks-refresh" type="button" title="重新扫描定时任务文件夹（新建的任务点这里就能看到，不用重启）">🔄 刷新</button></div>
         <div id="ag-tasks" class="ag-tasks-list">读取定时任务…</div>
-        <p class="ag-note ag-tasks-note">任务定义存在「资料库 › 定时任务」（换 AI 助手也能读、照着重建）；成果落「交付物 › 定时任务」；每跑完一次，AI 会依时效内容更新综述库。<br><small>说明：定时触发由你的 AI 助手在它自己的日程里执行，PaperPiggy 只登记、展示并把成果入库；云端检索和 AI 助手是否联网，取决于你的检索引擎与助手配置。</small></p>
+
       </section>
 
     </div>
@@ -564,7 +564,7 @@
               <div class="ag-trio-i"><b>📖 维护综述库</b><span>完整检查内容、来源、互链和主题归类；优先充实现有主题页，避免按单篇文献散建页面。说「维护我的知识库和综述主题归类」。</span></div>
               <div class="ag-trio-i"><b>🔭 跨学科发散与补文献</b><span>写作前打开理论视野：把窄题接到邻近学科、政治学 / 心理学等，理出该补的（尤其外文）文献。说「帮我把…这个题发散一下、看该补哪些文献」。</span></div>
             </div>
-            <p class="ag-note">这六条就是「📚 专属资料库 › 技能」里的顶层 .md 文件——<b>一个工作流一个文件、人类可读</b>。少年司法初稿的《三大刊结构》台账放在 <code>技能/参考手册/</code>，读取主工作流时自动附带，不会变成第七条工作流。你随时能和 AI 助手一起<b>把工作流和参考材料改成自己的习惯，或新建一条属于你的工作流</b>。应用更新时，没改过的出厂文件会自动升级；你改过的会原样保留，新版集中放进 <code>升级与备份/待合并/</code>，旧版恢复件进入 <code>升级与备份/历史备份/</code>。唯一例外是已经停用的旧《成文技艺手册》：它不再分发，升级时会删除应用管理的现存副本。无需记住文件名——Agent 页中间新增的「<b>🛠️ 技能（工作流）</b>」面板会直接列出所有内置和自建工作流及其用途说明，点「打开文件」就能直达对应文件；Agent 页仍可查看模板差异或复制给 Agent 合并。<button class="ag-link ag-linkbtn" id="ag-open-skills" type="button">打开技能文件夹</button></p>
+            <p class="ag-note">这六条就是「📚 专属资料库 › 技能」里的顶层 .md 文件——<b>一个工作流一个文件、人类可读</b>。少年司法初稿的《三大刊结构》台账放在 <code>技能/参考手册/</code>，读取主工作流时自动附带，不会变成第七条工作流。你随时能和 AI 助手一起<b>把工作流和参考材料改成自己的习惯，或新建一条属于你的工作流</b>。应用更新时，没改过的出厂文件会自动升级；你改过的会原样保留，新版集中放进 <code>升级与备份/待合并/</code>，旧版恢复件进入 <code>升级与备份/历史备份/</code>。唯一例外是已经停用的旧《成文技艺手册》：它不再分发，升级时会删除应用管理的现存副本。无需记住文件名——Agent 页中间的「<b>🛠️ 技能（工作流）</b>」卡片以分块方式展示所有内置和自建工作流名称，点一下对应分块即可直接打开该 <code>.md</code> 文件；Agent 页仍可查看模板差异或复制给 Agent 合并。<button class="ag-link ag-linkbtn" id="ag-open-skills" type="button">打开技能文件夹</button></p>
             <p class="ag-note">当然，直接说需求也行，比如：</p>
             <ul class="ag-prompts" id="ag-prompts"></ul>
           </div>

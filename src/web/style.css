@@ -984,9 +984,10 @@ button:disabled { opacity: .6; cursor: default; }
   background: rgba(148,163,184,.06); border-radius: 10px; padding: 11px 13px; }
 .ag-tasks-empty code { background: #f1f5f9; padding: 1px 5px; border-radius: 4px; font-size: 11.5px; }
 :root[data-theme="dark"] .ag-tasks-empty code, :root[data-theme="dark"] .ag-tasks-card code { background: #1e293b; }
-.ag-tasks-note { margin-top: 10px; }
-.ag-tasks-note small { color: var(--muted); }
-/* C4：交付物主题——独立整行卡片，默认五项，可展开全部 */
+/* 📦 交付物 / 🛠️ 技能（工作流） / ⏰ 定时任务 —— 收起整区时不留多余下边距 */
+.ag-recent h3:has(+ [hidden]),
+.ag-skills-card h3:has(+ [hidden]),
+.ag-tasks-h:has(+ [hidden]) { margin-bottom: 0; }
 /* 🔄 刷新按钮（定时任务 / 交付物主题 标题右侧；新增内容不必重启即可看到） */
 .ag-refresh { min-height: var(--control-sm); display: inline-flex; align-items: center; justify-content: center; gap: 5px;
   margin-left: auto; font-size: 11.5px; font-weight: 600; color: var(--muted);
@@ -1040,27 +1041,10 @@ button:disabled { opacity: .6; cursor: default; }
 .ag-output-item .ag-output-stats { display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
   min-height: 1.4em; font-size: 11.5px; color: var(--muted); line-height: 1.4; }
 .ag-output-item .ag-sep { color: var(--line); font-style: normal; }
-.ag-outputs-empty { font-size: 12.5px; color: var(--muted); line-height: 1.7; }
-/* 🛠️ 技能（工作流）卡（跨满）与只读环境自检 */
+.ag-outputs-empty { grid-column: 1 / -1; font-size: 12.5px; color: var(--muted); line-height: 1.7; }
+/* 🛠️ 技能（工作流）分块卡片（沿用交付物多列分块）与只读环境自检 */
 .ag-skills-card h3 { margin-bottom: 12px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.ag-skills-list { display: flex; flex-direction: column; gap: 8px; }
-.ag-skill-item { display: flex; align-items: center; justify-content: space-between; gap: 12px;
-  background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 10px 13px; }
-.ag-skill-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
-.ag-skill-title-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.ag-skill-name { font-size: 13.5px; font-weight: 650; color: var(--fg); }
-.ag-skill-badge { font-size: 11px; font-weight: 600; border-radius: 999px; padding: 1px 8px;
-  background: rgba(99,102,241,.10); color: #4f46e5; }
-.ag-skill-badge.custom { background: rgba(16,185,129,.12); color: #047857; }
-.ag-skill-badge.aux { background: rgba(148,163,184,.14); color: var(--muted); }
-.ag-skill-badge.edited { background: rgba(245,158,11,.13); color: #b45309; }
-.ag-skill-badge.companion { background: rgba(216,91,124,.11); color: var(--accent); }
-:root[data-theme="dark"] .ag-skill-badge { color: #a5b4fc; background: rgba(99,102,241,.18); }
-:root[data-theme="dark"] .ag-skill-badge.custom { color: #6ee7b7; background: rgba(16,185,129,.16); }
-:root[data-theme="dark"] .ag-skill-badge.edited { color: #fbbf24; background: rgba(245,158,11,.16); }
-.ag-skill-summary { font-size: 12.5px; color: var(--fg); opacity: .88; line-height: 1.5; }
-.ag-skill-meta { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; font-size: 11.5px; color: var(--muted); }
-.ag-skill-open { flex: 0 0 auto; font-size: 12px; padding: 5px 10px; white-space: nowrap; }
+.ag-skill-tile { justify-content: center; min-height: 46px; }
 .ag-hero-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
 .ag-doctor-btn { background: rgba(255,255,255,.10); color: #e2e8f0; border: 1px solid rgba(255,255,255,.20);
   border-radius: 10px; padding: 8px 12px; font-size: 12px; cursor: pointer; white-space: nowrap; }

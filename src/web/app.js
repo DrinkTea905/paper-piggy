@@ -3412,19 +3412,17 @@
       empty(`暂时读不到交付物列表（可能是后端未就绪）。稍后点 <b>🔄 刷新</b> 再试。`);
     }
   }
-  // 🛠️ 技能（工作流）：读 /agent/workflows（扫「资料库/技能/*.md」），展示可用研究工作流。
-  async function openAgentWorkflow(filename, btn) {
-    if (!filename) return;
-    const old = btn && btn.textContent;
-    if (btn) btn.disabled = true;
+  // 🛠️ 技能（工作流）：读 /agent/workflows（扫「资料库/技能/*.md」），按分块展示名称，点击直接打开 .md 文件。
+  async function openAgentWorkflow(filename, card) {
+    if (!filename || (card && card.getAttribute("aria-busy") === "true")) return;
+    if (card) { card.setAttribute("aria-busy", "true"); card.classList.add("opening"); }
     try {
       const r = await jpost("/agent/open_workflow", { filename });
       if (r && r.ok === false) throw new Error(r.detail || r.msg || "打开失败");
-      if (btn) { btn.textContent = "已定位 ✓"; setTimeout(() => { btn.textContent = old; }, 1400); }
     } catch (e) {
       flashToast("打开工作流文件失败：" + (e.message || e));
     } finally {
-      if (btn) btn.disabled = false;
+      if (card) { card.removeAttribute("aria-busy"); card.classList.remove("opening"); }
     }
   }
   function renderAgentSkills() {
@@ -3432,28 +3430,23 @@
     const toggle = $("#ag-skills-toggle");
     const isExp = syncAgentExpandSection(toggle, box, agentSkills.length, agentSkillsExpanded, (v) => { agentSkillsExpanded = v; });
     if (!agentSkills.length) {
-      box.innerHTML = `<div class="ag-tasks-empty">还没有检测到工作流文件。连接 AI 助手或点右上角 <b>🔄 刷新</b> 初始化 <code>0_Agent资料库/技能/</code> 即可看到。</div>`;
+      box.innerHTML = `<div class="ag-outputs-empty">还没有检测到工作流文件。连接 AI 助手或点右上角 <b>🔄 刷新</b> 初始化 <code>0_Agent资料库/技能/</code> 即可看到。</div>`;
       return;
     }
     const items = isExp ? agentSkills : agentSkills.slice(0, AGENT_OUTPUT_COLLAPSED_COUNT);
     box.innerHTML = items.map((s) => {
-      const roleClass = s.role === "自建" ? " custom" : (s.role === "辅助" ? " aux" : "");
-      const badges = [
-        `<span class="ag-skill-badge${roleClass}">${esc(s.role || (s.builtin ? "内置" : "自建"))}</span>`,
-        s.builtin && s.customized ? `<span class="ag-skill-badge edited">已定制</span>` : "",
-        (s.companions || []).length ? `<span class="ag-skill-badge companion">附带参考手册</span>` : "",
-      ].filter(Boolean).join("");
-      return `<div class="ag-skill-item">`
-        + `<div class="ag-skill-main">`
-        + `<div class="ag-skill-title-row"><span class="ag-skill-name">${esc(s.name || s.filename)}</span>${badges}</div>`
-        + (s.summary ? `<div class="ag-skill-summary">${esc(s.summary)}</div>` : "")
-        + `<div class="ag-skill-meta"><span>${esc(s.filename)}</span><span>更新于 ${esc(s.mtime || "未知")}</span></div>`
-        + `</div>`
-        + `<button class="ghost sm ag-skill-open" type="button" data-wf="${esc(s.filename)}" title="在文件管理器中定位该工作流">打开文件</button>`
+      const label = s.stem || String(s.filename || "").replace(/\.md$/i, "") || s.name || "";
+      const tip = [s.filename, s.summary].filter(Boolean).join(" — ") || "点击打开该工作流文件";
+      return `<div class="ag-output-item ag-skill-tile" role="button" tabindex="0" data-wf="${esc(s.filename)}" title="${esc(tip)}">`
+        + `<div class="ag-output-name"><span class="ag-output-ico">📄</span><span>${esc(label)}</span></div>`
         + `</div>`;
     }).join("");
-    box.querySelectorAll(".ag-skill-open").forEach((b) => {
-      b.addEventListener("click", () => openAgentWorkflow(b.dataset.wf, b));
+    box.querySelectorAll(".ag-skill-tile").forEach((card) => {
+      const open = () => openAgentWorkflow(card.dataset.wf, card);
+      card.addEventListener("click", open);
+      card.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); }
+      });
     });
   }
   async function loadAgentSkills() {
@@ -3465,7 +3458,7 @@
     } catch (e) {
       agentSkills = [];
       const toggle = $("#ag-skills-toggle"); if (toggle) toggle.hidden = true;
-      box.innerHTML = `<div class="ag-tasks-empty">暂时读不到工作流列表（可能是后端未就绪）。稍后点 <b>🔄 刷新</b> 再试。</div>`;
+      box.innerHTML = `<div class="ag-outputs-empty">暂时读不到工作流列表（可能是后端未就绪）。稍后点 <b>🔄 刷新</b> 再试。</div>`;
     }
   }
   function renderAgentTasks() {

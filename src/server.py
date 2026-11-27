@@ -1503,6 +1503,7 @@ def agent_workflows():
             companions = [Path(spec[1]).name for spec in AW.workflow_companion_specs(p.name)]
             return {
                 "filename": p.name,
+                "stem": p.stem,
                 "name": title,
                 "builtin": bool(tkey),
                 "role": role,
@@ -1560,9 +1561,20 @@ class AgentOpenWorkflowQ(BaseModel):
     filename: str
 
 
+def _open_system_file(f: Path):
+    """用系统默认程序打开既有文件；调用方负责限定路径范围。"""
+    target = str(f)
+    if sys.platform == "win32":
+        os.startfile(target)  # noqa
+    elif sys.platform == "darwin":
+        subprocess.Popen(["open", target])
+    else:
+        subprocess.Popen(["xdg-open", target])
+
+
 @app.post("/agent/open_workflow")
 def agent_open_workflow(q: AgentOpenWorkflowQ):
-    """在系统文件管理器中定位一个工作流 .md 文件；严格限定于 0_Agent资料库/技能/ 根目录直属文件。"""
+    """用系统默认程序打开一个工作流 .md 文件；严格限定于 0_Agent资料库/技能/ 根目录直属文件。"""
     import agent_ws as AW
     fn = str(q.filename or "").strip()
     if not fn or "/" in fn or "\\" in fn or not fn.lower().endswith(".md"):
@@ -1578,13 +1590,7 @@ def agent_open_workflow(q: AgentOpenWorkflowQ):
         resolved = target.resolve(strict=True)
         if resolved.parent != base:
             raise HTTPException(status_code=400, detail="工作流路径不在允许范围内")
-        if sys.platform == "win32":
-            subprocess.Popen(["explorer.exe", f"/select,{resolved}"],
-                             creationflags=getattr(C, "SUBPROC_NO_WINDOW", 0x08000000))
-        elif sys.platform == "darwin":
-            subprocess.Popen(["open", "-R", str(resolved)])
-        else:
-            subprocess.Popen(["xdg-open", str(resolved.parent)])
+        _open_system_file(resolved)
         return {"ok": True, "path": str(resolved)}
     except HTTPException:
         raise
@@ -1599,15 +1605,20 @@ def agent_doctor():
     checks = []
     # 1. 检索服务与已载入索引
     try:
-        mode = "full" if "tbl" in R.M else ("light" if "papers" in R.M else "init")
+        mode = R.STATE.get("mode") or ("full" if "tbl" in R.M else ("light" if "papers" in R.M else "init"))
         n_papers = len(R.M.get("papers") or {})
-        n_chunks = int(R.M.get("n_chunks") or 0)
+        n_blocks = int(R.M.get("row_count") or 0) if mode == "full" else 0
+        n_deep = len(_deep_keys())
         mode_zh = {"full": "全文语义 + 词法完整模式", "light": "题录词法轻量模式", "init": "初始化中"}.get(mode, mode)
+        deep_part = (
+            f"（已深索 {n_deep} 篇，共 {n_blocks} 个检索片段）" if n_blocks > 0
+            else (f"（已深索 {n_deep} 篇）" if n_deep > 0 else "（尚未深索正文）")
+        )
         checks.append({
             "id": "service",
             "label": "本地服务与索引载入",
             "status": "ok" if n_papers > 0 else "warn",
-            "detail": f"{mode_zh}；当前已载入 {n_papers} 篇文献" + (f"、{n_chunks} 个正文片段" if n_chunks else "（尚无正文切块）"),
+            "detail": f"{mode_zh}；当前已载入 {n_papers} 篇文献{deep_part}",
         })
     except Exception as e:
         checks.append({"id": "service", "label": "本地服务与索引载入", "status": "error", "detail": str(e)})
@@ -1616,7 +1627,7 @@ def agent_doctor():
     try:
         if S.is_api():
             ac = S.api_conf() or {}
-            has_key = bool(str(ac.get("api_key") or "").strip())
+            has_key = bool(str(ac.get("key") or ac.get("api_key") or "").strip())
             checks.append({
                 "id": "models",
                 "label": "检索引擎与模型",

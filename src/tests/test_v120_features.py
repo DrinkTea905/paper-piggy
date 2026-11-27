@@ -460,19 +460,34 @@ class AgentWorkflowsAndDoctorTests(unittest.TestCase):
             jj = next(x for x in res["workflows"] if x["filename"] == "论文初稿（少年司法版）.md")
             self.assertTrue(jj["builtin"])
             self.assertFalse(jj["customized"])
+            self.assertEqual(jj["stem"], "论文初稿（少年司法版）")
             self.assertEqual(len(jj["companions"]), 1)
 
             with self.assertRaises(Exception):
                 server.agent_open_workflow(server.AgentOpenWorkflowQ(filename="../evil.md"))
-            with mock.patch("subprocess.Popen") as popen:
+            opened_files = []
+            with mock.patch.object(server, "_open_system_file", side_effect=opened_files.append):
                 op = server.agent_open_workflow(server.AgentOpenWorkflowQ(filename="我的实证编码工作流.md"))
                 self.assertTrue(op["ok"])
-                popen.assert_called_once()
+                self.assertEqual(opened_files, [custom_wf.resolve()])
 
-            doc = server.agent_doctor()
-            self.assertTrue(doc["ok"])
-            self.assertEqual({c["id"] for c in doc["checks"]},
-                             {"service", "models", "source", "mcp_clients", "workspace_and_wiki"})
+            with mock.patch.object(server.R, "STATE", {"mode": "full", "ready": True}), \
+                    mock.patch.object(server.R, "M", {"papers": {"K1": {}}, "row_count": 42}), \
+                    mock.patch.object(server, "_deep_keys", return_value={"K1"}):
+                doc_local = server.agent_doctor()
+                self.assertTrue(doc_local["ok"])
+                self.assertEqual({c["id"] for c in doc_local["checks"]},
+                                 {"service", "models", "source", "mcp_clients", "workspace_and_wiki"})
+                svc = next(c for c in doc_local["checks"] if c["id"] == "service")
+                self.assertIn("已深索 1 篇，共 42 个检索片段", svc["detail"])
+
+            import settings as S
+            with mock.patch.object(S, "is_api", return_value=True), \
+                    mock.patch.object(S, "api_conf", return_value={"key": "sk-test-siliconflow"}):
+                doc_api = server.agent_doctor()
+                mdl = next(c for c in doc_api["checks"] if c["id"] == "models")
+                self.assertEqual(mdl["status"], "ok")
+                self.assertIn("已配置 Key", mdl["detail"])
 
 
 if __name__ == "__main__":
