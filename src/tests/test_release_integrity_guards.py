@@ -316,5 +316,92 @@ class BundleFreshnessTests(unittest.TestCase):
         self.assertNotIn("安装器 / 便携 zip", notices)
 
 
+class UpdateCheckFallbackTests(unittest.TestCase):
+    def test_rate_limit_403_skips_api_retries_and_succeeds_via_web_fallback(self):
+        from urllib.error import HTTPError
+
+        calls = []
+        fake_ver = "9.9.9"
+        sha_hex = "a" * 64
+        atom_xml = (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            '<feed xmlns="http://www.w3.org/2005/Atom">'
+            '<entry>'
+            f'<link rel="alternate" type="text/html" href="https://github.com/DrinkTea905/paper-piggy/releases/tag/v{fake_ver}"/>'
+            '<content type="html">&lt;p&gt;修复更新检查限流&lt;/p&gt;</content>'
+            '</entry>'
+            '</feed>'
+        ).encode("utf-8")
+
+        class _FakeResp:
+            def __init__(self, final_url, body=b""):
+                self._url = final_url
+                self._body = body
+
+            def geturl(self):
+                return self._url
+
+            def read(self):
+                return self._body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        def fake_urlopen(req, timeout=12):
+            url = req.full_url if hasattr(req, "full_url") else str(req)
+            calls.append(url)
+            if url == updater.API_LATEST:
+                raise HTTPError(url, 403, "rate limit exceeded", {}, None)
+            if url == updater.WEB_LATEST:
+                return _FakeResp(f"https://github.com/DrinkTea905/paper-piggy/releases/tag/v{fake_ver}")
+            if url.endswith(".zip.sha256"):
+                return _FakeResp(url, f"{sha_hex}  paper-piggy-app-{fake_ver}.zip\n".encode("utf-8"))
+            if url == updater.ATOM_FEED:
+                return _FakeResp(url, atom_xml)
+            raise AssertionError(f"Unexpected URL: {url}")
+
+        with mock.patch.object(updater, "urlopen", side_effect=fake_urlopen):
+            info = updater.check(tries=3)
+
+        self.assertEqual(calls.count(updater.API_LATEST), 1)
+        self.assertNotIn("error", info)
+        self.assertTrue(info["has_update"])
+        self.assertEqual(info["latest"], fake_ver)
+        self.assertEqual(info["source"], "web-fallback")
+        self.assertTrue(updater._official_release_asset(info["url"], f"paper-piggy-app-{fake_ver}.zip"))
+        self.assertTrue(updater._official_release_asset(info["sha256_url"], f"paper-piggy-app-{fake_ver}.zip.sha256"))
+        self.assertIn("修复更新检查限流", info["notes"])
+
+    def test_web_fallback_rejects_untrusted_redirect_host(self):
+        from urllib.error import HTTPError
+
+        class _FakeResp:
+            def geturl(self):
+                return "https://evil.example/DrinkTea905/paper-piggy/releases/tag/v9.9.9"
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        def fake_urlopen(req, timeout=12):
+            url = req.full_url if hasattr(req, "full_url") else str(req)
+            if url == updater.API_LATEST:
+                raise HTTPError(url, 403, "rate limit exceeded", {}, None)
+            if url == updater.WEB_LATEST:
+                return _FakeResp()
+            raise AssertionError(f"Unexpected URL: {url}")
+
+        with mock.patch.object(updater, "urlopen", side_effect=fake_urlopen):
+            info = updater.check(tries=3)
+
+        self.assertFalse(info["has_update"])
+        self.assertIn("error", info)
+
+
 if __name__ == "__main__":
     unittest.main()

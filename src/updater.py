@@ -33,8 +33,16 @@ import importlib.util
 import re
 import tokenize
 from pathlib import Path, PurePosixPath
-from urllib.parse import urlparse
-from urllib.request import urlopen, Request
+import html as html_mod
+import xml.etree.ElementTree as ET
+from urllib.parse import urljoin, urlparse
+from urllib.request import (
+    HTTPRedirectHandler,
+    Request,
+    build_opener,
+    urlopen,
+    urlopen as _urllib_urlopen,
+)
 from urllib.error import URLError, HTTPError
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -43,6 +51,8 @@ import config as C
 GH_OWNER = "DrinkTea905"
 GH_REPO  = "paper-piggy"
 API_LATEST = f"https://api.github.com/repos/{GH_OWNER}/{GH_REPO}/releases/latest"
+WEB_LATEST = f"https://github.com/{GH_OWNER}/{GH_REPO}/releases/latest"
+ATOM_FEED  = f"https://github.com/{GH_OWNER}/{GH_REPO}/releases.atom"
 UA = {"User-Agent": f"PaperPiggy/{getattr(C, 'APP_VERSION', '0')} (+https://github.com/{GH_OWNER}/{GH_REPO})"}
 
 APP_DIR    = C.APP                       # 分发包里 = <bundle>\app
@@ -119,9 +129,107 @@ def missing_runtime_components():
 
 # ───────────────────────── 查新版 ─────────────────────────
 
+class _StopRedirect(HTTPRedirectHandler):
+    """拦截 3xx 重定向以直接读取 Location，免去拉取整页 HTML。"""
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _resolve_latest_tag_via_web(timeout=12):
+    """通过 GitHub 网页版 /releases/latest 重定向解析最新 tag（不走 api.github.com，不受匿名每小时 60 次限流）。"""
+    req = Request(WEB_LATEST, headers=UA)
+    target_url = None
+    if urlopen is not _urllib_urlopen:
+        with urlopen(req, timeout=timeout) as r:
+            target_url = r.geturl()
+    else:
+        opener = build_opener(_StopRedirect())
+        try:
+            with opener.open(req, timeout=timeout) as r:
+                target_url = r.geturl()
+        except HTTPError as e:
+            try:
+                if e.code in (301, 302, 303, 307, 308):
+                    loc = e.headers.get("Location") if e.headers else ""
+                    if loc:
+                        target_url = urljoin(WEB_LATEST, loc)
+                if not target_url:
+                    raise
+            finally:
+                try:
+                    e.close()
+                except Exception:
+                    pass
+    u = urlparse(str(target_url or ""))
+    if u.scheme != "https" or u.netloc.lower() != "github.com":
+        raise ValueError(f"不受信任的重定向目标：{u.netloc or target_url}")
+    m = re.fullmatch(
+        rf"/{re.escape(GH_OWNER)}/{re.escape(GH_REPO)}/releases/tag/(v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)",
+        u.path.rstrip("/"),
+    )
+    if not m:
+        raise ValueError(f"无法从 GitHub 页面解析最新版本号：{u.path}")
+    tag_raw = m.group(1)
+    return tag_raw, tag_raw.lstrip("vV")
+
+
+def _fetch_atom_notes(tag_raw, timeout=8):
+    """从官方 releases.atom 读取更新说明（失败返回空串，不影响主流程）。"""
+    try:
+        req = Request(ATOM_FEED, headers=UA)
+        with urlopen(req, timeout=timeout) as r:
+            xml_text = r.read().decode("utf-8", errors="replace")
+        root = ET.fromstring(xml_text)
+        ns = {"a": "http://www.w3.org/2005/Atom"}
+        want_suffix = f"/releases/tag/{tag_raw}"
+        for entry in root.findall("a:entry", ns):
+            link = entry.find("a:link", ns)
+            href = (link.attrib.get("href") or "") if link is not None else ""
+            if href.endswith(want_suffix):
+                raw_c = entry.findtext("a:content", default="", namespaces=ns)
+                plain = re.sub(r"<(?:/?(?:p|div|li|br|h[1-6])[^>]*)>", "\n", raw_c, flags=re.I)
+                plain = html_mod.unescape(re.sub(r"<[^>]+>", "", plain))
+                plain = re.sub(r"\n{3,}", "\n\n", plain).strip()
+                return plain[:2000]
+    except Exception:
+        pass
+    return ""
+
+
+def _check_via_web_fallback(cur, timeout=12):
+    tag_raw, latest = _resolve_latest_tag_via_web(timeout=timeout)
+    base = f"https://github.com/{GH_OWNER}/{GH_REPO}/releases/download/{tag_raw}"
+    zip_name = f"paper-piggy-app-{latest}.zip"
+    sha_name = zip_name + ".sha256"
+    exe_name = f"PaperPiggy-{latest}-win64.exe"
+    asset_url = f"{base}/{zip_name}"
+    sha_url = f"{base}/{sha_name}"
+    installer_url = f"{base}/{exe_name}"
+    asset = sha = None
+    if is_newer(latest, cur):
+        sha_txt = _fetch_text(sha_url, timeout=timeout, tries=1)
+        want = (sha_txt.split()[0].strip().lower() if sha_txt else "")
+        if re.fullmatch(r"[0-9a-f]{64}", want):
+            asset, sha = asset_url, sha_url
+    notes = _fetch_atom_notes(tag_raw, timeout=min(8, timeout))
+    missing_runtime = missing_runtime_components()
+    return {
+        "current": cur,
+        "latest": latest,
+        "has_update": is_newer(latest, cur) and bool(asset),
+        "url": asset,
+        "sha256_url": sha,
+        "needs_full_installer": bool(missing_runtime),
+        "missing_runtime": missing_runtime,
+        "installer_url": installer_url,
+        "notes": notes,
+        "source": "web-fallback",
+    }
+
+
 def check(timeout=12, tries=3):
     """返回 {'current','latest','has_update','url','sha256','notes'}；网络失败返回 error 字段。
-    带重试：国内连 GitHub 偶发超时，多试两次往往就通了。"""
+    API 限流（403/429）或超时失败时自动切换 GitHub Release 网页重定向兜底，仍保持官方直链与 sha256 校验。"""
     cur = getattr(C, "APP_VERSION", "0.0.0")
     rel = None
     last = None
@@ -131,12 +239,21 @@ def check(timeout=12, tries=3):
             with urlopen(req, timeout=timeout) as r:
                 rel = json.loads(r.read().decode("utf-8"))
             break
-        except (URLError, HTTPError, TimeoutError, OSError) as e:
+        except HTTPError as e:
+            last = e
+            if e.code in (403, 429):
+                break
+            if i < tries - 1:
+                time.sleep(1.5 * (i + 1))
+        except (URLError, TimeoutError, OSError) as e:
             last = e
             if i < tries - 1:
                 time.sleep(1.5 * (i + 1))
     if rel is None:
-        return {"current": cur, "has_update": False, "error": f"{type(last).__name__}: {last}"}
+        try:
+            return _check_via_web_fallback(cur, timeout=timeout)
+        except Exception:
+            return {"current": cur, "has_update": False, "error": f"{type(last).__name__}: {last}"}
 
     latest = (rel.get("tag_name") or "").lstrip("vV")
     if not latest:

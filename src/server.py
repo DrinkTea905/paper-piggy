@@ -5748,12 +5748,12 @@ def update_check(force: int = 0):
     """查 GitHub 有没有新版。结果缓存 10 分钟，避免频繁打 GitHub API。"""
     import updater as UPD
     now = time.time()
-    if not force and UPDATE["info"] and (now - UPDATE["checked_at"] < 600):
+    if not force and UPDATE["info"] and not UPDATE["info"].get("error") and (now - UPDATE["checked_at"] < 600):
         return {"ok": True, "cached": True, **UPDATE["info"]}
     try:
         info = UPD.check()
         UPDATE["info"] = info
-        UPDATE["checked_at"] = now
+        UPDATE["checked_at"] = 0 if info.get("error") else now
         return {"ok": True, "cached": False, **info}
     except Exception as e:
         log_error("update_check", repr(e))
